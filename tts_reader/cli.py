@@ -83,6 +83,7 @@ def _build_engine(args):
         return CastEngine(
             _parse_voice_map(args.voice_map), factory,
             attributor=_make_attributor(args),
+            pause_ms=args.cast_pause_ms,
         )
     return factory(args.voice or default_voice)
 
@@ -423,6 +424,11 @@ def build_parser() -> argparse.ArgumentParser:
         "\"narrator=leo,Ahab=zac,Ishmael=dan,dialogue=tara\". 'narrator' is "
         "required; 'dialogue' is the fallback voice for unattributed quotes. "
         "Run the 'characters' subcommand first to see who was detected.",
+    )
+    p_conv.add_argument(
+        "--cast-pause-ms", type=int, default=250,
+        help="Silence inserted when the speaking voice changes in --voice-map "
+        "mode, in milliseconds (default: 250; 0 disables).",
     )
     p_conv.add_argument(
         "--llm-url", default=None,

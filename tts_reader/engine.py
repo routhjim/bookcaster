@@ -244,8 +244,12 @@ class CastEngine(BaseEngine):
       (defaults to the narrator's voice)
     """
 
-    def __init__(self, voice_map: dict[str, str], engine_factory, attributor=None):
+    def __init__(
+        self, voice_map: dict[str, str], engine_factory, attributor=None,
+        pause_ms: int = 250,
+    ):
         self.voice_map = {k.strip().lower(): v for k, v in voice_map.items()}
+        self.pause_ms = pause_ms
         if "narrator" not in self.voice_map:
             raise ValueError("voice map needs a 'narrator=<voice>' entry")
         self.default_quote_voice = self.voice_map.get(
@@ -288,14 +292,21 @@ class CastEngine(BaseEngine):
             self.attributor.refine(
                 segments, known=list(character_counts(segments)), log=log
             )
+        # A short beat when the voice changes keeps switches from feeling
+        # abrupt. 16-bit mono silence at the shared sample rate.
+        pause = b"\x00\x00" * int(self.sample_rate * self.pause_ms / 1000)
         pcm = bytearray()
+        prev_engine = None
         for seg in segments:
             # Narration tags arrive as ', said Ahab.' — drop the leading comma.
             spoken = _re.sub(r"^[\s,;:—\-]+", "", seg.text).strip()
             if not _re.search(r"\w", spoken):
                 continue
             engine = self._engine_for(seg)
+            if prev_engine is not None and engine is not prev_engine:
+                pcm += pause
             pcm += engine.synthesize_pcm(spoken, speed=speed, volume=volume, log=None)
+            prev_engine = engine
         return bytes(pcm)
 
     def _engine_for(self, seg):

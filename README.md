@@ -254,6 +254,10 @@ Casting works with both engines. With Piper, pick voices from the same quality
 tier (all `-medium`/`-high`) — mixed sample rates are rejected. With Orpheus,
 any mix of its eight voices works.
 
+A short beat of silence (250 ms) is inserted whenever the speaking voice
+changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
+(`0` disables).
+
 > Attribution is good but not perfect — expect an occasional line in the wrong
 > voice, especially in older prose. The LLM pass helps a lot; without it,
 > unattributed quotes simply use the `dialogue` voice, which always sounds
