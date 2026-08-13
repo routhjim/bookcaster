@@ -51,6 +51,7 @@ class CastSession:
     narrator_voice: str = ""
     dialogue_voice: str = ""
     history: list[dict] = field(default_factory=list)
+    excerpt: str = ""  # opening of the book, kept for on-demand describes
 
     # -- voice roster ------------------------------------------------------
     def roster(self) -> list[tuple[str, str, str]]:
@@ -106,8 +107,14 @@ class CastSession:
         return "\n".join(lines)
 
     # -- session stages ----------------------------------------------------
-    def describe_and_suggest(self, excerpt: str, log=print) -> None:
-        """One LLM call: summarize each character's role, propose a cast."""
+    def describe_and_suggest(self, excerpt: str, roles_only: bool = False,
+                             log=print) -> None:
+        """One LLM call: summarize each character's role, propose a cast.
+
+        With ``roles_only`` the voice assignments (and narrator/dialogue
+        picks) are left untouched — used to refresh descriptions for a
+        restored cast without disturbing the user's choices.
+        """
         samples = "\n".join(
             f"{m.name} ({m.quotes} lines): " + " / ".join(
                 f"“{s}”" for s in m.samples[:3]
@@ -139,9 +146,13 @@ class CastSession:
                 continue
             member.role = str(info.get("role", "")).strip()
             member.why = str(info.get("why", "")).strip()
+            if roles_only:
+                continue
             voice = str(info.get("voice", "")).strip().lower()
             if self.valid_voice(voice):
                 member.voice = voice
+        if roles_only:
+            return
         if self.valid_voice(str(data.get("narrator", "")).strip().lower()):
             self.narrator_voice = str(data["narrator"]).strip().lower()
         if self.valid_voice(str(data.get("dialogue", "")).strip().lower()):
@@ -338,16 +349,28 @@ def build_session(text: str, engine: str, llm_url: str | None,
             session.narrator_voice, session.dialogue_voice
         ) else roster[-1]
 
+    session.excerpt = text[:3000]
+
     if saved:
         restored = session.apply_saved(saved)
         if restored:
             log(f"Restored your saved cast ({restored} character(s)).")
+            # Broken/older sessions may have saved empty descriptions;
+            # backfill them without touching the restored voice picks.
+            if session.llm_url and any(not m.role for m in session.members):
+                log("Filling in missing character descriptions...")
+                try:
+                    session.describe_and_suggest(
+                        session.excerpt, roles_only=True, log=log
+                    )
+                except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                    log(f"warning: descriptions unavailable ({exc})")
             return session
 
     if session.llm_url:
         log("Asking the LLM to describe each character and suggest voices...")
         try:
-            session.describe_and_suggest(text[:3000], log=log)
+            session.describe_and_suggest(session.excerpt, log=log)
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
             log(f"warning: role descriptions unavailable ({exc}); "
                 "using defaults — you can still assign voices directly.")
@@ -361,6 +384,7 @@ HELP = """Commands:
                           updates the cast and answers you.
   Name = voice            assign a voice directly, no LLM (e.g. Stubb = dan)
   cast                    show the current cast table
+  describe                regenerate the character role summaries (LLM)
   voices                  show the voice roster for this engine
   convert [output]        finish casting and synthesize the audiobook
   map                     print the --voice-map string and exit
@@ -396,6 +420,18 @@ def run_repl(session: CastSession, on_convert, state_path=None, log=print) -> in
             log(HELP)
         elif cmd in ("cast", "list"):
             log(session.table())
+        elif cmd == "describe":
+            if not session.llm_url:
+                log("No LLM connected — descriptions need --llm-url.")
+                continue
+            try:
+                session.describe_and_suggest(
+                    session.excerpt, roles_only=True, log=log
+                )
+                checkpoint()
+                log(session.table())
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                log(f"LLM unavailable ({exc})")
         elif cmd == "voices":
             log(session.roster_text())
         elif cmd == "map":
