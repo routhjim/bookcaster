@@ -179,14 +179,18 @@ class CastSession:
             f"{self._cast_state()}\n\n"
             + (f"Recent conversation:\n{recent}\n\n" if recent else "")
             + f"The director says: \"{user_message}\"\n\n"
-            "Update the cast to match their direction (change voices, refine "
-            "role descriptions). Only change what they asked about. Reply "
-            'with ONLY JSON: {"reply": "<one or two sentences back to the '
-            'director>", "narrator": "<voice or null>", "dialogue": "<voice '
-            'or null>", "updates": {"<Name>": {"voice": "<voice or null>", '
-            '"role": "<updated description or null>"}}}'
+            "If this is casting direction, update the cast to match (change "
+            "voices, refine role descriptions), changing only what they asked "
+            "about. If it is a question or request for information, answer it "
+            "fully and make NO updates. Reply with ONLY JSON: "
+            '{"reply": "<your complete answer/response to the director — any '
+            "explanation, list, or rundown they asked for goes HERE in full; "
+            "this field is the only text they will ever see, so never claim "
+            'something is shown elsewhere>", "narrator": "<voice or null>", '
+            '"dialogue": "<voice or null>", "updates": {"<Name>": {"voice": '
+            '"<voice or null>", "role": "<updated description or null>"}}}'
         )
-        data = self._json_block(self._chat(prompt))
+        data = self._json_block(self._chat(prompt, max_tokens=1600))
         if not data:
             return "(couldn't parse the model's reply — try rephrasing)"
         by_name = {m.name.lower(): m for m in self.members}
