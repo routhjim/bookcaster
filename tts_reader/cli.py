@@ -57,6 +57,15 @@ def _cache_path_for(spec: str) -> Path:
     return p.with_name(p.name + ".speakers.json")
 
 
+def _emotions_cache_path_for(spec: str) -> Path:
+    """Sidecar file holding a book's emotion-tag decisions."""
+    if _is_url(spec):
+        digest = hashlib.sha1(spec.encode("utf-8")).hexdigest()[:16]
+        return default_models_dir().parent / "attribution" / f"{digest}.emotions.json"
+    p = Path(spec)
+    return p.with_name(p.name + ".emotions.json")
+
+
 def _cast_state_path_for(spec: str) -> Path:
     """Sidecar file holding a book's saved cast (voices + roles)."""
     if _is_url(spec):
@@ -116,11 +125,32 @@ def _build_engine(args):
             return PiperEngine(voice, models_dir=args.models_dir)
         default_voice = voice_catalog.DEFAULT_VOICE
 
-    if getattr(args, "voice_map", None):
+    emote = getattr(args, "emote", False)
+    tagger = None
+    if emote:
+        from .speakers import EmotionTagger
+
+        if args.engine != "orpheus":
+            print("warning: --emote only works with --engine orpheus "
+                  "(other engines don't understand emotion tags); ignoring.",
+                  file=sys.stderr)
+        elif not args.llm_url:
+            raise ValueError("--emote needs --llm-url (an LLM decides the tags)")
+        else:
+            tagger = EmotionTagger(args.llm_url, model=args.llm_model)
+
+    voice_map = getattr(args, "voice_map", None)
+    if voice_map is None and tagger is not None:
+        # Emotion tags need the dialogue segmentation CastEngine does, so a
+        # single-voice emote run becomes a one-person cast.
+        voice_map = f"narrator={args.voice or default_voice}"
+
+    if voice_map:
         return CastEngine(
-            _parse_voice_map(args.voice_map), factory,
+            _parse_voice_map(voice_map), factory,
             attributor=_make_attributor(args),
             pause_ms=args.cast_pause_ms,
+            emotion_tagger=tagger,
         )
     return factory(args.voice if args.voice is not None else default_voice)
 
@@ -377,6 +407,8 @@ def cmd_cast(args: argparse.Namespace) -> int:
             argv += ["-o", out]
         if args.engine == "f5":
             argv += ["--f5-url", args.f5_url]
+        if args.emote and args.engine == "orpheus":
+            argv.append("--emote")
         if session.llm_url:
             argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
         if args.no_strip_gutenberg:
@@ -473,6 +505,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
         if isinstance(engine, CastEngine):
             engine.cache_path = _cache_path_for(spec)
+            engine.emotions_cache_path = _emotions_cache_path_for(spec)
 
         chapters = None
         if args.chapters != "off":
@@ -573,6 +606,12 @@ def build_parser() -> argparse.ArgumentParser:
         "\"narrator=leo,Ahab=zac,Ishmael=dan,dialogue=tara\". 'narrator' is "
         "required; 'dialogue' is the fallback voice for unattributed quotes. "
         "Run the 'characters' subcommand first to see who was detected.",
+    )
+    p_conv.add_argument(
+        "--emote", action="store_true",
+        help="Orpheus only: let an LLM add sparse inline emotion tags "
+        "(<sigh>, <laugh>, <gasp>, ...) to dialogue based on textual cues. "
+        "Needs --llm-url. Decisions are cached per book.",
     )
     p_conv.add_argument(
         "--cast-pause-ms", type=int, default=250,
@@ -714,6 +753,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="MP3 bitrate in kbps for the conversion.")
     p_cast.add_argument("--cast-pause-ms", type=int, default=250,
                         help="Silence at voice changes, ms (default: 250).")
+    p_cast.add_argument(
+        "--emote", action="store_true",
+        help="Orpheus only: add sparse LLM-chosen emotion tags to dialogue "
+        "during the final conversion.",
+    )
     p_cast.add_argument(
         "--no-strip-gutenberg", action="store_true",
         help="Do not auto-trim Project Gutenberg license header/footer text.",

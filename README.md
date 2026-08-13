@@ -286,6 +286,15 @@ A short beat of silence (250 ms) is inserted whenever the speaking voice
 changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
 (`0` disables).
 
+**Emotion tags (`--emote`, Orpheus only)**: an LLM reads each line's
+surrounding narration ("he laughed", "she sighed") and injects a sparse
+inline tag (`<laugh>`, `<sigh>`, `<gasp>`, ...) where the text clearly calls
+for one — most lines get none, and decisions are cached per book
+(`<book>.emotions.json`). Works with `--voice-map` or single-voice; needs
+`--llm-url`. Orpheus's tag vocabulary covers laughter, sighs, gasps and the
+like — it can't do "coldly" or "furiously", so tags add texture at emotional
+beats rather than full performance direction.
+
 > Attribution is good but not perfect — expect an occasional line in the wrong
 > voice, especially in older prose. The LLM pass helps a lot; without it,
 > unattributed quotes simply use the `dialogue` voice, which always sounds

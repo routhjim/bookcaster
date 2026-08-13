@@ -268,8 +268,11 @@ class CastEngine(BaseEngine):
 
     def __init__(
         self, voice_map: dict[str, str], engine_factory, attributor=None,
-        pause_ms: int = 250,
+        pause_ms: int = 250, emotion_tagger=None,
     ):
+        self.emotion_tagger = emotion_tagger
+        # Set per input by the CLI, like cache_path.
+        self.emotions_cache_path = None
         self.voice_map = {k.strip().lower(): v for k, v in voice_map.items()}
         self.pause_ms = pause_ms
         if "narrator" not in self.voice_map:
@@ -320,6 +323,10 @@ class CastEngine(BaseEngine):
             segments, attributor=self.attributor,
             cache_path=self.cache_path, log=log,
         )
+        if self.emotion_tagger is not None:
+            self.emotion_tagger.tag(
+                segments, cache_path=self.emotions_cache_path, log=log
+            )
         # A short beat when the voice changes keeps switches from feeling
         # abrupt. 16-bit mono silence at the shared sample rate.
         pause = b"\x00\x00" * int(self.sample_rate * self.pause_ms / 1000)
@@ -333,6 +340,8 @@ class CastEngine(BaseEngine):
             assignment = self._assignment_for(seg)
             if prev_assignment is not None and assignment != prev_assignment:
                 pcm += pause
+            if seg.kind == "quote" and seg.emotion:
+                spoken = f"<{seg.emotion}> {spoken}"
             base, rate = assignment
             pcm += self.engines[base].synthesize_pcm(
                 spoken, speed=speed * rate, volume=volume, log=None

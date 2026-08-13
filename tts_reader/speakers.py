@@ -32,6 +32,7 @@ class Segment:
     kind: str  # "narration" | "quote"
     text: str
     speaker: Optional[str] = None  # normalized speaker name, quotes only
+    emotion: Optional[str] = None  # Orpheus emotion tag for this quote, if any
 
 
 # Verbs that introduce or tag speech. Ordered alternation inside one group.
@@ -268,6 +269,127 @@ def post_chat(url: str, body: dict, timeout: float) -> dict:
 
 
 NO_THINKING = {"enable_thinking": False}
+
+# The delivery cues Orpheus understands as inline tags.
+ORPHEUS_EMOTION_TAGS = (
+    "laugh", "chuckle", "sigh", "gasp", "groan", "yawn", "cough",
+)
+
+
+@dataclass
+class EmotionTagger:
+    """Decides an (optional) Orpheus emotion tag per quote, LLM-batched.
+
+    Deliberately conservative: most lines get no tag — only clear textual
+    cues ("he laughed", "she gasped", a heavy sigh in the narration) earn
+    one. Decisions, including "none", persist in a sidecar cache so a book
+    is judged once.
+    """
+
+    url: str
+    model: str = "default"
+    timeout: float = 300.0
+    batch_size: int = 16
+    context_chars: int = 240
+
+    def tag(self, segments: list[Segment], cache_path=None, log=print) -> None:
+        cache: dict[str, str] = {}
+        if cache_path is not None:
+            try:
+                data = json.loads(Path(cache_path).read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("version") == 1:
+                    cache = {str(k): str(v) for k, v in data.get("tags", {}).items()}
+            except (OSError, ValueError):
+                pass
+
+        pending: list[int] = []
+        hits = 0
+        for i, seg in enumerate(segments):
+            if seg.kind != "quote" or len(seg.text.strip()) < 2:
+                continue
+            key = _segment_key(segments, i)
+            if key in cache:
+                seg.emotion = cache[key] or None
+                hits += 1
+            else:
+                pending.append(i)
+        if hits and log:
+            log(f"  {hits} emotion decision(s) restored from cache")
+        if pending and log:
+            log(f"  emotion tagging: {len(pending)} quote(s) -> {self.url}")
+
+        total = (len(pending) + self.batch_size - 1) // self.batch_size
+        for start in range(0, len(pending), self.batch_size):
+            batch = pending[start:start + self.batch_size]
+            if log and total > 1:
+                log(f"    emotion batch {start // self.batch_size + 1}/{total}")
+            answers = self._ask(segments, batch)
+            for idx in batch:
+                tag = answers.get(idx, "none").strip().lower()
+                seg = segments[idx]
+                seg.emotion = tag if tag in ORPHEUS_EMOTION_TAGS else None
+                cache[_segment_key(segments, idx)] = seg.emotion or ""
+
+        if cache_path is not None:
+            try:
+                p = Path(cache_path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(
+                    json.dumps({"version": 1, "tags": cache}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+    def _context(self, segments: list[Segment], idx: int) -> str:
+        before = "".join(s.text for s in segments[max(0, idx - 3):idx])[-self.context_chars:]
+        quote = segments[idx].text[:200]
+        after = "".join(s.text for s in segments[idx + 1:idx + 3])[: self.context_chars // 2]
+        return f"{before}<<QUOTE>>{quote}<</QUOTE>>{after}".replace("\n", " ")
+
+    def _ask(self, segments: list[Segment], batch: list[int]) -> dict[int, str]:
+        numbered = "\n\n".join(
+            f"[{i}] ...{self._context(segments, i)}..." for i in batch
+        )
+        prompt = (
+            "For each numbered passage from a novel, decide whether the "
+            "spoken line between <<QUOTE>> and <</QUOTE>> should carry ONE "
+            f"delivery tag from this list: {', '.join(ORPHEUS_EMOTION_TAGS)}. "
+            "Assign a tag ONLY when the surrounding text gives a clear cue "
+            "(e.g. 'he laughed', 'she gasped', 'with a heavy sigh'). Most "
+            'lines should get "none" — be sparing; an over-tagged audiobook '
+            "sounds absurd. Respond with ONLY a JSON object mapping each "
+            'number to a tag or "none", e.g. {"3": "sigh", "7": "none"}.'
+            f"\n\n{numbered}"
+        )
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "max_tokens": 20 * self.batch_size,
+            "chat_template_kwargs": NO_THINKING,
+        }
+        try:
+            body = post_chat(self.url, payload, self.timeout)
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise RuntimeError(
+                f"emotion tagging request to {self.url} failed: {exc}"
+            ) from exc
+        content = body["choices"][0]["message"]["content"]
+        match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            raw = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+        out: dict[int, str] = {}
+        for k, v in raw.items():
+            try:
+                out[int(k)] = str(v)
+            except (TypeError, ValueError):
+                continue
+        return out
 
 
 @dataclass
