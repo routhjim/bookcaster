@@ -1,0 +1,6 @@
+# Local neural text-to-speech engine (VITS models, runs on CPU).
+piper-tts>=1.6.0
+# Pure LAME bindings so we can write MP3s without a system ffmpeg install.
+lameenc>=1.7.0
+# Reads/writes ID3 tags, including CHAP/CTOC chapter markers, in pure Python.
+mutagen>=1.47.0

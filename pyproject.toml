@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tts-reader"
+version = "0.1.0"
+description = "Convert text files into spoken-word MP3s using a local neural TTS engine (Piper)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "piper-tts>=1.6.0",
+    "lameenc>=1.7.0",
+    "mutagen>=1.47.0",
+]
+
+[project.scripts]
+tts-reader = "tts_reader.cli:main"
+
+[tool.setuptools]
+packages = ["tts_reader"]

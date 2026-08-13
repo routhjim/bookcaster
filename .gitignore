@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Generated audio / downloaded models
+*.mp3
+*.wav
+*.onnx
+*.onnx.json
+models/
+voices/

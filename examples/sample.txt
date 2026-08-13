@@ -1,0 +1,8 @@
+Welcome to TTS Reader.
+
+This is a small demonstration of turning a plain text file into spoken audio,
+entirely on your own machine. There is no cloud service involved: the neural
+voice model runs locally, and the result is written out as an MP3 file.
+
+You can choose from several voices, adjust the speaking speed, and point the
+tool at any text file you like. Happy listening!
