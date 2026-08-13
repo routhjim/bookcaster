@@ -38,8 +38,9 @@ class CastMember:
     quotes: int
     samples: list[str]
     role: str = ""
-    voice: str = ""
+    voice: str = ""  # may carry a rate variant, e.g. "zac@0.92"
     why: str = ""
+    gender: str = ""  # "M", "F", or "" when unknown
 
 
 @dataclass
@@ -67,8 +68,17 @@ class CastSession:
     def roster_text(self) -> str:
         return "\n".join(f"- {n} ({g}): {d}" for n, g, d in self.roster())
 
+    def voice_genders(self) -> dict[str, str]:
+        return {n: g for n, g, _ in self.roster()}
+
     def valid_voice(self, voice: str) -> bool:
-        return voice in {n for n, _, _ in self.roster()}
+        from .engine import parse_voice_spec
+
+        try:
+            base, _ = parse_voice_spec(voice)
+        except ValueError:
+            return False
+        return base in {n for n, _, _ in self.roster()}
 
     # -- LLM plumbing ------------------------------------------------------
     def _chat(self, prompt: str, max_tokens: int = 900) -> str:
@@ -128,13 +138,19 @@ class CastSession:
             "each (plus a narrator voice and a fallback voice for minor "
             "characters) from this roster:\n"
             f"{self.roster_text()}\n\n"
-            f"Opening excerpt:\n{excerpt}\n\nCharacters and sample lines:\n"
+            f"Opening excerpt:\n{excerpt}\n\nCharacters and sample lines "
+            "(listed by importance — most lines first; give earlier "
+            "characters the best-fitting voices):\n"
             f"{samples}\n\n"
-            "Give the biggest characters distinct voices — never reuse the "
-            "narrator's voice for a major character, and only double up "
-            "voices once the roster runs out. Reply with ONLY JSON shaped "
-            'like: {"narrator": "<voice>", "dialogue": "<voice>", '
-            '"characters": {"<Name>": {"role": "...", "voice": "<voice>", '
+            "Rules: a character's voice MUST match their gender (male "
+            "characters get male voices, female get female). Give the "
+            "biggest characters distinct voices — never reuse the narrator's "
+            "voice for a major character. If same-gender voices run out, "
+            "reuse one with a rate variant like 'zac@0.92' or 'zac@1.08' "
+            "(slightly slower/faster delivery) instead of switching gender. "
+            'Reply with ONLY JSON shaped like: {"narrator": "<voice>", '
+            '"dialogue": "<voice>", "characters": {"<Name>": {"role": "...", '
+            '"gender": "male|female|unknown", "voice": "<voice>", '
             '"why": "..."}}}'
         )
         data = self._json_block(self._chat(prompt))
@@ -146,6 +162,9 @@ class CastSession:
                 continue
             member.role = str(info.get("role", "")).strip()
             member.why = str(info.get("why", "")).strip()
+            gender = str(info.get("gender", "")).strip()[:1].upper()
+            if gender in ("M", "F"):
+                member.gender = gender
             if roles_only:
                 continue
             voice = str(info.get("voice", "")).strip().lower()
@@ -159,28 +178,70 @@ class CastSession:
             self.dialogue_voice = str(data["dialogue"]).strip().lower()
         self._dedupe_voices()
 
+    # Rate variants handed out when a gender's roster is exhausted: each
+    # reuse of a base voice gets the next slightly-different delivery speed.
+    _RATE_STEPS = [1.0, 0.92, 1.08, 0.85, 1.15]
+
     def _dedupe_voices(self) -> None:
-        """Keep major characters distinct: no narrator clones or duplicates
-        while unused roster voices remain (minor characters may share)."""
-        if self.dialogue_voice == self.narrator_voice:
-            others = [n for n, _, _ in self.roster() if n != self.narrator_voice]
+        """Enforce the casting rules, in priority order (most lines first):
+
+        * a character's voice matches their gender when it is known;
+        * no character reuses the narrator's or fallback voice;
+        * no two characters share the exact same voice — once a gender's
+          roster is exhausted, a voice is reused at a new rate variant
+          (``zac@0.92``) rather than crossing gender.
+
+        Members are iterated as sorted (by line count), so major characters
+        keep their preferred voices and later clashes get reassigned.
+        """
+        genders = self.voice_genders()
+        narrator_base = self.narrator_voice.partition("@")[0]
+        if self.dialogue_voice.partition("@")[0] == narrator_base:
+            others = [n for n in genders if n != narrator_base]
             if others:
                 self.dialogue_voice = others[0]
-        unused = [
-            n for n, _, _ in self.roster()
-            if n != self.narrator_voice and n != self.dialogue_voice
-        ]
-        taken: set[str] = set()
-        for m in self.members:
-            clash = (
-                m.voice == self.narrator_voice
-                or m.voice == self.dialogue_voice
-                or m.voice in taken
+        reserved = {narrator_base, self.dialogue_voice.partition("@")[0]}
+
+        def fits(base: str, member: CastMember) -> bool:
+            gender = genders.get(base, "")
+            return (
+                not member.gender
+                or not gender
+                or gender == "Neutral"
+                or gender[:1].upper() == member.gender
             )
-            if (not m.voice or clash) and unused:
-                m.voice = unused[0]
-            if m.voice in unused:
-                unused.remove(m.voice)
+
+        taken: set[str] = set()          # full specs, e.g. "zac@0.92"
+        used_bases: dict[str, int] = {}  # base voice -> times assigned
+        for m in self.members:
+            base = m.voice.partition("@")[0]
+            keeps = (
+                base in genders
+                and base not in reserved
+                and m.voice not in taken
+                and fits(base, m)
+            )
+            if not keeps:
+                fresh = [
+                    n for n in genders
+                    if n not in reserved and n not in used_bases and fits(n, m)
+                ]
+                if fresh:
+                    m.voice = fresh[0]
+                else:
+                    # Same-gender roster exhausted: reuse the least-used
+                    # fitting base at the next rate variant.
+                    pool = (
+                        [n for n in genders if n not in reserved and fits(n, m)]
+                        or [n for n in genders if n not in reserved]
+                        or list(genders)
+                    )
+                    base = min(pool, key=lambda n: used_bases.get(n, 0))
+                    step = used_bases.get(base, 0)
+                    rate = self._RATE_STEPS[min(step, len(self._RATE_STEPS) - 1)]
+                    m.voice = base if rate == 1.0 else f"{base}@{rate}"
+            base = m.voice.partition("@")[0]
+            used_bases[base] = used_bases.get(base, 0) + 1
             taken.add(m.voice)
 
     def refine(self, user_message: str) -> str:
@@ -196,8 +257,11 @@ class CastSession:
             + f"The director says: \"{user_message}\"\n\n"
             "If this is casting direction, update the cast to match (change "
             "voices, refine role descriptions), changing only what they asked "
-            "about. If it is a question or request for information, answer it "
-            "fully and make NO updates. Reply with ONLY JSON: "
+            "about. Keep voices gender-matched to characters; a voice may be "
+            "reused with a rate variant like 'zac@0.92' (slightly slower) or "
+            "'zac@1.08' (slightly faster) when the roster runs short. If it "
+            "is a question or request for information, answer it fully and "
+            "make NO updates. Reply with ONLY JSON: "
             '{"reply": "<your complete answer/response to the director — any '
             "explanation, list, or rundown they asked for goes HERE in full; "
             "this field is the only text they will ever see, so never claim "
@@ -236,7 +300,8 @@ class CastSession:
             "narrator": self.narrator_voice,
             "dialogue": self.dialogue_voice,
             "characters": {
-                m.name: {"voice": m.voice, "role": m.role} for m in self.members
+                m.name: {"voice": m.voice, "role": m.role, "gender": m.gender}
+                for m in self.members
             },
         }
 
@@ -260,6 +325,9 @@ class CastSession:
                 applied += 1
             if info.get("role"):
                 m.role = str(info["role"]).strip()
+            gender = str(info.get("gender", "")).strip()[:1].upper()
+            if gender in ("M", "F"):
+                m.gender = gender
         return applied
 
     # -- output ------------------------------------------------------------
@@ -444,7 +512,7 @@ def run_repl(session: CastSession, on_convert, state_path=None, log=print) -> in
             checkpoint()
             return on_convert(session.voice_map(), output)
         else:
-            direct = re.match(r"^([\w'’ .-]+?)\s*=\s*([\w-]+)$", line)
+            direct = re.match(r"^([\w'’ .-]+?)\s*=\s*([\w.@-]+)$", line)
             if direct:
                 name, voice = direct.group(1).strip(), direct.group(2).strip().lower()
                 if not session.valid_voice(voice):

@@ -254,6 +254,14 @@ Casting works with both engines. With Piper, pick voices from the same quality
 tier (all `-medium`/`-high`) — mixed sample rates are rejected. With Orpheus,
 any mix of its eight voices works.
 
+**Voice variants**: any voice can carry a delivery-rate variant —
+`Ahab=zac@0.92` speaks zac's voice slightly slower, `Stubb=zac@1.08` slightly
+faster — so one voice can play several characters distinguishably. The `cast`
+command uses this automatically: characters are cast in priority order (most
+lines first), voices are matched to each character's gender, and when a
+gender's roster runs out it hands out rate variants rather than casting
+across gender.
+
 A short beat of silence (250 ms) is inserted whenever the speaking voice
 changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
 (`0` disables).

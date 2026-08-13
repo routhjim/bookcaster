@@ -232,12 +232,34 @@ class OrpheusEngine(BaseEngine):
         return pcm
 
 
+def parse_voice_spec(spec: str) -> tuple[str, float]:
+    """Split 'zac@0.9' into (voice, rate). A bare voice means rate 1.0.
+
+    Rate variants let one voice play several characters distinguishably
+    (slightly faster/slower delivery) once a roster runs out of voices.
+    """
+    base, at, rate = str(spec).partition("@")
+    base = base.strip()
+    if not at:
+        return base, 1.0
+    try:
+        value = float(rate)
+    except ValueError:
+        raise ValueError(
+            f"bad voice spec {spec!r}: expected voice@rate like 'zac@0.9'"
+        ) from None
+    if not 0.5 <= value <= 2.0:
+        raise ValueError(f"bad voice spec {spec!r}: rate must be 0.5-2.0")
+    return base, value
+
+
 class CastEngine(BaseEngine):
     """Multi-voice wrapper: narration and each character get their own voice.
 
     Wraps one underlying engine per distinct voice and routes each dialogue
     segment (see :mod:`tts_reader.speakers`) to the voice its speaker was
-    assigned in ``voice_map``. Reserved map keys:
+    assigned in ``voice_map``. Values may carry a speed variant
+    (``zac@0.9``) so one voice can play multiple characters. Reserved keys:
 
     * ``narrator`` (required) — everything outside quotation marks
     * ``dialogue`` — fallback for quotes whose speaker is unknown/unmapped
@@ -252,11 +274,15 @@ class CastEngine(BaseEngine):
         self.pause_ms = pause_ms
         if "narrator" not in self.voice_map:
             raise ValueError("voice map needs a 'narrator=<voice>' entry")
-        self.default_quote_voice = self.voice_map.get(
-            "dialogue", self.voice_map["narrator"]
+        self.assignments = {
+            k: parse_voice_spec(v) for k, v in self.voice_map.items()
+        }
+        self.default_quote = self.assignments.get(
+            "dialogue", self.assignments["narrator"]
         )
         self.engines = {
-            v: engine_factory(v) for v in sorted(set(self.voice_map.values()))
+            base: engine_factory(base)
+            for base in sorted({b for b, _ in self.assignments.values()})
         }
         self.attributor = attributor
         # Set per input by the CLI so attributions persist in a sidecar file.
@@ -298,27 +324,28 @@ class CastEngine(BaseEngine):
         # abrupt. 16-bit mono silence at the shared sample rate.
         pause = b"\x00\x00" * int(self.sample_rate * self.pause_ms / 1000)
         pcm = bytearray()
-        prev_engine = None
+        prev_assignment = None
         for seg in segments:
             # Narration tags arrive as ', said Ahab.' — drop the leading comma.
             spoken = _re.sub(r"^[\s,;:—\-]+", "", seg.text).strip()
             if not _re.search(r"\w", spoken):
                 continue
-            engine = self._engine_for(seg)
-            if prev_engine is not None and engine is not prev_engine:
+            assignment = self._assignment_for(seg)
+            if prev_assignment is not None and assignment != prev_assignment:
                 pcm += pause
-            pcm += engine.synthesize_pcm(spoken, speed=speed, volume=volume, log=None)
-            prev_engine = engine
+            base, rate = assignment
+            pcm += self.engines[base].synthesize_pcm(
+                spoken, speed=speed * rate, volume=volume, log=None
+            )
+            prev_assignment = assignment
         return bytes(pcm)
 
-    def _engine_for(self, seg):
+    def _assignment_for(self, seg) -> tuple[str, float]:
         if seg.kind == "quote":
-            voice = self.voice_map.get(
-                (seg.speaker or "").lower(), self.default_quote_voice
+            return self.assignments.get(
+                (seg.speaker or "").lower(), self.default_quote
             )
-        else:
-            voice = self.voice_map["narrator"]
-        return self.engines[voice]
+        return self.assignments["narrator"]
 
 
 def _chunk_text(text: str, max_chars: int) -> list[str]:
