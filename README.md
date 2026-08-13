@@ -213,6 +213,26 @@ Orpheus options:
 > real-time generation rather than Piper's ~13×. It's the right choice for
 > quality; for a 20-hour book, Piper is still the pragmatic option.
 
+## Voice cloning: the F5-TTS engine (GPU)
+
+**F5-TTS** clones any voice from a ~10-second reference clip — there are no
+baked-in voices; a "voice" is just `<name>.wav` (the clip) plus `<name>.txt`
+(its exact transcript) dropped into the server's voices directory
+(`~/.local/share/tts_reader/f5_voices/`). LibriVox is a goldmine of
+public-domain narrator clips. An optional `voices.json` there adds
+`{"name": {"gender": "Male", "description": "..."}}` metadata that the
+`cast` command uses for gender-matched casting.
+
+```bash
+tts-reader convert book.txt -o book.mp3 --engine f5 --voice my_narrator
+tts-reader cast book.txt --engine f5          # roster comes from the server
+```
+
+The engine talks to a small local server (same OpenAI-style
+`/v1/audio/speech` API as Orpheus, port 5010) that wraps F5-TTS on your GPU.
+On AMD (gfx1151/Strix Halo), install PyTorch from TheRock's wheel index —
+the generic pytorch.org ROCm wheels crash on this hardware.
+
 ## Multi-voice narration (character casting)
 
 TTS Reader can give the narrator and each speaking character **their own

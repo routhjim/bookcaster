@@ -53,10 +53,15 @@ class CastSession:
     dialogue_voice: str = ""
     history: list[dict] = field(default_factory=list)
     excerpt: str = ""  # opening of the book, kept for on-demand describes
+    # Roster override for engines with dynamic voices (e.g. an F5 server's
+    # cloned-voice registry): list of (name, gender, description).
+    custom_roster: list = field(default_factory=list)
 
     # -- voice roster ------------------------------------------------------
     def roster(self) -> list[tuple[str, str, str]]:
         """(voice, gender, traits) options for the active engine."""
+        if self.custom_roster:
+            return list(self.custom_roster)
         if self.engine == "orpheus":
             return list(voice_catalog._ORPHEUS_VOICES)
         return [
@@ -376,16 +381,32 @@ def save_cast(session: CastSession, path) -> None:
         pass  # never let a failed save break the session
 
 
+def fetch_voice_roster(speech_url: str) -> list[tuple[str, str, str]]:
+    """Ask a TTS server (e.g. F5) for its /voices registry."""
+    from urllib.parse import urlparse
+
+    p = urlparse(speech_url)
+    with urlopen(f"{p.scheme}://{p.netloc}/voices", timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return [
+        (str(v["name"]), str(v.get("gender", "")),
+         str(v.get("description", "cloned voice")))
+        for v in data if isinstance(v, dict) and v.get("name")
+    ]
+
+
 def build_session(text: str, engine: str, llm_url: str | None,
                   llm_model: str, top: int, llm_context: int = 350,
                   cache_path=None, saved: dict | None = None,
+                  custom_roster: list | None = None,
                   log=print) -> CastSession:
     """Parse *text*, attribute speakers, and assemble the initial cast."""
     log("Parsing dialogue...")
     # Parse the same speech-prepped text the converter will synthesize, so
     # cached attributions line up between the session and the conversion.
     segments = segment_dialogue(prepare_for_speech(text))
-    session = CastSession(engine=engine, llm_url=llm_url, llm_model=llm_model)
+    session = CastSession(engine=engine, llm_url=llm_url, llm_model=llm_model,
+                          custom_roster=custom_roster or [])
 
     attributor = None
     if llm_url:
@@ -410,8 +431,14 @@ def build_session(text: str, engine: str, llm_url: str | None,
 
     # Sensible defaults before (or without) the LLM's suggestions.
     roster = [n for n, _, _ in session.roster()]
-    session.narrator_voice = "leo" if engine == "orpheus" else "ryan"
-    session.dialogue_voice = "tara" if engine == "orpheus" else "amy"
+    if not roster:
+        raise RuntimeError("no voices available for this engine")
+    if session.custom_roster:
+        session.narrator_voice = roster[0]
+        session.dialogue_voice = roster[1] if len(roster) > 1 else roster[0]
+    else:
+        session.narrator_voice = "leo" if engine == "orpheus" else "ryan"
+        session.dialogue_voice = "tara" if engine == "orpheus" else "amy"
     for member, voice in zip(session.members, roster):
         member.voice = voice if voice not in (
             session.narrator_voice, session.dialogue_voice

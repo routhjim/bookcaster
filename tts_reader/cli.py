@@ -101,6 +101,16 @@ def _build_engine(args):
                 chunk_chars=args.orpheus_chunk_chars,
             )
         default_voice = voice_catalog.ORPHEUS_DEFAULT_VOICE
+    elif args.engine == "f5":
+        # F5-TTS speaks the same /v1/audio/speech protocol as Orpheus; a
+        # voice is any name registered on the F5 server (a WAV+transcript
+        # pair in its voices directory).
+        def factory(voice):
+            return OrpheusEngine(
+                voice, base_url=args.f5_url, model="f5",
+                chunk_chars=args.orpheus_chunk_chars,
+            )
+        default_voice = ""  # server falls back to its first voice
     else:
         def factory(voice):
             return PiperEngine(voice, models_dir=args.models_dir)
@@ -112,7 +122,7 @@ def _build_engine(args):
             attributor=_make_attributor(args),
             pause_ms=args.cast_pause_ms,
         )
-    return factory(args.voice or default_voice)
+    return factory(args.voice if args.voice is not None else default_voice)
 
 
 def _is_url(spec: str) -> bool:
@@ -324,14 +334,35 @@ def cmd_cast(args: argparse.Namespace) -> int:
         print(f"error: could not read {spec}: {exc}", file=sys.stderr)
         return 2
 
+    custom_roster = None
+    if args.engine == "f5":
+        from .casting import fetch_voice_roster
+
+        try:
+            custom_roster = fetch_voice_roster(args.f5_url)
+        except OSError as exc:
+            print(f"error: cannot list voices from the F5 server "
+                  f"({args.f5_url}): {exc}\nStart it first — see README "
+                  "(F5-TTS setup).", file=sys.stderr)
+            return 1
+        if not custom_roster:
+            print("error: the F5 server has no voices yet. Add <name>.wav + "
+                  "<name>.txt pairs to its voices directory.", file=sys.stderr)
+            return 1
+
     state_path = _cast_state_path_for(spec)
-    session = build_session(
-        text, engine=args.engine, llm_url=args.llm_url,
-        llm_model=args.llm_model, top=args.top,
-        llm_context=args.llm_context,
-        cache_path=_cache_path_for(spec),
-        saved=None if args.fresh_cast else load_saved_cast(state_path),
-    )
+    try:
+        session = build_session(
+            text, engine=args.engine, llm_url=args.llm_url,
+            llm_model=args.llm_model, top=args.top,
+            llm_context=args.llm_context,
+            cache_path=_cache_path_for(spec),
+            saved=None if args.fresh_cast else load_saved_cast(state_path),
+            custom_roster=custom_roster,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
     def on_convert(voice_map: str, output: str | None) -> int:
         argv = [
@@ -344,6 +375,8 @@ def cmd_cast(args: argparse.Namespace) -> int:
         out = output or args.output
         if out:
             argv += ["-o", out]
+        if args.engine == "f5":
+            argv += ["--f5-url", args.f5_url]
         if session.llm_url:
             argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
         if args.no_strip_gutenberg:
@@ -504,9 +537,14 @@ def build_parser() -> argparse.ArgumentParser:
         "Defaults to the input name with a .mp3 extension.",
     )
     p_conv.add_argument(
-        "-e", "--engine", choices=["piper", "orpheus"], default="piper",
-        help="TTS backend: 'piper' (fast, local, default) or 'orpheus' (higher "
-        "quality via a local Orpheus GPU server). See README for Orpheus setup.",
+        "-e", "--engine", choices=["piper", "orpheus", "f5"], default="piper",
+        help="TTS backend: 'piper' (fast, local, default), 'orpheus' (higher "
+        "quality via a local Orpheus GPU server), or 'f5' (voice cloning via "
+        "a local F5-TTS server). See README for server setup.",
+    )
+    p_conv.add_argument(
+        "--f5-url", default="http://127.0.0.1:5010/v1/audio/speech",
+        help="F5-TTS server endpoint (OpenAI-compatible /v1/audio/speech).",
     )
     p_conv.add_argument(
         "-v", "--voice", default=None,
@@ -641,8 +679,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output MP3/directory used when you say 'convert' in the session.",
     )
     p_cast.add_argument(
-        "-e", "--engine", choices=["piper", "orpheus"], default="orpheus",
+        "-e", "--engine", choices=["piper", "orpheus", "f5"], default="orpheus",
         help="TTS backend for the cast (default: orpheus).",
+    )
+    p_cast.add_argument(
+        "--f5-url", default="http://127.0.0.1:5010/v1/audio/speech",
+        help="F5-TTS server endpoint (used with --engine f5).",
     )
     p_cast.add_argument(
         "--llm-url", default="http://127.0.0.1:8080/v1/chat/completions",
