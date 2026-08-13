@@ -263,6 +263,36 @@ changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
 > unattributed quotes simply use the `dialogue` voice, which always sounds
 > reasonable.
 
+### Interactive casting (`cast`)
+
+Rather than hand-writing a voice map, let the tool interview the book and you
+direct the cast in plain language:
+
+```text
+$ tts-reader cast moby.txt -o moby_audiobook/ --chapters split
+Parsing dialogue...
+Asking the LLM to describe each character and suggest voices...
+
+Proposed cast:
+  narrator  dan   (everything outside quotes)
+  (other)   zoe   (unattributed/minor speakers)
+  Ahab      leo   A tormented, obsessive captain ... deep authority
+  Starbuck  tara  The prudent, loyal first mate ...
+  Stubb     zac   A sardonic, observant second mate ...
+
+cast> Starbuck is an old, grizzled, crusty pirate
+cast> Ahab is refined and commanding, almost genteel
+cast> Stubb = dan
+cast> convert
+```
+
+The session needs an OpenAI-compatible LLM endpoint (default
+`http://127.0.0.1:8080/v1/chat/completions`, llama.cpp's standard port;
+change with `--llm-url`) for role descriptions, voice suggestions, and
+plain-language directing. Without one it still works — you just assign
+voices directly with `Name = voice`. `map` prints the resulting
+`--voice-map` string instead of converting, so you can reuse it later.
+
 ## Speech-friendly text preprocessing
 
 Before synthesis, text is cleaned up so it *reads* well (on by default, skip

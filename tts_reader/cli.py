@@ -282,6 +282,42 @@ def cmd_characters(args: argparse.Namespace) -> int:
     return status
 
 
+def cmd_cast(args: argparse.Namespace) -> int:
+    """Interactive casting session: describe roles, direct voices, convert."""
+    from .casting import build_session, run_repl
+
+    spec = args.input
+    try:
+        text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+    except (ValueError, OSError) as exc:
+        print(f"error: could not read {spec}: {exc}", file=sys.stderr)
+        return 2
+
+    session = build_session(
+        text, engine=args.engine, llm_url=args.llm_url,
+        llm_model=args.llm_model, top=args.top,
+    )
+
+    def on_convert(voice_map: str, output: str | None) -> int:
+        argv = [
+            "convert", spec, "--engine", args.engine,
+            "--voice-map", voice_map,
+            "--chapters", args.chapters, "--speed", str(args.speed),
+            "--bitrate", str(args.bitrate),
+            "--cast-pause-ms", str(args.cast_pause_ms),
+        ]
+        out = output or args.output
+        if out:
+            argv += ["-o", out]
+        if session.llm_url:
+            argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
+        if args.no_strip_gutenberg:
+            argv.append("--no-strip-gutenberg")
+        return main(argv)
+
+    return run_repl(session, on_convert)
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     specs: list[str] = args.inputs
     missing = [s for s in specs if not _is_url(s) and not Path(s).is_file()]
@@ -509,6 +545,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-trim Project Gutenberg license header/footer text.",
     )
     p_chars.set_defaults(func=cmd_characters)
+
+    p_cast = sub.add_parser(
+        "cast",
+        help="Interactively cast voices for a book's characters, then convert",
+    )
+    p_cast.add_argument("input", help="Text file or URL to cast and convert")
+    p_cast.add_argument(
+        "-o", "--output", default=None,
+        help="Output MP3/directory used when you say 'convert' in the session.",
+    )
+    p_cast.add_argument(
+        "-e", "--engine", choices=["piper", "orpheus"], default="orpheus",
+        help="TTS backend for the cast (default: orpheus).",
+    )
+    p_cast.add_argument(
+        "--llm-url", default="http://127.0.0.1:8080/v1/chat/completions",
+        help="OpenAI-compatible /v1/chat/completions endpoint that powers "
+        "role descriptions, voice suggestions and plain-language directing "
+        "(default: %(default)s — a local llama.cpp server's default port).",
+    )
+    p_cast.add_argument(
+        "--llm-model", default="default",
+        help="Model name sent to --llm-url (default: 'default').",
+    )
+    p_cast.add_argument(
+        "--top", type=int, default=10,
+        help="How many characters to cast; the rest use the fallback "
+        "dialogue voice (default: 10).",
+    )
+    p_cast.add_argument("--chapters", choices=["auto", "embed", "split", "off"],
+                        default="auto", help="Chapter handling for the final "
+                        "conversion (default: auto).")
+    p_cast.add_argument("--speed", type=float, default=1.0,
+                        help="Speaking-rate multiplier for the conversion.")
+    p_cast.add_argument("--bitrate", type=int, default=128,
+                        help="MP3 bitrate in kbps for the conversion.")
+    p_cast.add_argument("--cast-pause-ms", type=int, default=250,
+                        help="Silence at voice changes, ms (default: 250).")
+    p_cast.add_argument(
+        "--no-strip-gutenberg", action="store_true",
+        help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_cast.set_defaults(func=cmd_cast)
     return parser
 
 
