@@ -189,8 +189,11 @@ class LlmAttributor:
             return
         if log:
             log(f"  LLM attribution: {len(pending)} unattributed quote(s) -> {self.url}")
+        total = (len(pending) + self.batch_size - 1) // self.batch_size
         for start in range(0, len(pending), self.batch_size):
             batch = pending[start:start + self.batch_size]
+            if log and total > 1:
+                log(f"    attribution batch {start // self.batch_size + 1}/{total}")
             answers = self._ask(segments, batch, known)
             for idx, name in answers.items():
                 if name and name.lower() not in ("unknown", "narrator", "none"):
