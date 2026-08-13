@@ -37,19 +37,54 @@ from urllib.request import Request, urlopen
 from . import voices as voice_catalog
 from .audio import ChapteredMp3Writer, pcm_to_mp3, write_m3u_playlist
 from .chapters import DEFAULT_HEADING, SYNTHETIC_TITLES, Chapter, detect_chapters
-from .engine import OrpheusEngine, PiperEngine, default_models_dir
+from .engine import CastEngine, OrpheusEngine, PiperEngine, default_models_dir
+from .speakers import LlmAttributor, character_counts, segment_dialogue
+from .textprep import prepare_for_speech
+
+
+def _parse_voice_map(spec: str) -> dict[str, str]:
+    """Parse 'narrator=leo,Ahab=zac,dialogue=tara' into a dict."""
+    mapping: dict[str, str] = {}
+    for part in spec.split(","):
+        name, sep, voice = part.partition("=")
+        if not sep or not name.strip() or not voice.strip():
+            raise ValueError(
+                f"bad --voice-map entry {part!r}; expected name=voice pairs "
+                "like 'narrator=leo,Ahab=zac,dialogue=tara'"
+            )
+        mapping[name.strip().lower()] = voice.strip()
+    if "narrator" not in mapping:
+        raise ValueError("--voice-map needs a 'narrator=<voice>' entry")
+    return mapping
+
+
+def _make_attributor(args) -> LlmAttributor | None:
+    url = getattr(args, "llm_url", None)
+    if not url:
+        return None
+    return LlmAttributor(url, model=args.llm_model)
 
 
 def _build_engine(args):
     """Construct the requested TTS engine from parsed args."""
     if args.engine == "orpheus":
-        voice = args.voice or voice_catalog.ORPHEUS_DEFAULT_VOICE
-        return OrpheusEngine(
-            voice, base_url=args.orpheus_url, model=args.orpheus_model,
-            chunk_chars=args.orpheus_chunk_chars,
+        def factory(voice):
+            return OrpheusEngine(
+                voice, base_url=args.orpheus_url, model=args.orpheus_model,
+                chunk_chars=args.orpheus_chunk_chars,
+            )
+        default_voice = voice_catalog.ORPHEUS_DEFAULT_VOICE
+    else:
+        def factory(voice):
+            return PiperEngine(voice, models_dir=args.models_dir)
+        default_voice = voice_catalog.DEFAULT_VOICE
+
+    if getattr(args, "voice_map", None):
+        return CastEngine(
+            _parse_voice_map(args.voice_map), factory,
+            attributor=_make_attributor(args),
         )
-    voice = args.voice or voice_catalog.DEFAULT_VOICE
-    return PiperEngine(voice, models_dir=args.models_dir)
+    return factory(args.voice or default_voice)
 
 
 def _is_url(spec: str) -> bool:
@@ -136,11 +171,13 @@ def _slugify(text: str, maxlen: int = 60) -> str:
     return text[:maxlen] or "chapter"
 
 
-def _speak_text(chapter: Chapter) -> str:
+def _speak_text(chapter: Chapter, preprocess: bool = True) -> str:
     """Text to actually synthesize for a chapter (spoken title + body)."""
     if chapter.title in SYNTHETIC_TITLES or not chapter.title:
-        return chapter.text
-    return f"{chapter.title}.\n\n{chapter.text}".strip()
+        text = chapter.text
+    else:
+        text = f"{chapter.title}.\n\n{chapter.text}".strip()
+    return prepare_for_speech(text) if preprocess else text
 
 
 def _convert_chapters_embedded(engine, chapters, outp, args) -> None:
@@ -152,7 +189,8 @@ def _convert_chapters_embedded(engine, chapters, outp, args) -> None:
         for i, ch in enumerate(chapters, 1):
             print(f"  [{i}/{n}] {ch.title[:60]}  ({len(ch.text):,} chars)")
             pcm = engine.synthesize_pcm(
-                _speak_text(ch), speed=args.speed, volume=args.volume, log=None
+                _speak_text(ch, preprocess=not args.no_preprocess),
+                speed=args.speed, volume=args.volume, log=None,
             )
             writer.add_chapter(ch.title, pcm)
 
@@ -167,7 +205,8 @@ def _convert_chapters_split(engine, chapters, outp, args) -> Path:
         fname = f"{i:03d}_{_slugify(ch.title)}.mp3"
         print(f"  [{i}/{n}] {ch.title[:60]}  ({len(ch.text):,} chars)")
         pcm = engine.synthesize_pcm(
-            _speak_text(ch), speed=args.speed, volume=args.volume, log=None
+            _speak_text(ch, preprocess=not args.no_preprocess),
+            speed=args.speed, volume=args.volume, log=None,
         )
         pcm_to_mp3(pcm, out_dir / fname, engine.sample_rate, bitrate=args.bitrate)
         seconds = len(pcm) / 2 / engine.sample_rate
@@ -192,6 +231,54 @@ def cmd_voices(args: argparse.Namespace) -> int:
         "<laugh>, <sigh>, <chuckle>, <yawn> can be embedded inline in the text."
     )
     return 0
+
+
+# Orpheus voices handed out when suggesting a cast (narrator/dialogue excluded).
+_SUGGEST_VOICES = ["zac", "dan", "mia", "jess", "zoe", "leah"]
+
+
+def cmd_characters(args: argparse.Namespace) -> int:
+    """Detect quoted dialogue, attribute speakers, and print the cast."""
+    attributor = _make_attributor(args)
+    status = 0
+    for spec in args.inputs:
+        try:
+            text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+        except (ValueError, OSError) as exc:
+            print(f"skip: could not read {spec}: {exc}", file=sys.stderr)
+            status = 1
+            continue
+
+        segments = segment_dialogue(text)
+        quotes = [s for s in segments if s.kind == "quote" and s.text.strip()]
+        if attributor:
+            try:
+                attributor.refine(segments, known=list(character_counts(segments)))
+            except RuntimeError as exc:
+                print(f"warning: {exc}", file=sys.stderr)
+        counts = character_counts(segments)
+        unattributed = sum(1 for s in quotes if not s.speaker)
+
+        print(f"\n{spec}: {len(quotes)} quoted passage(s), "
+              f"{len(counts)} named speaker(s), {unattributed} unattributed")
+        for name, n in list(counts.items())[: args.top]:
+            example = next(
+                s.text.strip().replace("\n", " ")[:56]
+                for s in segments if s.kind == "quote" and s.speaker == name
+            )
+            print(f"  {name:<18} {n:>4} quote(s)   e.g. “{example}…”")
+
+        main_cast = [n for n, _ in list(counts.items())[: len(_SUGGEST_VOICES)]]
+        pairs = ",".join(
+            f"{name}={voice}" for name, voice in zip(main_cast, _SUGGEST_VOICES)
+        )
+        print("\nSuggested Orpheus cast (edit to taste):")
+        print(f"  --engine orpheus --voice-map \"narrator=leo,dialogue=tara"
+              + (f",{pairs}" if pairs else "") + "\"")
+        if not attributor:
+            print("Tip: add --llm-url http://127.0.0.1:8080/v1/chat/completions "
+                  "to resolve unattributed quotes with a local LLM.")
+    return status
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
@@ -263,8 +350,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
                 print(f"  wrote {outp} ({size_mb:,.1f} MB, {len(chapters)} chapters)")
             else:
                 print(f"Converting {spec}  ->  {outp}  ({len(text):,} chars)")
+                speak = text if args.no_preprocess else prepare_for_speech(text)
                 engine.synthesize_to_mp3(
-                    text, outp, speed=args.speed, volume=args.volume,
+                    speak, outp, speed=args.speed, volume=args.volume,
                     bitrate=args.bitrate, log=None,
                 )
                 size_kb = outp.stat().st_size / 1024
@@ -330,6 +418,28 @@ def build_parser() -> argparse.ArgumentParser:
         "limit for long passages. Default: 400.",
     )
     p_conv.add_argument(
+        "--voice-map", default=None,
+        help="Multi-voice narration: comma-separated name=voice pairs, e.g. "
+        "\"narrator=leo,Ahab=zac,Ishmael=dan,dialogue=tara\". 'narrator' is "
+        "required; 'dialogue' is the fallback voice for unattributed quotes. "
+        "Run the 'characters' subcommand first to see who was detected.",
+    )
+    p_conv.add_argument(
+        "--llm-url", default=None,
+        help="OpenAI-compatible /v1/chat/completions endpoint used to attribute "
+        "quotes the built-in heuristics can't (e.g. a local llama.cpp server). "
+        "Only used together with --voice-map.",
+    )
+    p_conv.add_argument(
+        "--llm-model", default="default",
+        help="Model name sent to --llm-url (default: 'default').",
+    )
+    p_conv.add_argument(
+        "--no-preprocess", action="store_true",
+        help="Skip the speech-friendly text cleanup (abbreviation expansion, "
+        "roman-numeral chapter numbers, ALL-CAPS softening, footnote removal).",
+    )
+    p_conv.add_argument(
         "--speed", type=float, default=1.0,
         help="Speaking-rate multiplier: 1.0 = normal, 1.2 = faster, 0.85 = slower.",
     )
@@ -369,6 +479,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show Piper's low-level log output (e.g. missing-phoneme warnings).",
     )
     p_conv.set_defaults(func=cmd_convert)
+
+    p_chars = sub.add_parser(
+        "characters",
+        help="Detect quoted dialogue and list the speakers found in a text",
+    )
+    p_chars.add_argument("inputs", nargs="+", help="Text file(s) or URL(s) to scan")
+    p_chars.add_argument(
+        "--llm-url", default=None,
+        help="OpenAI-compatible /v1/chat/completions endpoint to attribute "
+        "quotes the heuristics can't (e.g. http://127.0.0.1:8080/v1/chat/completions).",
+    )
+    p_chars.add_argument(
+        "--llm-model", default="default",
+        help="Model name sent to --llm-url (default: 'default').",
+    )
+    p_chars.add_argument(
+        "--top", type=int, default=15,
+        help="How many speakers to list (default: 15).",
+    )
+    p_chars.add_argument(
+        "--no-strip-gutenberg", action="store_true",
+        help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_chars.set_defaults(func=cmd_characters)
     return parser
 
 

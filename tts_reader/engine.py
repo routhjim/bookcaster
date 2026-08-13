@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re as _re
 import wave
 from pathlib import Path
 from typing import Optional
@@ -229,6 +230,82 @@ class OrpheusEngine(BaseEngine):
         if volume != 1.0:
             pcm = _apply_volume(pcm, volume)
         return pcm
+
+
+class CastEngine(BaseEngine):
+    """Multi-voice wrapper: narration and each character get their own voice.
+
+    Wraps one underlying engine per distinct voice and routes each dialogue
+    segment (see :mod:`tts_reader.speakers`) to the voice its speaker was
+    assigned in ``voice_map``. Reserved map keys:
+
+    * ``narrator`` (required) — everything outside quotation marks
+    * ``dialogue`` — fallback for quotes whose speaker is unknown/unmapped
+      (defaults to the narrator's voice)
+    """
+
+    def __init__(self, voice_map: dict[str, str], engine_factory, attributor=None):
+        self.voice_map = {k.strip().lower(): v for k, v in voice_map.items()}
+        if "narrator" not in self.voice_map:
+            raise ValueError("voice map needs a 'narrator=<voice>' entry")
+        self.default_quote_voice = self.voice_map.get(
+            "dialogue", self.voice_map["narrator"]
+        )
+        self.engines = {
+            v: engine_factory(v) for v in sorted(set(self.voice_map.values()))
+        }
+        self.attributor = attributor
+        self.key = "cast(" + ", ".join(
+            f"{k}={v}" for k, v in sorted(self.voice_map.items())
+        ) + ")"
+
+    @property
+    def sample_rate(self) -> int:
+        rates = {e.sample_rate for e in self.engines.values()}
+        if len(rates) > 1:
+            raise RuntimeError(
+                "All cast voices must share one sample rate; got "
+                + ", ".join(
+                    f"{v}={e.sample_rate}" for v, e in self.engines.items()
+                )
+                + ". Pick Piper voices of the same quality tier (e.g. all "
+                "-medium/-high), or use --engine orpheus."
+            )
+        return rates.pop()
+
+    def load(self, log=print) -> None:
+        for eng in self.engines.values():
+            eng.load(log=log)
+        self.sample_rate  # fail fast on mismatched rates
+
+    def synthesize_pcm(
+        self, text: str, speed: float = 1.0, volume: float = 1.0, log=print
+    ) -> bytes:
+        from .speakers import character_counts, segment_dialogue
+
+        segments = segment_dialogue(text)
+        if self.attributor is not None:
+            self.attributor.refine(
+                segments, known=list(character_counts(segments)), log=log
+            )
+        pcm = bytearray()
+        for seg in segments:
+            # Narration tags arrive as ', said Ahab.' — drop the leading comma.
+            spoken = _re.sub(r"^[\s,;:—\-]+", "", seg.text).strip()
+            if not _re.search(r"\w", spoken):
+                continue
+            engine = self._engine_for(seg)
+            pcm += engine.synthesize_pcm(spoken, speed=speed, volume=volume, log=None)
+        return bytes(pcm)
+
+    def _engine_for(self, seg):
+        if seg.kind == "quote":
+            voice = self.voice_map.get(
+                (seg.speaker or "").lower(), self.default_quote_voice
+            )
+        else:
+            voice = self.voice_map["narrator"]
+        return self.engines[voice]
 
 
 def _chunk_text(text: str, max_chars: int) -> list[str]:

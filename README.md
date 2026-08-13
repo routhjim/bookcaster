@@ -213,6 +213,65 @@ Orpheus options:
 > real-time generation rather than Piper's ~13×. It's the right choice for
 > quality; for a 20-hour book, Piper is still the pragmatic option.
 
+## Multi-voice narration (character casting)
+
+TTS Reader can give the narrator and each speaking character **their own
+voice**. It splits prose into narration and quoted dialogue, works out who is
+speaking, and routes each line to the voice you assigned.
+
+First, see who talks in your book:
+
+```bash
+python -m tts_reader characters moby.txt
+```
+
+This prints the speakers found (with quote counts and an example line) plus a
+ready-to-edit `--voice-map` suggestion. Attribution uses built-in heuristics
+(`"...," said Ahab` and friends) — free and offline. To resolve the quotes the
+heuristics can't attribute (unattributed back-and-forth exchanges, "said he",
+…), point it at any **OpenAI-compatible LLM endpoint**, such as a local
+llama.cpp server:
+
+```bash
+python -m tts_reader characters moby.txt \
+    --llm-url http://127.0.0.1:8080/v1/chat/completions
+```
+
+Then convert with a cast:
+
+```bash
+python -m tts_reader convert moby.txt -o moby.mp3 --engine orpheus \
+    --voice-map "narrator=leo,dialogue=tara,Ahab=zac,Starbuck=dan,Stubb=mia" \
+    --llm-url http://127.0.0.1:8080/v1/chat/completions
+```
+
+Voice-map keys: `narrator` (required) reads everything outside quotes;
+`dialogue` (optional) is the fallback for quotes whose speaker is unknown or
+unmapped (defaults to the narrator's voice); every other key is a character
+name as shown by `characters` (case-insensitive).
+
+Casting works with both engines. With Piper, pick voices from the same quality
+tier (all `-medium`/`-high`) — mixed sample rates are rejected. With Orpheus,
+any mix of its eight voices works.
+
+> Attribution is good but not perfect — expect an occasional line in the wrong
+> voice, especially in older prose. The LLM pass helps a lot; without it,
+> unattributed quotes simply use the `dialogue` voice, which always sounds
+> reasonable.
+
+## Speech-friendly text preprocessing
+
+Before synthesis, text is cleaned up so it *reads* well (on by default, skip
+with `--no-preprocess`):
+
+- Abbreviations are spoken: `Mr.` → "Mister", `Dr.` → "Doctor", `&c.`/`etc.` →
+  "et cetera", `No. 3` → "Number 3", `e.g.` → "for example", …
+- Roman-numeral headings become numbers: `CHAPTER XLI` → "Chapter 41".
+- SHOUTED HEADINGS are softened so they aren't spelled out letter-by-letter
+  (true acronyms without vowels are left alone).
+- Footnote markers (`[3]`), `_emphasis_` underscores, and `* * *` section
+  rules are removed; hyphen-split line-wrapped words are rejoined.
+
 ## Voices
 
 Run `python -m tts_reader voices` for the full table. The catalog includes:
