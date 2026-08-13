@@ -27,6 +27,7 @@ Convert several files at once (one MP3 each) into a folder::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import re
 import sys
@@ -38,8 +39,19 @@ from . import voices as voice_catalog
 from .audio import ChapteredMp3Writer, pcm_to_mp3, write_m3u_playlist
 from .chapters import DEFAULT_HEADING, SYNTHETIC_TITLES, Chapter, detect_chapters
 from .engine import CastEngine, OrpheusEngine, PiperEngine, default_models_dir
-from .speakers import LlmAttributor, character_counts, segment_dialogue
+from .speakers import (
+    LlmAttributor, attribute_segments, character_counts, segment_dialogue,
+)
 from .textprep import prepare_for_speech
+
+
+def _cache_path_for(spec: str) -> Path:
+    """Sidecar file holding a book's speaker attributions."""
+    if _is_url(spec):
+        digest = hashlib.sha1(spec.encode("utf-8")).hexdigest()[:16]
+        return default_models_dir().parent / "attribution" / f"{digest}.speakers.json"
+    p = Path(spec)
+    return p.with_name(p.name + ".speakers.json")
 
 
 def _parse_voice_map(spec: str) -> dict[str, str]:
@@ -253,13 +265,17 @@ def cmd_characters(args: argparse.Namespace) -> int:
             status = 1
             continue
 
-        segments = segment_dialogue(text)
+        # Same speech-prepped text the converter synthesizes, so cached
+        # attributions are shared between characters/cast/convert.
+        segments = segment_dialogue(prepare_for_speech(text))
         quotes = [s for s in segments if s.kind == "quote" and s.text.strip()]
-        if attributor:
-            try:
-                attributor.refine(segments, known=list(character_counts(segments)))
-            except RuntimeError as exc:
-                print(f"warning: {exc}", file=sys.stderr)
+        try:
+            attribute_segments(
+                segments, attributor=attributor,
+                cache_path=_cache_path_for(spec),
+            )
+        except RuntimeError as exc:
+            print(f"warning: {exc}", file=sys.stderr)
         counts = character_counts(segments)
         unattributed = sum(1 for s in quotes if not s.speaker)
 
@@ -300,6 +316,7 @@ def cmd_cast(args: argparse.Namespace) -> int:
         text, engine=args.engine, llm_url=args.llm_url,
         llm_model=args.llm_model, top=args.top,
         llm_context=args.llm_context,
+        cache_path=_cache_path_for(spec),
     )
 
     def on_convert(voice_map: str, output: str | None) -> int:
@@ -369,6 +386,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
             print(f"skip: could not read {spec}: {exc}", file=sys.stderr)
             failures += 1
             continue
+
+        if isinstance(engine, CastEngine):
+            engine.cache_path = _cache_path_for(spec)
 
         chapters = None
         if args.chapters != "off":

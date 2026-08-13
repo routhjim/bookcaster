@@ -263,6 +263,12 @@ changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
 > unattributed quotes simply use the `dialogue` voice, which always sounds
 > reasonable.
 
+**Attribution is cached.** LLM speaker attributions are saved to a sidecar
+file next to the book (`moby.txt.speakers.json`) and reused by `characters`,
+`cast`, and `convert` alike — the expensive first pass over a book happens
+once, and recasting or re-converting afterwards is nearly instant. Delete the
+sidecar to start fresh.
+
 ### Interactive casting (`cast`)
 
 Rather than hand-writing a voice map, let the tool interview the book and you

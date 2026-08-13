@@ -259,6 +259,8 @@ class CastEngine(BaseEngine):
             v: engine_factory(v) for v in sorted(set(self.voice_map.values()))
         }
         self.attributor = attributor
+        # Set per input by the CLI so attributions persist in a sidecar file.
+        self.cache_path = None
         self.key = "cast(" + ", ".join(
             f"{k}={v}" for k, v in sorted(self.voice_map.items())
         ) + ")"
@@ -285,13 +287,13 @@ class CastEngine(BaseEngine):
     def synthesize_pcm(
         self, text: str, speed: float = 1.0, volume: float = 1.0, log=print
     ) -> bytes:
-        from .speakers import character_counts, segment_dialogue
+        from .speakers import attribute_segments, segment_dialogue
 
         segments = segment_dialogue(text)
-        if self.attributor is not None:
-            self.attributor.refine(
-                segments, known=list(character_counts(segments)), log=log
-            )
+        attribute_segments(
+            segments, attributor=self.attributor,
+            cache_path=self.cache_path, log=log,
+        )
         # A short beat when the voice changes keeps switches from feeling
         # abrupt. 16-bit mono silence at the shared sample rate.
         pause = b"\x00\x00" * int(self.sample_rate * self.pause_ms / 1000)

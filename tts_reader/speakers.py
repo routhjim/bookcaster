@@ -15,9 +15,11 @@ the segments and picks a voice per speaker.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -159,6 +161,78 @@ def character_counts(segments: list[Segment]) -> dict[str, int]:
         if seg.kind == "quote" and seg.speaker:
             counts[seg.speaker] = counts.get(seg.speaker, 0) + 1
     return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+# ---------------------------------------------------------------------------
+# Attribution cache: LLM answers are expensive, so they persist in a sidecar
+# file and are reused across cast sessions, characters runs, and conversions.
+# Keys combine the quote text with a tail of the preceding segment, making
+# them stable whether the book is parsed whole or chapter-by-chapter.
+# ---------------------------------------------------------------------------
+
+def _segment_key(segments: list[Segment], i: int) -> str:
+    prev = segments[i - 1].text[-60:] if i else ""
+    raw = re.sub(r"\s+", " ", f"{prev}||{segments[i].text}").strip()
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+class AttributionCache:
+    """Speaker attributions persisted next to the book (JSON sidecar)."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        self.speakers: dict[str, str] = {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get("version") == 1:
+                self.speakers = {
+                    str(k): str(v) for k, v in data.get("speakers", {}).items()
+                }
+        except (OSError, ValueError):
+            pass  # missing or corrupt cache: start fresh
+
+    def apply(self, segments: list[Segment]) -> int:
+        hits = 0
+        for i, seg in enumerate(segments):
+            if seg.kind == "quote" and not seg.speaker:
+                name = self.speakers.get(_segment_key(segments, i))
+                if name:
+                    seg.speaker = name
+                    hits += 1
+        return hits
+
+    def update(self, segments: list[Segment]) -> None:
+        for i, seg in enumerate(segments):
+            if seg.kind == "quote" and seg.speaker:
+                self.speakers[_segment_key(segments, i)] = seg.speaker
+
+    def save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps({"version": 1, "speakers": self.speakers},
+                           ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # a failed cache write must never break synthesis
+
+
+def attribute_segments(
+    segments: list[Segment], attributor: "LlmAttributor | None" = None,
+    cache_path: str | Path | None = None, log=print,
+) -> None:
+    """Cache -> LLM -> cache pipeline on top of the heuristic attributions."""
+    cache = AttributionCache(cache_path) if cache_path else None
+    if cache is not None:
+        hits = cache.apply(segments)
+        if hits and log:
+            log(f"  {hits} speaker attribution(s) restored from cache")
+    if attributor is not None:
+        attributor.refine(segments, known=list(character_counts(segments)), log=log)
+    if cache is not None:
+        cache.update(segments)
+        cache.save()
 
 
 # ---------------------------------------------------------------------------

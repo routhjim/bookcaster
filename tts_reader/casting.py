@@ -24,7 +24,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from . import voices as voice_catalog
-from .speakers import LlmAttributor, character_counts, segment_dialogue
+from .speakers import (
+    LlmAttributor, attribute_segments, character_counts, segment_dialogue,
+)
+from .textprep import prepare_for_speech
 
 DEFAULT_LLM_URL = "http://127.0.0.1:8080/v1/chat/completions"
 
@@ -240,20 +243,26 @@ class CastSession:
 
 def build_session(text: str, engine: str, llm_url: str | None,
                   llm_model: str, top: int, llm_context: int = 350,
-                  log=print) -> CastSession:
+                  cache_path=None, log=print) -> CastSession:
     """Parse *text*, attribute speakers, and assemble the initial cast."""
     log("Parsing dialogue...")
-    segments = segment_dialogue(text)
+    # Parse the same speech-prepped text the converter will synthesize, so
+    # cached attributions line up between the session and the conversion.
+    segments = segment_dialogue(prepare_for_speech(text))
     session = CastSession(engine=engine, llm_url=llm_url, llm_model=llm_model)
 
+    attributor = None
     if llm_url:
-        try:
-            LlmAttributor(llm_url, model=llm_model, context_chars=llm_context).refine(
-                segments, known=list(character_counts(segments)), log=log
-            )
-        except RuntimeError as exc:
-            log(f"warning: LLM attribution skipped: {exc}")
-            session.llm_url = None
+        attributor = LlmAttributor(
+            llm_url, model=llm_model, context_chars=llm_context
+        )
+    try:
+        attribute_segments(
+            segments, attributor=attributor, cache_path=cache_path, log=log
+        )
+    except RuntimeError as exc:
+        log(f"warning: LLM attribution skipped: {exc}")
+        session.llm_url = None
 
     counts = character_counts(segments)
     for name, n in list(counts.items())[:top]:
