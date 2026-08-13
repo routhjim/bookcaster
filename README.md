@@ -307,6 +307,24 @@ plain-language directing. Without one it still works — you just assign
 voices directly with `Name = voice`. `map` prints the resulting
 `--voice-map` string instead of converting, so you can reuse it later.
 
+### Abridged audiobooks (`abridge`)
+
+For long books, an LLM can condense the text before synthesis — keeping every
+dialogue exchange verbatim (so casting still works), trimming only very long
+monologues, and compressing narration to key events, imagery, and themes in
+the book's own style:
+
+```bash
+tts-reader abridge moby.txt --level medium       # -> moby_abridged.txt
+tts-reader cast moby_abridged.txt -o moby_short/ --chapters split
+```
+
+Levels: `light` (~60% of narration kept), `medium` (~40%), `heavy` (~25%) —
+dialogue always survives, so dialogue-heavy chapters stay closer to full
+length. The output is a plain text file: read it, edit it, then cast/convert
+it like any book. Progress is checkpointed, so an interrupted run resumes
+where it stopped.
+
 ## Speech-friendly text preprocessing
 
 Before synthesis, text is cleaned up so it *reads* well (on by default, skip

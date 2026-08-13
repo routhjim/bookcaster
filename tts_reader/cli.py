@@ -44,6 +44,9 @@ from .speakers import (
 )
 from .textprep import prepare_for_speech
 
+# Imported lazily in cmd_abridge; the levels are needed at parser-build time.
+_ABRIDGE_LEVELS = ("light", "medium", "heavy")
+
 
 def _cache_path_for(spec: str) -> Path:
     """Sidecar file holding a book's speaker attributions."""
@@ -350,6 +353,43 @@ def cmd_cast(args: argparse.Namespace) -> int:
     return run_repl(session, on_convert, state_path=state_path)
 
 
+def cmd_abridge(args: argparse.Namespace) -> int:
+    """Write a condensed version of a book that keeps its dialogue."""
+    from .abridge import abridge_file
+
+    spec = args.input
+    try:
+        text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+    except (ValueError, OSError) as exc:
+        print(f"error: could not read {spec}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = Path(f"{_source_stem(spec)}_abridged.txt")
+        if not _is_url(spec):
+            out_path = Path(spec).with_name(out_path.name)
+
+    print(f"Abridging {spec} ({len(text):,} chars, level: {args.level}) "
+          f"->  {out_path}")
+    try:
+        abridge_file(
+            text, out_path, llm_url=args.llm_url, llm_model=args.llm_model,
+            level=args.level,
+            chapter_pattern=args.chapter_regex or DEFAULT_HEADING,
+        )
+    except (RuntimeError, OSError) as exc:
+        print(f"error: {exc}\n(progress is saved — rerun to resume)",
+              file=sys.stderr)
+        return 1
+    kept = out_path.stat().st_size / max(1, len(text.encode("utf-8")))
+    print(f"  wrote {out_path} ({kept:.0%} of the original)")
+    print(f"Next: tts-reader cast {out_path} — the abridged text casts and "
+          "converts like any book.")
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     specs: list[str] = args.inputs
     missing = [s for s in specs if not _is_url(s) and not Path(s).is_file()]
@@ -642,6 +682,41 @@ def build_parser() -> argparse.ArgumentParser:
         "scratch. The saved file is overwritten as the new session proceeds.",
     )
     p_cast.set_defaults(func=cmd_cast)
+
+    p_abr = sub.add_parser(
+        "abridge",
+        help="Condense a book with an LLM, keeping all dialogue (for shorter "
+        "audiobooks)",
+    )
+    p_abr.add_argument("input", help="Text file or URL to abridge")
+    p_abr.add_argument(
+        "-o", "--output", default=None,
+        help="Output text file (default: <input>_abridged.txt).",
+    )
+    p_abr.add_argument(
+        "--level", choices=sorted(_ABRIDGE_LEVELS), default="medium",
+        help="How aggressively to condense narration: light (~60%% kept), "
+        "medium (~40%%), heavy (~25%%). Dialogue is always kept. "
+        "Default: medium.",
+    )
+    p_abr.add_argument(
+        "--llm-url", default="http://127.0.0.1:8080/v1/chat/completions",
+        help="OpenAI-compatible /v1/chat/completions endpoint doing the "
+        "condensing (default: %(default)s).",
+    )
+    p_abr.add_argument(
+        "--llm-model", default="default",
+        help="Model name sent to --llm-url (default: 'default').",
+    )
+    p_abr.add_argument(
+        "--chapter-regex", default=None,
+        help="Custom regex (matched per line) marking where chapters begin.",
+    )
+    p_abr.add_argument(
+        "--no-strip-gutenberg", action="store_true",
+        help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_abr.set_defaults(func=cmd_abridge)
     return parser
 
 
