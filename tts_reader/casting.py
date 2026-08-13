@@ -71,18 +71,15 @@ class CastSession:
 
     # -- LLM plumbing ------------------------------------------------------
     def _chat(self, prompt: str, max_tokens: int = 900) -> str:
-        payload = json.dumps({
+        from .speakers import NO_THINKING, post_chat
+
+        body = post_chat(self.llm_url, {
             "model": self.llm_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "max_tokens": max_tokens,
-        }).encode("utf-8")
-        req = Request(
-            self.llm_url, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with urlopen(req, timeout=600) as resp:
-            body = json.loads(resp.read().decode("utf-8", "replace"))
+            "chat_template_kwargs": NO_THINKING,
+        }, timeout=600)
         return body["choices"][0]["message"]["content"]
 
     @staticmethod
@@ -154,6 +151,10 @@ class CastSession:
     def _dedupe_voices(self) -> None:
         """Keep major characters distinct: no narrator clones or duplicates
         while unused roster voices remain (minor characters may share)."""
+        if self.dialogue_voice == self.narrator_voice:
+            others = [n for n, _, _ in self.roster() if n != self.narrator_voice]
+            if others:
+                self.dialogue_voice = others[0]
         unused = [
             n for n, _, _ in self.roster()
             if n != self.narrator_voice and n != self.dialogue_voice
@@ -216,6 +217,40 @@ class CastSession:
         self.history.append({"who": "assistant", "text": reply})
         return reply
 
+    # -- persistence -------------------------------------------------------
+    def to_dict(self) -> dict:
+        return {
+            "version": 1,
+            "engine": self.engine,
+            "narrator": self.narrator_voice,
+            "dialogue": self.dialogue_voice,
+            "characters": {
+                m.name: {"voice": m.voice, "role": m.role} for m in self.members
+            },
+        }
+
+    def apply_saved(self, data: dict) -> int:
+        """Restore voices/roles from a saved cast; returns members restored."""
+        if not isinstance(data, dict) or data.get("version") != 1:
+            return 0
+        applied = 0
+        for key in ("narrator", "dialogue"):
+            voice = str(data.get(key) or "").strip().lower()
+            if voice and self.valid_voice(voice):
+                setattr(self, f"{key}_voice", voice)
+        saved = {str(k).lower(): v for k, v in (data.get("characters") or {}).items()}
+        for m in self.members:
+            info = saved.get(m.name.lower())
+            if not isinstance(info, dict):
+                continue
+            voice = str(info.get("voice") or "").strip().lower()
+            if voice and self.valid_voice(voice):
+                m.voice = voice
+                applied += 1
+            if info.get("role"):
+                m.role = str(info["role"]).strip()
+        return applied
+
     # -- output ------------------------------------------------------------
     def voice_map(self) -> str:
         parts = [f"narrator={self.narrator_voice}"]
@@ -241,9 +276,31 @@ class CastSession:
         return "\n".join(lines)
 
 
+def load_saved_cast(path) -> dict | None:
+    try:
+        from pathlib import Path
+
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def save_cast(session: CastSession, path) -> None:
+    try:
+        from pathlib import Path
+
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=1),
+                     encoding="utf-8")
+    except OSError:
+        pass  # never let a failed save break the session
+
+
 def build_session(text: str, engine: str, llm_url: str | None,
                   llm_model: str, top: int, llm_context: int = 350,
-                  cache_path=None, log=print) -> CastSession:
+                  cache_path=None, saved: dict | None = None,
+                  log=print) -> CastSession:
     """Parse *text*, attribute speakers, and assemble the initial cast."""
     log("Parsing dialogue...")
     # Parse the same speech-prepped text the converter will synthesize, so
@@ -281,6 +338,12 @@ def build_session(text: str, engine: str, llm_url: str | None,
             session.narrator_voice, session.dialogue_voice
         ) else roster[-1]
 
+    if saved:
+        restored = session.apply_saved(saved)
+        if restored:
+            log(f"Restored your saved cast ({restored} character(s)).")
+            return session
+
     if session.llm_url:
         log("Asking the LLM to describe each character and suggest voices...")
         try:
@@ -306,20 +369,28 @@ HELP = """Commands:
 """
 
 
-def run_repl(session: CastSession, on_convert, log=print) -> int:
+def run_repl(session: CastSession, on_convert, state_path=None, log=print) -> int:
     """The interactive loop. ``on_convert(voice_map, output)`` runs the job."""
+
+    def checkpoint():
+        if state_path is not None:
+            save_cast(session, state_path)
+
     log("\nProposed cast:\n" + session.table())
     log("\nDirect me — plain English or 'help' for commands.\n")
+    checkpoint()  # the initial suggestion is worth keeping too
     while True:
         try:
             line = input("cast> ").strip()
         except (EOFError, KeyboardInterrupt):
             log("")
+            checkpoint()
             return 0
         if not line:
             continue
         cmd = line.lower()
         if cmd in ("quit", "exit", "q"):
+            checkpoint()
             return 0
         if cmd == "help":
             log(HELP)
@@ -329,10 +400,12 @@ def run_repl(session: CastSession, on_convert, log=print) -> int:
             log(session.roster_text())
         elif cmd == "map":
             log(f'--voice-map "{session.voice_map()}"')
+            checkpoint()
             return 0
         elif cmd.startswith("convert"):
             output = line.split(None, 1)[1].strip() if " " in line else None
             log(f'\nCast locked in: --voice-map "{session.voice_map()}"')
+            checkpoint()
             return on_convert(session.voice_map(), output)
         else:
             direct = re.match(r"^([\w'’ .-]+?)\s*=\s*([\w-]+)$", line)
@@ -354,10 +427,12 @@ def run_repl(session: CastSession, on_convert, log=print) -> int:
                         log(f"no character called '{name}' — try 'cast'")
                         continue
                     member.voice = voice
+                checkpoint()
                 log("done — 'cast' to review")
             elif session.llm_url:
                 try:
                     log(session.refine(line))
+                    checkpoint()
                 except (HTTPError, URLError, TimeoutError, OSError) as exc:
                     log(f"LLM unavailable ({exc}); use 'Name = voice' instead")
             else:

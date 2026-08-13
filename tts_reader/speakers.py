@@ -239,6 +239,37 @@ def attribute_segments(
 # Optional LLM attribution for quotes the heuristics could not tag.
 # ---------------------------------------------------------------------------
 
+def post_chat(url: str, body: dict, timeout: float) -> dict:
+    """POST an OpenAI-style chat request and return the parsed response.
+
+    Reasoning models (e.g. Qwen) burn the max_tokens budget "thinking"
+    before any visible answer, so requests ask Qwen-style chat templates to
+    skip thinking via chat_template_kwargs; servers that reject the unknown
+    field get one retry without it.
+    """
+    for attempt in (0, 1):
+        req = Request(
+            url, data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except HTTPError as exc:
+            if (
+                attempt == 0
+                and "chat_template_kwargs" in body
+                and exc.code in (400, 404, 422)
+            ):
+                body = {k: v for k, v in body.items()
+                        if k != "chat_template_kwargs"}
+                continue
+            raise
+
+
+NO_THINKING = {"enable_thinking": False}
+
+
 @dataclass
 class LlmAttributor:
     """Client for any OpenAI-compatible /v1/chat/completions endpoint."""
@@ -291,21 +322,17 @@ class LlmAttributor:
             'mapping each number to a name, e.g. {"3": "Ahab", "7": "unknown"}.'
             f"\n\n{numbered}"
         )
-        payload = json.dumps({
+        payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
             # Answers are a short JSON object; a cap also keeps servers that
             # default max_tokens to "rest of context" from rejecting requests.
             "max_tokens": 40 * self.batch_size,
-        }).encode("utf-8")
-        req = Request(
-            self.url, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
+            "chat_template_kwargs": NO_THINKING,
+        }
         try:
-            with urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8", "replace"))
+            body = post_chat(self.url, payload, self.timeout)
         except (HTTPError, URLError, TimeoutError) as exc:
             raise RuntimeError(
                 f"LLM attribution request to {self.url} failed: {exc}. "

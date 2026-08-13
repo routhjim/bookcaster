@@ -54,6 +54,15 @@ def _cache_path_for(spec: str) -> Path:
     return p.with_name(p.name + ".speakers.json")
 
 
+def _cast_state_path_for(spec: str) -> Path:
+    """Sidecar file holding a book's saved cast (voices + roles)."""
+    if _is_url(spec):
+        digest = hashlib.sha1(spec.encode("utf-8")).hexdigest()[:16]
+        return default_models_dir().parent / "attribution" / f"{digest}.cast.json"
+    p = Path(spec)
+    return p.with_name(p.name + ".cast.json")
+
+
 def _parse_voice_map(spec: str) -> dict[str, str]:
     """Parse 'narrator=leo,Ahab=zac,dialogue=tara' into a dict."""
     mapping: dict[str, str] = {}
@@ -303,7 +312,7 @@ def cmd_characters(args: argparse.Namespace) -> int:
 
 def cmd_cast(args: argparse.Namespace) -> int:
     """Interactive casting session: describe roles, direct voices, convert."""
-    from .casting import build_session, run_repl
+    from .casting import build_session, load_saved_cast, run_repl
 
     spec = args.input
     try:
@@ -312,11 +321,13 @@ def cmd_cast(args: argparse.Namespace) -> int:
         print(f"error: could not read {spec}: {exc}", file=sys.stderr)
         return 2
 
+    state_path = _cast_state_path_for(spec)
     session = build_session(
         text, engine=args.engine, llm_url=args.llm_url,
         llm_model=args.llm_model, top=args.top,
         llm_context=args.llm_context,
         cache_path=_cache_path_for(spec),
+        saved=None if args.fresh_cast else load_saved_cast(state_path),
     )
 
     def on_convert(voice_map: str, output: str | None) -> int:
@@ -336,7 +347,7 @@ def cmd_cast(args: argparse.Namespace) -> int:
             argv.append("--no-strip-gutenberg")
         return main(argv)
 
-    return run_repl(session, on_convert)
+    return run_repl(session, on_convert, state_path=state_path)
 
 
 def cmd_convert(args: argparse.Namespace) -> int:
@@ -624,6 +635,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_cast.add_argument(
         "--no-strip-gutenberg", action="store_true",
         help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_cast.add_argument(
+        "--fresh-cast", action="store_true",
+        help="Ignore the saved cast (<input>.cast.json) and re-suggest from "
+        "scratch. The saved file is overwritten as the new session proceeds.",
     )
     p_cast.set_defaults(func=cmd_cast)
     return parser
