@@ -62,7 +62,10 @@ def _make_attributor(args) -> LlmAttributor | None:
     url = getattr(args, "llm_url", None)
     if not url:
         return None
-    return LlmAttributor(url, model=args.llm_model)
+    return LlmAttributor(
+        url, model=args.llm_model,
+        context_chars=getattr(args, "llm_context", 350),
+    )
 
 
 def _build_engine(args):
@@ -296,6 +299,7 @@ def cmd_cast(args: argparse.Namespace) -> int:
     session = build_session(
         text, engine=args.engine, llm_url=args.llm_url,
         llm_model=args.llm_model, top=args.top,
+        llm_context=args.llm_context,
     )
 
     def on_convert(voice_map: str, output: str | None) -> int:
@@ -477,6 +481,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name sent to --llm-url (default: 'default').",
     )
     p_conv.add_argument(
+        "--llm-context", type=int, default=350,
+        help="Characters of surrounding text sent with each quote during LLM "
+        "attribution. Wider resolves long exchanges better but costs slower "
+        "calls (default: 350).",
+    )
+    p_conv.add_argument(
         "--no-preprocess", action="store_true",
         help="Skip the speech-friendly text cleanup (abbreviation expansion, "
         "roman-numeral chapter numbers, ALL-CAPS softening, footnote removal).",
@@ -537,6 +547,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name sent to --llm-url (default: 'default').",
     )
     p_chars.add_argument(
+        "--llm-context", type=int, default=350,
+        help="Characters of context per quote in LLM attribution (default: 350).",
+    )
+    p_chars.add_argument(
         "--top", type=int, default=15,
         help="How many speakers to list (default: 15).",
     )
@@ -568,6 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cast.add_argument(
         "--llm-model", default="default",
         help="Model name sent to --llm-url (default: 'default').",
+    )
+    p_cast.add_argument(
+        "--llm-context", type=int, default=350,
+        help="Characters of context per quote in LLM attribution (default: 350).",
     )
     p_cast.add_argument(
         "--top", type=int, default=10,

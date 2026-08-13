@@ -235,7 +235,8 @@ class CastSession:
 
 
 def build_session(text: str, engine: str, llm_url: str | None,
-                  llm_model: str, top: int, log=print) -> CastSession:
+                  llm_model: str, top: int, llm_context: int = 350,
+                  log=print) -> CastSession:
     """Parse *text*, attribute speakers, and assemble the initial cast."""
     log("Parsing dialogue...")
     segments = segment_dialogue(text)
@@ -243,7 +244,7 @@ def build_session(text: str, engine: str, llm_url: str | None,
 
     if llm_url:
         try:
-            LlmAttributor(llm_url, model=llm_model).refine(
+            LlmAttributor(llm_url, model=llm_model, context_chars=llm_context).refine(
                 segments, known=list(character_counts(segments)), log=log
             )
         except RuntimeError as exc:

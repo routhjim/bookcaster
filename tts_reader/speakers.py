@@ -173,6 +173,9 @@ class LlmAttributor:
     model: str = "default"
     timeout: float = 300.0
     batch_size: int = 12
+    # How much surrounding text each quote carries. Wider context resolves
+    # long unattributed back-and-forth exchanges (the anchor "said Ahab" can
+    # be many quotes back) at the cost of larger, slower LLM calls.
     context_chars: int = 350
     calls: int = field(default=0, init=False)
 
@@ -194,9 +197,9 @@ class LlmAttributor:
                     segments[idx].speaker = normalize_name(name)
 
     def _context(self, segments: list[Segment], idx: int) -> str:
-        before = "".join(s.text for s in segments[max(0, idx - 4):idx])[-self.context_chars:]
+        before = "".join(s.text for s in segments[max(0, idx - 12):idx])[-self.context_chars:]
         quote = segments[idx].text[:300]
-        after = "".join(s.text for s in segments[idx + 1:idx + 5])[: self.context_chars // 2]
+        after = "".join(s.text for s in segments[idx + 1:idx + 9])[: self.context_chars // 2]
         return f"{before}<<QUOTE>>{quote}<</QUOTE>>{after}".replace("\n", " ")
 
     def _ask(self, segments: list[Segment], batch: list[int], known: list[str]) -> dict[int, str]:
