@@ -121,6 +121,7 @@ def _build_engine(args):
             return OrpheusEngine(
                 voice, base_url=args.f5_url, model="f5",
                 chunk_chars=args.orpheus_chunk_chars,
+                emotion_param=True,  # registers go in the request, not the text
             )
         default_voice = ""  # server falls back to its first voice
     else:
