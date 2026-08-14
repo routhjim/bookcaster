@@ -1,73 +1,68 @@
-# [Reddit draft — r/LocalLLaMA]
+# [Reddit draft — r/LocalLLaMA. Title goes in the title field, body below the line. Paste in Markdown editor mode.]
 
-**Title:** I built a fully local audiobook engine that auto-casts characters and switches emotional delivery line-by-line — voices cloned from public-domain LibriVox narrators, running on a Strix Halo APU
+**Title:** Turned my Strix Halo into a local audiobook studio: an LLM casts the characters, public-domain LibriVox narrators voice them, emotional delivery switches line-by-line. ~$0.35 of electricity per book.
 
 ---
 
-**The demo**: the climax of *The Adventure of the Speckled Band* rendered two ways from the same text —
-([single narrator](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_single_narrator.mp3) · [full cast](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_full_cast.mp3))
+Demo first. Same scene (the climax of Sherlock Holmes' *The Speckled Band*), rendered two ways, fully local:
 
-1. **Single narrator** — one cloned voice reading everything (F5-TTS's own contextual prosody, which is already surprisingly good)
-2. **Full cast** — an LLM attributes every line of dialogue, four different narrators voice the characters (gender-matched, cast by an LLM from voice descriptors, user-overridable), and each line is synthesized from an *emotional reference clip* matching its register — the terrified client actually sounds terrified, the menacing stepfather actually sounds menacing
+- [single narrator](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_single_narrator.mp3) (one cloned voice reads everything)
+- [full cast](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_full_cast.mp3) (LLM attributes every line, four different narrators play the characters, and each line is synthesized from a reference clip matching its emotion. The terrified client sounds terrified, the menacing stepfather sounds menacing)
 
-A scene that never existed as a single recording, assembled from four narrators who never met, all public domain, all local.
+None of these narrators ever recorded this scene. They never met. All voices are LibriVox public domain, so no likeness issues.
 
-**The pipeline** — what actually happens when a book goes in:
+Repo: https://github.com/routhjim/bookcaster (MIT)
+
+## Numbers, since that's why we're all here
+
+Hardware is a Ryzen AI MAX+ 395 (Strix Halo, 128GB unified, 8060S iGPU). Everything runs on this one box, including the LLM doing the casting.
+
+| thing | number |
+|---|---|
+| F5-TTS synthesis | 0.53x real-time (was 0.33x, torch.compile bought 1.65x) |
+| 16-step NFE mode | measured 2.05x faster, slightly different renders |
+| full multi-voice novel | overnight render, ~$0.35 of power |
+| same book via cloud TTS APIs | $120-360, per render (I re-rendered constantly while tuning) |
+| speaker attribution, full novel | ~10 min on Qwen3.6-35B-A3B, cached forever after |
+| new 8-emotion voice from LibriVox | ~1 hr machine time + 15 min of listening |
+
+Strix Halo notes you might actually want: stock pytorch ROCm wheels **segfault on bare matmul** on gfx1151. AMD's own wheel index (rocm.nightlies.amd.com/v2/gfx1151/) works fine. llama.cpp runs Vulkan on the same box concurrently. Also tested: batching/concurrent F5 requests gain ~nothing, one request already saturates the APU. The NPU sits idle, there's no Linux VitisAI EP (checked against Ryzen AI 1.8.0, all wheels are win_amd64).
+
+## The pipeline
 
 ```
 book.txt / Gutenberg URL
- │
- ├─ 1. PREPROCESS      abbreviations→spoken, roman numerals, footnotes out,
- │                     pronunciation lexicon applied (LLM-built per book)
- ├─ 2. CHAPTERIZE      heading detection → per-chapter units (resumable)
- ├─ 3. SEGMENT         narration vs. quoted dialogue, line by line
- ├─ 4. ATTRIBUTE       LLM names each line's speaker (heuristics catch the
- │                     easy "said Ahab" cases free) → book.speakers.json
- ├─ 5. CAST            LLM builds character roster + suggests voices from
- │                     the library's descriptors; you override at a REPL
- │                     ("Starbuck is a grizzled old pirate") → voice map
- ├─ 6. TAG EMOTION     LLM assigns each line a register (tense/angry/...)
- │                     from textual cues → book.emotions.json
- └─ 7. SYNTHESIZE      per segment: {speaker → voice, register → that
-                       narrator's matching reference clip} → F5-TTS clones
-                       delivery; output shaped (per-register tempo, pause
-                       band, ghost-speech gate) → chapter audio
- → 8. ASSEMBLE         tagged per-chapter MP3s + playlist, or one .m4b
-                       with chapter marks, in Author/Title library layout
+ 1. preprocess    abbreviations, roman numerals, LLM-built pronunciation
+                  lexicon ("clanging" was coming out "clan-jing")
+ 2. chapterize    heading detection, everything resumable per chapter
+ 3. segment       narration vs quoted dialogue
+ 4. attribute     LLM names each line's speaker (regex catches the free
+                  "said Ahab" cases first) -> cached sidecar json
+ 5. cast          LLM describes each character, proposes voices from the
+                  library; you override in plain English at a REPL
+                  ("Starbuck is an old, grizzled, crusty pirate")
+ 6. tag emotion   LLM assigns each line a register from textual cues
+ 7. synthesize    speaker -> voice, register -> that narrator's matching
+                  reference clip, F5-TTS clones the delivery
+ 8. assemble      tagged per-chapter MP3s + playlist, or .m4b with
+                  chapter marks, Author/Title layout for Audiobookshelf
 ```
 
-Steps 4–6 are LLM calls against any OpenAI-compatible endpoint (mine:
-llama.cpp serving Qwen3.6-35B-A3B on the same APU) and every decision is
-cached in sidecar files next to the book — the expensive passes happen once
-per book ever; recasting or re-rendering afterwards is nearly instant.
-Serving topology: llama.cpp on :8080 (all LLM passes), the F5-TTS palette
-server on :5010 (synthesis + voice registry), optional Orpheus on :5005.
+LLM steps hit any OpenAI-compatible endpoint (mine is llama.cpp + Qwen3.6-35B-A3B on the same APU). Every decision caches next to the book, so the expensive passes happen once and recasting is basically instant.
 
-The **voice library** feeding step 7 is built by a separate offline
-pipeline (docs/VOICE_MINING.md): LibriVox chapter → faster-whisper
-alignment → LLM locates emotional passages → quality gates → human
-audition → an 8-register palette per narrator.
+The voice library is its own offline pipeline: LibriVox chapter → faster-whisper alignment → LLM finds passages where the text forces an emotion (Blind Pew approaching = tense) → quality gates → I audition 2-3 candidates per cell. Docs: [VOICE_MINING.md](https://github.com/routhjim/bookcaster/blob/main/docs/VOICE_MINING.md). Each voice ends up as 8 reference clips of the same narrator: neutral/warm/tense/angry/sad/excited/cold/surprised.
 
-**Beyond the pipeline** (github.com/routhjim/bookcaster):
+## Things that went wrong (the useful part)
 
-- **Adding narrators is repeatable, not artisanal**: write a small JSON grid mapping emotions to chapters where the text forces that register ("Blind Pew's approach" → tense), run `tools/mine_voice.py`, audition the staged candidates, promote your picks — full workflow in [docs/VOICE_MINING.md](https://github.com/routhjim/bookcaster/blob/main/docs/VOICE_MINING.md). A new 8-register narrator: ~1 hour of machine time, ~15 minutes of listening
-- Three interchangeable engines behind one interface: Piper (CPU, 13.7× real-time, robotic), Orpheus 3B (GPU, ~0.7×, natural + inline `<sigh>`-style tags), F5-TTS (GPU, cloning + palettes — the headliner)
-- Long renders are resumable at every chapter; an LLM `abridge` mode condenses books while preserving all dialogue verbatim
+- **F5 clones pace above everything.** My first "excited" clips were just the narrator reading fast, so I got a fast voice, not an excited one. Had to gate mined clips against each narrator's own words-per-second baseline. Fun finding from calibrating against clips my ear had approved: angry consistently runs 10-25% *faster* than neutral. Menace accelerates.
+- **Never use reference clips containing dialogue.** Narrators perform character voices. I cloned a "warm" clip from a fairy tale and got the narrator's falsetto princess. Related: LibriVox group recordings have a different volunteer per chapter. Verify solo readers per file or you will clone a stranger.
+- **Reference clips cut mid-sentence make F5 hallucinate.** It quietly "completes" the reference's unfinished sentence into your audiobook. One of my voices kept whispering "I am lost" before lines. Fixed with sentence-final clip cuts.
+- **Short lines are cursed.** Feed F5 "Always." against a 12-second reference and it pads the output with barely-audible ghost mumbling. Fixed with an edge energy gate on the output.
+- **The tags got read aloud.** For one glorious render the cast dramatically announced "tensuh" before tense lines because the emotion tags leaked into the text path. My favorite bug of the project.
+- Whisper drops quotation marks in transcripts, so text-based dialogue filters miss things. The human audition pass is not optional and my ear caught multiple things the gates passed.
 
-**Hardware + numbers** (Ryzen AI MAX+ 395, 8060S iGPU, 128GB unified, Vulkan for llama.cpp / TheRock torch for F5 — the stock pytorch ROCm wheels segfault on gfx1151, AMD's own wheel index works):
+## Honest limitations
 
-- F5 renders at 0.53× real-time (torch.compile bought 1.65×; bf16 was already on; concurrency measured useless — one request saturates the APU; 16-step NFE is a measured 2.05× if you accept slightly-different renders)
-- A ~10-hour multi-voice audiobook ≈ overnight-plus render, ~$0.35 of electricity. The same book through a cloud TTS API at per-character pricing: $120–360, per render, and I re-rendered *constantly* while tuning
-- LLM passes on the same box: full-novel speaker attribution ~10 min, emotion tagging similar, all cached
+Attribution is ~95%, not 100% (misses fall back to a neutral dialogue voice, sounds fine). Emotional range from straight readers is tonal, not theatrical — these are audiobook narrators, not voice actors. F5 has run-to-run variance. And pronunciation has a long tail even with the lexicon.
 
-**Hard-won lessons** (the failure museum):
-
-- F5 clones *pace* above all: an "excited" reference that's merely fast reading produces a fast voice, not an excited one — pace-gate your clips against the narrator's own baseline
-- Never mine reference clips containing quoted dialogue: narrators perform character voices (falsetto princesses included), and you'll clone the *performance*, not the person. LibriVox group recordings will burn you the same way — verify solo readers per file
-- Ref clips cut mid-sentence make F5 hallucinate quiet "ghost" completions into your audio; ditto very short generation texts ("Always.") — fixed with sentence-final clip cuts + an edge energy gate
-- Whisper transcription drops quotation marks, so text-based dialogue filters can't catch everything; the human audition pass is not optional
-- Character-level TTS spells its way into pronunciation errors ("clanging" → "clan-jing"); a per-book LLM-built respelling lexicon fixes the long tail
-
-**Honest limitations:** attribution is ~95% not 100% (unattributed lines fall back to a neutral dialogue voice — sounds fine); the emotional shifts from straight readers are tonal, not theatrical; F5 output has run-to-run variance; the NPU sits idle (no Linux VitisAI EP exists — verified against Ryzen AI 1.8.0, wheels are win_amd64 only).
-
-Everything's MIT, built on F5-TTS/Orpheus/Piper/llama.cpp/faster-whisper. Voices are LibriVox public domain end-to-end — no likeness games.
+Stack: F5-TTS, Orpheus 3B and Piper as alternate engines, llama.cpp, faster-whisper, lameenc/ffmpeg. Happy to answer anything, share the sourcing grids, or take suggestions for narrator #7.
