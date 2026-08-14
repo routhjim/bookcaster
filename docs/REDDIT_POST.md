@@ -12,14 +12,47 @@
 
 A scene that never existed as a single recording, assembled from four narrators who never met, all public domain, all local.
 
-**What it does** (github.com/routhjim/bookcaster):
+**The pipeline** — what actually happens when a book goes in:
 
-- Text/URL/Gutenberg in → chaptered MP3s or proper `.m4b` audiobooks (chapter marks, resume, `Author/Title/` library layout for Audiobookshelf) out
-- **Interactive casting**: `bookcaster cast book.txt` — an LLM reads the book, describes each character's role, proposes voices; you direct recasts in plain English at a REPL ("Starbuck is an old, grizzled, crusty pirate") and it recasts
-- **Emotional palettes**: each library voice is 8 reference clips of the *same* narrator (neutral/warm/tense/angry/sad/excited/cold/surprised), semi-automatically mined from their LibriVox catalog — whisper alignment finds candidate passages, an LLM picks emotional spans, quality gates (SNR, clipping, pace-vs-baseline, no-dialogue, sentence-final endings) filter them, human ear makes the final call
-- **Adding narrators is a repeatable pipeline**, not artisanal work: write a small JSON grid mapping emotions to chapters where the text forces that register ("Blind Pew's approach" → tense), run `tools/mine_voice.py`, audition the staged candidates, promote your picks. Full workflow with all the gates documented in [docs/VOICE_MINING.md](https://github.com/routhjim/bookcaster/blob/main/docs/VOICE_MINING.md) — a new 8-register narrator costs about an hour of machine time and fifteen minutes of listening
-- Speaker attribution, emotion tagging, and pronunciation-lexicon building are LLM passes against any OpenAI-compatible endpoint (I use llama.cpp + Qwen3.6-35B-A3B locally), all cached per book in sidecar files — a full novel's attribution costs one pass, ever
-- Three engines: Piper (CPU, 13.7× real-time, robotic), Orpheus 3B (GPU, ~0.7×, natural + inline emotion tags), F5-TTS (GPU, voice cloning + the palette system)
+```
+book.txt / Gutenberg URL
+ │
+ ├─ 1. PREPROCESS      abbreviations→spoken, roman numerals, footnotes out,
+ │                     pronunciation lexicon applied (LLM-built per book)
+ ├─ 2. CHAPTERIZE      heading detection → per-chapter units (resumable)
+ ├─ 3. SEGMENT         narration vs. quoted dialogue, line by line
+ ├─ 4. ATTRIBUTE       LLM names each line's speaker (heuristics catch the
+ │                     easy "said Ahab" cases free) → book.speakers.json
+ ├─ 5. CAST            LLM builds character roster + suggests voices from
+ │                     the library's descriptors; you override at a REPL
+ │                     ("Starbuck is a grizzled old pirate") → voice map
+ ├─ 6. TAG EMOTION     LLM assigns each line a register (tense/angry/...)
+ │                     from textual cues → book.emotions.json
+ └─ 7. SYNTHESIZE      per segment: {speaker → voice, register → that
+                       narrator's matching reference clip} → F5-TTS clones
+                       delivery; output shaped (per-register tempo, pause
+                       band, ghost-speech gate) → chapter audio
+ → 8. ASSEMBLE         tagged per-chapter MP3s + playlist, or one .m4b
+                       with chapter marks, in Author/Title library layout
+```
+
+Steps 4–6 are LLM calls against any OpenAI-compatible endpoint (mine:
+llama.cpp serving Qwen3.6-35B-A3B on the same APU) and every decision is
+cached in sidecar files next to the book — the expensive passes happen once
+per book ever; recasting or re-rendering afterwards is nearly instant.
+Serving topology: llama.cpp on :8080 (all LLM passes), the F5-TTS palette
+server on :5010 (synthesis + voice registry), optional Orpheus on :5005.
+
+The **voice library** feeding step 7 is built by a separate offline
+pipeline (docs/VOICE_MINING.md): LibriVox chapter → faster-whisper
+alignment → LLM locates emotional passages → quality gates → human
+audition → an 8-register palette per narrator.
+
+**Beyond the pipeline** (github.com/routhjim/bookcaster):
+
+- **Adding narrators is repeatable, not artisanal**: write a small JSON grid mapping emotions to chapters where the text forces that register ("Blind Pew's approach" → tense), run `tools/mine_voice.py`, audition the staged candidates, promote your picks — full workflow in [docs/VOICE_MINING.md](https://github.com/routhjim/bookcaster/blob/main/docs/VOICE_MINING.md). A new 8-register narrator: ~1 hour of machine time, ~15 minutes of listening
+- Three interchangeable engines behind one interface: Piper (CPU, 13.7× real-time, robotic), Orpheus 3B (GPU, ~0.7×, natural + inline `<sigh>`-style tags), F5-TTS (GPU, cloning + palettes — the headliner)
+- Long renders are resumable at every chapter; an LLM `abridge` mode condenses books while preserving all dialogue verbatim
 
 **Hardware + numbers** (Ryzen AI MAX+ 395, 8060S iGPU, 128GB unified, Vulkan for llama.cpp / TheRock torch for F5 — the stock pytorch ROCm wheels segfault on gfx1151, AMD's own wheel index works):
 
