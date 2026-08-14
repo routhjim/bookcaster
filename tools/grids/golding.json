@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "gender": "Female",
+  "description": "Measured British (Ruth Golding, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "mental_efficiency_rg_librivox",
+   "file": "mentalefficiency_1_bennett_64kb.mp3",
+   "hint": "Nonfiction baseline; even explanatory tone."
+  },
+  "warm": {
+   "item": "told_after_supper_rg_librivox",
+   "file": "toldaftersupper_1_jerome_64kb.mp3",
+   "hint": "Comic ghost-story framing; amused warmth."
+  },
+  "tense": {
+   "item": "wuthering_heights_rg_librivox",
+   "file": "wutheringheights_03_bronte_64kb.mp3",
+   "hint": "Cathy's ghost at the window; terror in the night."
+  },
+  "angry": {
+   "item": "wuthering_heights_rg_librivox",
+   "file": "wutheringheights_11_bronte_64kb.mp3",
+   "hint": "Heathcliff's rages; confrontation."
+  },
+  "sad": {
+   "item": "wuthering_heights_rg_librivox",
+   "file": "wutheringheights_15_bronte_64kb.mp3",
+   "hint": "Catherine's death; grief."
+  },
+  "excited": {
+   "item": "told_after_supper_rg_librivox",
+   "file": "toldaftersupper_2_jerome_64kb.mp3",
+   "hint": "Storytelling one-upmanship; lively energy."
+  },
+  "cold": {
+   "item": "wuthering_heights_rg_librivox",
+   "file": "wutheringheights_27_bronte_64kb.mp3",
+   "hint": "Heathcliff's revenge; quiet cruelty."
+  },
+  "surprised": {
+   "item": "wuthering_heights_rg_librivox",
+   "file": "wutheringheights_10_bronte_64kb.mp3",
+   "hint": "Heathcliff's return; astonishment."
+  }
+ },
+ "narrator": "golding"
+}

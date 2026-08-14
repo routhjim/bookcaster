@@ -140,23 +140,32 @@ def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
         try:
             i, j = int(pick["start_seg"]), int(pick["end_seg"])
             span = [s for s in segs if i <= s["i"] <= j]
-            start, end = span[0]["start"], span[-1]["end"]
+            span[0]  # noqa: expression — raises IndexError when empty
         except (KeyError, ValueError, IndexError):
             continue
+        # The LLM finds the right location but often overshoots the length;
+        # keep whole segments from the start of the pick until 8-14 s.
+        trimmed = []
+        for s in span:
+            trimmed.append(s)
+            if trimmed[-1]["end"] - trimmed[0]["start"] >= 8:
+                break
+        start, end = trimmed[0]["start"], trimmed[-1]["end"]
         if not 6 <= end - start <= 16:
             print(f"    cand{n}: bad duration {end-start:.1f}s, skipped")
             continue
         clip = audio[int(start * SR):int(end * SR)]
         ok, verdict = gate(clip)
         print(f"    cand{n}: {end-start:.1f}s {verdict} | "
-              f"{' '.join(s['text'] for s in span)[:60]}")
+              f"{' '.join(s['text'] for s in trimmed)[:60]}")
         if not ok:
             continue
-        stem = STAGING / f"{narrator}.{emotion}.cand{n}"
-        sf.write(stem.with_suffix(".wav"), clip, SR)
-        stem.with_suffix(".txt").write_text(
-            " ".join(s["text"] for s in span).strip() + "\n", encoding="utf-8")
-        kept.append(stem.name)
+        wav_path = STAGING / f"{narrator}.{emotion}.cand{n}.wav"
+        sf.write(wav_path, clip, SR)
+        wav_path.with_name(f"{narrator}.{emotion}.cand{n}.txt").write_text(
+            " ".join(s["text"] for s in trimmed).strip() + "\n",
+            encoding="utf-8")
+        kept.append(wav_path.name)
     return kept
 
 

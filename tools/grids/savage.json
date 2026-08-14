@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "gender": "Female",
+  "description": "Light, quick, UK/US (Karen Savage, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "pride_prejudice_krs_librivox",
+   "file": "pride_and_prejudice_01_austen_64kb.mp3",
+   "hint": "Narrative passages; brisk wit."
+  },
+  "warm": {
+   "item": "railway_children_librivox",
+   "file": "railwaychildren_02_nesbit_64kb.mp3",
+   "hint": "Family scenes; affectionate warmth."
+  },
+  "tense": {
+   "item": "scarlet_pimpernel_ks_librivox",
+   "file": "scarlet_pimpernel_22_orczy_64kb.mp3",
+   "hint": "Marguerite at Calais; fear for Percy."
+  },
+  "angry": {
+   "item": "pride_prejudice_krs_librivox",
+   "file": "pride_and_prejudice_34_austen_64kb.mp3",
+   "hint": "The refused proposal; indignation."
+  },
+  "sad": {
+   "item": "anne_island_0811_librivox",
+   "file": "anne_island_14_montgomery_64kb.mp3",
+   "hint": "Ruby Gillis; illness and grief."
+  },
+  "excited": {
+   "item": "railway_children_librivox",
+   "file": "railwaychildren_13_nesbit_64kb.mp3",
+   "hint": "Rescue and reunion; joyous excitement."
+  },
+  "cold": {
+   "item": "scarlet_pimpernel_ks_librivox",
+   "file": "scarlet_pimpernel_09_orczy_64kb.mp3",
+   "hint": "Chauvelin's threats; silky menace."
+  },
+  "surprised": {
+   "item": "scarlet_pimpernel_ks_librivox",
+   "file": "scarlet_pimpernel_30_orczy_64kb.mp3",
+   "hint": "Identity reveal; astonishment."
+  }
+ },
+ "narrator": "savage"
+}

@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "gender": "Female",
+  "description": "Warm American (Kara Shallenberg, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_03_dickens_64kb.mp3",
+   "hint": "Stave 3 descriptive narration."
+  },
+  "warm": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_02_dickens_64kb.mp3",
+   "hint": "Fezziwig's party; festive warmth."
+  },
+  "tense": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_01_dickens_64kb.mp3",
+   "hint": "Marley's ghost; chains and dread."
+  },
+  "angry": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_01_dickens_64kb.mp3",
+   "hint": "Scrooge's irritable outbursts; bah humbug."
+  },
+  "sad": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_04_dickens_64kb.mp3",
+   "hint": "Tiny Tim's empty chair; grief."
+  },
+  "excited": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_05_dickens_64kb.mp3",
+   "hint": "Scrooge transformed; giddy joy."
+  },
+  "cold": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_04_dickens_64kb.mp3",
+   "hint": "Ghost of Christmas Yet to Come; silent dread."
+  },
+  "surprised": {
+   "item": "christmas_carol_1212_librivox",
+   "file": "a_christmas_carol_05_dickens_64kb.mp3",
+   "hint": "Waking on Christmas morning; astonishment."
+  }
+ },
+ "narrator": "kara"
+}

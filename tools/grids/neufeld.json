@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "gender": "Male",
+  "description": "Mature, level, gravelly (Bob Neufeld, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "bartlebyscrivener_1109_librivox",
+   "file": "bartlebyscrivener_01_melville_64kb.mp3",
+   "hint": "Expository opening; calm lawyer's narration."
+  },
+  "warm": {
+   "item": "lostworld_1403_librivox",
+   "file": "lostworld_02_doyle_64kb.mp3",
+   "hint": "Gladys and the newspaper office; wry good humor."
+  },
+  "tense": {
+   "item": "jekyll_hyde_1111_librivox",
+   "file": "thestrangecaseofdrjekyllandmrhyde_04_stevenson_64kb.mp3",
+   "hint": "The Last Night; dread at Jekyll's door."
+  },
+  "angry": {
+   "item": "picture_dorian_gray_1204_librivox",
+   "file": "pictureofdoriangray_13_wilde_64kb.mp3",
+   "hint": "Dorian and Basil confrontation; fury before the murder."
+  },
+  "sad": {
+   "item": "bartlebyscrivener_1109_librivox",
+   "file": "bartlebyscrivener_04_melville_64kb.mp3",
+   "hint": "Closing pages; 'Ah Bartleby! Ah humanity!' \u2014 grief and pity."
+  },
+  "excited": {
+   "item": "lostworld_1403_librivox",
+   "file": "lostworld_11_doyle_64kb.mp3",
+   "hint": "Expedition triumphs; discovery energy."
+  },
+  "cold": {
+   "item": "picture_dorian_gray_1204_librivox",
+   "file": "pictureofdoriangray_07_wilde_64kb.mp3",
+   "hint": "Dorian's cruelty to Sibyl Vane; icy contempt."
+  },
+  "surprised": {
+   "item": "jekyll_hyde_1111_librivox",
+   "file": "thestrangecaseofdrjekyllandmrhyde_05_stevenson_64kb.mp3",
+   "hint": "Henry Jekyll's Full Statement; horrified revelation."
+  }
+ },
+ "narrator": "neufeld"
+}

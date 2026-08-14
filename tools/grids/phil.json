@@ -1,0 +1,49 @@
+{
+ "meta": {
+  "gender": "Male",
+  "description": "Warm, animated-but-natural (Phil Chenevert, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "zanzibar_tales_1209_librivox",
+   "file": "zanzibartales_01_bateman_64kb.mp3",
+   "hint": "Frame narration; easy storytelling."
+  },
+  "warm": {
+   "item": "zanzibar_tales_1209_librivox",
+   "file": "zanzibartales_03_bateman_64kb.mp3",
+   "hint": "Gentle humor in the tales."
+  },
+  "tense": {
+   "item": "sixcreepytales_pc_librivox",
+   "file": "sixcreepystoriesbypoe_1_poe_64kb.mp3",
+   "hint": "Tell-Tale Heart; mounting paranoia."
+  },
+  "angry": {
+   "item": "sixcreepytales_pc_librivox",
+   "file": "sixcreepystoriesbypoe_1_poe_64kb.mp3",
+   "hint": "Tell-Tale Heart climax; frantic fury at the heartbeat."
+  },
+  "sad": {
+   "item": "sixcreepytales_pc_librivox",
+   "file": "sixcreepystoriesbypoe_3_poe_64kb.mp3",
+   "hint": "Melancholy Poe passages; mournful dread."
+  },
+  "excited": {
+   "item": "zanzibar_tales_1209_librivox",
+   "file": "zanzibartales_06_bateman_64kb.mp3",
+   "hint": "Story climaxes; animated delight."
+  },
+  "cold": {
+   "item": "thedunwichhorror_1810_librivox",
+   "file": "dunwichhorror_02_lovecraft_64kb.mp3",
+   "hint": "Ritual dread; flat cosmic menace."
+  },
+  "surprised": {
+   "item": "thedunwichhorror_1810_librivox",
+   "file": "dunwichhorror_03_lovecraft_64kb.mp3",
+   "hint": "Monster reveal; horrified astonishment."
+  }
+ },
+ "narrator": "phil"
+}
