@@ -20,7 +20,7 @@ Hardware is a Ryzen AI MAX+ 395 (Strix Halo, 128GB unified, 8060S iGPU). Everyth
 | thing | number |
 |---|---|
 | F5-TTS synthesis | 0.53x real-time (was 0.33x, torch.compile bought 1.65x) |
-| 16-step NFE mode | measured 2.05x faster, slightly different renders |
+| 16-step NFE mode | measured 2.05x faster, but I could hear the difference, so everything here is 32-step |
 | full multi-voice novel | overnight render, ~$0.35 of power |
 | same book via cloud TTS APIs | $120-360, per render (I re-rendered constantly while tuning) |
 | speaker attribution, full novel | ~10 min on Qwen3.6-35B-A3B, cached forever after |
