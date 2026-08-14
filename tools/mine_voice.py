@@ -95,9 +95,13 @@ def pick_spans(segs: list[dict], emotion: str, hint: str) -> list[dict]:
         "single narrator. I need short reference clips where the narrator's "
         f"own delivery is likely *{emotion}* — passages whose content forces "
         f"that register. Hint about this chapter: {hint}\n\n"
+        "CRITICAL: pick spans of pure NARRATION in the narrator's own voice. "
+        "Absolutely no quoted character dialogue — narrators perform "
+        "characters (funny voices, falsetto for women), which would "
+        "contaminate the clip with a voice that is not theirs. Avoid any "
+        "segment containing quotation marks or speech attribution.\n\n"
         "Pick the THREE best spans of consecutive segments, each spanning "
-        "roughly 7-14 seconds (use the timestamps), preferring vivid "
-        "mid-scene lines over scene-setting. Reply with ONLY JSON: "
+        "roughly 7-14 seconds (use the timestamps). Reply with ONLY JSON: "
         '[{"start_seg": <i>, "end_seg": <i>, "why": "..."}]\n\n' + numbered
     )
     reply = chat(prompt)
@@ -178,6 +182,11 @@ def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
         start, end = trimmed[0]["start"], trimmed[-1]["end"]
         if not 6 <= end - start <= 16:
             print(f"    cand{n}: bad duration {end-start:.1f}s, skipped")
+            continue
+        text_all = " ".join(s["text"] for s in trimmed)
+        if re.search(r"[\"“”‘’']\s|\b(said|asked|cried|replied|shouted|whispered|exclaimed)\b",
+                     text_all):
+            print(f"    cand{n}: contains dialogue (character-voice risk), skipped")
             continue
         pace = _wps(trimmed)
         if pace > limit:

@@ -142,7 +142,95 @@ def speech(req: SpeechRequest):
         wf.setsampwidth(2)
         wf.setframerate(int(sr))
         wf.writeframes(pcm.tobytes())
-    return Response(content=buf.getvalue(), media_type="audio/wav")
+    out = _apply_register_tempo(buf.getvalue(), name, req.emotion)
+    out = _cap_pauses(out, name)
+    return Response(content=out, media_type="audio/wav")
+
+
+def _cap_pauses(wav_bytes: bytes, voice: str) -> bytes:
+    """Clamp pause lengths into [min_pause_ms, max_pause_ms] (voices.json).
+
+    F5 clones the reference clip's pause structure, so output pauses are as
+    erratic as the ref's. Long silences are compacted to the cap; genuine
+    sentence gaps (>= 250 ms) shorter than the floor are padded up to it.
+    """
+    try:
+        meta = json.loads((VOICES_DIR / "voices.json").read_text(encoding="utf-8"))
+        cap_ms = int(meta.get(voice, {}).get("max_pause_ms", 0))
+        floor_ms = int(meta.get(voice, {}).get("min_pause_ms", 0))
+    except (OSError, ValueError):
+        return wav_bytes
+    if cap_ms <= 0 and floor_ms <= 0:
+        return wav_bytes
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        sr = wf.getframerate()
+        pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+    frame = max(sr // 50, 1)  # 20 ms
+    n = len(pcm) // frame
+    if n < 3:
+        return wav_bytes
+    rms = np.sqrt(np.mean(
+        (pcm[: n * frame].astype(np.float32) / 32768).reshape(n, frame) ** 2,
+        axis=1) + 1e-12)
+    silent = rms < max(np.percentile(rms, 90) * 0.1, 1e-4)
+    cap = max(int(cap_ms / 20), 1) if cap_ms > 0 else 10**9
+    floor = int(floor_ms / 20)
+    gap_min = int(250 / 20)  # runs this long count as sentence gaps
+
+    pieces = []
+    i = 0
+    frames = pcm[: n * frame].reshape(n, frame)
+    while i < n:
+        if not silent[i]:
+            pieces.append(frames[i])
+            i += 1
+            continue
+        j = i
+        while j < n and silent[j]:
+            j += 1
+        run = j - i
+        out_run = min(run, cap)
+        if run >= gap_min and out_run < floor:
+            out_run = floor
+        pieces.extend(frames[i:min(i + min(run, out_run), n)])
+        extra = out_run - min(run, out_run)
+        if extra > 0:
+            pieces.extend([np.zeros(frame, dtype="<i2")] * extra)
+        i = j
+    out_pcm = np.concatenate(pieces + [pcm[n * frame:]])
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(out_pcm.astype("<i2").tobytes())
+    return buf.getvalue()
+
+
+def _apply_register_tempo(wav_bytes: bytes, voice: str, emotion: str) -> bytes:
+    """Per-voice/per-register pitch-preserving time stretch.
+
+    voices.json may carry {"<voice>": {"emotion_speed": {"neutral": 0.85,
+    "sad": 0.8, ...}}}; factors < 1 slow the delivery. User-editable.
+    """
+    import subprocess
+
+    try:
+        meta = json.loads((VOICES_DIR / "voices.json").read_text(encoding="utf-8"))
+        factor = float(
+            meta.get(voice, {}).get("emotion_speed", {}).get(emotion or "neutral", 1.0)
+        )
+    except (OSError, ValueError):
+        return wav_bytes
+    if abs(factor - 1.0) < 0.01:
+        return wav_bytes
+    factor = max(0.5, min(2.0, factor))
+    proc = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
+         "-af", f"atempo={factor}", "-f", "wav", "pipe:1"],
+        input=wav_bytes, capture_output=True,
+    )
+    return proc.stdout if proc.returncode == 0 and proc.stdout else wav_bytes
 
 
 if __name__ == "__main__":
