@@ -4,7 +4,8 @@
 
 ---
 
-**The demo** (attach both clips): the climax of *The Adventure of the Speckled Band* rendered two ways from the same text —
+**The demo**: the climax of *The Adventure of the Speckled Band* rendered two ways from the same text —
+([single narrator](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_single_narrator.mp3) · [full cast](https://github.com/routhjim/bookcaster/raw/main/docs/demo/demo_full_cast.mp3))
 
 1. **Single narrator** — one cloned voice reading everything (F5-TTS's own contextual prosody, which is already surprisingly good)
 2. **Full cast** — an LLM attributes every line of dialogue, four different narrators voice the characters (gender-matched, cast by an LLM from voice descriptors, user-overridable), and each line is synthesized from an *emotional reference clip* matching its register — the terrified client actually sounds terrified, the menacing stepfather actually sounds menacing
