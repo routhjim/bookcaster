@@ -264,13 +264,26 @@ def _convert_chapters_embedded(engine, chapters, outp, args) -> None:
 
 
 def _convert_chapters_split(engine, chapters, outp, args) -> Path:
-    """One MP3 per chapter plus an M3U playlist, in a folder."""
+    """One MP3 per chapter plus an M3U playlist, in a folder.
+
+    Chapters whose MP3 already exists are skipped (resume after an
+    interrupted run); pass --overwrite to re-render everything.
+    """
     out_dir = Path(args.output) if args.output else outp.with_suffix("")
     out_dir.mkdir(parents=True, exist_ok=True)
     n = len(chapters)
     entries = []
+    skipped = 0
     for i, ch in enumerate(chapters, 1):
         fname = f"{i:03d}_{_slugify(ch.title)}.mp3"
+        existing = out_dir / fname
+        # >1 KB guards against a partial file from a crash mid-write.
+        if not args.overwrite and existing.exists() and existing.stat().st_size > 1024:
+            seconds = existing.stat().st_size * 8 / (args.bitrate * 1000)
+            entries.append((fname, ch.title, seconds))
+            skipped += 1
+            print(f"  [{i}/{n}] {ch.title[:60]}  (already done, skipping)")
+            continue
         print(f"  [{i}/{n}] {ch.title[:60]}  ({len(ch.text):,} chars)")
         pcm = engine.synthesize_pcm(
             _speak_text(ch, preprocess=not args.no_preprocess),
@@ -280,6 +293,8 @@ def _convert_chapters_split(engine, chapters, outp, args) -> Path:
         seconds = len(pcm) / 2 / engine.sample_rate
         entries.append((fname, ch.title, seconds))
     write_m3u_playlist(out_dir / "playlist.m3u", entries)
+    if skipped:
+        print(f"  resumed: {skipped}/{n} chapter(s) already existed")
     return out_dir
 
 
@@ -665,6 +680,11 @@ def build_parser() -> argparse.ArgumentParser:
         "detected (else a plain MP3); 'embed' forces one MP3 with jump-to-chapter "
         "markers; 'split' writes one MP3 per chapter plus a playlist; 'off' ignores "
         "chapters. Default: auto.",
+    )
+    p_conv.add_argument(
+        "--overwrite", action="store_true",
+        help="In --chapters split mode, re-render chapter MP3s that already "
+        "exist instead of skipping them (default: skip, i.e. resume).",
     )
     p_conv.add_argument(
         "--list-chapters", action="store_true",

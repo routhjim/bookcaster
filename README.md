@@ -101,6 +101,7 @@ Chapter options:
 | `--chapters embed`  | Force a single MP3 with jump-to-chapter markers.                       |
 | `--chapters split`  | One MP3 per chapter + `playlist.m3u` in a folder.                      |
 | `--chapters off`    | Ignore chapters; one continuous MP3.                                   |
+| `--overwrite`       | Split mode: re-render chapters whose MP3 already exists (default: skip them, so interrupted runs resume). |
 | `--list-chapters`   | Print detected chapters and exit (no audio).                          |
 | `--chapter-regex`   | Custom per-line regex marking where chapters begin.                   |
 
