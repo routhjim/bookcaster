@@ -128,10 +128,25 @@ def gate(clip: np.ndarray) -> tuple[bool, str]:
     return True, f"ok (snr {snr:.0f} dB)"
 
 
+# F5 clones pace above all; a "warm" clip that is merely fast reading makes
+# a fast voice, not a warm one. Calm registers must sit near the narrator's
+# baseline pace; energetic ones may lift, but pace alone is not emotion.
+_CALM = {"neutral", "warm", "sad", "cold"}
+_MAX_PACE = {"calm": 1.12, "energetic": 1.30}
+
+
+def _wps(span: list[dict]) -> float:
+    words = sum(len(s["text"].split()) for s in span)
+    dur = span[-1]["end"] - span[0]["start"]
+    return words / max(dur, 0.1)
+
+
 def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
     print(f"  [{narrator}.{emotion}] {cell['item']}/{cell['file']}")
     wav = fetch(cell["item"], cell["file"])
     segs = transcribe(wav)
+    baseline = _wps(segs) if segs else 3.0
+    limit = baseline * _MAX_PACE["calm" if emotion in _CALM else "energetic"]
     picks = pick_spans(segs, emotion, cell.get("hint", ""))
     audio, _ = sf.read(wav, dtype="float32")
     kept = []
@@ -144,19 +159,34 @@ def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
         except (KeyError, ValueError, IndexError):
             continue
         # The LLM finds the right location but often overshoots the length;
-        # keep whole segments from the start of the pick until 8-14 s.
-        trimmed = []
+        # keep whole segments from the start of the pick until 8-14 s, then
+        # extend to a sentence-final segment — a ref clip cut mid-sentence
+        # makes F5 hallucinate a completion of it into the output.
+        trimmed, fallback = [], None
         for s in span:
             trimmed.append(s)
-            if trimmed[-1]["end"] - trimmed[0]["start"] >= 8:
+            dur = trimmed[-1]["end"] - trimmed[0]["start"]
+            if dur >= 8 and fallback is None:
+                fallback = list(trimmed)  # mid-sentence cut as a last resort
+            if dur >= 8 and trimmed[-1]["text"].rstrip().endswith((".", "!", "?", "”", "'")):
                 break
+            if dur >= 15:
+                trimmed = fallback or trimmed  # no clean ending in range
+                break
+        else:
+            trimmed = trimmed if trimmed else span[:1]
         start, end = trimmed[0]["start"], trimmed[-1]["end"]
         if not 6 <= end - start <= 16:
             print(f"    cand{n}: bad duration {end-start:.1f}s, skipped")
             continue
+        pace = _wps(trimmed)
+        if pace > limit:
+            print(f"    cand{n}: too fast ({pace:.1f} w/s vs narrator "
+                  f"baseline {baseline:.1f}), skipped")
+            continue
         clip = audio[int(start * SR):int(end * SR)]
         ok, verdict = gate(clip)
-        print(f"    cand{n}: {end-start:.1f}s {verdict} | "
+        print(f"    cand{n}: {end-start:.1f}s {verdict} {pace:.1f}w/s | "
               f"{' '.join(s['text'] for s in trimmed)[:60]}")
         if not ok:
             continue

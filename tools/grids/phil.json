@@ -5,14 +5,14 @@
  },
  "cells": {
   "neutral": {
-   "item": "zanzibar_tales_1209_librivox",
-   "file": "zanzibartales_01_bateman_64kb.mp3",
-   "hint": "Frame narration; easy storytelling."
+   "item": "frogprince_pc_librivox",
+   "file": "frogprinceandotherstories_1_crane_64kb.mp3",
+   "hint": "Fairy-tale frame narration; easy storytelling."
   },
   "warm": {
-   "item": "zanzibar_tales_1209_librivox",
-   "file": "zanzibartales_03_bateman_64kb.mp3",
-   "hint": "Gentle humor in the tales."
+   "item": "frogprince_pc_librivox",
+   "file": "frogprinceandotherstories_2_crane_64kb.mp3",
+   "hint": "Gentle, kindly passages in the tales."
   },
   "tense": {
    "item": "sixcreepytales_pc_librivox",
@@ -30,9 +30,9 @@
    "hint": "Melancholy Poe passages; mournful dread."
   },
   "excited": {
-   "item": "zanzibar_tales_1209_librivox",
-   "file": "zanzibartales_06_bateman_64kb.mp3",
-   "hint": "Story climaxes; animated delight."
+   "item": "equationofdoom_1504_librivox",
+   "file": "equationofdoom_02_vance_64kb.mp3",
+   "hint": "Pulp sci-fi action; urgency and momentum."
   },
   "cold": {
    "item": "thedunwichhorror_1810_librivox",
