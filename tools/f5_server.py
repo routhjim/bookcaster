@@ -142,9 +142,46 @@ def speech(req: SpeechRequest):
         wf.setsampwidth(2)
         wf.setframerate(int(sr))
         wf.writeframes(pcm.tobytes())
-    out = _apply_register_tempo(buf.getvalue(), name, req.emotion)
+    out = _trim_ghosts(buf.getvalue())
+    out = _apply_register_tempo(out, name, req.emotion)
     out = _cap_pauses(out, name)
     return Response(content=out, media_type="audio/wav")
+
+
+def _trim_ghosts(wav_bytes: bytes) -> bytes:
+    """Cut barely-audible 'ghost' speech from the clip edges.
+
+    F5 pads very short inputs with quiet mumble before/after the real
+    words. Real speech sits near the clip's own level; ghosts sit far
+    below it — trim edge audio under 12% of the speech level (plus a
+    150 ms guard) back to the first/last strong onset.
+    """
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        sr = wf.getframerate()
+        pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype="<i2")
+    frame = max(sr // 50, 1)  # 20 ms
+    n = len(pcm) // frame
+    if n < 10:
+        return wav_bytes
+    rms = np.sqrt(np.mean(
+        (pcm[: n * frame].astype(np.float32) / 32768).reshape(n, frame) ** 2,
+        axis=1) + 1e-12)
+    speech_level = np.percentile(rms, 95)
+    strong = rms > speech_level * 0.12
+    idx = np.where(strong)[0]
+    if len(idx) == 0:
+        return wav_bytes
+    guard = int(0.15 * sr / frame)  # keep a natural onset/decay
+    start = max(idx[0] - guard, 0) * frame
+    end = min(idx[-1] + 1 + guard, n) * frame
+    out_pcm = pcm[start:end]
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(out_pcm.astype("<i2").tobytes())
+    return buf.getvalue()
 
 
 def _cap_pauses(wav_bytes: bytes, voice: str) -> bytes:
