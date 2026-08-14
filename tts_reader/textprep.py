@@ -9,7 +9,32 @@ keep working on the result.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+from pathlib import Path
+
+# User-editable pronunciation lexicon: {"word": "respelling"}. Respellings
+# are written the way they should sound ("encourageable": "en-courage-able");
+# useful mainly for F5, which reads raw characters and can stumble on rare
+# words. Applied case-insensitively on word boundaries.
+_LEXICON_PATH = Path(
+    os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+) / "tts_reader" / "lexicon.json"
+_lexicon_cache: dict | None = None
+
+
+def _lexicon() -> dict[str, str]:
+    global _lexicon_cache
+    if _lexicon_cache is None:
+        try:
+            data = json.loads(_LEXICON_PATH.read_text(encoding="utf-8"))
+            _lexicon_cache = {
+                str(k): str(v) for k, v in data.items()
+            } if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            _lexicon_cache = {}
+    return _lexicon_cache
 
 # Titles and honorifics that TTS engines otherwise read as "mr dot".
 _ABBREVIATIONS = {
@@ -93,6 +118,9 @@ def prepare_for_speech(text: str) -> str:
         lambda m: m.group(0).capitalize() if re.search(r"[AEIOUY]", m.group(0)) else m.group(0),
         text,
     )
+
+    for word, spoken in _lexicon().items():
+        text = re.sub(rf"\b{re.escape(word)}\b", spoken, text, flags=re.IGNORECASE)
 
     text = text.replace("…", "...")
     text = re.sub(r"([!?])\1+", r"\1", text)  # "!!" reads fine as "!"

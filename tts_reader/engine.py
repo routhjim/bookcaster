@@ -164,7 +164,11 @@ class OrpheusEngine(BaseEngine):
         model: str = "orpheus",
         timeout: float = 600.0,
         chunk_chars: int = 400,
+        emotion_param: bool = False,
     ):
+        # True for servers (F5) that select an emotional reference clip via
+        # an "emotion" field in the request, rather than inline text tags.
+        self.emotion_param = emotion_param
         self.key = f"orpheus:{voice_catalog.resolve_orpheus(voice)}"
         self.voice = voice_catalog.resolve_orpheus(voice)
         self.base_url = base_url
@@ -195,14 +199,17 @@ class OrpheusEngine(BaseEngine):
                 "at its /v1/audio/speech endpoint. See README (Orpheus setup)."
             ) from exc
 
-    def _request_pcm(self, text: str, speed: float) -> bytes:
-        payload = json.dumps({
+    def _request_pcm(self, text: str, speed: float, emotion: str = "") -> bytes:
+        body = {
             "model": self.model,
             "input": text,
             "voice": self.voice,
             "response_format": "wav",
             "speed": speed,
-        }).encode("utf-8")
+        }
+        if emotion and self.emotion_param:
+            body["emotion"] = emotion
+        payload = json.dumps(body).encode("utf-8")
         req = Request(
             self.base_url, data=payload,
             headers={"Content-Type": "application/json", "Accept": "audio/wav"},
@@ -223,10 +230,13 @@ class OrpheusEngine(BaseEngine):
         return _wav_bytes_to_pcm(audio)
 
     def synthesize_pcm(
-        self, text: str, speed: float = 1.0, volume: float = 1.0, log=print
+        self, text: str, speed: float = 1.0, volume: float = 1.0, log=print,
+        emotion: str = "",
     ) -> bytes:
         chunks = _chunk_text(text, self.chunk_chars) if self.chunk_chars > 0 else [text]
-        pcm = b"".join(self._request_pcm(c, speed) for c in chunks if c.strip())
+        pcm = b"".join(
+            self._request_pcm(c, speed, emotion=emotion) for c in chunks if c.strip()
+        )
         if volume != 1.0:
             pcm = _apply_volume(pcm, volume)
         return pcm
@@ -340,11 +350,19 @@ class CastEngine(BaseEngine):
             assignment = self._assignment_for(seg)
             if prev_assignment is not None and assignment != prev_assignment:
                 pcm += pause
-            if seg.kind == "quote" and seg.emotion:
-                spoken = f"<{seg.emotion}> {spoken}"
             base, rate = assignment
-            pcm += self.engines[base].synthesize_pcm(
-                spoken, speed=speed * rate, volume=volume, log=None
+            engine = self.engines[base]
+            extra = {}
+            if seg.kind == "quote" and seg.emotion:
+                if getattr(engine, "emotion_param", False):
+                    # F5-style: the server swaps in an emotional reference
+                    # clip of the same narrator for this line.
+                    extra["emotion"] = seg.emotion
+                else:
+                    # Orpheus-style: inline vocalization tag in the text.
+                    spoken = f"<{seg.emotion}> {spoken}"
+            pcm += engine.synthesize_pcm(
+                spoken, speed=speed * rate, volume=volume, log=None, **extra
             )
             prev_assignment = assignment
         return bytes(pcm)

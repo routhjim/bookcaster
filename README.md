@@ -287,6 +287,23 @@ A short beat of silence (250 ms) is inserted whenever the speaking voice
 changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
 (`0` disables).
 
+**Emotional voice palettes (`--emote` with F5)**: a voice in the F5 registry
+can carry *emotional variants* — reference clips of the same narrator in
+different registers, named `smith.tense.wav`, `smith.angry.wav`, ... beside
+the neutral `smith.wav`. With `--emote`, an LLM tags each dialogue line's
+register (warm/tense/angry/sad/excited/cold/surprised) and the engine
+synthesizes that line from the matching reference clip — same voice,
+shifting delivery. Lines rated neutral (most of them) use the base clip;
+missing variants fall back silently. `tools/mine_voice.py` semi-automates
+building palettes from LibriVox recordings (whisper alignment + LLM span
+picking + quality gating), and `tools/grids/` holds sourcing grids.
+
+**Pronunciation lexicon**: `tts-reader lexicon book.txt` scans a book for
+words TTS engines mispronounce (rare proper nouns, archaic spellings) and
+has an LLM add phonetic respellings to
+`~/.local/share/tts_reader/lexicon.json`, applied automatically during
+preprocessing for every engine. Edit the file to tune or remove entries.
+
 **Emotion tags (`--emote`, Orpheus only)**: an LLM reads each line's
 surrounding narration ("he laughed", "she sighed") and injects a sparse
 inline tag (`<laugh>`, `<sigh>`, `<gasp>`, ...) where the text clearly calls

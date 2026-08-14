@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import logging
 import re
 import sys
@@ -57,13 +58,15 @@ def _cache_path_for(spec: str) -> Path:
     return p.with_name(p.name + ".speakers.json")
 
 
-def _emotions_cache_path_for(spec: str) -> Path:
-    """Sidecar file holding a book's emotion-tag decisions."""
+def _emotions_cache_path_for(spec: str, engine: str = "orpheus") -> Path:
+    """Sidecar file holding a book's emotion decisions (per engine style:
+    Orpheus gesture tags and F5 registers use different vocabularies)."""
+    suffix = ".emotions-f5.json" if engine == "f5" else ".emotions.json"
     if _is_url(spec):
         digest = hashlib.sha1(spec.encode("utf-8")).hexdigest()[:16]
-        return default_models_dir().parent / "attribution" / f"{digest}.emotions.json"
+        return default_models_dir().parent / "attribution" / f"{digest}{suffix}"
     p = Path(spec)
-    return p.with_name(p.name + ".emotions.json")
+    return p.with_name(p.name + suffix)
 
 
 def _cast_state_path_for(spec: str) -> Path:
@@ -128,16 +131,26 @@ def _build_engine(args):
     emote = getattr(args, "emote", False)
     tagger = None
     if emote:
-        from .speakers import EmotionTagger
+        from .speakers import (
+            F5_EMOTION_REGISTERS, ORPHEUS_EMOTION_TAGS, EmotionTagger,
+        )
 
-        if args.engine != "orpheus":
-            print("warning: --emote only works with --engine orpheus "
-                  "(other engines don't understand emotion tags); ignoring.",
+        if args.engine == "piper":
+            print("warning: --emote needs orpheus (inline tags) or f5 "
+                  "(emotional reference clips); ignoring for piper.",
                   file=sys.stderr)
         elif not args.llm_url:
             raise ValueError("--emote needs --llm-url (an LLM decides the tags)")
+        elif args.engine == "f5":
+            tagger = EmotionTagger(
+                args.llm_url, model=args.llm_model,
+                vocabulary=F5_EMOTION_REGISTERS, style="register",
+            )
         else:
-            tagger = EmotionTagger(args.llm_url, model=args.llm_model)
+            tagger = EmotionTagger(
+                args.llm_url, model=args.llm_model,
+                vocabulary=ORPHEUS_EMOTION_TAGS, style="gesture",
+            )
 
     voice_map = getattr(args, "voice_map", None)
     if voice_map is None and tagger is not None:
@@ -422,7 +435,7 @@ def cmd_cast(args: argparse.Namespace) -> int:
             argv += ["-o", out]
         if args.engine == "f5":
             argv += ["--f5-url", args.f5_url]
-        if args.emote and args.engine == "orpheus":
+        if args.emote and args.engine in ("orpheus", "f5"):
             argv.append("--emote")
         if session.llm_url:
             argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
@@ -431,6 +444,107 @@ def cmd_cast(args: argparse.Namespace) -> int:
         return main(argv)
 
     return run_repl(session, on_convert, state_path=state_path)
+
+
+def cmd_lexicon(args: argparse.Namespace) -> int:
+    """Scan a book for likely TTS mispronunciations; extend the lexicon."""
+    from collections import Counter
+
+    from .speakers import NO_THINKING, post_chat
+    from .textprep import _LEXICON_PATH
+
+    spec = args.input
+    try:
+        text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+    except (ValueError, OSError) as exc:
+        print(f"error: could not read {spec}: {exc}", file=sys.stderr)
+        return 2
+
+    existing: dict[str, str] = {}
+    if _LEXICON_PATH.exists():
+        try:
+            existing = json.loads(_LEXICON_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+
+    # Candidate words: long-ish, not already handled, keep original casing
+    # so proper nouns are visible to the LLM. Sorted by frequency so the
+    # words the listener will hear most are judged first.
+    counts = Counter(
+        w for w in re.findall(r"[A-Za-z][A-Za-z'’-]{4,}", text)
+    )
+    seen_lower = {w.lower() for w in existing}
+    candidates = [
+        w for w, _ in counts.most_common()
+        if w.lower() not in seen_lower
+    ][: args.max_words]
+
+    print(f"Scanning {len(candidates):,} candidate word(s) from {spec} "
+          f"-> {_LEXICON_PATH}")
+    added: dict[str, str] = {}
+    batch_size = 250
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start:start + batch_size]
+        prompt = (
+            "A character-level text-to-speech engine reads words letter by "
+            "letter and mispronounces unusual ones: rare proper nouns, "
+            "archaic spellings, foreign borrowings, unintuitive English "
+            "(e.g. 'Pequod', 'Goethe', 'victuals', 'quay'). From this word "
+            "list, pick ONLY the words a TTS would likely mispronounce and "
+            "give each a plain phonetic respelling using ordinary English "
+            "syllables separated by hyphens (e.g. \"victuals\": \"vit-uls\"). "
+            "Common words that TTS handles fine must be omitted. Reply with "
+            'ONLY a JSON object, e.g. {"Pequod": "Pee-kwod"}. If none '
+            "qualify, reply {}.\n\n" + ", ".join(batch)
+        )
+        try:
+            reply = post_chat(args.llm_url, {
+                "model": args.llm_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "max_tokens": 1500,
+                "chat_template_kwargs": NO_THINKING,
+            }, timeout=300)["choices"][0]["message"]["content"]
+        except Exception as exc:
+            print(f"error: LLM request failed: {exc}", file=sys.stderr)
+            return 1
+        match = re.search(r"\{.*\}", reply, re.DOTALL)
+        if not match:
+            continue
+        try:
+            picks = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        def _norm(s: str) -> str:
+            return re.sub(r"[^a-z]", "", s.lower())
+
+        for word, spoken in picks.items():
+            word, spoken = str(word).strip(), str(spoken).strip()
+            # A "respelling" with the same letters (Span-ish) changes
+            # nothing but adds choppiness — only keep real respellings.
+            if (word and spoken and word.lower() not in seen_lower
+                    and _norm(spoken) != _norm(word)):
+                added[word] = spoken
+                seen_lower.add(word.lower())
+        print(f"  batch {start // batch_size + 1}: "
+              f"{len(added)} respelling(s) so far")
+
+    if not added:
+        print("No new respellings needed.")
+        return 0
+    existing.update(added)
+    _LEXICON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LEXICON_PATH.write_text(
+        json.dumps(existing, indent=1, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    print(f"\nAdded {len(added)} respelling(s):")
+    for word, spoken in sorted(added.items())[:30]:
+        print(f"  {word} -> {spoken}")
+    if len(added) > 30:
+        print(f"  ... and {len(added) - 30} more")
+    print(f"Edit or prune anytime: {_LEXICON_PATH}")
+    return 0
 
 
 def cmd_abridge(args: argparse.Namespace) -> int:
@@ -520,7 +634,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
         if isinstance(engine, CastEngine):
             engine.cache_path = _cache_path_for(spec)
-            engine.emotions_cache_path = _emotions_cache_path_for(spec)
+            engine.emotions_cache_path = _emotions_cache_path_for(spec, args.engine)
 
         chapters = None
         if args.chapters != "off":
@@ -823,6 +937,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-trim Project Gutenberg license header/footer text.",
     )
     p_abr.set_defaults(func=cmd_abridge)
+
+    p_lex = sub.add_parser(
+        "lexicon",
+        help="Scan a book for words TTS will mispronounce; add LLM "
+        "respellings to the pronunciation lexicon",
+    )
+    p_lex.add_argument("input", help="Text file or URL to scan")
+    p_lex.add_argument(
+        "--llm-url", default="http://127.0.0.1:8080/v1/chat/completions",
+        help="OpenAI-compatible chat endpoint (default: %(default)s).",
+    )
+    p_lex.add_argument("--llm-model", default="default",
+                       help="Model name sent to --llm-url.")
+    p_lex.add_argument(
+        "--max-words", type=int, default=2000,
+        help="How many candidate words (by frequency) to judge (default: 2000).",
+    )
+    p_lex.add_argument(
+        "--no-strip-gutenberg", action="store_true",
+        help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_lex.set_defaults(func=cmd_lexicon)
     return parser
 
 

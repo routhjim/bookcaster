@@ -275,6 +275,12 @@ ORPHEUS_EMOTION_TAGS = (
     "laugh", "chuckle", "sigh", "gasp", "groan", "yawn", "cough",
 )
 
+# Emotional registers for palette-based engines (F5): each maps to a
+# reference clip variant of the same narrator. "none" -> neutral base clip.
+F5_EMOTION_REGISTERS = (
+    "warm", "tense", "angry", "sad", "excited", "cold", "surprised",
+)
+
 
 @dataclass
 class EmotionTagger:
@@ -291,6 +297,10 @@ class EmotionTagger:
     timeout: float = 300.0
     batch_size: int = 16
     context_chars: int = 240
+    # What the LLM may assign. Orpheus tags are vocal gestures (be sparing);
+    # F5 registers are whole-line moods (assign whenever the mood is clear).
+    vocabulary: tuple = ORPHEUS_EMOTION_TAGS
+    style: str = "gesture"  # "gesture" | "register"
 
     def tag(self, segments: list[Segment], cache_path=None, log=print) -> None:
         cache: dict[str, str] = {}
@@ -327,7 +337,7 @@ class EmotionTagger:
             for idx in batch:
                 tag = answers.get(idx, "none").strip().lower()
                 seg = segments[idx]
-                seg.emotion = tag if tag in ORPHEUS_EMOTION_TAGS else None
+                seg.emotion = tag if tag in self.vocabulary else None
                 cache[_segment_key(segments, idx)] = seg.emotion or ""
 
         if cache_path is not None:
@@ -351,15 +361,28 @@ class EmotionTagger:
         numbered = "\n\n".join(
             f"[{i}] ...{self._context(segments, i)}..." for i in batch
         )
+        if self.style == "register":
+            rules = (
+                "decide the emotional register the line between <<QUOTE>> and "
+                f"<</QUOTE>> is delivered in: {', '.join(self.vocabulary)}. "
+                "Judge from the line itself and its surrounding narration. "
+                'Use "none" for ordinary neutral delivery — but do assign a '
+                "register whenever the mood is clear (fear, anger, joy, "
+                "menace); that is what makes the reading dynamic."
+            )
+        else:
+            rules = (
+                "decide whether the spoken line between <<QUOTE>> and "
+                "<</QUOTE>> should carry ONE delivery tag from this list: "
+                f"{', '.join(self.vocabulary)}. Assign a tag ONLY when the "
+                "surrounding text gives a clear cue (e.g. 'he laughed', 'she "
+                'gasped\', \'with a heavy sigh\'). Most lines should get "none" '
+                "— be sparing; an over-tagged audiobook sounds absurd."
+            )
         prompt = (
-            "For each numbered passage from a novel, decide whether the "
-            "spoken line between <<QUOTE>> and <</QUOTE>> should carry ONE "
-            f"delivery tag from this list: {', '.join(ORPHEUS_EMOTION_TAGS)}. "
-            "Assign a tag ONLY when the surrounding text gives a clear cue "
-            "(e.g. 'he laughed', 'she gasped', 'with a heavy sigh'). Most "
-            'lines should get "none" — be sparing; an over-tagged audiobook '
-            "sounds absurd. Respond with ONLY a JSON object mapping each "
-            'number to a tag or "none", e.g. {"3": "sigh", "7": "none"}.'
+            f"For each numbered passage from a novel, {rules} "
+            "Respond with ONLY a JSON object mapping each number to a value "
+            'or "none", e.g. {"3": "tense", "7": "none"}.'
             f"\n\n{numbered}"
         )
         payload = {

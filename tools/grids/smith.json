@@ -1,0 +1,22 @@
+{
+  "narrator": "smith",
+  "meta": {"gender": "Male", "description": "Steady American baritone (Mark F. Smith, LibriVox) — anchor narrator with emotional palette"},
+  "cells": {
+    "neutral": {"item": "whitefang2_1010_librivox", "file": "whitefang2_01_london_64kb.mp3",
+                "hint": "Opening wilderness chapter; calm scene-setting narration."},
+    "warm": {"item": "treasure_island_1307_librivox", "file": "treasureisland_01_stevenson_64kb.mp3",
+             "hint": "Admiral Benbow inn; homely, companionable storytelling."},
+    "tense": {"item": "treasure_island_1307_librivox", "file": "treasureisland_04_stevenson_64kb.mp3",
+              "hint": "Blind Pew's approach; dread, hurried whispers, fear of discovery."},
+    "angry": {"item": "whitefang2_1010_librivox", "file": "whitefang2_16_london_64kb.mp3",
+              "hint": "Beauty Smith and the dog-fighting chapters; cruelty and fury."},
+    "sad": {"item": "call_ofthe_wild_1010_librivox", "file": "callofwild3_07_london_64kb.mp3",
+            "hint": "Death of John Thornton; grief and mourning."},
+    "excited": {"item": "poison_belt_0812_librivox", "file": "poisonbelt_2_doyle_64kb.mp3",
+                "hint": "Challenger expedition crisis; urgency, discovery, rising energy."},
+    "cold": {"item": "treasure_island_1307_librivox", "file": "treasureisland_28_stevenson_64kb.mp3",
+             "hint": "Long John Silver's calculated threats; quiet menace."},
+    "surprised": {"item": "treasure_island_1307_librivox", "file": "treasureisland_11_stevenson_64kb.mp3",
+                  "hint": "The apple barrel; Jim overhears the mutiny plot — shock and revelation."}
+  }
+}
