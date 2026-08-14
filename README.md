@@ -339,6 +339,13 @@ beats rather than full performance direction.
 > unattributed quotes simply use the `dialogue` voice, which always sounds
 > reasonable.
 
+**Review and pin attribution by hand**: `tts-reader attribution book.txt`
+lists every quoted line with its speaker and opens a correction REPL —
+`44 = Roylott`, ranges (`4-14 = Helen`), `find <text>`, `unattributed`.
+Corrections pin into the cache immediately and survive all future renders;
+LLMs fall for name-mention traps ("Which of you is Holmes?" is not Holmes
+speaking), so a quick review pass before a long render is worth it.
+
 **Attribution is cached.** LLM speaker attributions are saved to a sidecar
 file next to the book (`moby.txt.speakers.json`) and reused by `characters`,
 `cast`, and `convert` alike — the expensive first pass over a book happens

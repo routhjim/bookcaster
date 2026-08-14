@@ -446,6 +446,89 @@ def cmd_characters(args: argparse.Namespace) -> int:
     return status
 
 
+def cmd_attribution(args: argparse.Namespace) -> int:
+    """Review and correct speaker attribution line-by-line; pin to cache."""
+    from .speakers import AttributionCache, normalize_name
+
+    spec = args.input
+    try:
+        text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+    except (ValueError, OSError) as exc:
+        print(f"error: could not read {spec}: {exc}", file=sys.stderr)
+        return 2
+
+    cache_path = _cache_path_for(spec)
+    segments = segment_dialogue(prepare_for_speech(text))
+    attribute_segments(
+        segments, attributor=_make_attributor(args), cache_path=cache_path,
+    )
+    quotes = [i for i, s in enumerate(segments)
+              if s.kind == "quote" and s.text.strip()]
+
+    def show(indices, width=68):
+        for i in indices:
+            s = segments[i]
+            spk = s.speaker or "UNATTRIBUTED"
+            print(f"[{i:4}] {spk:<20} | {s.text.strip()[:width]}")
+
+    def pin():
+        cache = AttributionCache(cache_path)
+        cache.update(segments)
+        cache.save()
+
+    if args.list:
+        show(quotes)
+        return 0
+
+    show(quotes)
+    print(f"\n{len(quotes)} quoted line(s); corrections are pinned to "
+          f"{cache_path.name} immediately.\n"
+          "Commands: <n> = Name | <n>-<m> = Name | list [n m] | "
+          "unattributed | find <text> | quit\n")
+    while True:
+        try:
+            line = input("attribution> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+        cmd = line.lower()
+        if cmd in ("quit", "exit", "q", "done"):
+            return 0
+        if cmd == "list":
+            show(quotes)
+        elif cmd.startswith("list "):
+            try:
+                lo, hi = (int(x) for x in line.split()[1:3])
+                show([i for i in quotes if lo <= i <= hi])
+            except (ValueError, IndexError):
+                print("usage: list <from> <to>")
+        elif cmd == "unattributed":
+            show([i for i in quotes if not segments[i].speaker])
+        elif cmd.startswith("find "):
+            needle = line[5:].lower()
+            show([i for i in quotes if needle in segments[i].text.lower()])
+        else:
+            m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?\s*=\s*(.+)$", line)
+            if not m:
+                print("didn't understand — try '44 = Roylott' or "
+                      "'4-14 = Helen'")
+                continue
+            lo = int(m.group(1))
+            hi = int(m.group(2) or m.group(1))
+            name = normalize_name(m.group(3))
+            hits = [i for i in quotes if lo <= i <= hi]
+            if not hits:
+                print(f"no quoted lines in [{lo}, {hi}]")
+                continue
+            for i in hits:
+                segments[i].speaker = name
+            pin()
+            print(f"pinned {len(hits)} line(s) -> {name}")
+            show(hits[:4])
+
+
 def cmd_cast(args: argparse.Namespace) -> int:
     """Interactive casting session: describe roles, direct voices, convert."""
     from .casting import build_session, load_saved_cast, run_repl
@@ -948,6 +1031,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-trim Project Gutenberg license header/footer text.",
     )
     p_chars.set_defaults(func=cmd_characters)
+
+    p_attr = sub.add_parser(
+        "attribution",
+        help="Review speaker attribution line-by-line and pin corrections "
+        "(they persist in the cache across renders)",
+    )
+    p_attr.add_argument("input", help="Text file or URL to review")
+    p_attr.add_argument("--list", action="store_true",
+                        help="Print all lines and exit (no interactive loop).")
+    p_attr.add_argument(
+        "--llm-url", default=None,
+        help="Optional: attribute unknowns with an LLM first (else cached/"
+        "heuristic attribution is shown as-is).",
+    )
+    p_attr.add_argument("--llm-model", default="default",
+                        help="Model name sent to --llm-url.")
+    p_attr.add_argument("--llm-context", type=int, default=350,
+                        help="Characters of context per quote (default: 350).")
+    p_attr.add_argument(
+        "--no-strip-gutenberg", action="store_true",
+        help="Do not auto-trim Project Gutenberg license header/footer text.",
+    )
+    p_attr.set_defaults(func=cmd_attribution)
 
     p_cast = sub.add_parser(
         "cast",
