@@ -199,6 +199,16 @@ def _strip_gutenberg(text: str) -> str:
     return text.strip()
 
 
+def _extract_book_meta(raw_text: str) -> dict[str, str]:
+    """Title/Author from a Project Gutenberg header, when present."""
+    meta = {}
+    for key in ("Title", "Author"):
+        m = re.search(rf"^{key}:\s*(.+)$", raw_text[:4000], re.MULTILINE)
+        if m:
+            meta[key.lower()] = " ".join(m.group(1).split())
+    return meta
+
+
 def _fetch_url(url: str) -> str:
     req = Request(url, headers={"User-Agent": "tts_reader/0.1 (+https://pypi.org/project/tts-reader)"})
     with urlopen(req, timeout=30) as resp:  # nosec - user-supplied URL by design
@@ -206,13 +216,20 @@ def _fetch_url(url: str) -> str:
         return resp.read().decode(charset, errors="replace")
 
 
-def _load_text(spec: str, strip_gutenberg: bool = True) -> str:
-    """Load text from a local file path or an http(s) URL."""
+def _load_text(spec: str, strip_gutenberg: bool = True,
+               meta: dict | None = None) -> str:
+    """Load text from a local file path or an http(s) URL.
+
+    When ``meta`` (a dict) is passed, it is filled with title/author parsed
+    from a Project Gutenberg header if one is present.
+    """
     if _is_url(spec):
         text = _fetch_url(spec)
     else:
         text = Path(spec).read_text(encoding="utf-8", errors="replace")
 
+    if meta is not None:
+        meta.update(_extract_book_meta(text))
     if strip_gutenberg and ("PROJECT GUTENBERG" in text.upper()):
         text = _strip_gutenberg(text)
 
@@ -228,7 +245,7 @@ def _resolve_outputs(specs: list[str], output: str | None) -> list[Path]:
         out = Path(output)
         if out.is_dir():
             return [out / (_source_stem(specs[0]) + ".mp3")]
-        if out.suffix.lower() != ".mp3":
+        if out.suffix.lower() not in (".mp3", ".m4b"):
             out = out.with_suffix(".mp3")
         return [out]
 
@@ -276,6 +293,44 @@ def _convert_chapters_embedded(engine, chapters, outp, args) -> None:
             writer.add_chapter(ch.title, pcm)
 
 
+def _convert_chapters_m4b(engine, chapters, outp, args) -> None:
+    """One .m4b audiobook with chapter marks; resumable via a workdir of
+    lossless per-chapter WAVs that is removed after a successful mux."""
+    from .audio import wav_duration, write_m4b, write_pcm_wav
+
+    work = outp.with_name(outp.name + ".work")
+    work.mkdir(parents=True, exist_ok=True)
+    n = len(chapters)
+    entries = []
+    skipped = 0
+    for i, ch in enumerate(chapters, 1):
+        wav_path = work / f"{i:03d}_{_slugify(ch.title)}.wav"
+        if not args.overwrite and wav_path.exists() and wav_path.stat().st_size > 1024:
+            entries.append((wav_path, ch.title))
+            skipped += 1
+            print(f"  [{i}/{n}] {ch.title[:60]}  (already done, skipping)")
+            continue
+        print(f"  [{i}/{n}] {ch.title[:60]}  ({len(ch.text):,} chars)")
+        pcm = engine.synthesize_pcm(
+            _speak_text(ch, preprocess=not args.no_preprocess),
+            speed=args.speed, volume=args.volume, log=None,
+        )
+        write_pcm_wav(pcm, wav_path, engine.sample_rate)
+        entries.append((wav_path, ch.title))
+    if skipped:
+        print(f"  resumed: {skipped}/{n} chapter(s) already existed")
+    total_s = sum(wav_duration(p) for p, _ in entries)
+    print(f"  muxing {n} chapter(s) / {total_s/3600:.1f} h -> {outp}")
+    write_m4b(
+        entries, outp, bitrate=args.m4b_bitrate,
+        album=getattr(args, "book_album", None) or outp.stem,
+        artist=getattr(args, "book_artist", None),
+    )
+    import shutil
+
+    shutil.rmtree(work)
+
+
 def _convert_chapters_split(engine, chapters, outp, args) -> Path:
     """One MP3 per chapter plus an M3U playlist, in a folder.
 
@@ -305,6 +360,15 @@ def _convert_chapters_split(engine, chapters, outp, args) -> Path:
         pcm_to_mp3(pcm, out_dir / fname, engine.sample_rate, bitrate=args.bitrate)
         seconds = len(pcm) / 2 / engine.sample_rate
         entries.append((fname, ch.title, seconds))
+    from .audio import tag_mp3
+
+    album = getattr(args, "book_album", None) or out_dir.name
+    for track, (fname, title, _s) in enumerate(entries, 1):
+        try:
+            tag_mp3(out_dir / fname, title=title, album=album, track=track,
+                    total=len(entries), artist=getattr(args, "book_artist", None))
+        except Exception:
+            pass  # tags are best-effort; never fail a finished render
     write_m3u_playlist(out_dir / "playlist.m3u", entries)
     if skipped:
         print(f"  resumed: {skipped}/{n} chapter(s) already existed")
@@ -625,12 +689,31 @@ def cmd_convert(args: argparse.Namespace) -> int:
 
     failures = 0
     for spec, outp in zip(specs, outputs):
+        meta: dict[str, str] = {}
         try:
-            text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg)
+            text = _load_text(spec, strip_gutenberg=not args.no_strip_gutenberg,
+                              meta=meta)
         except (ValueError, OSError) as exc:
             print(f"skip: could not read {spec}: {exc}", file=sys.stderr)
             failures += 1
             continue
+
+        # Book metadata for tags/chapters; flags beat the Gutenberg header.
+        args.book_album = args.book_title or meta.get("title") or _source_stem(spec)
+        args.book_artist = args.author or meta.get("author")
+
+        if args.library:
+            def _safe(s: str) -> str:
+                return re.sub(r'[<>:"/\\|?*]', "_", s).strip() or "Unknown"
+            base = (Path(args.library) / _safe(args.book_artist or "Unknown Author")
+                    / _safe(args.book_album))
+            if args.chapters == "split":
+                args.output = str(base) + "/"
+                outp = base / (_source_stem(spec) + ".mp3")
+            else:
+                outp = base / f"{_safe(args.book_album)}.m4b"
+                outp.parent.mkdir(parents=True, exist_ok=True)
+            print(f"Library: {outp if outp.suffix == '.m4b' else base}/")
 
         if isinstance(engine, CastEngine):
             engine.cache_path = _cache_path_for(spec)
@@ -643,7 +726,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
         use_chapters = chapters is not None and len(chapters) > 1
 
         try:
-            if args.chapters == "split" and chapters:
+            if outp.suffix.lower() == ".m4b":
+                book = chapters or [Chapter(args.book_album, text)]
+                print(f"Converting {spec}  ->  {outp}  "
+                      f"({len(text):,} chars, {len(book)} chapter(s))")
+                _convert_chapters_m4b(engine, book, outp, args)
+                size_mb = outp.stat().st_size / 1_048_576
+                print(f"  wrote {outp} ({size_mb:,.1f} MB)")
+            elif args.chapters == "split" and chapters:
                 print(f"Converting {spec}  ->  {len(chapters)} chapter file(s)")
                 out_dir = _convert_chapters_split(engine, chapters, outp, args)
                 print(f"  wrote {out_dir}/ (+ playlist.m3u)")
@@ -794,6 +884,22 @@ def build_parser() -> argparse.ArgumentParser:
         "detected (else a plain MP3); 'embed' forces one MP3 with jump-to-chapter "
         "markers; 'split' writes one MP3 per chapter plus a playlist; 'off' ignores "
         "chapters. Default: auto.",
+    )
+    p_conv.add_argument(
+        "--library", default=None,
+        help="Audiobook-library root: outputs are organized as "
+        "<library>/<Author>/<Title>/ (single .m4b by default, or the split "
+        "MP3 folder with --chapters split). Author/title come from --author/"
+        "--book-title or the Project Gutenberg header when present.",
+    )
+    p_conv.add_argument("--author", default=None,
+                        help="Book author for tags/library layout.")
+    p_conv.add_argument("--book-title", default=None,
+                        help="Book title for tags/library layout.")
+    p_conv.add_argument(
+        "--m4b-bitrate", type=int, default=64,
+        help="AAC bitrate (kbps) for .m4b output (default: 64 — transparent "
+        "for mono speech).",
     )
     p_conv.add_argument(
         "--overwrite", action="store_true",

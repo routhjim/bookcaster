@@ -175,3 +175,97 @@ def write_m3u_playlist(path: str | Path, entries: list[tuple[str, str, float]]) 
         lines.append(f"#EXTINF:{int(round(seconds))},{title}")
         lines.append(filename)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# M4B audiobooks (needs system ffmpeg — checked at call time).
+# ---------------------------------------------------------------------------
+
+def write_pcm_wav(pcm: bytes, wav_path: str | Path, sample_rate: int) -> None:
+    """Write raw 16-bit mono PCM to a WAV file (lossless work file)."""
+    wav_path = Path(wav_path)
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+
+
+def wav_duration(wav_path: str | Path) -> float:
+    with wave.open(str(wav_path), "rb") as wf:
+        return wf.getnframes() / wf.getframerate()
+
+
+def write_m4b(
+    entries: list[tuple[Path, str]], out_path: str | Path,
+    bitrate: int = 64, album: str | None = None, artist: str | None = None,
+) -> None:
+    """Mux per-chapter WAVs into one .m4b with chapter marks via ffmpeg.
+
+    ``entries`` is ordered ``(wav_path, chapter_title)``. AAC is encoded
+    straight from the lossless work files, so there is no double-lossy step.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            ".m4b output needs ffmpeg on PATH (chapters + AAC mux); "
+            "use --chapters split for the ffmpeg-free MP3 folder instead."
+        )
+    out_path = Path(out_path)
+    with tempfile.TemporaryDirectory() as td:
+        concat = Path(td) / "concat.txt"
+        concat.write_text(
+            "".join(f"file '{p.resolve()}'\n" for p, _ in entries),
+            encoding="utf-8",
+        )
+        meta_lines = [";FFMETADATA1"]
+        if album:
+            meta_lines += [f"album={album}", f"title={album}"]
+        if artist:
+            meta_lines += [f"artist={artist}"]
+        meta_lines.append("genre=Audiobook")
+        clock = 0.0
+        for wav_path, title in entries:
+            dur = wav_duration(wav_path)
+            meta_lines += [
+                "[CHAPTER]", "TIMEBASE=1/1000",
+                f"START={int(clock * 1000)}",
+                f"END={int((clock + dur) * 1000)}",
+                "title=" + title.replace("\n", " "),
+            ]
+            clock += dur
+        meta = Path(td) / "meta.txt"
+        meta.write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "concat", "-safe", "0", "-i", str(concat),
+             "-i", str(meta), "-map_metadata", "1",
+             "-c:a", "aac", "-b:a", f"{bitrate}k",
+             "-movflags", "+faststart", "-f", "mp4", str(out_path)],
+            check=True,
+        )
+
+
+def tag_mp3(
+    mp3_path: str | Path, title: str, album: str, track: int, total: int,
+    artist: str | None = None,
+) -> None:
+    """Write basic ID3 tags so players sort and group split chapters."""
+    from mutagen.id3 import ID3, TALB, TCON, TIT2, TPE1, TRCK
+    from mutagen.id3._util import ID3NoHeaderError
+
+    try:
+        tags = ID3(str(mp3_path))
+    except ID3NoHeaderError:
+        tags = ID3()
+    tags.setall("TIT2", [TIT2(encoding=3, text=title)])
+    tags.setall("TALB", [TALB(encoding=3, text=album)])
+    tags.setall("TRCK", [TRCK(encoding=3, text=f"{track}/{total}")])
+    tags.setall("TCON", [TCON(encoding=3, text="Audiobook")])
+    if artist:
+        tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
+    tags.save(str(mp3_path))

@@ -105,6 +105,27 @@ Chapter options:
 | `--list-chapters`   | Print detected chapters and exit (no audio).                          |
 | `--chapter-regex`   | Custom per-line regex marking where chapters begin.                   |
 
+### Audiobook output: `.m4b` and library layout
+
+For real audiobook apps (resume position, chapter navigation, speed
+control), output an `.m4b` — needs system ffmpeg:
+
+```bash
+tts-reader convert moby.txt -o moby.m4b
+```
+
+Chapters render incrementally into a lossless workdir (`moby.m4b.work/`),
+so interrupted runs resume like split mode; the final AAC mux happens once
+at the end, straight from lossless. `--m4b-bitrate` tunes the AAC rate
+(default 64 kbps, transparent for mono speech).
+
+Building a library (e.g. for Audiobookshelf)? `--library ~/Audiobooks`
+organizes output as `<Author>/<Title>/<Title>.m4b`, with author/title taken
+from `--author`/`--book-title` or parsed automatically from the Project
+Gutenberg header. Split-MP3 chapters also carry proper ID3 tags now (album,
+track, chapter title, author, genre=Audiobook) so players group and order
+them correctly.
+
 > Not every player supports embedded MP3 chapters. If yours doesn't show them,
 > use `--chapters split` for universally-browseable per-chapter files. (The
 > classic audiobook `.m4b` format has the broadest chapter support but requires
