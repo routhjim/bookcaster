@@ -15,10 +15,20 @@ from dataclasses import dataclass
 # Lines that begin a new chapter. Anchored to the start of a line (MULTILINE),
 # keyed off common structural words so ordinary prose is not misread.
 DEFAULT_HEADING = (
-    r"^\s{0,3}("
-    r"chapter|chap\.|part|book|section|canto|volume|"
-    r"prologue|epilogue|introduction|preface|foreword|afterword"
-    r")\b.*$"
+    r"^\s{0,3}(?:"
+    # Structural word + a number ("Chapter 7", "Part II", "Book One") — the
+    # number requirement keeps prose like "part of his face" from matching.
+    r"(?:chapter|chap\.|part|book|section|canto|volume)\s+"
+    r"(?:[0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|"
+    r"nineteen|twenty|thirty|forty|fifty|first|second|third|last)\b.*"
+    # Standalone structural words are headings only when (nearly) alone on
+    # the line — "Introduction", not "introduction of his name will...".
+    r"|(?:prologue|epilogue|introduction|preface|foreword|afterword)\b.{0,25}$"
+    # Numbered-title headings: "I. A SCANDAL IN BOHEMIA", "XII. THE ..."
+    # (uppercase-only so prose "i. e." can't match; short lines only).
+    r"|(?-i:[IVXLCDM]{1,7}\.\s+\S)(?=.{0,60}$).*"
+    r")$"
 )
 
 # Titles we generate ourselves (not real headings) and therefore do not speak.
@@ -38,7 +48,7 @@ def _clean_title(raw: str) -> str:
 def detect_chapters(
     text: str,
     pattern: str = DEFAULT_HEADING,
-    min_body_chars: int = 24,
+    min_body_chars: int = 40,
 ) -> list[Chapter]:
     """Split ``text`` into a list of :class:`Chapter`.
 
