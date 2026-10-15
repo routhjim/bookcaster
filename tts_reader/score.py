@@ -128,6 +128,23 @@ def estimated_starts(paras: list[str], chars_per_sec: float,
     return starts, t
 
 
+def plan_only(text: str, work: Path, llm_url: str, llm_model: str = "default",
+              log=print) -> list[dict]:
+    """Plan the scenes now (the LLM's part) and cache them in *work*; the
+    later --ahead / score runs restore the plan and need no LLM."""
+    work.mkdir(parents=True, exist_ok=True)
+    plan_path = work / "plan.json"
+    if plan_path.exists():
+        scenes = json.loads(plan_path.read_text())
+        log(f"  score plan already cached ({len(scenes)} cue(s))")
+        return scenes
+    log("  planning scenes...")
+    scenes = plan_scenes(paragraphs(text), llm_url, llm_model)
+    plan_path.write_text(json.dumps(scenes, indent=1))
+    log(f"  planned {len(scenes)} cue(s)")
+    return scenes
+
+
 def compose_ahead(text: str, work: Path, llm_url: str, llm_model: str = "default",
                   ace_url: str = DEFAULT_ACE_URL, chars_per_sec: float = 15.0,
                   margin: float = 1.2, log=print) -> list[dict]:

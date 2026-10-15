@@ -16,8 +16,10 @@ replace role summaries and you assign voices directly with ``Name = voice``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from pathlib import Path
 import sys
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
@@ -715,12 +717,24 @@ class CastSession:
             v = self.voice_of(m)
             lines.setdefault(v, []).extend(hardest(
                 [s.text for s in segments if s.kind == "quote" and s.speaker == m.name]))
+        # Verdicts are remembered per (voice, lines): a saved cast reopened
+        # isn't re-rendered (minutes), and a coin-flip take can't flip it.
+        cache_path = getattr(self, "screen_cache_path", None)
+        try:
+            remembered = json.loads(Path(cache_path).read_text()) if cache_path else {}
+        except (OSError, ValueError):
+            remembered = {}
         bad = set()
         for voice, texts in lines.items():
             texts = texts[:lines_per_voice]
             if len(texts) < 2:
                 continue
             base, _, _ = voice.partition("@")
+            key = base + "|" + hashlib.sha1("\n".join(texts).encode()).hexdigest()[:16]
+            if key in remembered:
+                if not remembered[key]:
+                    bad.add(base)
+                continue
             failed = 0
             for t in texts:
                 body = json.dumps({"input": t, "voice": base, "verify": True,
@@ -741,6 +755,9 @@ class CastSession:
             # (simon on The Raven: 3/4 here, then re-renders on every page).
             if failed:
                 bad.add(base)
+            remembered[key] = not failed
+            if cache_path:
+                Path(cache_path).write_text(json.dumps(remembered, indent=1))
         return bad
 
     def to_dict(self) -> dict:
@@ -927,6 +944,8 @@ def build_session(text: str, engine: str, llm_url: str | None,
                           audition_dir=audition_dir, no_play=no_play,
                           registers=registers, fill_voices=fill_voices,
                           design_fallback_url=design_fallback_url)
+    if cache_path:
+        session.screen_cache_path = str(cache_path).replace(".speakers.json", "") + ".screened.json"
 
     attributor = None
     if llm_url:
@@ -1000,7 +1019,7 @@ def build_session(text: str, engine: str, llm_url: str | None,
                     )
                 except (HTTPError, URLError, TimeoutError, OSError) as exc:
                     log(f"warning: descriptions unavailable ({exc})")
-            _screen_and_recast(session, segments, log)
+            _screen_and_recast(session, segments, log, recast=False)
             _prepare_designs(session, log)
             return session
 
@@ -1025,15 +1044,21 @@ def build_session(text: str, engine: str, llm_url: str | None,
     return session
 
 
-def _screen_and_recast(session: CastSession, segments, log=print, rounds: int = 2) -> None:
+def _screen_and_recast(session: CastSession, segments, log=print, rounds: int = 2,
+                       recast: bool = True) -> None:
     """Screen the cast's voices on the server; drop failures from the roster
-    and let the LLM recast (up to *rounds* times)."""
+    and let the LLM recast (up to *rounds* times). recast=False (a cast the
+    user already directed): only report the failures."""
     if session.designing or not session.custom_roster or not session.llm_url:
         return
     log("Screening the cast's voices on their hardest lines...")
     for _ in range(rounds):
         bad = session.screen_voices(segments, log=log)
         if not bad:
+            return
+        if not recast:
+            log(f"  {', '.join(sorted(bad))} stumbled on some of their lines when screened; "
+                "kept because this cast was chosen — 'Name = voice' to change it")
             return
         log(f"  {', '.join(sorted(bad))} failed screening on this text — recasting without it")
         session.custom_roster = [r for r in session.custom_roster if r[0] not in bad]
@@ -1092,8 +1117,12 @@ DESIGN_HELP = """Designed voices (cast --design):
 """
 
 
-def run_repl(session: CastSession, on_convert, state_path=None, log=print) -> int:
-    """The interactive loop. ``on_convert(voice_map, output)`` runs the job."""
+def run_repl(session: CastSession, on_convert, state_path=None, log=print,
+             lines=None) -> int:
+    """The interactive loop. ``on_convert(voice_map, output)`` runs the job.
+    *lines*: commands to run instead of reading the prompt (scripts, agents);
+    the session is saved and the loop ends when they run out."""
+    feed = iter(lines) if lines is not None else None
 
     def checkpoint():
         if state_path is not None:
@@ -1136,8 +1165,12 @@ def run_repl(session: CastSession, on_convert, state_path=None, log=print) -> in
     checkpoint()  # the initial suggestion is worth keeping too
     while True:
         try:
-            line = input("cast> ").strip()
-        except (EOFError, KeyboardInterrupt):
+            if feed is not None:
+                line = next(feed).strip()
+                log(f"cast> {line}")
+            else:
+                line = input("cast> ").strip()
+        except (EOFError, KeyboardInterrupt, StopIteration):
             log("")
             checkpoint()
             return 0

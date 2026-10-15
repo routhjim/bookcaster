@@ -311,6 +311,32 @@ The caches beside the book (`.speakers.json`, `.cast.json`,
 `.emotions-fish.json`) keep a re-render from asking the LLM again. Delete one,
 or pass `--fresh-cast`, to redo that step.
 
+### The audiobook studio: just ask (`bookcaster` + a local agent)
+
+`bookcaster` wraps the whole flow in plain, non-interactive steps:
+
+* `search` and `fetch` find and download books from Project Gutenberg.
+* `chapters` and `pick` choose what to record.
+* `cast --do "..."` lets you direct the cast in plain English, and `audition` renders a character's line.
+* `make` records in the background: delivery cues and the scene plan on the LLM, then voices on
+  Fish while ACE composes, then the mix.
+* `status` reports progress.
+
+Books live in `~/audiobooks/<book>/`, and the finished MP3s go in `out/`.
+
+Give a coding agent that folder and its `CLAUDE.md`, and you can talk to it instead:
+
+```bash
+tools/fish_stack.sh up all                 # Fish + ACE, then Strata Flash-Next (iGPU) + the agent proxy
+cd ~/audiobooks && claude-local            # or from the phone: happier-new audiobooks ~/audiobooks
+> I'd like to listen to The Speckled Band. Roylott should sound old and gravelly.
+```
+
+From the phone, download the result in Happier: Files tab → `audiobooks/<book>/out/` → Download.
+`fish_stack.sh up all` starts the voice and music servers before Strata, which pins about 90 GiB
+of shared RAM. It flushes the kernel's GPU page pool first, and refuses any start that wouldn't
+fit, rather than risk an out-of-memory crash.
+
 ## Multi-voice narration (character casting)
 
 TTS Reader can give the narrator and each speaking character **their own

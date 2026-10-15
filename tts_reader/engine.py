@@ -444,9 +444,10 @@ class CastEngine(BaseEngine):
             eng.load(log=log)
         self.sample_rate  # fail fast on mismatched rates
 
-    def synthesize_pcm(
-        self, text: str, speed: float = 1.0, volume: float = 1.0, log=print
-    ) -> bytes:
+    def prepare(self, text: str, log=print) -> list:
+        """The LLM half of a render: who speaks each quote, and (with an
+        emotion tagger) how each line is delivered. Both are cached, so
+        running this ahead leaves the render only the voices to do."""
         from .speakers import attribute_segments, segment_dialogue
 
         segments = segment_dialogue(text)
@@ -458,6 +459,12 @@ class CastEngine(BaseEngine):
             self.emotion_tagger.tag(
                 segments, cache_path=self.emotions_cache_path, log=log
             )
+        return segments
+
+    def synthesize_pcm(
+        self, text: str, speed: float = 1.0, volume: float = 1.0, log=print
+    ) -> bytes:
+        segments = self.prepare(text, log=log)
         # Plan first (silences, pieces, timeline marks), then render the
         # pieces — several at once when the voice server batches requests
         # (self.parallel) — then assemble in order.

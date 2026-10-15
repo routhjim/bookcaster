@@ -645,13 +645,14 @@ def cmd_cast(args: argparse.Namespace) -> int:
 
     from .design import book_slug
 
-    state_path = _cast_state_path_for(spec)
+    stem = args.cache_stem or spec
+    state_path = _cast_state_path_for(stem)
     try:
         session = build_session(
             text, engine=args.engine, llm_url=args.llm_url,
             llm_model=args.llm_model, top=args.top,
             llm_context=args.llm_context,
-            cache_path=_cache_path_for(spec),
+            cache_path=_cache_path_for(stem),
             saved=None if args.fresh_cast else load_saved_cast(state_path),
             custom_roster=custom_roster,
             design_url=design_url, book=book or book_slug(spec), f5_url=args.f5_url,
@@ -694,9 +695,11 @@ def cmd_cast(args: argparse.Namespace) -> int:
             argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
         if args.no_strip_gutenberg:
             argv.append("--no-strip-gutenberg")
+        if args.cache_stem:
+            argv += ["--cache-stem", args.cache_stem]
         return main(argv)
 
-    return run_repl(session, on_convert, state_path=state_path)
+    return run_repl(session, on_convert, state_path=state_path, lines=args.do)
 
 
 def cmd_lexicon(args: argparse.Namespace) -> int:
@@ -843,6 +846,16 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     audio = Path(args.audio)
     timeline = Path(args.timeline) if args.timeline else audio.with_name(audio.stem + ".timeline.json")
+    if getattr(args, "plan_only", False):
+        try:
+            text = _load_text(args.input, strip_gutenberg=not args.no_strip_gutenberg)
+            out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
+            score.plan_only(text, Path(args.work_dir) if args.work_dir else out.with_suffix(".score"),
+                            llm_url=args.llm_url, llm_model=args.llm_model)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: planning failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.ahead:
         # Compose from estimated scene lengths while the voices render
         # (--audio names the render that is coming; it needn't exist yet).
@@ -909,8 +922,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(specs, args.output)
 
     print(f"Voice: {engine.key}")
+    prepare_only = getattr(args, "prepare_only", False)
+    if prepare_only and not isinstance(engine, CastEngine):
+        print("error: --prepare-only needs --voice-map (it prepares a cast render)",
+              file=sys.stderr)
+        return 2
     try:
-        engine.load()  # download (if needed) + load once, reused for every input
+        if not prepare_only:   # tagging needs only the LLM, not the voices
+            engine.load()  # download (if needed) + load once, reused for every input
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -944,8 +963,20 @@ def cmd_convert(args: argparse.Namespace) -> int:
             print(f"Library: {outp if outp.suffix == '.m4b' else base}/")
 
         if isinstance(engine, CastEngine):
-            engine.cache_path = _cache_path_for(spec)
-            engine.emotions_cache_path = _emotions_cache_path_for(spec, "fish" if args.fish else args.engine)
+            # --cache-stem: chapters cut from one book share its caches.
+            stem = getattr(args, "cache_stem", None) or spec
+            engine.cache_path = _cache_path_for(stem)
+            engine.emotions_cache_path = _emotions_cache_path_for(stem, "fish" if args.fish else args.engine)
+            if prepare_only:
+                speak = text if args.no_preprocess else prepare_for_speech(text)
+                try:
+                    engine.prepare(speak, log=print)
+                except Exception as exc:
+                    print(f"error: preparing {spec} failed: {exc}", file=sys.stderr)
+                    failures += 1
+                else:
+                    print(f"prepared {spec} (attribution + delivery cues cached)")
+                continue
 
         chapters = None
         if args.chapters != "off":
@@ -1093,6 +1124,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_conv.add_argument("--speech-level-db", type=float, default=-20.0,
                         help="Bring every rendered line to this speech level, dBFS "
                         "(default -20; emotional lines keep a small offset; 0 = off).")
+    p_conv.add_argument("--prepare-only", action="store_true",
+                        help="Only attribute speakers and tag delivery (needs the LLM, not the "
+                        "voice servers); a later convert renders from the cached results.")
+    p_conv.add_argument("--cache-stem", default=None,
+                        help="Keep the attribution/emotion caches beside this path instead "
+                        "of each input (chapters cut from one book share one set).")
     p_conv.add_argument("--steady-narration", choices=("anchor", "match", "off"),
                         default="anchor",
                         help="Keep long narration in one voice across chunks: 'anchor' (default) "
@@ -1383,6 +1420,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore the saved cast (<input>.cast.json) and re-suggest from "
         "scratch. The saved file is overwritten as the new session proceeds.",
     )
+    p_cast.add_argument(
+        "--do", action="append", default=None, metavar="COMMAND",
+        help="Run session commands without the interactive prompt, then exit "
+        "(repeatable): plain-English direction, 'Name = voice', 'cast', 'voices', "
+        "'map'... For scripts and agents.",
+    )
+    p_cast.add_argument(
+        "--cache-stem", default=None,
+        help="Keep the attribution cache and saved cast beside this path "
+        "instead of the input's.",
+    )
     p_cast.set_defaults(func=cmd_cast)
 
     p_abr = sub.add_parser(
@@ -1470,6 +1518,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--chars-per-sec", type=float, default=15.0,
                          help="Speaking rate for --ahead estimates (Fish ~16; lower "
                          "= longer cues, safer).")
+    p_score.add_argument("--plan-only", action="store_true",
+                         help="Only ask the LLM for the scene plan (cached in the work dir); "
+                         "composing and mixing need just the music server later.")
     p_score.set_defaults(func=cmd_score)
     return parser
 

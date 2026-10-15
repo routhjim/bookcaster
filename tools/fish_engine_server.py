@@ -78,13 +78,93 @@ class Job:
         self.t0 = time.time()
 
 
+def _remember_coordesc():
+    """Keep coordinate-descent tuning results across restarts.
+
+    fish_speech turns coordinate_descent_tuning on, and torch 2.11 (ROCm)
+    re-runs it for every kernel on every start even when the compiled
+    graphs come from the disk cache: a kernel reloaded with its saved best
+    config loses the found_by_coordesc mark, and a search that keeps the
+    starting config never sticks. That was ~140 s of each ~4 min start.
+    Each kernel's tuned config is kept here by its source file name (a hash
+    of the kernel source, launch sizes included) and reused."""
+    import json as _json
+
+    from torch._inductor.runtime import triton_heuristics as th
+    from triton import Config
+
+    path = Path(os.environ["TORCHINDUCTOR_CACHE_DIR"]) / "fish-coordesc.json"
+    try:
+        memo = _json.loads(path.read_text())
+    except (OSError, ValueError):
+        memo = {}
+    orig = th.CachingAutotuner.coordinate_descent_tuning
+    lock = threading.Lock()
+
+    def tuned(self, launcher, *args, **kwargs):
+        key = os.path.basename(self.filename or "")
+        hit = memo.get(key) if key else None
+        if hit is not None:
+            cfg = Config(dict(hit["kwargs"]), num_warps=hit["num_warps"],
+                         num_stages=hit["num_stages"])
+            cfg.found_by_coordesc = True
+            if self.fn.fn is None and hasattr(self, "_reload_kernel"):
+                self.fn = self._reload_kernel().fn
+            with self.lock:
+                return self._precompile_config(cfg).make_launcher()
+        out = orig(self, launcher, *args, **kwargs)
+        if key:
+            c = out.config
+            with lock:
+                memo[key] = {"kwargs": dict(c.kwargs), "num_warps": c.num_warps,
+                             "num_stages": c.num_stages}
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(_json.dumps(memo))
+                tmp.replace(path)
+        return out
+
+    th.CachingAutotuner.coordinate_descent_tuning = tuned
+
+
+def _debug_coordesc():
+    """FISH_DEBUG_COORDESC=1: log why a kernel is re-tuned at start."""
+    from torch._inductor.runtime import triton_heuristics as th
+    from torch._inductor.runtime.autotune_cache import AutotuneCache
+
+    orig, seen = th.CachingAutotuner.coordinate_descent_tuning, [0]
+
+    def wrapped(self, launcher, *a, **k):
+        seen[0] += 1
+        if seen[0] <= 6:
+            try:
+                cache = AutotuneCache.create(self.inductor_meta, self.filename, "")
+                path = cache.local_cache[1] if cache and cache.local_cache else None
+                saved = open(path).read() if path and os.path.exists(path) else None
+                print(f"coordesc {os.path.basename(self.filename)} launcher={launcher.config} "
+                      f"file={'yes' if saved else 'no'} saved={saved} "
+                      f"meta_coordesc={self.inductor_meta.get('coordinate_descent_tuning')} "
+                      f"local_cache={self.inductor_meta.get('autotune_local_cache')}", flush=True)
+            except Exception as exc:
+                print(f"coordesc debug failed: {exc!r}", flush=True)
+        return orig(self, launcher, *a, **k)
+
+    th.CachingAutotuner.coordinate_descent_tuning = wrapped
+
+
 def load():
     global _model, _codec, _step
+    if os.environ.get("FISH_DEBUG_COORDESC") == "1":
+        _debug_coordesc()
+    if os.environ.get("FISH_COORDESC_MEMO", "1") == "1":
+        _remember_coordesc()
     os.chdir(FISH_DIR)
     from fish_speech.models.dac.inference import load_model as load_codec
     from fish_speech.models.text2semantic.inference import init_model
 
-    _model, _ = init_model("checkpoints/s2-pro", "cuda", torch.bfloat16, compile=False)
+    if os.environ.get("FISH_STOCK_LOAD") == "1":
+        _model, _ = init_model("checkpoints/s2-pro", "cuda", torch.bfloat16, compile=False)
+    else:
+        _model = _load_model_on_gpu("checkpoints/s2-pro")
     if os.environ.get("FISH_INT8") == "1":
         print(f"int8 weights on {fb.quantize_int8(_model)} Linears", flush=True)
     _codec = load_codec("modded_dac_vq", "checkpoints/s2-pro/codec.pth", device="cuda")
@@ -96,6 +176,54 @@ def load():
         torch._dynamo.config.recompile_limit, len(ROW_BUCKETS) * len(KV_BUCKETS) + 4)
     _step = torch.compile(fb.step, mode=os.environ.get("FISH_COMPILE_MODE", "default"),
                           dynamic=False) if os.environ.get("FISH_COMPILE", "1") == "1" else fb.step
+
+
+def _load_model_on_gpu(path: str):
+    """The stock loader builds the whole model in fp32 on the CPU (~18 GB)
+    and reads every weight into RAM before moving it: an 18.6 GiB RSS spike
+    that OOMs the box when Strata holds the shared memory. Here parameters
+    are created on the meta device (no memory), each safetensors shard is
+    read straight onto the GPU and assigned, and only then is the model
+    cast like the stock path does (so buffers match it exactly)."""
+    import contextlib
+    import json as _json
+
+    from safetensors.torch import load_file
+    from fish_speech.models.text2semantic.llama import (
+        DualARTransformer, _remap_fish_qwen3_omni_keys)
+
+    @contextlib.contextmanager
+    def params_on_meta():
+        orig = torch.nn.Module.register_parameter
+
+        def register(self, name, param):
+            orig(self, name, param)
+            if param is not None and param.device.type != "meta":
+                self._parameters[name] = torch.nn.Parameter(
+                    param.to("meta"), requires_grad=param.requires_grad)
+
+        torch.nn.Module.register_parameter = register
+        try:
+            yield
+        finally:
+            torch.nn.Module.register_parameter = orig
+
+    with params_on_meta():
+        model = DualARTransformer.from_pretrained(path, load_weights=False)
+    index = _json.loads((Path(path) / "model.safetensors.index.json").read_text())
+    for shard in sorted(set(index["weight_map"].values())):
+        weights = _remap_fish_qwen3_omni_keys(load_file(str(Path(path) / shard), device="cuda"))
+        model.load_state_dict(weights, strict=False, assign=True)
+        del weights
+    left = [n for n, p in model.named_parameters() if p.device.type == "meta"]
+    if left:
+        raise RuntimeError(f"weights missing for {len(left)} parameters, e.g. {left[:3]}")
+    model = model.to(device="cuda", dtype=torch.bfloat16)
+    model.fixed_temperature = torch.tensor(0.7, device="cuda", dtype=torch.float)
+    model.fixed_top_p = torch.tensor(0.7, device="cuda", dtype=torch.float)
+    model.fixed_repetition_penalty = torch.tensor(1.5, device="cuda", dtype=torch.float)
+    model._cache_setup_done = False
+    return model.eval()
 
 
 def _fast_caches_for(rows: int):
@@ -405,6 +533,17 @@ def warm_up(ref_wav: str, ref_text: str):
         probe = torch.zeros(_model.config.num_codebooks, 20, dtype=torch.long, device="cuda")
         _hop = _codec.from_indices(probe[None])[0].squeeze().shape[-1] // 20
     print(f"codec: {_hop} samples per frame", flush=True)
+    try:
+        from torch._dynamo.utils import counters
+        print("compile cache: " + ", ".join(f"{k}={v}" for k, v in sorted(counters["inductor"].items())
+                                            if "cache" in k) +
+              " | aot: " + ", ".join(f"{k}={v}" for k, v in sorted(counters["aot_autograd"].items())
+                                    if "cache" in k), flush=True)
+        if os.environ.get("FISH_COMPILE_TIMES") == "1":
+            from torch._dynamo.utils import compile_times
+            print(compile_times(repr="str", aggregate=True), flush=True)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
