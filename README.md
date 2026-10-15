@@ -255,6 +255,62 @@ The engine talks to a small local server (same OpenAI-style
 On AMD (gfx1151/Strix Halo), install PyTorch from TheRock's wheel index —
 the generic pytorch.org ROCm wheels crash on this hardware.
 
+## Fish S2 Pro: the default cast engine (GPU)
+
+`cast` renders through Fish Audio S2 Pro by default. Three pieces:
+
+* `tools/fish_engine_server.py` (:8891) decodes up to 8 lines at once with
+  continuous batching (7900 XTX: one line 1.8x real time, eight 12x).
+* `tools/fish_tts_server.py` (:5014) is the adapter the tool talks to. It
+  handles voices, turns emotion cues into inline tags (`[angry]`, `[whisper]`,
+  `[pause]`...), and re-renders a take when Whisper finds skipped words or babble.
+* ACE-Step 1.5 (:8001) is optional. It composes the music for `score`.
+
+Start and stop them as memory-capped systemd user units:
+
+```bash
+tools/fish_stack.sh up --music     # engine + adapter (+ ACE); first start compiles for a few minutes
+tools/fish_stack.sh status
+tools/fish_stack.sh down --music
+```
+
+Venv paths and GPU pins come from environment variables (see the script's
+header). Then cast and render a book, with an LLM on `--llm-url` doing the
+speaker attribution, character descriptions, emotion cues and directing:
+
+```bash
+tts-reader cast book.txt --llm-url http://127.0.0.1:8081/v1/chat/completions \
+    --emote --bitrate 192 -o book.mp3
+# cast> (review the proposed voices, direct in plain language) ... convert
+```
+
+To score the result with music:
+
+```bash
+tts-reader score book.txt --audio book.mp3 --llm-url http://127.0.0.1:8081/v1/chat/completions
+```
+
+What the Fish path adds over the other engines:
+
+* **Delivery cues.** The LLM tags each sentence of dialogue (`[angry][shouting]`
+  with an intensity). A quote whose delivery changes mid-line is split into
+  takes, each with its own loudness and pitch offset. Narration is levelled to
+  `--speech-level-db`, and a lookahead limiter keeps shouts clean.
+* **Steady narration** (`--steady-narration anchor`, the default). Each narration
+  chunk is shown one shared "anchor" take of its voice, so a long passage keeps
+  one pitch and tone across chunk joins. `match` also nudges each chunk toward
+  the anchor's pitch and spectrum.
+* **Verse.** With `--verse-pacing auto|tags`, a stanza goes to the model whole,
+  with `[pause]` tags at line ends.
+* **Speed.** Lines render concurrently, as many as the server batches
+  (`--parallel` overrides). A 60-minute Sherlock Holmes story renders in about
+  9 minutes. `score --ahead` composes the music from estimated scene lengths
+  while the narration renders.
+
+The caches beside the book (`.speakers.json`, `.cast.json`,
+`.emotions-fish.json`) keep a re-render from asking the LLM again. Delete one,
+or pass `--fresh-cast`, to redo that step.
+
 ## Multi-voice narration (character casting)
 
 TTS Reader can give the narrator and each speaking character **their own
@@ -381,6 +437,81 @@ change with `--llm-url`) for role descriptions, voice suggestions, and
 plain-language directing. Without one it still works — you just assign
 voices directly with `Name = voice`. `map` prints the resulting
 `--voice-map` string instead of converting, so you can reuse it later.
+
+### Designed character voices (`cast --design`)
+
+Instead of picking from a voice library, give every character an
+**original** voice built from a description of how they sound. The LLM writes
+the description from the book; Qwen3-TTS VoiceDesign turns it into a short
+reference clip; F5 then renders the whole book in that voice. No real
+person's voice is involved.
+
+```text
+$ tts-reader cast sherlock.txt --design --no-play \
+    --llm-url http://127.0.0.1:18100/v1/chat/completions --llm-model flashnext-c2t8
+Designing 5 voice(s)...
+  designed Holmes (8.6s clip, take 0)
+    audition: sherlock.txt.auditions/Holmes_v1.mp3
+  ...
+  Roylott   [designed]  A menacing, aggressive stepfather ...
+            sounds: A man in his fifties with a gravelly, booming bass ...
+  Ghost     [= Marley]  same person — shares Marley's voice
+
+cast> Roylott should sound older, with a harsh rasp     # rewrites + rebuilds
+cast> redesign Stoner                                   # new take, same description
+cast> play Holmes                                       # F5 renders one of his lines
+cast> Watson is the narrator
+cast> proceed                                           # convert the book
+```
+
+Every design, redesign and `play` also saves an MP3 to `<book>.auditions/`
+(`<Name>_v1.mp3`, `_v2`, …), so you can audition from a phone or file browser;
+`--no-play` skips this machine's speakers entirely. Designed voices live in
+the F5 registry as `d_<book>_<character>`.
+
+Needs three local servers (pin each to a GPU; HIP order on the reference box is
+0 = XTX, 1 = iGPU, 2 = XTX):
+
+```bash
+HIP_VISIBLE_DEVICES=0 F5_PORT=5011 ~/f5-tts/.venv-xtx/bin/python ~/f5-tts/server.py   # renderer
+HIP_VISIBLE_DEVICES=2 ~/tts-ab/.venv-qwen/bin/python -I tools/qwen_design_server.py   # designer, :5012
+# plus an OpenAI-compatible LLM for attribution/descriptions (--llm-url)
+```
+
+**Emotion.** Each designed voice also gets seven emotional variants (warm,
+tense, angry, sad, excited, cold, surprised). With `--emote` (the default with
+`--design`) every line is tagged, and F5 uses the matching clip. The neutral
+clip is designed with a calm delivery instruction so it has room to move.
+
+**Accents.** VoiceDesign can't do accents (everything comes out American), so
+accents borrow the *delivery* of a real accented speaker and keep the
+character's designed *timbre*:
+
+```text
+cast> accent Roylott scottish        # or: "make Roylott Scottish"; 'none' removes
+  Roylott: scottish accent (renders on Qwen; emotion is added by pitch/pace shaping)
+    audition: sherlock.txt.auditions/Roylott_scottish.mp3
+```
+
+A description that already names an accent ("a soft Irish lilt") turns it on
+automatically. Accented characters render through the Qwen3-TTS server
+(`--qwen-url`, default `:5013`), because F5 drops the accent when it copies the
+clip. Their emotions come from reshaping pitch, pitch range, pace and loudness
+after rendering, since an emotional reference clip would cancel the accent.
+Accent speakers come from the VCTK corpus (CC-BY 4.0), picked by ear, and live
+in `~/.local/share/tts_reader/accent_donors/` (`donors.json` maps accent →
+gender → clips). Scottish and Irish are available so far.
+
+```bash
+HIP_VISIBLE_DEVICES=2 ~/tts-ab/.venv-qwen/bin/python -I tools/qwen_tts_server.py      # accents, :5013
+```
+
+Speaker attribution reads the book passage by passage (`--llm-context`,
+default 6000 characters) so the LLM follows each conversation's turn-taking;
+titled names ("Miss Stoner", "Dr. Roylott") seed a character roster that
+supplies genders and merges aliases ("Sherlock Holmes" → Holmes, but never
+"Mr." and "Mrs. Bennet"); a first-person narrator's own lines ("said I") use
+the narrator voice.
 
 ### Abridged audiobooks (`abridge`)
 

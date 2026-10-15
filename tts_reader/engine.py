@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+
+from .textprep import VERSE_BREAK
 from urllib.request import Request, urlopen
 
 from . import voices as voice_catalog
@@ -169,6 +171,9 @@ class OrpheusEngine(BaseEngine):
         # True for servers (F5) that select an emotional reference clip via
         # an "emotion" field in the request, rather than inline text tags.
         self.emotion_param = emotion_param
+        # Per-request verification reports (X-Verify header from servers
+        # that check their own output, e.g. tools/qwen_tts_server.py).
+        self.verify_log: list[dict] = []
         self.key = f"orpheus:{voice_catalog.resolve_orpheus(voice)}"
         self.voice = voice_catalog.resolve_orpheus(voice)
         self.base_url = base_url
@@ -180,7 +185,8 @@ class OrpheusEngine(BaseEngine):
 
     @property
     def sample_rate(self) -> int:
-        return ORPHEUS_SAMPLE_RATE
+        # The server says its rate in /health (Fish: 44.1 kHz); else 24 kHz.
+        return getattr(self, "_rate", None) or ORPHEUS_SAMPLE_RATE
 
     def _origin(self) -> str:
         p = urlparse(self.base_url)
@@ -188,6 +194,14 @@ class OrpheusEngine(BaseEngine):
 
     def load(self, log=print) -> None:
         """Check that the Orpheus server is reachable, with a helpful error."""
+        health = self._health()
+        self.inline_tags = bool(health.get("inline_tags"))
+        self.max_batch = max(1, int(health.get("max_batch") or 1))
+        self._rate = int(health.get("sample_rate") or ORPHEUS_SAMPLE_RATE)
+        # The server can take earlier takes as context and match a take's
+        # pitch/spectrum (Fish adapter): used to steady long narration.
+        self.takes_context = bool(health.get("context"))
+        self.anchor = None          # {"text", "codes"}: this voice's narration anchor
         try:
             urlopen(self._origin(), timeout=10)
         except HTTPError:
@@ -199,7 +213,20 @@ class OrpheusEngine(BaseEngine):
                 "at its /v1/audio/speech endpoint. See README (Orpheus setup)."
             ) from exc
 
-    def _request_pcm(self, text: str, speed: float, emotion: str = "") -> bytes:
+    def _health(self) -> dict:
+        """The server's /health: "inline_tags" (its model acts on delivery
+        tags like [pause]) and "max_batch" (requests it decodes together) —
+        tools/fish_tts_server.py reports both."""
+        try:
+            with urlopen(f"{self._origin()}/health", timeout=10) as resp:
+                info = json.loads(resp.read())
+            return info if isinstance(info, dict) else {}
+        except (HTTPError, URLError, OSError, ValueError):
+            return {}
+
+    def _request_pcm(self, text: str, speed: float, emotion: str = "", sink=None,
+                     pitch: float = 0.0, pitch_range: float = 1.0, steady: str = "",
+                     codes_out: list | None = None) -> bytes:
         body = {
             "model": self.model,
             "input": text,
@@ -209,6 +236,17 @@ class OrpheusEngine(BaseEngine):
         }
         if emotion and self.emotion_param:
             body["emotion"] = emotion
+        if pitch or pitch_range != 1.0:
+            # Register shift for the cue (Fish adapter applies it, formants kept).
+            body["pitch"], body["pitch_range"] = round(pitch, 2), round(pitch_range, 3)
+        if getattr(self, "temperature", 0):
+            body["temperature"] = self.temperature   # sampling (Fish); 0 = server default
+        if steady and self.anchor:
+            # Every narration chunk is shown the same anchor take, so they
+            # share one pitch, pace and tone instead of each drifting.
+            body["context"] = [self.anchor]
+            if steady == "match":
+                body["match"] = self.anchor["codes"]
         payload = json.dumps(body).encode("utf-8")
         req = Request(
             self.base_url, data=payload,
@@ -218,6 +256,16 @@ class OrpheusEngine(BaseEngine):
         try:
             with urlopen(req, timeout=self.timeout) as resp:
                 audio = resp.read()
+                verdict = resp.headers.get("X-Verify")
+                if codes_out is not None:
+                    codes_out.append(resp.headers.get("X-Codes", ""))
+            if verdict:
+                try:
+                    (self.verify_log if sink is None else sink).append(
+                        {"voice": self.voice, "emotion": emotion, "text": text,
+                         **json.loads(verdict)})
+                except ValueError:
+                    pass
         except HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")[:500]
             raise RuntimeError(
@@ -228,6 +276,50 @@ class OrpheusEngine(BaseEngine):
                 f"Orpheus request failed ({exc.reason}). Is the server still running?"
             ) from exc
         return _wav_bytes_to_pcm(audio)
+
+    def render(self, text: str, speed: float = 1.0, volume: float = 1.0,
+               emotion: str = "", level_db: float = 0.0, pitch: float = 0.0,
+               pitch_range: float = 1.0, steady: str = "") -> tuple[bytes, list[dict]]:
+        """synthesize_pcm that returns its verification reports instead of
+        logging them on the engine — safe to call from several threads."""
+        sink: list[dict] = []
+        chunks = _chunk_text(text, self.chunk_chars) if self.chunk_chars > 0 else [text]
+        # An inline delivery tag holds until the next one: a chunk cut from
+        # the middle of a tagged quote starts with the tag still in force.
+        tag, carried = "", []
+        for c in chunks:
+            if tag and not _re.match(r"\s*\[[^\]]+\]", c):
+                c = f"{tag} {c}"
+            # The last stacked cue group ([furious][shouting]) is what's in
+            # force; [emphasis] marks one word, it doesn't carry.
+            groups = [g.replace("[emphasis]", "") for g in
+                      _re.findall(r"(?:\[[^\]]+\])+", c)]
+            groups = [g for g in groups if g]
+            tag = groups[-1] if groups else tag
+            carried.append(c)
+        # Each chunk is a separate take at whatever level the model chose;
+        # with level_db (narration) they're levelled one by one so a long
+        # paragraph doesn't jump in volume where its chunks meet.
+        pcm = b"".join(
+            level_speech(a, self.sample_rate, level_db) if level_db else a
+            for a in (self._request_pcm(c, speed, emotion=emotion, sink=sink,
+                                        pitch=pitch, pitch_range=pitch_range,
+                                        steady=steady)
+                      for c in carried if c.strip()))
+        if volume != 1.0:
+            pcm = _apply_volume(pcm, volume)
+        return pcm, sink
+
+    def make_anchor(self, text: str, speed: float = 1.0) -> bool:
+        """Render *text* once as this voice's narration anchor (a take every
+        later narration chunk is shown). False if the server can't."""
+        if not getattr(self, "takes_context", False):
+            return False
+        got: list = []
+        self._request_pcm(text, speed, codes_out=got)
+        if got and got[0]:
+            self.anchor = {"text": text, "codes": got[0]}
+        return self.anchor is not None
 
     def synthesize_pcm(
         self, text: str, speed: float = 1.0, volume: float = 1.0, log=print,
@@ -279,7 +371,32 @@ class CastEngine(BaseEngine):
     def __init__(
         self, voice_map: dict[str, str], engine_factory, attributor=None,
         pause_ms: int = 250, emotion_tagger=None,
+        paragraph_ms: int = 650, stanza_ms: int = 900, line_ms: int = 300,
+        verse_pacing: str = "auto", parallel: int = 0, speech_level_db: float = -20.0,
+        steady_narration: str = "anchor",
     ):
+        # Pacing: silence at paragraph breaks, between stanzas, and at the
+        # end-stopped lines of verse (textprep keeps verse line ends).
+        self.paragraph_ms, self.stanza_ms, self.line_ms = paragraph_ms, stanza_ms, line_ms
+        # "silence": verse is rendered line by line with silence between;
+        # "tags": a stanza goes to the model whole, its line ends marked with
+        # delivery tags ([pause] / [short pause]) that models like Fish S2
+        # act on, so the model paces the verse itself; "auto": tags for
+        # voices whose server says it understands them, else silence.
+        self.verse_pacing = verse_pacing
+        # Lines in flight at once: 0 = what the voice servers say they batch
+        # ("max_batch" in /health; 1 for servers that render one at a time).
+        self.parallel = parallel
+        # Narration chunks are brought to this speech level (dBFS, pauses
+        # ignored) so the narrator doesn't jump between takes; dialogue is
+        # left alone. 0 = off.
+        self.speech_level_db = speech_level_db
+        # Long narration is rendered in chunks, each sampled on its own, so
+        # pitch and tone drift where they meet. "anchor": every narration
+        # chunk of a voice is shown one shared take of that voice (servers
+        # that take context); "match": also nudged to the anchor's pitch and
+        # spectrum; "off": independent chunks.
+        self.steady_narration = steady_narration
         self.emotion_tagger = emotion_tagger
         # Set per input by the CLI, like cache_path.
         self.emotions_cache_path = None
@@ -298,6 +415,10 @@ class CastEngine(BaseEngine):
             for base in sorted({b for b, _ in self.assignments.values()})
         }
         self.attributor = attributor
+        self.verify_log: list[dict] = []   # per line, with the speaker
+        # Where each segment starts in the rendered audio (seconds, per
+        # synthesize call) — lets a soundtrack be cued against scenes.
+        self.timeline: list[dict] = []
         # Set per input by the CLI so attributions persist in a sidecar file.
         self.cache_path = None
         self.key = "cast(" + ", ".join(
@@ -337,23 +458,42 @@ class CastEngine(BaseEngine):
             self.emotion_tagger.tag(
                 segments, cache_path=self.emotions_cache_path, log=log
             )
-        # A short beat when the voice changes keeps switches from feeling
-        # abrupt. 16-bit mono silence at the shared sample rate.
-        pause = b"\x00\x00" * int(self.sample_rate * self.pause_ms / 1000)
-        pcm = bytearray()
+        # Plan first (silences, pieces, timeline marks), then render the
+        # pieces — several at once when the voice server batches requests
+        # (self.parallel) — then assemble in order.
+        plan: list = []        # ("gap", ms) | ("mark", entry) | ("piece", job)
         prev_assignment = None
+        carry_ms = 0          # a paragraph break owed from the previous segment
         for seg in segments:
             # Narration tags arrive as ', said Ahab.' — drop the leading comma.
             spoken = _re.sub(r"^[\s,;:—\-]+", "", seg.text).strip()
             if not _re.search(r"\w", spoken):
+                carry_ms = max(carry_ms, self._break_ms(seg.text))
                 continue
             assignment = self._assignment_for(seg)
+            lead = seg.text[: len(seg.text) - len(seg.text.lstrip())]
+            gap = max(carry_ms, self._break_ms(lead))
+            # A short beat when the voice changes keeps switches from feeling
+            # abrupt (self.pause_ms).
             if prev_assignment is not None and assignment != prev_assignment:
-                pcm += pause
+                gap = max(gap, self.pause_ms)
+            if prev_assignment is not None and gap:
+                plan.append(("gap", gap))
+            tail = seg.text[len(seg.text.rstrip()):]
+            carry_ms = self._break_ms(tail, verse=VERSE_BREAK in seg.text)
             base, rate = assignment
             engine = self.engines[base]
             extra = {}
-            if seg.kind == "quote" and seg.emotion:
+            runs = None
+            if seg.kind == "quote" and seg.sentence_tags and getattr(engine, "inline_tags", False):
+                # Fish: tags go inline where the delivery changes, so a
+                # threat can build from [angry] to [shouting] mid-line; each
+                # change starts a new take whose loudness follows the cue.
+                from .speakers import cue_db, cue_pitch, cue_runs
+
+                runs = [(text, cue_db(cue) if cue else None, cue_pitch(cue))
+                        for cue, text in cue_runs(spoken, seg.sentence_tags)]
+            elif seg.kind == "quote" and seg.emotion:
                 if getattr(engine, "emotion_param", False):
                     # F5-style: the server swaps in an emotional reference
                     # clip of the same narrator for this line.
@@ -361,11 +501,157 @@ class CastEngine(BaseEngine):
                 else:
                     # Orpheus-style: inline vocalization tag in the text.
                     spoken = f"<{seg.emotion}> {spoken}"
-            pcm += engine.synthesize_pcm(
-                spoken, speed=speed * rate, volume=volume, log=None, **extra
-            )
+            plan.append(("mark", {
+                "kind": seg.kind,
+                "speaker": (seg.speaker or "") if seg.kind == "quote" else "narrator",
+                "emotion": seg.emotion or "", "text": spoken[:160]}))
+            speaker = (seg.speaker or "(unattributed)") if seg.kind == "quote" else "narrator"
+            tags = self.verse_pacing == "tags" or (
+                self.verse_pacing == "auto" and getattr(engine, "inline_tags", False))
+            if runs:
+                for text, offset, (st, rng) in runs:
+                    level = None if offset is None else self.speech_level_db + offset
+                    shaped = dict(extra)
+                    if st or rng != 1.0:
+                        shaped.update(pitch=st, pitch_range=rng)
+                    plan.append(("piece", (engine, text, speed * rate, shaped, speaker, level)))
+                prev_assignment = assignment
+                continue
+            for k, (ms, piece) in enumerate(self._paced_units(spoken, tags=tags)):
+                if k and ms:
+                    plan.append(("gap", ms))
+                # Narration is levelled; plain dialogue keeps the model's level.
+                level = self.speech_level_db if seg.kind == "narration" else None
+                shaped = extra
+                if (seg.kind == "narration" and self.steady_narration != "off"
+                        and getattr(engine, "takes_context", False)):
+                    shaped = {**extra, "steady": self.steady_narration}
+                plan.append(("piece", (engine, piece, speed * rate, shaped, speaker, level)))
             prev_assignment = assignment
+
+        def render(job):
+            engine, piece, spd, extra, speaker, level = job
+            # level (dBFS) is set for narration (each chunk, so the narrator
+            # doesn't jump between takes) and for cued dialogue (from the
+            # cue's intensity); None = keep the model's own level.
+            if not self.speech_level_db or level is None:
+                level = 0.0
+            if hasattr(engine, "render"):
+                return engine.render(piece, speed=spd, volume=volume, level_db=level, **extra)
+            audio = engine.synthesize_pcm(piece, speed=spd, volume=volume, log=None, **extra)
+            if level:
+                audio = level_speech(audio, self.sample_rate, level)
+            return audio, []
+
+        jobs = [item[1] for item in plan if item[0] == "piece"]
+        self._make_anchors(jobs, log)
+        limits = self.server_limits()
+        if sum(limits.values()) > 1:
+            # Each server gets as many lines in flight as it batches (Fish
+            # decodes them together, whatever their voices); a one-at-a-time
+            # server (Qwen) in the same cast doesn't hold the others back.
+            import threading
+
+            gates = {srv: threading.BoundedSemaphore(n) for srv, n in limits.items()}
+            plain = render
+
+            def render(job):
+                with gates[self._server_of(job[0])]:
+                    return plain(job)
+        workers = max(1, min(sum(limits.values()), len(jobs)))
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = iter(list(pool.map(render, jobs)))
+        else:
+            results = (render(j) for j in jobs)
+        silence = lambda ms: b"\x00\x00" * int(self.sample_rate * ms / 1000)
+        pcm = bytearray()
+        for kind, item in plan:
+            if kind == "gap":
+                pcm += silence(item)
+            elif kind == "mark":
+                self.timeline.append({"t": round(len(pcm) / 2 / self.sample_rate, 2), **item})
+            else:
+                audio, verdicts = next(results)
+                pcm += audio
+                for entry in verdicts:
+                    self.verify_log.append({"speaker": item[4], **entry})
         return bytes(pcm)
+
+    def _make_anchors(self, jobs, log=print) -> None:
+        """Before the steady narration renders, give each of its voices an
+        anchor take: a full-length narration chunk (first of this text with
+        at least ~250 characters, else the longest). Kept for the run, so
+        every chapter shares it."""
+        firsts: dict = {}
+        for engine, piece, spd, extra, _speaker, _level in jobs:
+            if not extra.get("steady") or engine.anchor is not None:
+                continue
+            for c in (_chunk_text(piece, engine.chunk_chars) if engine.chunk_chars > 0 else [piece]):
+                best = firsts.get(id(engine))
+                if best is None or (len(best[1]) < 250 and len(c) > len(best[1])):
+                    firsts[id(engine)] = (engine, c.strip(), spd)
+        for engine, text, spd in firsts.values():
+            if text and engine.make_anchor(text, spd) and log:
+                log(f"  narration anchor for {engine.voice}: {text[:60]!r}...")
+
+    @staticmethod
+    def _server_of(engine) -> str:
+        origin = getattr(engine, "_origin", None)
+        return origin() if callable(origin) else f"local:{id(engine)}"
+
+    def server_limits(self) -> dict[str, int]:
+        """Lines in flight per voice server: what it batches ("max_batch"
+        in /health), or --parallel when given; in-process engines get 1."""
+        limits: dict[str, int] = {}
+        for e in self.engines.values():
+            srv = self._server_of(e)
+            n = self.parallel if self.parallel > 0 else getattr(e, "max_batch", 1)
+            if srv.startswith("local:"):
+                n = 1
+            limits[srv] = max(limits.get(srv, 1), n)
+        return limits
+
+    def _break_ms(self, whitespace: str, verse: bool = False) -> int:
+        """Silence owed for a paragraph break in *whitespace* (0 if none)."""
+        if _re.search(r"\n\s*\n", whitespace):
+            return self.stanza_ms if verse else self.paragraph_ms
+        return 0
+
+    def _paced_units(self, text: str, tags: bool = False) -> list[tuple[int, str]]:
+        """Split *text* into (silence_before_ms, piece) at paragraph breaks
+        and at end-stopped verse lines (ending . ! ? ; : or a dash); lines
+        that run on, or end on a comma, stay joined so the phrase flows."""
+        units: list[tuple[int, str]] = []
+        for p, para in enumerate(_re.split(r"\n\s*\n", text)):
+            verse = VERSE_BREAK in para
+            gap = (self.stanza_ms if verse else self.paragraph_ms) if p else 0
+            buf = ""
+            lines = para.split(VERSE_BREAK)
+            if verse and tags:
+                marked = ""
+                for i, line in enumerate(lines):
+                    line = line.strip()
+                    if i < len(lines) - 1 and _re.search(r"[.!?;:—–][”’\"')]*$", line):
+                        line += " [pause]"
+                    elif i < len(lines) - 1 and line.endswith(","):
+                        line += " [short pause]"
+                    marked = f"{marked} {line}".strip()
+                if _re.search(r"\w", marked):
+                    units.append((gap, marked))
+                continue
+            for i, line in enumerate(lines):
+                buf = f"{buf} {line.strip()}".strip()
+                end = i == len(lines) - 1
+                if not end and not _re.search(r"[.!?;:—–][”’\"')]*$", buf):
+                    continue
+                if _re.search(r"\w", buf):
+                    units.append((gap, buf))
+                    gap = self.line_ms
+                buf = ""
+        return units or [(0, text)]
 
     def _assignment_for(self, seg) -> tuple[str, float]:
         if seg.kind == "quote":
@@ -418,6 +704,71 @@ def _wav_bytes_to_pcm(data: bytes) -> bytes:
         )
     with wave.open(io.BytesIO(data), "rb") as wav_file:
         return wav_file.readframes(wav_file.getnframes())
+
+
+def speech_level(pcm: bytes, rate: int) -> float | None:
+    """Active-speech level of 16-bit PCM in dBFS: power mean of the 10 ms
+    frames within 30 dB of the loudest (pauses and breaths don't count)."""
+    import numpy as np
+
+    a = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    n = max(1, rate // 100)
+    if len(a) < n * 10:
+        return None
+    fr = a[: len(a) // n * n].reshape(-1, n)
+    db = 10 * np.log10((fr ** 2).mean(1) + 1e-12)
+    act = db[db > max(db.max() - 30.0, -60.0)]
+    if not len(act):
+        return None
+    return float(10 * np.log10(np.mean(10 ** (act / 10))))
+
+
+def level_speech(pcm: bytes, rate: int, target_db: float, max_gain_db: float = 12.0,
+                 ceiling_db: float = -1.0) -> bytes:
+    """Scale *pcm* so its speech sits at *target_db*, never past
+    *max_gain_db* either way and never peaking above *ceiling_db*."""
+    import numpy as np
+
+    level = speech_level(pcm, rate)
+    if level is None:
+        return pcm
+    a = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    gain_db = max(-max_gain_db, min(max_gain_db, target_db - level))
+    y = a * 10 ** (gain_db / 20)
+    y = limit_peaks(y, rate, 10 ** (ceiling_db / 20))
+    return (np.clip(y, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def limit_peaks(y, rate: int, ceil: float, block_ms: float = 2.5,
+                lookahead_blocks: int = 2, release_ms: float = 80.0):
+    """Lookahead peak limiter: gain is lowered smoothly *before* a peak and
+    recovers over *release_ms*, so loud lines stay under *ceil* without the
+    waveshaping distortion a per-sample clipper adds (the first version used
+    tanh on the samples and shouts sounded harsh at any volume)."""
+    import numpy as np
+
+    n = max(1, int(rate * block_ms / 1000))
+    nb = (len(y) + n - 1) // n
+    pad = np.zeros(nb * n, dtype=np.float32)
+    pad[: len(y)] = np.abs(y)
+    peaks = pad.reshape(nb, n).max(1)
+    if peaks.max() <= ceil:
+        return y
+    need = np.minimum(1.0, ceil / np.maximum(peaks, 1e-9))
+    # lookahead: a block's gain already accounts for the next blocks' peaks
+    ahead = need.copy()
+    for k in range(1, lookahead_blocks + 1):
+        ahead[:-k] = np.minimum(ahead[:-k], need[k:])
+    rel = np.exp(-block_ms / release_ms)
+    g = np.empty_like(ahead)
+    cur = 1.0
+    for i, want in enumerate(ahead):            # instant attack, smooth release
+        cur = want if want < cur else want + (cur - want) * rel
+        g[i] = cur
+    centers = (np.arange(nb) + 0.5) * n
+    gains = np.interp(np.arange(len(y)), centers, g)
+    out = y * gains
+    return np.clip(out, -ceil, ceil)            # catches the few samples between blocks
 
 
 def _apply_volume(pcm: bytes, volume: float) -> bytes:

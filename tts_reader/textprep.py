@@ -36,6 +36,19 @@ def _lexicon() -> dict[str, str]:
             _lexicon_cache = {}
     return _lexicon_cache
 
+
+def unspell(name: str) -> str:
+    """Undo a lexicon respelling of a name ("Star-buk" -> "Starbuck").
+
+    Speaker detection runs on speech-prepped text, so names arrive in their
+    respelled form; casts and voice maps should show the book's spelling.
+    """
+    lowered = name.strip().lower()
+    for word, spoken in _lexicon().items():
+        if word[:1].isupper() and spoken.lower() == lowered:
+            return word
+    return name
+
 # Titles and honorifics that TTS engines otherwise read as "mr dot".
 _ABBREVIATIONS = {
     "Mr.": "Mister",
@@ -90,12 +103,34 @@ _HYPHEN_WRAP = re.compile(r"(\w)-\n(\w)")
 _SOFT_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
 
 
+# A verse line end, kept through unwrapping so the reader can give each line
+# its beat (U+2028 LINE SEPARATOR: whitespace to regexes and cache keys).
+VERSE_BREAK = "\u2028"
+_VERSE_LINE_START = re.compile(r"\s*[“\"‘'(]*[A-Z]")
+
+
+def _mark_verse(text: str) -> str:
+    """Keep the line breaks of verse paragraphs (lines start with capitals;
+    hard-wrapped prose mostly continues its lines in lowercase)."""
+    parts = re.split(r"(\n\s*\n)", text)
+    for i in range(0, len(parts), 2):
+        lines = [ln for ln in parts[i].split("\n") if ln.strip()]
+        # 4+ lines, at most one of them not capitalized: a 3-line prose
+        # paragraph can wrap onto two names ("said / Holmes ... Miss / Stoner").
+        if len(lines) >= 4 and sum(
+                not _VERSE_LINE_START.match(ln) for ln in lines[1:]) <= 1:
+            parts[i] = VERSE_BREAK.join(ln.strip() for ln in lines)
+    return "".join(parts)
+
+
 def prepare_for_speech(text: str) -> str:
     """Rewrite *text* so a TTS engine reads it naturally."""
     # Rejoin words hyphen-split across line breaks, then unwrap hard-wrapped
-    # lines (single newlines) while keeping paragraph breaks intact.
+    # lines (single newlines) while keeping paragraph breaks — and the line
+    # ends of verse — intact.
     text = _HYPHEN_WRAP.sub(r"\1\2", text)
     text = _STAR_RULE.sub("", text)
+    text = _mark_verse(text)
     text = _SOFT_NEWLINE.sub(" ", text)
 
     text = _FOOTNOTE.sub("", text)
