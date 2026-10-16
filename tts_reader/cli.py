@@ -851,7 +851,7 @@ def cmd_score(args: argparse.Namespace) -> int:
             text = _load_text(args.input, strip_gutenberg=not args.no_strip_gutenberg)
             out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
             score.plan_only(text, Path(args.work_dir) if args.work_dir else out.with_suffix(".score"),
-                            llm_url=args.llm_url, llm_model=args.llm_model)
+                            llm_url=args.llm_url, llm_model=args.llm_model, style=args.style)
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"error: planning failed: {exc}", file=sys.stderr)
             return 1
@@ -864,7 +864,8 @@ def cmd_score(args: argparse.Namespace) -> int:
             out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
             score.compose_ahead(text, Path(args.work_dir) if args.work_dir else out.with_suffix(".score"),
                                 llm_url=args.llm_url, llm_model=args.llm_model,
-                                ace_url=args.ace_url, chars_per_sec=args.chars_per_sec)
+                                ace_url=args.ace_url, chars_per_sec=args.chars_per_sec,
+                                style=args.style)
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"error: composing ahead failed: {exc}", file=sys.stderr)
             return 1
@@ -882,7 +883,8 @@ def cmd_score(args: argparse.Namespace) -> int:
     try:
         score.score_chapter(text, audio, timeline, out, llm_url=args.llm_url,
                             llm_model=args.llm_model, ace_url=args.ace_url,
-                            work_dir=Path(args.work_dir) if args.work_dir else None)
+                            work_dir=Path(args.work_dir) if args.work_dir else None,
+                            style=args.style)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: scoring failed: {exc}", file=sys.stderr)
         return 1
@@ -1518,6 +1520,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--chars-per-sec", type=float, default=15.0,
                          help="Speaking rate for --ahead estimates (Fish ~16; lower "
                          "= longer cues, safer).")
+    p_score.add_argument("--style", default="",
+                         help="Music style for every cue, in plain words (e.g. 'solo piano, "
+                         "romantic era'); changing it replans and recomposes the cues.")
     p_score.add_argument("--plan-only", action="store_true",
                          help="Only ask the LLM for the scene plan (cached in the work dir); "
                          "composing and mixing need just the music server later.")

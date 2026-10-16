@@ -511,7 +511,7 @@ class CastEngine(BaseEngine):
             plan.append(("mark", {
                 "kind": seg.kind,
                 "speaker": (seg.speaker or "") if seg.kind == "quote" else "narrator",
-                "emotion": seg.emotion or "", "text": spoken[:160]}))
+                "emotion": seg.emotion or "", "text": spoken}))   # whole: video subtitles read it
             speaker = (seg.speaker or "(unattributed)") if seg.kind == "quote" else "narrator"
             tags = self.verse_pacing == "tags" or (
                 self.verse_pacing == "auto" and getattr(engine, "inline_tags", False))

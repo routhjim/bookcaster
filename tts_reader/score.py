@@ -41,8 +41,13 @@ def _chat(url: str, model: str, prompt: str, max_tokens: int = 3000) -> str:
 
 
 def plan_scenes(paras: list[str], llm_url: str, model: str = "default",
-                max_cues: int = 9) -> list[dict]:
+                max_cues: int = 9, style: str = "") -> list[dict]:
     numbered = "\n\n".join(f"[P{i}] {p}" for i, p in enumerate(paras))
+    direction = (
+        "\nThe listener chose the music style for this book: \"" + style + "\". "
+        "Every cue's music description must be in that style (its genre and "
+        "instruments), adapted to the scene's mood; keep it instrumental.\n"
+    ) if style else ""
     prompt = (
         "You are the music supervisor for an audiobook. Below is one chapter, "
         "paragraph-numbered. Mark the KEY SCENES that deserve background "
@@ -59,7 +64,8 @@ def plan_scenes(paras: list[str], llm_url: str, model: str = "default",
         "tense, slowly building').\n"
         "- bpm: tempo (40-140)\n"
         "- key: e.g. 'D minor'\n"
-        "- intensity: 0.0-1.0 (how present the music should be)\n\n"
+        "- intensity: 0.0-1.0 (how present the music should be)\n"
+        + direction + "\n"
         'Reply with ONLY JSON: {"cues": [{"start": 0, "end": 3, "scene": "...", '
         '"mood": "...", "music": "...", "bpm": 70, "key": "D minor", '
         '"intensity": 0.4}]}\n\n'
@@ -128,18 +134,34 @@ def estimated_starts(paras: list[str], chars_per_sec: float,
     return starts, t
 
 
+def style_guard(work: Path, style: str, log=print) -> None:
+    """The plan and cues in *work* were made for one music style; when the
+    style changes, drop them so the next run plans and composes afresh."""
+    work.mkdir(parents=True, exist_ok=True)
+    f = work / "style.txt"
+    old = f.read_text(encoding="utf-8").strip() if f.exists() else ""
+    if old == style.strip():
+        return
+    stale = [p for p in [work / "plan.json", *work.glob("cue*.wav")] if p.exists()]
+    for p in stale:
+        p.unlink()
+    if stale:
+        log(f"  music style changed ({old or 'default'} -> {style or 'default'}): replanning")
+    f.write_text(style.strip(), encoding="utf-8")
+
+
 def plan_only(text: str, work: Path, llm_url: str, llm_model: str = "default",
-              log=print) -> list[dict]:
+              style: str = "", log=print) -> list[dict]:
     """Plan the scenes now (the LLM's part) and cache them in *work*; the
     later --ahead / score runs restore the plan and need no LLM."""
-    work.mkdir(parents=True, exist_ok=True)
+    style_guard(work, style, log)
     plan_path = work / "plan.json"
     if plan_path.exists():
         scenes = json.loads(plan_path.read_text())
         log(f"  score plan already cached ({len(scenes)} cue(s))")
         return scenes
     log("  planning scenes...")
-    scenes = plan_scenes(paragraphs(text), llm_url, llm_model)
+    scenes = plan_scenes(paragraphs(text), llm_url, llm_model, style=style)
     plan_path.write_text(json.dumps(scenes, indent=1))
     log(f"  planned {len(scenes)} cue(s)")
     return scenes
@@ -147,13 +169,13 @@ def plan_only(text: str, work: Path, llm_url: str, llm_model: str = "default",
 
 def compose_ahead(text: str, work: Path, llm_url: str, llm_model: str = "default",
                   ace_url: str = DEFAULT_ACE_URL, chars_per_sec: float = 15.0,
-                  margin: float = 1.2, log=print) -> list[dict]:
+                  margin: float = 1.2, style: str = "", log=print) -> list[dict]:
     """Compose every cue from ESTIMATED scene lengths (x *margin*) so the
     music can be generated on its own GPU while the voices render on
     another. The normal score run afterwards re-times the cues to the real
     timeline, reuses each cue that is long enough (the mix trims and fades
     the rest) and recomposes only one that came out too short."""
-    work.mkdir(parents=True, exist_ok=True)
+    style_guard(work, style, log)
     paras = paragraphs(text)
     plan_path = work / "plan.json"
     if plan_path.exists():
@@ -162,7 +184,7 @@ def compose_ahead(text: str, work: Path, llm_url: str, llm_model: str = "default
         log(f"  score plan restored ({len(scenes)} cue(s))")
     else:
         log("  planning scenes...")
-        scenes = plan_scenes(paras, llm_url, llm_model)
+        scenes = plan_scenes(paras, llm_url, llm_model, style=style)
     starts, total = estimated_starts(paras, chars_per_sec)
     cues = []
     for c in scenes:
@@ -246,10 +268,10 @@ def audio_seconds(path: Path) -> float:
 
 def score_chapter(text: str, audio: Path, timeline_path: Path, out: Path, llm_url: str,
                   llm_model: str = "default", ace_url: str = DEFAULT_ACE_URL,
-                  work_dir: Path | None = None, log=print) -> list[dict]:
+                  work_dir: Path | None = None, style: str = "", log=print) -> list[dict]:
     """Plan, compose and mix; caches the plan and cues in *work_dir*."""
     work = work_dir or out.with_suffix(".score")
-    work.mkdir(parents=True, exist_ok=True)
+    style_guard(work, style, log)
     paras = paragraphs(text)
     plan_path = work / "plan.json"
     timeline = json.loads(timeline_path.read_text())
@@ -261,7 +283,7 @@ def score_chapter(text: str, audio: Path, timeline_path: Path, out: Path, llm_ur
         log(f"  score plan restored ({len(scenes)} cue(s))")
     else:
         log("  planning scenes...")
-        scenes = plan_scenes(paras, llm_url, llm_model)
+        scenes = plan_scenes(paras, llm_url, llm_model, style=style)
     cues = place_cues(scenes, paras, timeline, audio_seconds(audio))
     plan_path.write_text(json.dumps(cues, indent=1))
     for n, c in enumerate(cues, 1):
