@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 tts-reader = "tts_reader.cli:main"
+bookcaster = "tts_reader.bookcaster:main"
 
 [tool.setuptools]
 packages = ["tts_reader"]

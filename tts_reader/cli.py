@@ -61,12 +61,20 @@ def _cache_path_for(spec: str) -> Path:
 def _emotions_cache_path_for(spec: str, engine: str = "orpheus") -> Path:
     """Sidecar file holding a book's emotion decisions (per engine style:
     Orpheus gesture tags and F5 registers use different vocabularies)."""
-    suffix = ".emotions-f5.json" if engine == "f5" else ".emotions.json"
+    suffix = {"f5": ".emotions-f5.json", "fish": ".emotions-fish.json"}.get(engine, ".emotions.json")
     if _is_url(spec):
         digest = hashlib.sha1(spec.encode("utf-8")).hexdigest()[:16]
         return default_models_dir().parent / "attribution" / f"{digest}{suffix}"
     p = Path(spec)
     return p.with_name(p.name + suffix)
+
+
+def _audition_dir_for(spec: str, args: argparse.Namespace) -> Path:
+    """Where cast --design saves audition MP3s (beside the book)."""
+    if getattr(args, "audition_dir", None):
+        return Path(args.audition_dir).expanduser()
+    state = _cast_state_path_for(spec)
+    return state.with_name(state.name.removesuffix(".cast.json") + ".auditions")
 
 
 def _cast_state_path_for(spec: str) -> Path:
@@ -100,8 +108,42 @@ def _make_attributor(args) -> LlmAttributor | None:
         return None
     return LlmAttributor(
         url, model=args.llm_model,
-        context_chars=getattr(args, "llm_context", 350),
+        context_chars=getattr(args, "llm_context", 6000),
     )
+
+
+def _save_timeline(engine, outp: Path) -> None:
+    """<name>.timeline.json: when each segment starts (for `score`)."""
+    timeline = getattr(engine, "timeline", None)
+    if timeline:
+        path = outp.with_name(outp.stem + ".timeline.json")
+        path.write_text(json.dumps(timeline, indent=1), encoding="utf-8")
+        engine.timeline = []
+
+
+def _report_verification(engine, outp: Path) -> None:
+    """Summarize the server's per-line checks (Whisper + voice likeness) and
+    save them beside the output as <name>.verify.json."""
+    log = getattr(engine, "verify_log", None)
+    if not log:
+        return
+    engine.verify_log = []
+    retried = [e for e in log if e.get("takes", 1) > 1]
+    failed = [e for e in log if not e.get("ok", True)]
+    path = outp.with_name(outp.stem + ".verify.json")
+    path.write_text(json.dumps(log, indent=1), encoding="utf-8")
+    print(f"  checked {len(log)} line(s): {len(retried)} re-rendered, "
+          f"{len(failed)} still flagged  ({path.name})")
+    by_speaker: dict[str, list[float]] = {}
+    for e in log:
+        if e.get("likeness") is not None:
+            by_speaker.setdefault(e.get("speaker") or e["voice"], []).append(e["likeness"])
+    for who, vals in sorted(by_speaker.items()):
+        print(f"    {who:<16} {len(vals):4d} lines  voice match avg {sum(vals)/len(vals):.2f}"
+              f"  min {min(vals):.2f}")
+    for e in failed[:20]:
+        print(f"    ! {e.get('speaker', e['voice'])}: {', '.join(e.get('problems', []))} — "
+              f"{e['text'][:70]!r}")
 
 
 def _build_engine(args):
@@ -117,12 +159,21 @@ def _build_engine(args):
         # F5-TTS speaks the same /v1/audio/speech protocol as Orpheus; a
         # voice is any name registered on the F5 server (a WAV+transcript
         # pair in its voices directory).
+        from .design import renders_on_qwen
+
         def factory(voice):
-            return OrpheusEngine(
-                voice, base_url=args.f5_url, model="f5",
+            # Accented voices render on the Qwen server: F5 loses the accent
+            # it would have to copy from the reference clip (see design.py).
+            url = args.f5_url
+            if renders_on_qwen(voice):
+                url = getattr(args, "qwen_url", "") or url
+            eng = OrpheusEngine(
+                voice, base_url=url, model="f5",
                 chunk_chars=args.orpheus_chunk_chars,
                 emotion_param=True,  # registers go in the request, not the text
             )
+            eng.temperature = getattr(args, "tts_temperature", 0.0)
+            return eng
         default_voice = ""  # server falls back to its first voice
     else:
         def factory(voice):
@@ -142,6 +193,13 @@ def _build_engine(args):
                   file=sys.stderr)
         elif not args.llm_url:
             raise ValueError("--emote needs --llm-url (an LLM decides the tags)")
+        elif getattr(args, "fish", False):
+            from .speakers import FISH_TAGS
+
+            tagger = EmotionTagger(
+                args.llm_url, model=args.llm_model,
+                vocabulary=FISH_TAGS, style="fish", batch_size=8,
+            )
         elif args.engine == "f5":
             tagger = EmotionTagger(
                 args.llm_url, model=args.llm_model,
@@ -165,6 +223,12 @@ def _build_engine(args):
             attributor=_make_attributor(args),
             pause_ms=args.cast_pause_ms,
             emotion_tagger=tagger,
+            paragraph_ms=args.paragraph_pause_ms, stanza_ms=args.stanza_pause_ms,
+            line_ms=args.line_pause_ms,
+            verse_pacing=getattr(args, "verse_pacing", "auto"),
+            parallel=getattr(args, "parallel", 0),
+            speech_level_db=getattr(args, "speech_level_db", -20.0),
+            steady_narration=getattr(args, "steady_narration", "anchor"),
         )
     return factory(args.voice if args.voice is not None else default_voice)
 
@@ -540,6 +604,17 @@ def cmd_cast(args: argparse.Namespace) -> int:
         print(f"error: could not read {spec}: {exc}", file=sys.stderr)
         return 2
 
+    design_url = book = None
+    if args.design:
+        from .design import book_slug
+
+        # Designed voices are F5 reference pairs, so F5 renders the book;
+        # emotion tagging picks each line's register variant.
+        args.engine = "f5"
+        if not args.no_emote:
+            args.emote = True
+        design_url, book = args.design_url, book_slug(spec)
+
     custom_roster = None
     if args.engine == "f5":
         from .casting import fetch_voice_roster
@@ -551,20 +626,41 @@ def cmd_cast(args: argparse.Namespace) -> int:
                   f"({args.f5_url}): {exc}\nStart it first — see README "
                   "(F5-TTS setup).", file=sys.stderr)
             return 1
+        from .design import belongs_to, book_slug
+
+        # Hide other books' designed voices (and tmp_ scratch voices) from
+        # this cast, designing or not.
+        custom_roster = [r for r in custom_roster
+                         if belongs_to(r[0], book or book_slug(spec))
+                         and not r[0].startswith("tmp_")]
+        # --exclude-voices: drop voices whose name or description matches
+        # (e.g. "librivox" keeps every LibriVox-harvested reader out).
+        for pat in (p.lower() for p in args.exclude_voices or []):
+            custom_roster = [r for r in custom_roster
+                             if pat not in r[0].lower() and pat not in r[2].lower()]
         if not custom_roster:
             print("error: the F5 server has no voices yet. Add <name>.wav + "
                   "<name>.txt pairs to its voices directory.", file=sys.stderr)
             return 1
 
-    state_path = _cast_state_path_for(spec)
+    from .design import book_slug
+
+    stem = args.cache_stem or spec
+    state_path = _cast_state_path_for(stem)
     try:
         session = build_session(
             text, engine=args.engine, llm_url=args.llm_url,
             llm_model=args.llm_model, top=args.top,
             llm_context=args.llm_context,
-            cache_path=_cache_path_for(spec),
+            cache_path=_cache_path_for(stem),
             saved=None if args.fresh_cast else load_saved_cast(state_path),
             custom_roster=custom_roster,
+            design_url=design_url, book=book or book_slug(spec), f5_url=args.f5_url,
+            qwen_url=args.qwen_url,
+            audition_dir=_audition_dir_for(spec, args) if design_url else None,
+            no_play=args.no_play, registers=not args.no_registers,
+            fill_voices=not args.no_fill_voices,
+            design_fallback_url=args.design_url,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -572,26 +668,38 @@ def cmd_cast(args: argparse.Namespace) -> int:
 
     def on_convert(voice_map: str, output: str | None) -> int:
         argv = [
-            "convert", spec, "--engine", args.engine,
+            "convert", spec, "--engine", "fish" if args.fish else args.engine,
             "--voice-map", voice_map,
             "--chapters", args.chapters, "--speed", str(args.speed),
             "--bitrate", str(args.bitrate),
             "--cast-pause-ms", str(args.cast_pause_ms),
+            "--paragraph-pause-ms", str(args.paragraph_pause_ms),
+            "--stanza-pause-ms", str(args.stanza_pause_ms),
+            "--line-pause-ms", str(args.line_pause_ms),
+            "--verse-pacing", args.verse_pacing,
+            "--parallel", str(args.parallel),
+            "--speech-level-db", str(args.speech_level_db),
+            "--steady-narration", args.steady_narration,
+            "--tts-temperature", str(args.tts_temperature),
         ]
         out = output or args.output
         if out:
             argv += ["-o", out]
-        if args.engine == "f5":
-            argv += ["--f5-url", args.f5_url]
+        if args.fish:
+            argv += ["--fish-url", args.fish_url]
+        elif args.engine == "f5":
+            argv += ["--f5-url", args.f5_url, "--qwen-url", args.qwen_url]
         if args.emote and args.engine in ("orpheus", "f5"):
             argv.append("--emote")
         if session.llm_url:
             argv += ["--llm-url", session.llm_url, "--llm-model", args.llm_model]
         if args.no_strip_gutenberg:
             argv.append("--no-strip-gutenberg")
+        if args.cache_stem:
+            argv += ["--cache-stem", args.cache_stem]
         return main(argv)
 
-    return run_repl(session, on_convert, state_path=state_path)
+    return run_repl(session, on_convert, state_path=state_path, lines=args.do)
 
 
 def cmd_lexicon(args: argparse.Namespace) -> int:
@@ -732,6 +840,57 @@ def cmd_abridge(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_score(args: argparse.Namespace) -> int:
+    """Add a mood soundtrack under key scenes of an already-rendered chapter."""
+    from . import score
+
+    audio = Path(args.audio)
+    timeline = Path(args.timeline) if args.timeline else audio.with_name(audio.stem + ".timeline.json")
+    if getattr(args, "plan_only", False):
+        try:
+            text = _load_text(args.input, strip_gutenberg=not args.no_strip_gutenberg)
+            out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
+            score.plan_only(text, Path(args.work_dir) if args.work_dir else out.with_suffix(".score"),
+                            llm_url=args.llm_url, llm_model=args.llm_model, style=args.style)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: planning failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if args.ahead:
+        # Compose from estimated scene lengths while the voices render
+        # (--audio names the render that is coming; it needn't exist yet).
+        try:
+            text = _load_text(args.input, strip_gutenberg=not args.no_strip_gutenberg)
+            out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
+            score.compose_ahead(text, Path(args.work_dir) if args.work_dir else out.with_suffix(".score"),
+                                llm_url=args.llm_url, llm_model=args.llm_model,
+                                ace_url=args.ace_url, chars_per_sec=args.chars_per_sec,
+                                style=args.style)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: composing ahead failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    if not timeline.exists():
+        print(f"error: no timeline at {timeline} — render with `convert --voice-map` "
+              "first (it writes <name>.timeline.json)", file=sys.stderr)
+        return 1
+    try:
+        text = _load_text(args.input, strip_gutenberg=not args.no_strip_gutenberg)
+    except (OSError, ValueError) as exc:
+        print(f"error: could not read {args.input}: {exc}", file=sys.stderr)
+        return 1
+    out = Path(args.output) if args.output else audio.with_name(audio.stem + "_scored.mp3")
+    try:
+        score.score_chapter(text, audio, timeline, out, llm_url=args.llm_url,
+                            llm_model=args.llm_model, ace_url=args.ace_url,
+                            work_dir=Path(args.work_dir) if args.work_dir else None,
+                            style=args.style)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"error: scoring failed: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
     specs: list[str] = args.inputs
     missing = [s for s in specs if not _is_url(s) and not Path(s).is_file()]
@@ -765,8 +924,14 @@ def cmd_convert(args: argparse.Namespace) -> int:
     outputs = _resolve_outputs(specs, args.output)
 
     print(f"Voice: {engine.key}")
+    prepare_only = getattr(args, "prepare_only", False)
+    if prepare_only and not isinstance(engine, CastEngine):
+        print("error: --prepare-only needs --voice-map (it prepares a cast render)",
+              file=sys.stderr)
+        return 2
     try:
-        engine.load()  # download (if needed) + load once, reused for every input
+        if not prepare_only:   # tagging needs only the LLM, not the voices
+            engine.load()  # download (if needed) + load once, reused for every input
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -800,8 +965,20 @@ def cmd_convert(args: argparse.Namespace) -> int:
             print(f"Library: {outp if outp.suffix == '.m4b' else base}/")
 
         if isinstance(engine, CastEngine):
-            engine.cache_path = _cache_path_for(spec)
-            engine.emotions_cache_path = _emotions_cache_path_for(spec, args.engine)
+            # --cache-stem: chapters cut from one book share its caches.
+            stem = getattr(args, "cache_stem", None) or spec
+            engine.cache_path = _cache_path_for(stem)
+            engine.emotions_cache_path = _emotions_cache_path_for(stem, "fish" if args.fish else args.engine)
+            if prepare_only:
+                speak = text if args.no_preprocess else prepare_for_speech(text)
+                try:
+                    engine.prepare(speak, log=print)
+                except Exception as exc:
+                    print(f"error: preparing {spec} failed: {exc}", file=sys.stderr)
+                    failures += 1
+                else:
+                    print(f"prepared {spec} (attribution + delivery cues cached)")
+                continue
 
         chapters = None
         if args.chapters != "off":
@@ -843,6 +1020,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
             failures += 1
             continue
 
+        _report_verification(engine, outp)
+        _save_timeline(engine, outp)
+
     done = len(specs) - failures
     print(f"\nDone: {done}/{len(specs)} input(s) converted.")
     return 1 if failures else 0
@@ -873,14 +1053,24 @@ def build_parser() -> argparse.ArgumentParser:
         "Defaults to the input name with a .mp3 extension.",
     )
     p_conv.add_argument(
-        "-e", "--engine", choices=["piper", "orpheus", "f5"], default="piper",
+        "-e", "--engine", choices=["piper", "orpheus", "f5", "fish"], default="piper",
         help="TTS backend: 'piper' (fast, local, default), 'orpheus' (higher "
-        "quality via a local Orpheus GPU server), or 'f5' (voice cloning via "
-        "a local F5-TTS server). See README for server setup.",
+        "quality via a local Orpheus GPU server), 'f5' (voice cloning via "
+        "a local F5-TTS/Qwen server) or 'fish' (Fish S2 via "
+        "tools/fish_tts_server.py: batched, inline emotion tags). See README.",
+    )
+    p_conv.add_argument(
+        "--fish-url", default="http://127.0.0.1:5014/v1/audio/speech",
+        help="Fish adapter endpoint (tools/fish_tts_server.py) for --engine fish.",
     )
     p_conv.add_argument(
         "--f5-url", default="http://127.0.0.1:5010/v1/audio/speech",
         help="F5-TTS server endpoint (OpenAI-compatible /v1/audio/speech).",
+    )
+    p_conv.add_argument(
+        "--qwen-url", default="http://127.0.0.1:5013/v1/audio/speech",
+        help="Qwen3-TTS server (tools/qwen_tts_server.py) that renders "
+        "characters given an accent (Scottish, Irish) in cast --design.",
     )
     p_conv.add_argument(
         "-v", "--voice", default=None,
@@ -912,8 +1102,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_conv.add_argument(
         "--emote", action="store_true",
-        help="Orpheus only: let an LLM add sparse inline emotion tags "
-        "(<sigh>, <laugh>, <gasp>, ...) to dialogue based on textual cues. "
+        help="Let an LLM tag dialogue with emotion from textual cues: inline "
+        "tags (<sigh>, <laugh>, ...) for Orpheus, or a register (tense, angry, "
+        "sad, ...) that picks the voice's matching reference clip for F5. "
         "Needs --llm-url. Decisions are cached per book.",
     )
     p_conv.add_argument(
@@ -921,6 +1112,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Silence inserted when the speaking voice changes in --voice-map "
         "mode, in milliseconds (default: 250; 0 disables).",
     )
+
+    p_conv.add_argument("--paragraph-pause-ms", type=int, default=650,
+                        help="Silence at paragraph breaks, ms (default: 650).")
+    p_conv.add_argument("--stanza-pause-ms", type=int, default=900,
+                        help="Silence between verse stanzas, ms (default: 900).")
+    p_conv.add_argument("--line-pause-ms", type=int, default=300,
+                        help="Silence after an end-stopped verse line, ms "
+                        "(default: 300).")
+    p_conv.add_argument("--tts-temperature", type=float, default=0.0,
+                        help="Sampling temperature for the voice model (Fish; "
+                        "default 0 = the server's own, 0.8). Higher = more varied delivery.")
+    p_conv.add_argument("--speech-level-db", type=float, default=-20.0,
+                        help="Bring every rendered line to this speech level, dBFS "
+                        "(default -20; emotional lines keep a small offset; 0 = off).")
+    p_conv.add_argument("--prepare-only", action="store_true",
+                        help="Only attribute speakers and tag delivery (needs the LLM, not the "
+                        "voice servers); a later convert renders from the cached results.")
+    p_conv.add_argument("--cache-stem", default=None,
+                        help="Keep the attribution/emotion caches beside this path instead "
+                        "of each input (chapters cut from one book share one set).")
+    p_conv.add_argument("--steady-narration", choices=("anchor", "match", "off"),
+                        default="anchor",
+                        help="Keep long narration in one voice across chunks: 'anchor' (default) "
+                        "shows every narration chunk one shared take of its voice; 'match' also "
+                        "nudges each chunk to that take's pitch and tone; 'off' = independent chunks "
+                        "(servers without context support: always off).")
+    p_conv.add_argument("--parallel", type=int, default=0,
+                        help="Lines in flight per voice server (default 0: as many as each "
+                        "server batches, from its /health; 1 = one at a time).")
+    p_conv.add_argument("--verse-pacing", choices=("auto", "silence", "tags"),
+                        default="auto",
+                        help="How verse is paced: 'silence' renders it line by "
+                        "line with silences between; 'tags' sends each stanza "
+                        "whole with [pause]/[short pause] at line ends, for "
+                        "models that act on delivery tags (Fish S2); 'auto' "
+                        "(default) uses tags where the voice server supports them.")
     p_conv.add_argument(
         "--llm-url", default=None,
         help="OpenAI-compatible /v1/chat/completions endpoint used to attribute "
@@ -932,10 +1159,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name sent to --llm-url (default: 'default').",
     )
     p_conv.add_argument(
-        "--llm-context", type=int, default=350,
-        help="Characters of surrounding text sent with each quote during LLM "
-        "attribution. Wider resolves long exchanges better but costs slower "
-        "calls (default: 350).",
+        "--llm-context", type=int, default=6000,
+        help="Characters of consecutive text per LLM attribution passage. "
+        "Wider shows longer conversations per call (default: 6000).",
     )
     p_conv.add_argument(
         "--no-preprocess", action="store_true",
@@ -1019,8 +1245,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name sent to --llm-url (default: 'default').",
     )
     p_chars.add_argument(
-        "--llm-context", type=int, default=350,
-        help="Characters of context per quote in LLM attribution (default: 350).",
+        "--llm-context", type=int, default=6000,
+        help="Characters of text per LLM attribution passage (default: 6000).",
     )
     p_chars.add_argument(
         "--top", type=int, default=15,
@@ -1047,8 +1273,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_attr.add_argument("--llm-model", default="default",
                         help="Model name sent to --llm-url.")
-    p_attr.add_argument("--llm-context", type=int, default=350,
-                        help="Characters of context per quote (default: 350).")
+    p_attr.add_argument("--llm-context", type=int, default=6000,
+                        help="Characters of text per attribution passage (default: 6000).")
     p_attr.add_argument(
         "--no-strip-gutenberg", action="store_true",
         help="Do not auto-trim Project Gutenberg license header/footer text.",
@@ -1065,12 +1291,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output MP3/directory used when you say 'convert' in the session.",
     )
     p_cast.add_argument(
-        "-e", "--engine", choices=["piper", "orpheus", "f5"], default="orpheus",
-        help="TTS backend for the cast (default: orpheus).",
+        "-e", "--engine", choices=["piper", "orpheus", "f5", "fish"], default="fish",
+        help="TTS backend for the cast (default: fish).",
     )
     p_cast.add_argument(
-        "--f5-url", default="http://127.0.0.1:5010/v1/audio/speech",
-        help="F5-TTS server endpoint (used with --engine f5).",
+        "--fish-url", default="http://127.0.0.1:5014/v1/audio/speech",
+        help="Fish adapter endpoint (tools/fish_tts_server.py) for --engine fish.",
+    )
+    p_cast.add_argument(
+        "--f5-url", default="http://127.0.0.1:5011/v1/audio/speech",
+        help="F5-TTS server endpoint (used with --engine f5; default: the "
+        "XTX server on :5011).",
+    )
+    p_cast.add_argument(
+        "--qwen-url", default="http://127.0.0.1:5013/v1/audio/speech",
+        help="Qwen3-TTS server (tools/qwen_tts_server.py) that renders "
+        "characters given an accent (Scottish, Irish) in cast --design.",
+    )
+    p_cast.add_argument(
+        "--design", action="store_true",
+        help="Give each character an ORIGINAL voice designed from an LLM-"
+        "written description (Qwen3-TTS VoiceDesign), auditioned and "
+        "refined in the session, then rendered by F5. Implies --engine f5.",
+    )
+    p_cast.add_argument(
+        "--design-url", default="http://127.0.0.1:5012",
+        help="Voice-design server (tools/qwen_design_server.py).",
+    )
+    p_cast.add_argument(
+        "--audition-dir", default=None,
+        help="Folder for audition MP3s from --design (default: "
+        "<book>.auditions beside the book).",
+    )
+    p_cast.add_argument(
+        "--no-registers", action="store_true",
+        help="With --design: skip building emotional variants (tense, angry, "
+        "sad, ...) of each designed voice.",
+    )
+    p_cast.add_argument(
+        "--no-emote", action="store_true",
+        help="With --design: don't tag lines with emotional registers "
+        "(--design turns emotion tagging on by default).",
+    )
+    p_cast.add_argument(
+        "--no-play", action="store_true",
+        help="Never play audio on this machine's speakers — auditions are "
+        "only saved as MP3s (for remote/phone sessions).",
     )
     p_cast.add_argument(
         "--llm-url", default="http://127.0.0.1:8080/v1/chat/completions",
@@ -1083,8 +1349,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name sent to --llm-url (default: 'default').",
     )
     p_cast.add_argument(
-        "--llm-context", type=int, default=350,
-        help="Characters of context per quote in LLM attribution (default: 350).",
+        "--llm-context", type=int, default=6000,
+        help="Characters of text per LLM attribution passage (default: 6000).",
     )
     p_cast.add_argument(
         "--top", type=int, default=10,
@@ -1100,6 +1366,36 @@ def build_parser() -> argparse.ArgumentParser:
                         help="MP3 bitrate in kbps for the conversion.")
     p_cast.add_argument("--cast-pause-ms", type=int, default=250,
                         help="Silence at voice changes, ms (default: 250).")
+
+    p_cast.add_argument("--paragraph-pause-ms", type=int, default=650,
+                        help="Silence at paragraph breaks, ms (default: 650).")
+    p_cast.add_argument("--stanza-pause-ms", type=int, default=900,
+                        help="Silence between verse stanzas, ms (default: 900).")
+    p_cast.add_argument("--line-pause-ms", type=int, default=300,
+                        help="Silence after an end-stopped verse line, ms "
+                        "(default: 300).")
+    p_cast.add_argument("--tts-temperature", type=float, default=0.0,
+                        help="Sampling temperature for the voice model (Fish; "
+                        "default 0 = the server's own, 0.8). Higher = more varied delivery.")
+    p_cast.add_argument("--speech-level-db", type=float, default=-20.0,
+                        help="Bring every rendered line to this speech level, dBFS "
+                        "(default -20; emotional lines keep a small offset; 0 = off).")
+    p_cast.add_argument("--steady-narration", choices=("anchor", "match", "off"),
+                        default="anchor",
+                        help="Keep long narration in one voice across chunks: 'anchor' (default) "
+                        "shows every narration chunk one shared take of its voice; 'match' also "
+                        "nudges each chunk to that take's pitch and tone; 'off' = independent chunks "
+                        "(servers without context support: always off).")
+    p_cast.add_argument("--parallel", type=int, default=0,
+                        help="Lines in flight per voice server (default 0: as many as each "
+                        "server batches, from its /health; 1 = one at a time).")
+    p_cast.add_argument("--verse-pacing", choices=("auto", "silence", "tags"),
+                        default="auto",
+                        help="How verse is paced: 'silence' renders it line by "
+                        "line with silences between; 'tags' sends each stanza "
+                        "whole with [pause]/[short pause] at line ends, for "
+                        "models that act on delivery tags (Fish S2); 'auto' "
+                        "(default) uses tags where the voice server supports them.")
     p_cast.add_argument(
         "--emote", action="store_true",
         help="Orpheus only: add sparse LLM-chosen emotion tags to dialogue "
@@ -1110,9 +1406,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-trim Project Gutenberg license header/footer text.",
     )
     p_cast.add_argument(
+        "--no-fill-voices", action="store_true",
+        help="Don't fill casting gaps. By default the LLM reviews each "
+        "voice's fit (gender, age, accent); a poor fit gets a matching real "
+        "VCTK speaker imported, or a designed voice (--design-url) when VCTK "
+        "has none (children, old characters).",
+    )
+    p_cast.add_argument(
+        "--exclude-voices", action="append", metavar="TEXT",
+        help="Leave voices out of the cast whose name or description contains "
+        "TEXT (case-insensitive; repeatable), e.g. --exclude-voices librivox.",
+    )
+    p_cast.add_argument(
         "--fresh-cast", action="store_true",
         help="Ignore the saved cast (<input>.cast.json) and re-suggest from "
         "scratch. The saved file is overwritten as the new session proceeds.",
+    )
+    p_cast.add_argument(
+        "--do", action="append", default=None, metavar="COMMAND",
+        help="Run session commands without the interactive prompt, then exit "
+        "(repeatable): plain-English direction, 'Name = voice', 'cast', 'voices', "
+        "'map'... For scripts and agents.",
+    )
+    p_cast.add_argument(
+        "--cache-stem", default=None,
+        help="Keep the attribution cache and saved cast beside this path "
+        "instead of the input's.",
     )
     p_cast.set_defaults(func=cmd_cast)
 
@@ -1172,12 +1491,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not auto-trim Project Gutenberg license header/footer text.",
     )
     p_lex.set_defaults(func=cmd_lexicon)
+
+    p_score = sub.add_parser(
+        "score", help="Add mood music under the key scenes of a rendered chapter",
+        description="An LLM marks the chapter's key scenes and their moods; "
+        "ACE-Step composes an instrumental cue per scene at its length; the cues "
+        "are mixed under the narration (fades at scene edges, ducking under "
+        "speech). Needs the <name>.timeline.json a cast render writes.",
+    )
+    p_score.add_argument("input", help="The chapter's text file (as rendered)")
+    p_score.add_argument("--audio", required=True, help="The rendered chapter MP3")
+    p_score.add_argument("--timeline", default=None,
+                         help="Segment timeline (default: <audio>.timeline.json)")
+    p_score.add_argument("-o", "--output", default=None,
+                         help="Scored MP3 (default: <audio>_scored.mp3)")
+    p_score.add_argument("--llm-url", required=True,
+                         help="OpenAI-compatible chat endpoint that plans the scenes")
+    p_score.add_argument("--llm-model", default="default")
+    p_score.add_argument("--ace-url", default="http://127.0.0.1:8001",
+                         help="ACE-Step 1.5 API server (acestep.api_server)")
+    p_score.add_argument("--work-dir", default=None,
+                         help="Where the plan and cues are cached (default: <output>.score/)")
+    p_score.add_argument("--no-strip-gutenberg", action="store_true")
+    p_score.add_argument("--ahead", action="store_true",
+                         help="Compose the cues now from estimated scene lengths, "
+                         "before/while the narration renders (run on the music GPU "
+                         "in parallel); a normal score run afterwards fits and mixes them.")
+    p_score.add_argument("--chars-per-sec", type=float, default=15.0,
+                         help="Speaking rate for --ahead estimates (Fish ~16; lower "
+                         "= longer cues, safer).")
+    p_score.add_argument("--style", default="",
+                         help="Music style for every cue, in plain words (e.g. 'solo piano, "
+                         "romantic era'); changing it replans and recomposes the cues.")
+    p_score.add_argument("--plan-only", action="store_true",
+                         help="Only ask the LLM for the scene plan (cached in the work dir); "
+                         "composing and mixing need just the music server later.")
+    p_score.set_defaults(func=cmd_score)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Fish speaks the F5 protocol (voice registry, /v1/audio/speech), so it
+    # runs through the f5 code paths with every voice sent to the Fish
+    # adapter; args.fish switches on its per-sentence emotion tagging.
+    args.fish = getattr(args, "engine", None) == "fish"
+    if args.fish:
+        args.engine = "f5"
+        args.f5_url = args.qwen_url = args.fish_url
     # Piper logs a benign "Missing phoneme from id map" warning for rare IPA
     # diacritics it drops; hide those (and other sub-error noise) unless -v.
     verbose = getattr(args, "verbose", False)

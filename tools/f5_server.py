@@ -23,6 +23,9 @@ from pathlib import Path
 
 import numpy as np
 import soundfile
+# hipBLASLt instead of torch's rocBLAS default: F5 on a 7900 XTX went from
+# 3.50x to 5.78x real time (same audio). Must be set before torch loads.
+os.environ.setdefault("TORCH_BLAS_PREFER_HIPBLASLT", "1")
 import torch
 import torchaudio
 from fastapi import FastAPI, HTTPException
