@@ -471,6 +471,7 @@ class CastEngine(BaseEngine):
         plan: list = []        # ("gap", ms) | ("mark", entry) | ("piece", job)
         prev_assignment = None
         carry_ms = 0          # a paragraph break owed from the previous segment
+        prev_spoken = ""
         for seg in segments:
             # Narration tags arrive as ', said Ahab.' — drop the leading comma.
             spoken = _re.sub(r"^[\s,;:—\-]+", "", seg.text).strip()
@@ -484,6 +485,12 @@ class CastEngine(BaseEngine):
             # abrupt (self.pause_ms).
             if prev_assignment is not None and assignment != prev_assignment:
                 gap = max(gap, self.pause_ms)
+            # an aside in brackets mid-speech ("(Now this man acquired a field ...)" inside Peter's
+            # speech) is set off by a paragraph's beat each side: run straight on, it sounded like
+            # lines were missing (user, 10-17)
+            if spoken.startswith("(") or prev_spoken.endswith(")"):
+                gap = max(gap, self.paragraph_ms)
+            prev_spoken = spoken
             if prev_assignment is not None and gap:
                 plan.append(("gap", gap))
             tail = seg.text[len(seg.text.rstrip()):]

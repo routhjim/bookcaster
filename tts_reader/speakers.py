@@ -176,7 +176,14 @@ def _attribute_heuristic(segments: list[Segment]) -> None:
         if seg.kind != "quote" or seg.speaker:
             continue
         # Look at the narration right after the quote: ', said Ahab'
-        if i + 1 < len(segments) and segments[i + 1].kind == "narration":
+        # ... unless it is a new sentence leading INTO the next quote ('"...what shall we do?" And Peter
+        # said to them, "Repent..."'): that names the next speaker, not this one (the crowd's question
+        # went to Peter, 10-17)
+        lead_in = (i + 1 < len(segments) and re.search(r"[.?!]\s*$", seg.text)
+                   and segments[i + 1].text.strip()[:1].isupper()
+                   and re.search(r"[,:]\s*$", segments[i + 1].text)
+                   and i + 2 < len(segments) and segments[i + 2].kind == "quote")
+        if i + 1 < len(segments) and segments[i + 1].kind == "narration" and not lead_in:
             after = segments[i + 1].text
             m = _TAG_VERB_NAME.search(after) or _TAG_NAME_VERB.search(after)
             if not m and (_TAG_VERB_I.search(after) or _TAG_I_VERB.search(after)):
@@ -459,6 +466,16 @@ def enforce_dialogue_conventions(segments: list[Segment]) -> int:
         # The tag's own name, if it gives one ("added the March Hare"), beats
         # any guess for both quotes; "said she to Charlotte" names a listener.
         named = next((n for n in names if _tag_names(tag, n)), None)
+        if re.search(r"[.?!][’'\"”]?\s*$", seg.text) and tag.strip()[:1].isupper() \
+                and re.search(r"[,:]\s*$", tag):
+            # '"...to Israel?" He said to them, "It is not..."' / '"...what shall we do?" And Peter said
+            # to them, "Repent..."': a new sentence leading into the next quote, the ANSWER; it names
+            # (at most) the second speaker, never the first (Jesus's words went to the Apostles, the
+            # crowd's question to Peter, 10-17)
+            if named and segments[nxt].speaker != named:
+                segments[nxt].speaker = named
+                fixed += 1
+            continue
         who = named or seg.speaker
         for k in (i, nxt):
             if who and segments[k].speaker != who:

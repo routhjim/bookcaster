@@ -11,10 +11,17 @@ into a cast, scored audiobook. Built for an agent (or a person) to drive:
     bookcaster voice-remove <name>             delete one of your recorded voices
     bookcaster audition <book> Holmes          hear a character's voice
     bookcaster music <book> ["style"]          set / show the music style
+    bookcaster pace <book> [1.25]              set / show the listening speed (pitch kept)
     bookcaster art <book> ["style"]            set / show the picture style (--sample)
-    bookcaster make <book> [--no-music]        record it (background job)
-                    [--video]                  ...and make the picture video too
-    bookcaster video <book>                    picture video of what's recorded
+    bookcaster make <book> [--level L]         record it (background job); L, cheapest first:
+                                               audio | music (default) | pictures | moments | animated
+    bookcaster video <book> [--level L]        picture/animated video of what's recorded
+    bookcaster estimate <book>                 rough box time for each level
+    bookcaster sfx <book>                      add sound effects to recorded chapters (job)
+    bookcaster storyboard <book>               review pack before recording: voices, looks,
+                                               music, art (out/storyboard/; background job)
+    bookcaster look <book> [--do "N = desc"]   show / change how a character looks
+    bookcaster redraw <book> 12:30 [p021]      redraw pictures you don't like
                     [--music-only]             redo just the music, keep the voices
     bookcaster jellyfin [<book>]               copy finished videos to the Jellyfin server
     bookcaster status [<book>]                 what's running / done
@@ -58,6 +65,14 @@ VOICES_DIR = Path(os.environ.get("F5_VOICES_DIR")
                   or Path.home() / ".local" / "share" / "tts_reader" / "f5_voices").expanduser()
 USER_SOURCE = "user recording"
 CHARS_PER_SEC = 16.0          # Fish narration pace, for time estimates
+# What a recording includes, cheapest first; each level adds to the one before:
+# voices; + a score; + the still-picture video; + animated key moments;
+# fully animated (lip-synced dialogue, moving narration scenes).
+LEVELS = ["audio", "music", "pictures", "moments", "animated"]
+
+
+def at_least(level: str, floor: str) -> bool:
+    return LEVELS.index(level) >= LEVELS.index(floor)
 UA = {"User-Agent": "bookcaster/0.1 (personal audiobook tool)"}
 
 
@@ -316,6 +331,69 @@ def voice_remove(name: str) -> None:
     print(f"removed voice '{name}'")
 
 
+# --- pace -------------------------------------------------------------------------
+# The Fish server can't speak faster ("speed" is accepted but not applied), so
+# a book's pace is a pitch-preserving time-stretch of each chapter's voice
+# track right after recording, with the timeline scaled to match: music,
+# effects, captions, pictures and animation all follow it. ffmpeg's atempo:
+# the user's pick by ear (10-16) over Sonic, Rubber Band R2/R3, SoundTouch
+# and PSOLA on the same passage at 1.25x (R2 "sounded awful").
+
+# the user's standing choice (10-17): every book at 1.25x unless its pace.txt says otherwise
+DEFAULT_PACE = float(os.environ.get("BOOKCASTER_PACE", "1.25"))
+
+
+def book_pace(book: Path) -> float:
+    f = book / "pace.txt"
+    return float(f.read_text().strip()) if f.exists() else DEFAULT_PACE
+
+
+def set_pace(book: Path, pace: float) -> None:
+    if not 0.7 <= pace <= 1.6:
+        sys.exit("pace must be between 0.7 and 1.6 (1.25 = a quarter faster)")
+    (book / "pace.txt").write_text(f"{pace:g}\n")      # always written: no file = DEFAULT_PACE
+
+
+def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
+    """Bring a chapter's voice track and timeline to the book's pace, from the
+    unstretched copies (kept as .raw.*). *fresh*: the voices were just
+    recorded (at 1.0). True if anything changed."""
+    work = book / "work"
+    r, tl = work / f"{f.stem}.mp3", work / f"{f.stem}.timeline.json"
+    raw, raw_tl, mark = work / f"{f.stem}.raw.mp3", work / f"{f.stem}.raw.timeline.json", work / f"{f.stem}.pace"
+    if fresh:
+        for x in (raw, raw_tl, mark):
+            x.unlink(missing_ok=True)
+    if not r.exists() or not tl.exists():
+        return False
+    target, current = book_pace(book), float(mark.read_text()) if mark.exists() else 1.0
+    if abs(target - current) < 1e-6:
+        return False
+    if not raw.exists():
+        shutil.copyfile(r, raw)
+        shutil.copyfile(tl, raw_tl)
+    timeline = json.loads(raw_tl.read_text())
+    if abs(target - 1.0) < 1e-6:
+        shutil.copyfile(raw, r)
+        mark.unlink(missing_ok=True)
+    else:
+        tmp = r.with_name("." + r.name)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw), "-af",
+                        f"atempo={target:g}",
+                        "-b:a", "192k", "-f", "mp3", str(tmp)], check=True)
+        tmp.replace(r)
+        for seg in timeline:
+            seg["t"] = round(float(seg["t"]) / target, 3)
+        mark.write_text(f"{target:g}")
+    tl.write_text(json.dumps(timeline, ensure_ascii=False))
+    # Everything timed in seconds against the old track is stale now.
+    shutil.rmtree(work / "score" / f.stem, ignore_errors=True)
+    shutil.rmtree(work / "sfx" / f.stem, ignore_errors=True)
+    shutil.rmtree(_video_work(book, f) / "anim", ignore_errors=True)
+    log(f"  {f.stem}: voices at {target:g}x (music, effects and animated shots will be redone)")
+    return True
+
+
 # --- music style ------------------------------------------------------------------
 
 def music_style(book: Path) -> str:
@@ -345,6 +423,183 @@ def music_sample(book: Path, seconds: float = 30.0) -> Path:
                    check=True)
     wav.unlink()
     return mp3
+
+
+# --- storyboard and looks -----------------------------------------------------------
+
+STORYBOARD_SCENES = 12
+STORYBOARD_VOICES = 6
+
+_SHEET = """
+import sys, json
+from PIL import Image, ImageDraw, ImageFont
+items, out, cols, w = json.loads(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+font = None
+for f in ("/usr/share/fonts/google-noto/NotoSans-Regular.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"):
+    try:
+        font = ImageFont.truetype(f, 22); break
+    except OSError:
+        pass
+font = font or ImageFont.load_default()
+ims = [Image.open(p).convert("RGB") for p, _ in items]
+h = max(int(w * im.height / im.width) for im in ims)
+rows = (len(ims) + cols - 1) // cols
+sheet = Image.new("RGB", (cols * w, rows * (h + 34)), "white")
+d = ImageDraw.Draw(sheet)
+for n, (im, (_, label)) in enumerate(zip(ims, items)):
+    x, y = (n % cols) * w, (n // cols) * (h + 34)
+    sheet.paste(im.resize((w, int(w * im.height / im.width))), (x, y))
+    d.text((x + 6, y + h + 4), label, fill="black", font=font)
+sheet.save(out, quality=88)
+"""
+
+
+def _contact_sheet(items: list[tuple[str, str]], out: Path, cols: int, width: int) -> Path:
+    """A grid of pictures with a caption under each (PIL lives in the drawing venv)."""
+    from . import video
+    subprocess.run([str(video.ART_PYTHON), "-I", "-c", _SHEET, json.dumps(items), str(out),
+                    str(cols), str(width)], check=True)
+    return out
+
+
+def run_storyboard_job(book: Path) -> int:
+    """A cheap review pack before the expensive recording: the main voices,
+    every character's look, a music sample and the first scenes in the art
+    style, in out/storyboard/ with a summary of what to change and how."""
+    from . import video
+    files = chapter_files(book)
+    log = _logger(book)
+    if not files:
+        _set_status(book, state="failed", step="nothing picked (bookcaster pick)")
+        return 1
+    _set_status(book, state="running", step="storyboard", chapters=len(files), done=0, outputs=[],
+                started=time.strftime("%Y-%m-%d %H:%M"))
+    stamp = time.strftime("%m%d-%H%M")
+    sb = book / "out" / "storyboard"
+    sb.mkdir(parents=True, exist_ok=True)
+    made, notes = [], []
+    style = art_style(book) or video.DEFAULT_STYLE
+    try:
+        _set_status(book, step="storyboard: planning the pictures (characters, places, scenes)")
+        plan = plan_pictures_for(book, files[0], log)
+        work = _video_work(book, files[0])
+        first = plan["pictures"][:STORYBOARD_SCENES]
+        _set_status(book, step=f"storyboard: drawing the character sheets and {len(first)} scenes")
+        video.draw(first, work / "img", log=log, plan=plan, style=style)
+        chars, places = video.looks(plan)
+        prompts = video.ref_prompts(plan, style)
+        refs = work.parent / "refs"
+        seen, sheets = set(), []
+        for name in chars:
+            if name in prompts and video.canon(name) not in seen:
+                seen.add(video.canon(name))
+                sheets.append((str(video.ref_path(refs, name, prompts[name][0])), name))
+        sheets = [x for x in sheets if Path(x[0]).exists()]
+        if sheets:
+            made.append(_contact_sheet(sheets, sb / f"characters-{stamp}.jpg", 3, 640))
+            notes.append(f"characters-{stamp}.jpg: how each character looks. Change one with "
+                         f"`bookcaster look {book.name} --do \"Name = new description\"` "
+                         f"(see `bookcaster look {book.name}` for the current ones).")
+        scenes = [(str(work / "img" / f"{p['id']}.png"), f"{p['id']}: {p['prompt'][:46]}") for p in first
+                  if (work / "img" / f"{p['id']}.png").exists()]
+        if scenes:
+            made.append(_contact_sheet(scenes, sb / f"scenes-{stamp}.jpg", 4, 480))
+            notes.append(f"scenes-{stamp}.jpg: the first {len(scenes)} scenes of {files[0].stem} in the art "
+                         f"style ({style[:60]}...). Change the style with `bookcaster art {book.name} "
+                         f"\"...\"`, one picture with `bookcaster redraw`.")
+    except Exception as exc:
+        log(f"storyboard pictures failed: {exc}")
+        notes.append(f"(pictures failed: {exc})")
+    try:
+        _set_status(book, step="storyboard: voices")
+        lines = speaker_lines(book)
+        cast = sorted(lines, key=lambda k: -len(lines[k]))[:STORYBOARD_VOICES]
+        clips, order = [], []
+        for who in cast:
+            try:
+                clips.append(audition(book, who))
+                order.append(who)
+            except (SystemExit, Exception) as exc:
+                log(f"audition {who} failed: {exc}")
+        if clips:
+            gap = sb / ".gap.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            "anullsrc=r=44100:cl=mono", "-t", "0.9", str(gap)], check=True)
+            lst = sb / ".voices.txt"
+            lst.write_text("".join(f"file '{c}'\nfile '{gap}'\n" for c in clips))
+            out = sb / f"voices-{stamp}.mp3"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                            "-ar", "44100", "-ac", "1", "-b:a", "128k", str(out)], check=True)
+            lst.unlink(); gap.unlink()
+            made.append(out)
+            vm = dict(kv.split("=", 1) for kv in voice_map(book).split(","))
+            notes.append(f"voices-{stamp}.mp3: in order " + ", ".join(f"{w} ({vm.get(w, '?')})" for w in order)
+                         + f". Change one with `bookcaster cast {book.name} --do \"...\"`.")
+    except Exception as exc:
+        log(f"storyboard voices failed: {exc}")
+        notes.append(f"(voices failed: {exc})")
+    try:
+        _set_status(book, step="storyboard: music sample")
+        if http_ok(f"{ACE_URL}/health"):
+            m = music_sample(book)
+            out = sb / f"music-{stamp}.mp3"
+            shutil.copyfile(m, out)
+            made.append(out)
+            notes.append(f"music-{stamp}.mp3: 30 s in the music style "
+                         f"({music_style(book) or 'default: the planner picks per scene'}). "
+                         f"Change it with `bookcaster music {book.name} \"...\"`.")
+        else:
+            notes.append("(no music sample: the music server is down)")
+    except Exception as exc:
+        log(f"storyboard music failed: {exc}")
+        notes.append(f"(music failed: {exc})")
+    summary = sb / f"storyboard-{stamp}.txt"
+    summary.write_text(f"Storyboard for {book.name}\n\n" + "\n\n".join(notes)
+                       + f"\n\nWhen it's right: bookcaster make {book.name} --level <audio|music|pictures|"
+                         f"moments|animated> (see bookcaster estimate {book.name}).\n")
+    made.append(summary)
+    _set_status(book, state="done", step="storyboard ready", outputs=[str(m) for m in made],
+                finished=time.strftime("%Y-%m-%d %H:%M"))
+    return 0
+
+
+def show_looks(book: Path) -> str:
+    from . import video
+    reg = book / "work" / "video" / "look.json"
+    if not reg.exists():
+        return "no looks yet: they're written with the first picture plan (bookcaster storyboard)"
+    chars = json.loads(reg.read_text()).get("characters", {})
+    seen, out = set(), []
+    for k, v in chars.items():
+        if video.canon(k) not in seen:
+            seen.add(video.canon(k))
+            out.append(f"{k}: {v}")
+    return "\n".join(out)
+
+
+def set_look(book: Path, name: str, desc: str) -> str:
+    """Give a character a new look, under every spelling of the name. Their
+    reference sheet is redrawn and scenes with them are redrawn at the next
+    storyboard / video job (the scene prompts include the look)."""
+    from . import video
+    reg_path = book / "work" / "video" / "look.json"
+    if not reg_path.exists():
+        sys.exit("no looks yet: run bookcaster storyboard first")
+    reg = json.loads(reg_path.read_text())
+    chars = reg.get("characters", {})
+    hits = [k for k in chars if video.canon(k) == video.canon(name)] or \
+           [k for k in chars if name.lower() in k.lower()]
+    if len({video.canon(k) for k in hits}) > 1:
+        sys.exit(f"which character? " + ", ".join(sorted({k for k in chars})))
+    if not hits:
+        # someone the storyboard's few pictures didn't need yet (John, a crowd, ...): the full picture
+        # plan keeps looks already in the registry, so setting one now fixes how they'll be drawn
+        hits = [name.strip()]
+    desc = video.literal_safe(desc)
+    for k in hits:
+        chars[k] = desc
+    reg_path.write_text(json.dumps(reg, indent=1, ensure_ascii=False))
+    return hits[0]
 
 
 # --- finished files ------------------------------------------------------------------
@@ -432,7 +687,94 @@ def draw_pictures_for(book: Path, f: Path, log) -> None:
                        art_style(book) or video.DEFAULT_STYLE, LLM_URL, LLM_MODEL, log=log)
 
 
-def video_for(book: Path, f: Path, log) -> Path:
+def redraw_pictures(book: Path, f: Path, which: list[str]) -> list[str]:
+    """Mark pictures of a finished video to be drawn again (by time or id)."""
+    from . import video
+    work = _video_work(book, f)
+    plan = json.loads((work / "plan.json").read_text())
+    timeline = json.loads((book / "work" / f"{f.stem}.timeline.json").read_text())
+    pics = video.timed(plan, _chapter_text(f), timeline, video.audio_seconds(final_path(book, f)))
+    try:
+        return video.reject(pics, work / "img", which)
+    except ValueError as exc:
+        sys.exit(str(exc))
+
+
+def narrator_character(book: Path) -> str | None:
+    """The cast member who is the book's first-person narrator (Watson)."""
+    try:
+        chars = json.loads((book / "book.cast.json").read_text())["characters"]
+    except (OSError, ValueError, KeyError):
+        return None
+    return next((n for n, c in chars.items() if str(c.get("same_as", "")).lower() == "narrator"), None)
+
+
+def animate_all(book: Path, files: list[Path], level: str, log, status=lambda **k: None) -> None:
+    """Animated shots for every chapter: all planning first (keyframes planned, drawn, checked: the
+    language model on the iGPU), then all rendering (the VAE server on the iGPU). One switch for the
+    whole job; Strata takes minutes to load (10-17)."""
+    from . import animate
+    animate.igpu("strata", log)                # the picture plans and checks need it too
+    for n, f in enumerate(files, 1):
+        status(step=f"planning shots {n}/{len(files)}: {f.stem} ({level})")
+        draw_pictures_for(book, f, log)
+        animate_for(book, f, level, log, phase="plan")
+    for n, f in enumerate(files, 1):
+        status(step=f"animating {n}/{len(files)}: {f.stem} ({level})")
+        animate_for(book, f, level, log, phase="render")
+    animate.igpu("strata", log)                # the builds after this read plans with the language model
+
+
+def animate_for(book: Path, f: Path, level: str, log, phase: str = "all") -> list:
+    """Render the chapter's animated shots ("moments" or "animated"); the
+    pictures must be drawn. Talking shots are lip-synced to the voices-only
+    render (no music under the words)."""
+    from . import animate, video
+    voices = book / "work" / f"{f.stem}.mp3"
+    timeline = book / "work" / f"{f.stem}.timeline.json"
+    if not voices.exists() or not timeline.exists():
+        raise RuntimeError(f"{f.stem} isn't recorded yet")
+    return animate.animate_chapter(level, _chapter_text(f), voices, timeline, _video_work(book, f),
+                                   art_style(book) or video.DEFAULT_STYLE, log=log,
+                                   narrator=narrator_character(book), llm_url=LLM_URL, llm_model=LLM_MODEL,
+                                   phase=phase)
+
+
+def estimate_text(book: Path, only: str | None = None) -> str:
+    """Rough box time per level for the picked chapters (recorded ones use
+    their real length and dialogue share)."""
+    from . import animate, video
+    total = dialogue = 0.0
+    pics = 0
+    for f in chapter_files(book):
+        tl = book / "work" / f"{f.stem}.timeline.json"
+        rec = book / "work" / f"{f.stem}.mp3"
+        if tl.exists() and rec.exists():
+            secs = video.audio_seconds(rec)
+            dialogue += sum(r["t1"] - r["t0"] for r in animate.dialogue_runs(json.loads(tl.read_text()), secs))
+        else:
+            secs = len(_chapter_text(f)) / CHARS_PER_SEC
+            dialogue += 0.6 * secs
+        total += secs
+        pics += max(3, round(secs / 60))
+    hours = total / 3600
+    base = {"audio": 15 * hours + 5, "music": 18 * hours + 5}
+    base["pictures"] = base["music"] + pics * 12 / 60 + 4 * hours + 3
+    for lv in ("moments", "animated"):
+        base[lv] = base["pictures"] + animate.estimate_minutes(lv, total, dialogue, pics)
+    desc = {"audio": "voices only", "music": "voices + score", "pictures": "+ still-picture video",
+            "moments": f"+ {animate.MOMENTS_TALK} talking and {animate.MOMENTS_ACTION} action shots",
+            "animated": f"fully animated ({dialogue / 60:.0f} min lip-synced dialogue)"}
+
+    def fmt(m):
+        return f"{m:.0f} min" if m < 90 else f"{m / 60:.1f} h"
+
+    rows = [lv for lv in LEVELS if only is None or lv == only]
+    head = f"{book.name}: {total / 60:.0f} min of audio" + ("" if only else ", rough box time per level:")
+    return "\n".join([head] + [f"  {lv:9s} {fmt(base[lv]):>8s}  {desc[lv]}" for lv in rows])
+
+
+def video_for(book: Path, f: Path, log, level: str = "pictures") -> Path:
     from . import video
     audio = final_path(book, f)
     timeline = book / "work" / f"{f.stem}.timeline.json"
@@ -440,7 +782,7 @@ def video_for(book: Path, f: Path, log) -> Path:
         raise RuntimeError(f"{f.stem} isn't recorded yet")
     mp4 = video.make_video(_chapter_text(f), audio, timeline, final_path(book, f, "mp4"),
                            _video_work(book, f), LLM_URL, LLM_MODEL,
-                           style=art_style(book), log=log)
+                           style=art_style(book), log=log, animated=at_least(level, "moments"))
     out = publish(book, mp4)
     if to_jellyfin(book, f, log):
         from . import jellyfin
@@ -497,7 +839,7 @@ def _logger(book: Path):
     return write
 
 
-def run_video_job(book: Path) -> int:
+def run_video_job(book: Path, level: str = "pictures") -> int:
     files = [f for f in chapter_files(book) if final_path(book, f).exists()]
     if not files:
         _set_status(book, state="failed", step="nothing recorded yet (bookcaster make)")
@@ -506,10 +848,17 @@ def run_video_job(book: Path) -> int:
     _set_status(book, state="running", step="video", chapters=len(files), done=0, outputs=[],
                 started=time.strftime("%Y-%m-%d %H:%M"))
     outputs = []
+    if at_least(level, "moments"):
+        try:
+            animate_all(book, files, level, log, lambda **k: _set_status(book, **k))
+        except Exception as exc:
+            log(f"animation failed: {exc}")
+            _set_status(book, state="failed", step=f"animation: {exc}"[:300])
+            return 1
     for n, f in enumerate(files, 1):
         _set_status(book, step=f"video {n}/{len(files)}: {f.stem} (planning, drawing, building)")
         try:
-            outputs.append(str(video_for(book, f, log)))
+            outputs.append(str(video_for(book, f, log, level)))
         except Exception as exc:      # report it; the audio is unaffected
             log(f"video failed for {f.stem}: {exc}")
             _set_status(book, state="failed", step=f"video {f.stem}: {exc}"[:300])
@@ -533,12 +882,43 @@ def _set_status(book: Path, **kw) -> None:
     p.write_text(json.dumps(st, indent=1))
 
 
-def run_job(book: Path, music: bool = True, music_only: bool = False,
-            video: bool = False) -> int:
+def sfx_for(book: Path, f: Path, final: Path, log) -> None:
+    """Mix sound effects into a finished chapter file (in place)."""
+    from . import sfx
+    sfx.add_sfx(final, book / "work" / f"{f.stem}.mp3", book / "work" / f"{f.stem}.timeline.json",
+                book / "work" / "sfx" / f.stem, LLM_URL, LLM_MODEL, log=log)
+
+
+def run_sfx_job(book: Path) -> int:
+    files = [f for f in chapter_files(book) if final_path(book, f).exists()]
+    if not files:
+        _set_status(book, state="failed", step="nothing recorded yet (bookcaster make)")
+        return 1
+    log = _logger(book)
+    _set_status(book, state="running", step="sound effects", chapters=len(files), done=0, outputs=[],
+                started=time.strftime("%Y-%m-%d %H:%M"))
+    outputs = []
+    for n, f in enumerate(files, 1):
+        _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
+        try:
+            final = final_path(book, f)
+            sfx_for(book, f, final, log)
+            outputs.append(str(publish(book, final)))
+        except Exception as exc:
+            log(f"sound effects failed for {f.stem}: {exc}")
+            _set_status(book, state="failed", step=f"sound effects {f.stem}: {exc}"[:300])
+            return 1
+        _set_status(book, done=n, outputs=outputs)
+    _set_status(book, state="done", step="finished", outputs=outputs, finished=time.strftime("%Y-%m-%d %H:%M"))
+    return 0
+
+
+def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: bool = False) -> int:
     """Everything after casting, in order: delivery cues and the scene plan
     (LLM), then the voices (Fish) while the music composes (ACE), then the
     mix. Finished files go to out/. *music_only* keeps the existing voice
     recordings and redoes just the music (after a style change)."""
+    music, video = at_least(level, "music"), at_least(level, "pictures")
     work, out = book / "work", book / "out"
     work.mkdir(exist_ok=True)
     out.mkdir(exist_ok=True)
@@ -615,9 +995,16 @@ def run_job(book: Path, music: bool = True, music_only: bool = False,
         if tts("convert", f, *common, "-o", r, log=log).returncode or not r.exists():
             _set_status(book, state="failed", step=f"recording {f.stem} (see work/job.log)")
             return 1
+        apply_pace(book, f, _logger(book), fresh=True)
         if not music:
             final = final_path(book, f)
             shutil.copyfile(r, final)
+            if sfx:
+                _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
+                try:
+                    sfx_for(book, f, final, _logger(book))
+                except Exception as exc:
+                    _logger(book)(f"sound effects failed for {f.stem}: {exc}")
             outputs.append(str(publish(book, final)))
             _set_status(book, done=n, outputs=outputs)
     if composer is not None:
@@ -634,13 +1021,24 @@ def run_job(book: Path, music: bool = True, music_only: bool = False,
                 shutil.copyfile(r, final)        # the voices without music beat nothing
                 with open(log, "a") as fh:
                     fh.write(f"music mix failed for {f.stem}; saved it without music\n")
+            if sfx:
+                _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
+                try:
+                    sfx_for(book, f, final, _logger(book))
+                except Exception as exc:
+                    _logger(book)(f"sound effects failed for {f.stem}: {exc}")
             outputs.append(str(publish(book, final)))
             _set_status(book, done=n, outputs=outputs)
     if video:
+        if at_least(level, "moments"):
+            try:
+                animate_all(book, files, level, _logger(book), lambda **k: _set_status(book, **k))
+            except Exception as exc:
+                _logger(book)(f"animation failed: {exc}")
         for n, f in enumerate(files, 1):
             _set_status(book, step=f"building video {n}/{len(files)}: {f.stem}")
             try:
-                outputs.append(str(video_for(book, f, _logger(book))))
+                outputs.append(str(video_for(book, f, _logger(book), level)))
             except Exception as exc:
                 _logger(book)(f"video failed for {f.stem}: {exc}")
             _set_status(book, outputs=outputs)
@@ -653,8 +1051,9 @@ def unit_name(book: Path) -> str:
     return "bookcaster-" + re.sub(r"[^A-Za-z0-9_-]", "-", book.name)[:40]
 
 
-def start_job(book: Path, music: bool, music_only: bool = False, video: bool = False,
-              video_only: bool = False) -> None:
+def start_job(book: Path, level: str = "music", music_only: bool = False,
+              video_only: bool = False, storyboard: bool = False, sfx: bool = False,
+              sfx_only: bool = False) -> None:
     unit = unit_name(book)
     if subprocess.run(["systemctl", "--user", "is-active", "-q", unit]).returncode == 0:
         sys.exit(f"already recording {book.name} — `bookcaster status {book.name}`")
@@ -664,12 +1063,15 @@ def start_job(book: Path, music: bool, music_only: bool = False, video: bool = F
     cmd = ["systemd-run", "--user", f"--unit={unit}", "-p", "MemoryMax=8G",
            "-p", "MemorySwapMax=0", f"--working-directory={book}",
            sys.executable, "-m", "tts_reader.bookcaster", "_job", str(book)]
-    if not music:
-        cmd.append("--no-music")
+    cmd += ["--level", level]
+    if storyboard:
+        cmd.append("--storyboard")
+    if sfx:
+        cmd.append("--sfx")
+    if sfx_only:
+        cmd.append("--sfx-only")
     if music_only:
         cmd.append("--music-only")
-    if video:
-        cmd.append("--video")
     if video_only:
         cmd.append("--video-only")
     subprocess.run(cmd, check=True, capture_output=True)
@@ -747,12 +1149,35 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--sample", action="store_true", help="draw one picture of the opening")
     s = sub.add_parser("video", help="make the picture video of the recorded chapters (background job)")
     s.add_argument("book")
+    s.add_argument("--level", choices=LEVELS[2:], default="pictures",
+                   help="pictures (stills, default) | moments (+ animated key moments) | animated")
+    s = sub.add_parser("estimate", help="rough box time for each level")
+    s.add_argument("book")
+    s = sub.add_parser("pace", help="set or show the listening speed (1.25 = a quarter faster, pitch kept)")
+    s.add_argument("book")
+    s.add_argument("value", nargs="?", type=float)
+    s = sub.add_parser("sfx", help="add sound effects to the recorded chapters (background job)")
+    s.add_argument("book")
+    s = sub.add_parser("storyboard", help="review pack before recording: voices, looks, music, art (background job)")
+    s.add_argument("book")
+    s = sub.add_parser("look", help="show or change how characters look in the pictures")
+    s.add_argument("book")
+    s.add_argument("--do", action="append", default=[], metavar="NAME = DESCRIPTION",
+                   help='full new description, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
+    s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
+    s.add_argument("book")
+    s.add_argument("which", nargs="+", help="when it's on screen (12:30) or its number (p021)")
+    s.add_argument("--chapter", help="which chapter's video (a number or title words), if several")
     s = sub.add_parser("make", help="record the picked chapters (background job)")
     s.add_argument("book")
-    s.add_argument("--no-music", action="store_true")
+    s.add_argument("--level", choices=LEVELS, default=None,
+                   help="audio | music (default) | pictures (+ still-picture video) | "
+                        "moments (+ animated key moments) | animated (fully animated)")
+    s.add_argument("--no-music", action="store_true", help="same as --level audio")
     s.add_argument("--music-only", action="store_true",
                    help="keep the recorded voices, redo only the music (after `music` changes the style)")
-    s.add_argument("--video", action="store_true", help="also make the picture video")
+    s.add_argument("--video", action="store_true", help="same as --level pictures")
+    s.add_argument("--sfx", action="store_true", help="add sound effects (ambience + spot effects)")
     s = sub.add_parser("status", help="recording progress (all books, or one)")
     s.add_argument("book", nargs="?")
     s = sub.add_parser("stop", help="cancel a recording job")
@@ -763,10 +1188,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("services", help="voice / music / LLM server status")
     s = sub.add_parser("_job")
     s.add_argument("book")
-    s.add_argument("--no-music", action="store_true")
+    s.add_argument("--level", choices=LEVELS, default="music")
     s.add_argument("--music-only", action="store_true")
-    s.add_argument("--video", action="store_true")
     s.add_argument("--video-only", action="store_true")
+    s.add_argument("--storyboard", action="store_true")
+    s.add_argument("--sfx", action="store_true")
+    s.add_argument("--sfx-only", action="store_true")
     a = ap.parse_args(argv)
 
     if a.cmd == "search":
@@ -844,16 +1271,34 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         if not any(final_path(d, f).exists() for f in chapter_files(d)):
             sys.exit("nothing recorded yet: bookcaster make <book> (or make --video)")
-        start_job(d, music=True, video_only=True)
-        print(f"making the video for {d.name} in the background — `bookcaster status {d.name}`; "
+        start_job(d, level=a.level, video_only=True)
+        print(f"making the video ({a.level}) for {d.name} in the background — `bookcaster status {d.name}`; "
               f"the .mp4 appears in {d / 'out'}")
+    elif a.cmd == "redraw":
+        d = book_dir(a.book)
+        files = [f for f in chapter_files(d) if final_path(d, f, "mp4").exists()]
+        if a.chapter:
+            files = [f for f in files if f.stem.startswith(a.chapter.zfill(2) + "_")
+                     or a.chapter.lower() in f.stem.lower()]
+        if len(files) != 1:
+            sys.exit("which chapter? --chapter <number>: " + ", ".join(f.stem for f in files)
+                     if files else "no finished video to redraw")
+        f = files[0]
+        print("rejected " + ", ".join(redraw_pictures(d, f, a.which)))
+        start_job(d, level="pictures", video_only=True)
+        print(f"redrawing and rebuilding in the background — `bookcaster status {d.name}`")
     elif a.cmd == "make":
         d = book_dir(a.book)
         if not chapter_files(d):
             sys.exit("pick chapters first: bookcaster pick <book> ...")
         if not http_ok(FISH_URL.rsplit("/v1/", 1)[0] + "/health"):
             sys.exit("the voice server isn't up: tools/fish_stack.sh up all")
-        start_job(d, music=not a.no_music, music_only=a.music_only, video=a.video)
+        level = a.level or ("pictures" if a.video else "audio" if a.no_music else "music")
+        if a.no_music and at_least(level, "music"):
+            sys.exit("--no-music conflicts with --level " + level)
+        start_job(d, level=level, music_only=a.music_only, sfx=a.sfx)
+        if at_least(level, "moments"):
+            print(estimate_text(d, only=level))
         print(f"recording {d.name} in the background — `bookcaster status {d.name}`; "
               f"finished files appear in {d / 'out'}")
     elif a.cmd == "status":
@@ -884,9 +1329,56 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "services":
         return subprocess.run(["bash", str(STACK), "status"]).returncode
     elif a.cmd == "_job":
+        if a.storyboard:
+            return run_storyboard_job(Path(a.book))
+        if a.sfx_only:
+            return run_sfx_job(Path(a.book))
         if a.video_only:
-            return run_video_job(Path(a.book))
-        return run_job(Path(a.book), music=not a.no_music, music_only=a.music_only, video=a.video)
+            return run_video_job(Path(a.book), a.level)
+        return run_job(Path(a.book), a.level, music_only=a.music_only, sfx=a.sfx)
+    elif a.cmd == "estimate":
+        print(estimate_text(book_dir(a.book)))
+    elif a.cmd == "pace":
+        d = book_dir(a.book)
+        if a.value is None:
+            print(f"{d.name}: pace {book_pace(d):g}x")
+        else:
+            set_pace(d, a.value)
+            changed = [f.stem for f in chapter_files(d) if apply_pace(d, f, print)]
+            print(f"{d.name}: pace {book_pace(d):g}x")
+            if changed:
+                st = json.loads(_status_path(d).read_text() or "{}") if _status_path(d).exists() else {}
+                if st.get("music", True) and http_ok(f"{ACE_URL}/health"):
+                    start_job(d, level="music", music_only=True)
+                    print("re-mixing the music to the new pace in the background — `bookcaster status "
+                          f"{d.name}`; then remake the video / effects if they had them")
+                else:
+                    print(f"recorded chapters re-paced; remix with `bookcaster make {d.name} --music-only` "
+                          "(music server needed), then remake the video / effects if they had them")
+    elif a.cmd == "sfx":
+        d = book_dir(a.book)
+        if not any(final_path(d, f).exists() for f in chapter_files(d)):
+            sys.exit("nothing recorded yet: bookcaster make <book>")
+        start_job(d, sfx_only=True)
+        print(f"adding sound effects to {d.name} in the background — `bookcaster status {d.name}`")
+    elif a.cmd == "storyboard":
+        d = book_dir(a.book)
+        if not chapter_files(d):
+            sys.exit("pick chapters first: bookcaster pick <book> ...")
+        start_job(d, storyboard=True)
+        print(f"making the storyboard for {d.name} in the background (a few minutes) — "
+              f"`bookcaster status {d.name}`; files appear in {d / 'out' / 'storyboard'}")
+    elif a.cmd == "look":
+        d = book_dir(a.book)
+        for cmd in a.do:
+            if "=" not in cmd:
+                sys.exit('use "Name = full new description"')
+            name, desc = (x.strip() for x in cmd.split("=", 1))
+            print(f"{set_look(d, name, desc)} now: {desc}")
+        if a.do:
+            print("their character sheet and scenes are redrawn at the next storyboard or video job")
+        else:
+            print(show_looks(d))
     return 0
 
 
