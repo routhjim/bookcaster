@@ -19,7 +19,8 @@
 #   QWEN_VENV  venv the adapter runs in (Whisper check)      ~/tts-ab/.venv-qwen
 #   ACE_VENV / ACE_DIR  ACE-Step 1.5 venv and checkout       ~/tts-ab/.venv-ace, ~/tts-ab/ACE-Step-1.5
 #   ACE_SERVE  ACE launcher script                           ~/tts-ab/ab2/ace_serve.py
-#   FISH_GPU / ACE_GPU  HIP_VISIBLE_DEVICES for each         0 / 2
+#   FISH_BUS / ACE_BUS  PCI bus of the GPU for each          05 / 65
+#   FISH_GPU / ACE_GPU  HIP_VISIBLE_DEVICES index (overrides the bus lookup)
 #   FISH_WARM_REF  a voice clip to encode at start (optional)
 set -euo pipefail
 
@@ -29,8 +30,23 @@ QWEN_VENV=${QWEN_VENV:-$HOME/tts-ab/.venv-qwen}
 ACE_VENV=${ACE_VENV:-$HOME/tts-ab/.venv-ace}
 ACE_DIR=${ACE_DIR:-$HOME/tts-ab/ACE-Step-1.5}
 ACE_SERVE=${ACE_SERVE:-$HOME/tts-ab/ab2/ace_serve.py}
-FISH_GPU=${FISH_GPU:-0}
-ACE_GPU=${ACE_GPU:-2}
+# HIP numbers GPUs in KFD topology order, which changes with how the docks
+# come up at boot (a reboot swapped the iGPU and the second XTX): find each
+# server's GPU by its PCI bus instead of a fixed index.
+hip_index() {
+  local i=0 n p bus
+  for n in $(ls -d /sys/class/kfd/kfd/topology/nodes/* | sort -t/ -k8 -n); do
+    p=$n/properties
+    [ "$(awk '/^simd_count/{print $2}' "$p")" = 0 ] && continue
+    bus=$(printf %02x $(( $(awk '/^location_id/{print $2}' "$p") >> 8 )))
+    [ "$bus" = "$1" ] && { echo $i; return 0; }
+    i=$((i + 1))
+  done
+  echo "fish_stack: no GPU on PCI bus $1" >&2
+  return 1
+}
+FISH_GPU=${FISH_GPU:-$(hip_index "${FISH_BUS:-05}")}
+ACE_GPU=${ACE_GPU:-$(hip_index "${ACE_BUS:-65}")}
 FISH_WARM_REF=${FISH_WARM_REF:-$HOME/.local/share/tts_reader/f5_voices/bob.wav}
 STRATA_UP=${STRATA_UP:-$HOME/strata-eval/strata-best-up.sh}
 FLUSH=${FLUSH:-/usr/local/sbin/gpu-pool-flush}

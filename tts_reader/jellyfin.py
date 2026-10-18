@@ -3,9 +3,9 @@ share, then ask Jellyfin to rescan, so they can be cast from its phone app.
 
 Set up once in ~/.config/bookcaster/jellyfin (mode 600):
 
-    JELLYFIN_URL=http://192.168.4.32:8096
+    JELLYFIN_URL=http://<server>:8096
     JELLYFIN_KEY=<Dashboard -> API Keys>
-    SMB_SHARE=//192.168.4.32/bookcaster     (the folder a Jellyfin library reads)
+    SMB_SHARE=//<server>/bookcaster     (the folder a Jellyfin library reads)
     SMB_USER=bookcaster
     SMB_PASS=...
 
@@ -26,9 +26,11 @@ from urllib.request import Request, urlopen
 
 CONFIG = Path(os.environ.get("BOOKCASTER_JELLYFIN_CONFIG",
                              Path.home() / ".config" / "bookcaster" / "jellyfin")).expanduser()
-# Over Wi-Fi a full-speed copy starves everything else on the link (the
-# Happier session timed out during a full-speed download), so cap it.
-RATE = int(float(os.environ.get("BOOKCASTER_JELLYFIN_MBPS", "8")) * 2**20)
+# Capped so a big upload doesn't starve everything else on a Wi-Fi link (on
+# the old Wi-Fi 5 link the Happier session timed out during a full-speed
+# download, hence 8 MiB/s then). On Wi-Fi 7 (6 GHz, ~865 Mbit/s, 2026-10-16)
+# 40 MiB/s leaves most of the link free.
+RATE = int(float(os.environ.get("BOOKCASTER_JELLYFIN_MBPS", "40")) * 2**20)
 CHUNK = 1 << 20
 
 
