@@ -1192,10 +1192,10 @@ def _pp_split(out: Path, route: str, default: int) -> int:
 
 
 def _pp_fit(files: list) -> dict:
-    """pp_fit's BEST --split per route over these timing files."""
+    """pp_fit's BEST --split per route over these timing files, decode on card B (the default for every route)."""
     if not files:
         return {}
-    r = subprocess.run([str(LTX_PY), str(HERE / "ltx_runner" / "pp_fit.py"), *map(str, files)],
+    r = subprocess.run([str(LTX_PY), str(HERE / "ltx_runner" / "pp_fit.py"), "--decode-b", *map(str, files)],
                        capture_output=True, text=True)
     best, cur = {}, None
     for ln in r.stdout.splitlines():

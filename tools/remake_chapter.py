@@ -76,12 +76,16 @@ RUNNER_DIR = HERE / "ltx_runner"
 # The measured-best two-XTX LTX setup, the DEFAULT for every gen whatever flow calls ltx_step (user 10-26: "all future
 # runs use the most optimal ltx by default"): ltx_split_next.py --pp (process per card), two lanes sharing card A,
 # lanes 70 s out of step (~12%/frame, 10-24), pooled pinned buffers between the cards, fa_amd attention (-10% e2e) +
-# hipBLASLt (-12%), VAE decode on card 65 for the distilled (quiet) route only (A/B 10-24: frames identical, 58.3 ->
-# 52.5 s; on talk card 65 is already the slower card), and the per-route layer split pp_fit fits from this chapter's
-# timing, else the book's newest chapter (flow3d._pp_split). REMAKE_LTX_PP=0 = the old one-process ltx_split.py;
+# hipBLASLt (-12%), VAE decode on card 65 for EVERY route (A/B 10-24 on quiet: frames identical, 58.3 -> 52.5 s; user
+# 10-26: all clip types), and the per-route layer split pp_fit fits from this chapter's timing, else the book's newest
+# chapter (flow3d._pp_split), with the decode counted on card 65 so the split moves blocks back to card 05. REMAKE_LTX_PP=0 = the old one-process ltx_split.py;
 # REMAKE_LTX_PP_ARGS replaces LTX_PP_ARGS.
 PP = os.environ.get("REMAKE_LTX_PP", "1") != "0"
-LTX_PP_ARGS = "--lanes 2 --pp-shared-a --stagger 70 --pp-pool"
+LTX_PP_ARGS = "--lanes 2 --pp-shared-a --pp-pool --decode-b"
+# lane 2 starts half a clip late (10-26 user: per clip type; 70 s was half a two-stage action clip, more than a whole
+# ~45 s quiet one): half the route's median clip wall time from pp_timing (this chapter, else the book's newest),
+# else STAGGER_DEFAULT
+STAGGER_DEFAULT = {"a2vid": 100, "ti2v": 60, "ic": 60, "distilled": 22}
 LTX_GEN_ARGS = ("--fa-amd", "--blaslt")
 SPLIT_DEFAULT = {"a2vid": 25, "ti2v": 24, "ic": 17, "distilled": 17}
 LTX_PY = HOME / "tts-ab" / ".venv-ltx" / "bin" / "python"
@@ -2706,6 +2710,25 @@ def _split_arg(cx: Ctx, args: list) -> list:
     return ["--split", str(v)]
 
 
+def _stagger(cx: Ctx, route: str) -> int:
+    """Half the route's median clip wall time (s), from this chapter's pp_timing.jsonl, else the book's newest chapter."""
+    own = cx.OUT / "ltx" / "out" / "pp_timing.jsonl"
+    sib = sorted(cx.OUT.parent.parent.glob(f"*/{cx.OUT.name}/ltx/out/pp_timing.jsonl"),
+                 key=lambda f: f.stat().st_mtime, reverse=True)
+    for f in ([own] if own.exists() else []) + [f for f in sib if f != own]:
+        walls = []
+        for ln in f.read_text().splitlines():
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if r.get("route") == route and r.get("pp") and r.get("lanes", 1) > 1 and r.get("wall_s"):
+                walls.append(r["wall_s"])
+        if len(walls) >= 3:
+            return round(sorted(walls)[len(walls) // 2] / 2)
+    return STAGGER_DEFAULT[route]
+
+
 def _gen_args(cx: Ctx, args: list) -> list:
     """A gen call's args with the default fast set added (see PP above); encode calls pass through unchanged."""
     if not (args and args[0] == "gen"):
@@ -2714,8 +2737,8 @@ def _gen_args(cx: Ctx, args: list) -> list:
     if not PP:
         return out
     pp = os.environ.get("REMAKE_LTX_PP_ARGS", LTX_PP_ARGS).split()
-    if _route(args) == "distilled" and "--decode-b" not in out:
-        pp.append("--decode-b")
+    if "--stagger" not in pp and "--stagger" not in out:
+        pp += ["--stagger", str(_stagger(cx, _route(args)))]
     return out + ["--pp", *[a for a in pp if a not in out]] + _split_arg(cx, out)
 
 
