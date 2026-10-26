@@ -1,0 +1,7 @@
+{
+ "check": "clip.no_text",
+ "media": "fail_382_tablet.mp4",
+ "verdict": "fail",
+ "ctx": {},
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/out/r_talk-000382.mp4"
+}

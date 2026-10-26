@@ -233,7 +233,7 @@ def compose(ace_url: str, cue: dict, out: Path, seed: int = 7, timeout: float = 
 
 
 def mix(voice: Path, cues: list[dict], out: Path, level_db: float = -20.0,
-        bitrate: str = "192k") -> None:
+        bitrate: str = "192k", duck_ratio: float = 6.0) -> None:
     """Lay cues under the narration: fades at scene edges, a base level well
     below the voice (scaled by each cue's intensity), and sidechain ducking."""
     inputs = ["-i", str(voice)]
@@ -254,7 +254,7 @@ def mix(voice: Path, cues: list[dict], out: Path, level_db: float = -20.0,
               # unity (the default upmix drops it 3 dB)
               ";[0:a]aresample=48000,aformat=channel_layouts=mono,pan=stereo|c0=c0|c1=c0,"
               "asplit=2[v1][v2]"
-              ";[music][v1]sidechaincompress=threshold=0.03:ratio=6:attack=80:release=900[ducked]"
+              f";[music][v1]sidechaincompress=threshold=0.03:ratio={duck_ratio:g}:attack=80:release=900[ducked]"
               ";[v2][ducked]amix=inputs=2:normalize=0:duration=first[out]")
     subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph,
                     "-map", "[out]", "-c:a", "libmp3lame", "-b:a", bitrate, str(out)], check=True)

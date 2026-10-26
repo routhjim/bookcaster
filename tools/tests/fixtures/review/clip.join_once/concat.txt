@@ -1,0 +1,2 @@
+file '/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c0.mp4'
+file '/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c1.mp4'

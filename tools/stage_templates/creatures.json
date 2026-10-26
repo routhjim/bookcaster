@@ -1,0 +1,1870 @@
+{
+ "format": "creature_templates/1",
+ "frame": "metres at body length 1.0 (|chest - pelvis|); +X forward, Z up, +Y = left, feet on z=0",
+ "templates": {
+  "winged_quadruped": {
+   "joints": [
+    "pelvis",
+    "spine1",
+    "spine2",
+    "spine3",
+    "chest",
+    "neck1",
+    "neck2",
+    "neck3",
+    "neck4",
+    "head",
+    "jaw",
+    "tail1",
+    "tail2",
+    "tail3",
+    "tail4",
+    "tail5",
+    "tail6",
+    "tail7",
+    "tail8",
+    "fleg_l_hip",
+    "fleg_l_knee",
+    "fleg_l_ankle",
+    "fleg_l_toe",
+    "hleg_l_hip",
+    "hleg_l_knee",
+    "hleg_l_ankle",
+    "hleg_l_toe",
+    "wing_l_shoulder",
+    "wing_l_elbow",
+    "wing_l_wrist",
+    "wing_l_tip",
+    "wing_l_finger1",
+    "wing_l_finger2",
+    "wing_l_finger3",
+    "fleg_r_hip",
+    "fleg_r_knee",
+    "fleg_r_ankle",
+    "fleg_r_toe",
+    "hleg_r_hip",
+    "hleg_r_knee",
+    "hleg_r_ankle",
+    "hleg_r_toe",
+    "wing_r_shoulder",
+    "wing_r_elbow",
+    "wing_r_wrist",
+    "wing_r_tip",
+    "wing_r_finger1",
+    "wing_r_finger2",
+    "wing_r_finger3"
+   ],
+   "parents": {
+    "pelvis": null,
+    "spine1": "pelvis",
+    "spine2": "spine1",
+    "spine3": "spine2",
+    "chest": "spine3",
+    "neck1": "chest",
+    "neck2": "neck1",
+    "neck3": "neck2",
+    "neck4": "neck3",
+    "head": "neck4",
+    "jaw": "head",
+    "tail1": "pelvis",
+    "tail2": "tail1",
+    "tail3": "tail2",
+    "tail4": "tail3",
+    "tail5": "tail4",
+    "tail6": "tail5",
+    "tail7": "tail6",
+    "tail8": "tail7",
+    "fleg_l_hip": "chest",
+    "fleg_l_knee": "fleg_l_hip",
+    "fleg_l_ankle": "fleg_l_knee",
+    "fleg_l_toe": "fleg_l_ankle",
+    "hleg_l_hip": "pelvis",
+    "hleg_l_knee": "hleg_l_hip",
+    "hleg_l_ankle": "hleg_l_knee",
+    "hleg_l_toe": "hleg_l_ankle",
+    "wing_l_shoulder": "spine3",
+    "wing_l_elbow": "wing_l_shoulder",
+    "wing_l_wrist": "wing_l_elbow",
+    "wing_l_tip": "wing_l_wrist",
+    "wing_l_finger1": "wing_l_wrist",
+    "wing_l_finger2": "wing_l_wrist",
+    "wing_l_finger3": "wing_l_wrist",
+    "fleg_r_hip": "chest",
+    "fleg_r_knee": "fleg_r_hip",
+    "fleg_r_ankle": "fleg_r_knee",
+    "fleg_r_toe": "fleg_r_ankle",
+    "hleg_r_hip": "pelvis",
+    "hleg_r_knee": "hleg_r_hip",
+    "hleg_r_ankle": "hleg_r_knee",
+    "hleg_r_toe": "hleg_r_ankle",
+    "wing_r_shoulder": "spine3",
+    "wing_r_elbow": "wing_r_shoulder",
+    "wing_r_wrist": "wing_r_elbow",
+    "wing_r_tip": "wing_r_wrist",
+    "wing_r_finger1": "wing_r_wrist",
+    "wing_r_finger2": "wing_r_wrist",
+    "wing_r_finger3": "wing_r_wrist"
+   },
+   "rest": {
+    "pelvis": [
+     0.0,
+     0.0,
+     0.8
+    ],
+    "spine1": [
+     0.25,
+     0.0,
+     0.83
+    ],
+    "spine2": [
+     0.5,
+     0.0,
+     0.86
+    ],
+    "spine3": [
+     0.75,
+     0.0,
+     0.88
+    ],
+    "chest": [
+     1.0,
+     0.0,
+     0.88
+    ],
+    "neck1": [
+     1.14,
+     0.0,
+     1.0
+    ],
+    "neck2": [
+     1.27,
+     0.0,
+     1.17
+    ],
+    "neck3": [
+     1.38,
+     0.0,
+     1.36
+    ],
+    "neck4": [
+     1.47,
+     0.0,
+     1.55
+    ],
+    "head": [
+     1.57,
+     0.0,
+     1.7
+    ],
+    "jaw": [
+     1.6,
+     0.0,
+     1.64
+    ],
+    "tail1": [
+     -0.22,
+     0.0,
+     0.78
+    ],
+    "tail2": [
+     -0.46,
+     0.0,
+     0.715
+    ],
+    "tail3": [
+     -0.7,
+     0.0,
+     0.65
+    ],
+    "tail4": [
+     -0.94,
+     0.0,
+     0.585
+    ],
+    "tail5": [
+     -1.18,
+     0.0,
+     0.52
+    ],
+    "tail6": [
+     -1.42,
+     0.0,
+     0.455
+    ],
+    "tail7": [
+     -1.66,
+     0.0,
+     0.39
+    ],
+    "tail8": [
+     -1.9,
+     0.0,
+     0.325
+    ],
+    "fleg_l_hip": [
+     0.95,
+     0.22,
+     0.78
+    ],
+    "fleg_l_knee": [
+     1.0,
+     0.26,
+     0.45
+    ],
+    "fleg_l_ankle": [
+     0.95,
+     0.26,
+     0.12
+    ],
+    "fleg_l_toe": [
+     1.08,
+     0.27,
+     0.0
+    ],
+    "hleg_l_hip": [
+     0.05,
+     0.25,
+     0.78
+    ],
+    "hleg_l_knee": [
+     0.24,
+     0.29,
+     0.46
+    ],
+    "hleg_l_ankle": [
+     0.04,
+     0.29,
+     0.15
+    ],
+    "hleg_l_toe": [
+     0.18,
+     0.29,
+     0.0
+    ],
+    "wing_l_shoulder": [
+     0.85,
+     0.18,
+     1.02
+    ],
+    "wing_l_elbow": [
+     0.68,
+     0.8,
+     1.18
+    ],
+    "wing_l_wrist": [
+     0.78,
+     1.45,
+     1.28
+    ],
+    "wing_l_tip": [
+     0.55,
+     2.45,
+     1.32
+    ],
+    "wing_l_finger1": [
+     0.18,
+     2.05,
+     1.14
+    ],
+    "wing_l_finger2": [
+     -0.12,
+     1.55,
+     1.02
+    ],
+    "wing_l_finger3": [
+     -0.28,
+     0.95,
+     0.96
+    ],
+    "fleg_r_hip": [
+     0.95,
+     -0.22,
+     0.78
+    ],
+    "fleg_r_knee": [
+     1.0,
+     -0.26,
+     0.45
+    ],
+    "fleg_r_ankle": [
+     0.95,
+     -0.26,
+     0.12
+    ],
+    "fleg_r_toe": [
+     1.08,
+     -0.27,
+     0.0
+    ],
+    "hleg_r_hip": [
+     0.05,
+     -0.25,
+     0.78
+    ],
+    "hleg_r_knee": [
+     0.24,
+     -0.29,
+     0.46
+    ],
+    "hleg_r_ankle": [
+     0.04,
+     -0.29,
+     0.15
+    ],
+    "hleg_r_toe": [
+     0.18,
+     -0.29,
+     0.0
+    ],
+    "wing_r_shoulder": [
+     0.85,
+     -0.18,
+     1.02
+    ],
+    "wing_r_elbow": [
+     0.68,
+     -0.8,
+     1.18
+    ],
+    "wing_r_wrist": [
+     0.78,
+     -1.45,
+     1.28
+    ],
+    "wing_r_tip": [
+     0.55,
+     -2.45,
+     1.32
+    ],
+    "wing_r_finger1": [
+     0.18,
+     -2.05,
+     1.14
+    ],
+    "wing_r_finger2": [
+     -0.12,
+     -1.55,
+     1.02
+    ],
+    "wing_r_finger3": [
+     -0.28,
+     -0.95,
+     0.96
+    ]
+   },
+   "body_length_def": "|chest - pelvis| = 1.0",
+   "chains": {
+    "spine": [
+     "pelvis",
+     "spine1",
+     "spine2",
+     "spine3",
+     "chest"
+    ],
+    "neck": [
+     "chest",
+     "neck1",
+     "neck2",
+     "neck3",
+     "neck4",
+     "head"
+    ],
+    "tail": [
+     "pelvis",
+     "tail1",
+     "tail2",
+     "tail3",
+     "tail4",
+     "tail5",
+     "tail6",
+     "tail7",
+     "tail8"
+    ],
+    "jaw": [
+     "head",
+     "jaw"
+    ],
+    "leg_fl": [
+     "fleg_l_hip",
+     "fleg_l_knee",
+     "fleg_l_ankle",
+     "fleg_l_toe"
+    ],
+    "leg_hl": [
+     "hleg_l_hip",
+     "hleg_l_knee",
+     "hleg_l_ankle",
+     "hleg_l_toe"
+    ],
+    "wing_l": [
+     "wing_l_shoulder",
+     "wing_l_elbow",
+     "wing_l_wrist",
+     "wing_l_tip"
+    ],
+    "wing_l_fingers": [
+     "wing_l_finger1",
+     "wing_l_finger2",
+     "wing_l_finger3"
+    ],
+    "leg_fr": [
+     "fleg_r_hip",
+     "fleg_r_knee",
+     "fleg_r_ankle",
+     "fleg_r_toe"
+    ],
+    "leg_hr": [
+     "hleg_r_hip",
+     "hleg_r_knee",
+     "hleg_r_ankle",
+     "hleg_r_toe"
+    ],
+    "wing_r": [
+     "wing_r_shoulder",
+     "wing_r_elbow",
+     "wing_r_wrist",
+     "wing_r_tip"
+    ],
+    "wing_r_fingers": [
+     "wing_r_finger1",
+     "wing_r_finger2",
+     "wing_r_finger3"
+    ]
+   },
+   "feet": [
+    "fleg_l_toe",
+    "fleg_r_toe",
+    "hleg_l_toe",
+    "hleg_r_toe"
+   ],
+   "anchors": {
+    "head": {
+     "joint": "head",
+     "offset": [
+      0.1,
+      0.0,
+      0.05
+     ]
+    },
+    "snout": {
+     "joint": "head",
+     "offset": [
+      0.42,
+      0.0,
+      -0.02
+     ]
+    },
+    "jaw": {
+     "joint": "jaw",
+     "offset": [
+      0.36,
+      0.0,
+      -0.06
+     ]
+    },
+    "chest": {
+     "joint": "chest",
+     "offset": [
+      0.12,
+      0.0,
+      -0.12
+     ]
+    },
+    "claw_l": {
+     "joint": "fleg_l_toe",
+     "offset": [
+      0.06,
+      0.0,
+      0.0
+     ]
+    },
+    "claw_r": {
+     "joint": "fleg_r_toe",
+     "offset": [
+      0.06,
+      0.0,
+      0.0
+     ]
+    },
+    "claw_tip_l": {
+     "joint": "fleg_l_toe",
+     "offset": [
+      0.12,
+      0.0,
+      0.01
+     ]
+    },
+    "claw_tip_r": {
+     "joint": "fleg_r_toe",
+     "offset": [
+      0.12,
+      0.0,
+      0.01
+     ]
+    },
+    "belly": {
+     "joint": "spine2",
+     "offset": [
+      0.0,
+      0.0,
+      -0.22
+     ]
+    }
+   },
+   "limits": {
+    "fleg_l_knee": {
+     "angle": [
+      60,
+      178
+     ]
+    },
+    "fleg_l_ankle": {
+     "angle": [
+      70,
+      180
+     ]
+    },
+    "hleg_l_knee": {
+     "angle": [
+      50,
+      175
+     ]
+    },
+    "hleg_l_ankle": {
+     "angle": [
+      40,
+      175
+     ]
+    },
+    "wing_l_shoulder": {
+     "elev": [
+      -35,
+      85
+     ]
+    },
+    "wing_l_elbow": {
+     "angle": [
+      20,
+      170
+     ]
+    },
+    "wing_l_wrist": {
+     "angle": [
+      12,
+      175
+     ]
+    },
+    "fleg_r_knee": {
+     "angle": [
+      60,
+      178
+     ]
+    },
+    "fleg_r_ankle": {
+     "angle": [
+      70,
+      180
+     ]
+    },
+    "hleg_r_knee": {
+     "angle": [
+      50,
+      175
+     ]
+    },
+    "hleg_r_ankle": {
+     "angle": [
+      40,
+      175
+     ]
+    },
+    "wing_r_shoulder": {
+     "elev": [
+      -35,
+      85
+     ]
+    },
+    "wing_r_elbow": {
+     "angle": [
+      20,
+      170
+     ]
+    },
+    "wing_r_wrist": {
+     "angle": [
+      12,
+      175
+     ]
+    },
+    "neck1": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck2": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck3": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck4": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "tail1": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail2": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail3": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail4": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail5": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail6": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail7": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail8": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "jaw": {
+     "open": [
+      0,
+      45
+     ]
+    }
+   },
+   "membrane": {
+    "l": [
+     "wing_l_shoulder",
+     "wing_l_elbow",
+     "wing_l_wrist",
+     "wing_l_tip",
+     "wing_l_finger1",
+     "wing_l_finger2",
+     "wing_l_finger3",
+     "pelvis",
+     "spine2"
+    ],
+    "r": [
+     "wing_r_shoulder",
+     "wing_r_elbow",
+     "wing_r_wrist",
+     "wing_r_tip",
+     "wing_r_finger1",
+     "wing_r_finger2",
+     "wing_r_finger3",
+     "pelvis",
+     "spine2"
+    ]
+   },
+   "wing_poses": {
+    "folded": {
+     "elbow": 25,
+     "wrist": 15,
+     "elev": 10
+    },
+    "half": {
+     "elbow": 95,
+     "wrist": 90,
+     "elev": 20
+    },
+    "spread": {
+     "elbow": 165,
+     "wrist": 170,
+     "elev": 25
+    }
+   }
+  },
+  "quadruped": {
+   "joints": [
+    "pelvis",
+    "spine1",
+    "spine2",
+    "spine3",
+    "chest",
+    "neck1",
+    "neck2",
+    "neck3",
+    "neck4",
+    "head",
+    "jaw",
+    "tail1",
+    "tail2",
+    "tail3",
+    "tail4",
+    "tail5",
+    "tail6",
+    "tail7",
+    "tail8",
+    "fleg_l_hip",
+    "fleg_l_knee",
+    "fleg_l_ankle",
+    "fleg_l_toe",
+    "hleg_l_hip",
+    "hleg_l_knee",
+    "hleg_l_ankle",
+    "hleg_l_toe",
+    "fleg_r_hip",
+    "fleg_r_knee",
+    "fleg_r_ankle",
+    "fleg_r_toe",
+    "hleg_r_hip",
+    "hleg_r_knee",
+    "hleg_r_ankle",
+    "hleg_r_toe"
+   ],
+   "parents": {
+    "pelvis": null,
+    "spine1": "pelvis",
+    "spine2": "spine1",
+    "spine3": "spine2",
+    "chest": "spine3",
+    "neck1": "chest",
+    "neck2": "neck1",
+    "neck3": "neck2",
+    "neck4": "neck3",
+    "head": "neck4",
+    "jaw": "head",
+    "tail1": "pelvis",
+    "tail2": "tail1",
+    "tail3": "tail2",
+    "tail4": "tail3",
+    "tail5": "tail4",
+    "tail6": "tail5",
+    "tail7": "tail6",
+    "tail8": "tail7",
+    "fleg_l_hip": "chest",
+    "fleg_l_knee": "fleg_l_hip",
+    "fleg_l_ankle": "fleg_l_knee",
+    "fleg_l_toe": "fleg_l_ankle",
+    "hleg_l_hip": "pelvis",
+    "hleg_l_knee": "hleg_l_hip",
+    "hleg_l_ankle": "hleg_l_knee",
+    "hleg_l_toe": "hleg_l_ankle",
+    "fleg_r_hip": "chest",
+    "fleg_r_knee": "fleg_r_hip",
+    "fleg_r_ankle": "fleg_r_knee",
+    "fleg_r_toe": "fleg_r_ankle",
+    "hleg_r_hip": "pelvis",
+    "hleg_r_knee": "hleg_r_hip",
+    "hleg_r_ankle": "hleg_r_knee",
+    "hleg_r_toe": "hleg_r_ankle"
+   },
+   "rest": {
+    "pelvis": [
+     0.0,
+     0.0,
+     0.8
+    ],
+    "spine1": [
+     0.25,
+     0.0,
+     0.83
+    ],
+    "spine2": [
+     0.5,
+     0.0,
+     0.86
+    ],
+    "spine3": [
+     0.75,
+     0.0,
+     0.88
+    ],
+    "chest": [
+     1.0,
+     0.0,
+     0.88
+    ],
+    "neck1": [
+     1.14,
+     0.0,
+     1.0
+    ],
+    "neck2": [
+     1.27,
+     0.0,
+     1.17
+    ],
+    "neck3": [
+     1.38,
+     0.0,
+     1.36
+    ],
+    "neck4": [
+     1.47,
+     0.0,
+     1.55
+    ],
+    "head": [
+     1.57,
+     0.0,
+     1.7
+    ],
+    "jaw": [
+     1.6,
+     0.0,
+     1.64
+    ],
+    "tail1": [
+     -0.22,
+     0.0,
+     0.78
+    ],
+    "tail2": [
+     -0.46,
+     0.0,
+     0.715
+    ],
+    "tail3": [
+     -0.7,
+     0.0,
+     0.65
+    ],
+    "tail4": [
+     -0.94,
+     0.0,
+     0.585
+    ],
+    "tail5": [
+     -1.18,
+     0.0,
+     0.52
+    ],
+    "tail6": [
+     -1.42,
+     0.0,
+     0.455
+    ],
+    "tail7": [
+     -1.66,
+     0.0,
+     0.39
+    ],
+    "tail8": [
+     -1.9,
+     0.0,
+     0.325
+    ],
+    "fleg_l_hip": [
+     0.95,
+     0.22,
+     0.78
+    ],
+    "fleg_l_knee": [
+     1.0,
+     0.26,
+     0.45
+    ],
+    "fleg_l_ankle": [
+     0.95,
+     0.26,
+     0.12
+    ],
+    "fleg_l_toe": [
+     1.08,
+     0.27,
+     0.0
+    ],
+    "hleg_l_hip": [
+     0.05,
+     0.25,
+     0.78
+    ],
+    "hleg_l_knee": [
+     0.24,
+     0.29,
+     0.46
+    ],
+    "hleg_l_ankle": [
+     0.04,
+     0.29,
+     0.15
+    ],
+    "hleg_l_toe": [
+     0.18,
+     0.29,
+     0.0
+    ],
+    "fleg_r_hip": [
+     0.95,
+     -0.22,
+     0.78
+    ],
+    "fleg_r_knee": [
+     1.0,
+     -0.26,
+     0.45
+    ],
+    "fleg_r_ankle": [
+     0.95,
+     -0.26,
+     0.12
+    ],
+    "fleg_r_toe": [
+     1.08,
+     -0.27,
+     0.0
+    ],
+    "hleg_r_hip": [
+     0.05,
+     -0.25,
+     0.78
+    ],
+    "hleg_r_knee": [
+     0.24,
+     -0.29,
+     0.46
+    ],
+    "hleg_r_ankle": [
+     0.04,
+     -0.29,
+     0.15
+    ],
+    "hleg_r_toe": [
+     0.18,
+     -0.29,
+     0.0
+    ]
+   },
+   "body_length_def": "|chest - pelvis| = 1.0",
+   "chains": {
+    "spine": [
+     "pelvis",
+     "spine1",
+     "spine2",
+     "spine3",
+     "chest"
+    ],
+    "neck": [
+     "chest",
+     "neck1",
+     "neck2",
+     "neck3",
+     "neck4",
+     "head"
+    ],
+    "tail": [
+     "pelvis",
+     "tail1",
+     "tail2",
+     "tail3",
+     "tail4",
+     "tail5",
+     "tail6",
+     "tail7",
+     "tail8"
+    ],
+    "jaw": [
+     "head",
+     "jaw"
+    ],
+    "leg_fl": [
+     "fleg_l_hip",
+     "fleg_l_knee",
+     "fleg_l_ankle",
+     "fleg_l_toe"
+    ],
+    "leg_hl": [
+     "hleg_l_hip",
+     "hleg_l_knee",
+     "hleg_l_ankle",
+     "hleg_l_toe"
+    ],
+    "leg_fr": [
+     "fleg_r_hip",
+     "fleg_r_knee",
+     "fleg_r_ankle",
+     "fleg_r_toe"
+    ],
+    "leg_hr": [
+     "hleg_r_hip",
+     "hleg_r_knee",
+     "hleg_r_ankle",
+     "hleg_r_toe"
+    ]
+   },
+   "feet": [
+    "fleg_l_toe",
+    "fleg_r_toe",
+    "hleg_l_toe",
+    "hleg_r_toe"
+   ],
+   "anchors": {
+    "head": {
+     "joint": "head",
+     "offset": [
+      0.1,
+      0.0,
+      0.05
+     ]
+    },
+    "snout": {
+     "joint": "head",
+     "offset": [
+      0.42,
+      0.0,
+      -0.02
+     ]
+    },
+    "jaw": {
+     "joint": "jaw",
+     "offset": [
+      0.36,
+      0.0,
+      -0.06
+     ]
+    },
+    "chest": {
+     "joint": "chest",
+     "offset": [
+      0.12,
+      0.0,
+      -0.12
+     ]
+    },
+    "claw_l": {
+     "joint": "fleg_l_toe",
+     "offset": [
+      0.06,
+      0.0,
+      0.0
+     ]
+    },
+    "claw_r": {
+     "joint": "fleg_r_toe",
+     "offset": [
+      0.06,
+      0.0,
+      0.0
+     ]
+    },
+    "claw_tip_l": {
+     "joint": "fleg_l_toe",
+     "offset": [
+      0.12,
+      0.0,
+      0.01
+     ]
+    },
+    "claw_tip_r": {
+     "joint": "fleg_r_toe",
+     "offset": [
+      0.12,
+      0.0,
+      0.01
+     ]
+    },
+    "belly": {
+     "joint": "spine2",
+     "offset": [
+      0.0,
+      0.0,
+      -0.22
+     ]
+    }
+   },
+   "limits": {
+    "fleg_l_knee": {
+     "angle": [
+      60,
+      178
+     ]
+    },
+    "fleg_l_ankle": {
+     "angle": [
+      70,
+      180
+     ]
+    },
+    "hleg_l_knee": {
+     "angle": [
+      50,
+      175
+     ]
+    },
+    "hleg_l_ankle": {
+     "angle": [
+      40,
+      175
+     ]
+    },
+    "fleg_r_knee": {
+     "angle": [
+      60,
+      178
+     ]
+    },
+    "fleg_r_ankle": {
+     "angle": [
+      70,
+      180
+     ]
+    },
+    "hleg_r_knee": {
+     "angle": [
+      50,
+      175
+     ]
+    },
+    "hleg_r_ankle": {
+     "angle": [
+      40,
+      175
+     ]
+    },
+    "neck1": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck2": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck3": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "neck4": {
+     "angle": [
+      120,
+      180
+     ]
+    },
+    "tail1": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail2": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail3": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail4": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail5": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail6": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail7": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "tail8": {
+     "angle": [
+      140,
+      180
+     ]
+    },
+    "jaw": {
+     "open": [
+      0,
+      45
+     ]
+    }
+   }
+  },
+  "biped_creature": {
+   "joints": [
+    "pelvis",
+    "spine1",
+    "spine2",
+    "spine3",
+    "chest",
+    "neck1",
+    "neck2",
+    "head",
+    "jaw",
+    "arm_l_shoulder",
+    "arm_l_elbow",
+    "arm_l_wrist",
+    "arm_l_hand",
+    "leg_l_hip",
+    "leg_l_knee",
+    "leg_l_ankle",
+    "leg_l_toe",
+    "tail1",
+    "tail2",
+    "tail3",
+    "tail4",
+    "tail5",
+    "arm_r_shoulder",
+    "arm_r_elbow",
+    "arm_r_wrist",
+    "arm_r_hand",
+    "leg_r_hip",
+    "leg_r_knee",
+    "leg_r_ankle",
+    "leg_r_toe"
+   ],
+   "parents": {
+    "pelvis": null,
+    "spine1": "pelvis",
+    "spine2": "spine1",
+    "spine3": "spine2",
+    "chest": "spine3",
+    "neck1": "chest",
+    "neck2": "neck1",
+    "head": "neck2",
+    "jaw": "head",
+    "arm_l_shoulder": "chest",
+    "arm_l_elbow": "arm_l_shoulder",
+    "arm_l_wrist": "arm_l_elbow",
+    "arm_l_hand": "arm_l_wrist",
+    "leg_l_hip": "pelvis",
+    "leg_l_knee": "leg_l_hip",
+    "leg_l_ankle": "leg_l_knee",
+    "leg_l_toe": "leg_l_ankle",
+    "tail1": "pelvis",
+    "tail2": "tail1",
+    "tail3": "tail2",
+    "tail4": "tail3",
+    "tail5": "tail4",
+    "arm_r_shoulder": "chest",
+    "arm_r_elbow": "arm_r_shoulder",
+    "arm_r_wrist": "arm_r_elbow",
+    "arm_r_hand": "arm_r_wrist",
+    "leg_r_hip": "pelvis",
+    "leg_r_knee": "leg_r_hip",
+    "leg_r_ankle": "leg_r_knee",
+    "leg_r_toe": "leg_r_ankle"
+   },
+   "rest": {
+    "pelvis": [
+     0.0,
+     0.0,
+     1.1
+    ],
+    "spine1": [
+     0.0,
+     0.0,
+     1.35
+    ],
+    "spine2": [
+     0.0,
+     0.0,
+     1.6
+    ],
+    "spine3": [
+     0.0,
+     0.0,
+     1.85
+    ],
+    "chest": [
+     0.02,
+     0.0,
+     2.1
+    ],
+    "neck1": [
+     0.05,
+     0.0,
+     2.25
+    ],
+    "neck2": [
+     0.08,
+     0.0,
+     2.38
+    ],
+    "head": [
+     0.12,
+     0.0,
+     2.5
+    ],
+    "jaw": [
+     0.16,
+     0.0,
+     2.44
+    ],
+    "arm_l_shoulder": [
+     0.0,
+     0.32,
+     2.05
+    ],
+    "arm_l_elbow": [
+     0.0,
+     0.62,
+     1.7
+    ],
+    "arm_l_wrist": [
+     0.05,
+     0.78,
+     1.35
+    ],
+    "arm_l_hand": [
+     0.1,
+     0.84,
+     1.18
+    ],
+    "leg_l_hip": [
+     0.0,
+     0.2,
+     1.05
+    ],
+    "leg_l_knee": [
+     0.05,
+     0.24,
+     0.58
+    ],
+    "leg_l_ankle": [
+     0.0,
+     0.24,
+     0.1
+    ],
+    "leg_l_toe": [
+     0.2,
+     0.24,
+     0.0
+    ],
+    "tail1": [
+     -0.25,
+     0.0,
+     1.0
+    ],
+    "tail2": [
+     -0.5,
+     0.0,
+     0.86
+    ],
+    "tail3": [
+     -0.75,
+     0.0,
+     0.72
+    ],
+    "tail4": [
+     -1.0,
+     0.0,
+     0.58
+    ],
+    "tail5": [
+     -1.25,
+     0.0,
+     0.44
+    ],
+    "arm_r_shoulder": [
+     0.0,
+     -0.32,
+     2.05
+    ],
+    "arm_r_elbow": [
+     0.0,
+     -0.62,
+     1.7
+    ],
+    "arm_r_wrist": [
+     0.05,
+     -0.78,
+     1.35
+    ],
+    "arm_r_hand": [
+     0.1,
+     -0.84,
+     1.18
+    ],
+    "leg_r_hip": [
+     0.0,
+     -0.2,
+     1.05
+    ],
+    "leg_r_knee": [
+     0.05,
+     -0.24,
+     0.58
+    ],
+    "leg_r_ankle": [
+     0.0,
+     -0.24,
+     0.1
+    ],
+    "leg_r_toe": [
+     0.2,
+     -0.24,
+     0.0
+    ]
+   },
+   "body_length_def": "|chest - pelvis| = 1.0",
+   "chains": {
+    "spine": [
+     "pelvis",
+     "spine1",
+     "spine2",
+     "spine3",
+     "chest"
+    ],
+    "neck": [
+     "chest",
+     "neck1",
+     "neck2",
+     "head"
+    ],
+    "tail": [
+     "pelvis",
+     "tail1",
+     "tail2",
+     "tail3",
+     "tail4",
+     "tail5"
+    ],
+    "jaw": [
+     "head",
+     "jaw"
+    ],
+    "arm_l": [
+     "arm_l_shoulder",
+     "arm_l_elbow",
+     "arm_l_wrist",
+     "arm_l_hand"
+    ],
+    "leg_l": [
+     "leg_l_hip",
+     "leg_l_knee",
+     "leg_l_ankle",
+     "leg_l_toe"
+    ],
+    "arm_r": [
+     "arm_r_shoulder",
+     "arm_r_elbow",
+     "arm_r_wrist",
+     "arm_r_hand"
+    ],
+    "leg_r": [
+     "leg_r_hip",
+     "leg_r_knee",
+     "leg_r_ankle",
+     "leg_r_toe"
+    ]
+   },
+   "feet": [
+    "leg_l_toe",
+    "leg_r_toe"
+   ],
+   "anchors": {
+    "head": {
+     "joint": "head",
+     "offset": [
+      0.08,
+      0.0,
+      0.05
+     ]
+    },
+    "jaw": {
+     "joint": "jaw",
+     "offset": [
+      0.22,
+      0.0,
+      -0.04
+     ]
+    },
+    "chest": {
+     "joint": "chest",
+     "offset": [
+      0.15,
+      0.0,
+      -0.1
+     ]
+    },
+    "claw_l": {
+     "joint": "arm_l_hand",
+     "offset": [
+      0.05,
+      0.0,
+      -0.08
+     ]
+    },
+    "claw_r": {
+     "joint": "arm_r_hand",
+     "offset": [
+      0.05,
+      0.0,
+      -0.08
+     ]
+    }
+   },
+   "limits": {
+    "jaw": {
+     "open": [
+      0,
+      40
+     ]
+    },
+    "arm_l_elbow": {
+     "angle": [
+      30,
+      180
+     ]
+    },
+    "leg_l_knee": {
+     "angle": [
+      40,
+      180
+     ]
+    },
+    "arm_r_elbow": {
+     "angle": [
+      30,
+      180
+     ]
+    },
+    "leg_r_knee": {
+     "angle": [
+      40,
+      180
+     ]
+    }
+   }
+  },
+  "serpent": {
+   "joints": [
+    "head",
+    "body1",
+    "body2",
+    "body3",
+    "body4",
+    "body5",
+    "body6",
+    "body7",
+    "body8",
+    "body9",
+    "body10",
+    "body11",
+    "body12",
+    "body13",
+    "body14",
+    "body15",
+    "body16",
+    "jaw"
+   ],
+   "parents": {
+    "head": null,
+    "body1": "head",
+    "body2": "body1",
+    "body3": "body2",
+    "body4": "body3",
+    "body5": "body4",
+    "body6": "body5",
+    "body7": "body6",
+    "body8": "body7",
+    "body9": "body8",
+    "body10": "body9",
+    "body11": "body10",
+    "body12": "body11",
+    "body13": "body12",
+    "body14": "body13",
+    "body15": "body14",
+    "body16": "body15",
+    "jaw": "head"
+   },
+   "rest": {
+    "head": [
+     0.0,
+     0.0,
+     0.12
+    ],
+    "body1": [
+     -0.25,
+     0.0,
+     0.1
+    ],
+    "body2": [
+     -0.5,
+     0.0,
+     0.1
+    ],
+    "body3": [
+     -0.75,
+     0.0,
+     0.1
+    ],
+    "body4": [
+     -1.0,
+     0.0,
+     0.1
+    ],
+    "body5": [
+     -1.25,
+     0.0,
+     0.1
+    ],
+    "body6": [
+     -1.5,
+     0.0,
+     0.1
+    ],
+    "body7": [
+     -1.75,
+     0.0,
+     0.1
+    ],
+    "body8": [
+     -2.0,
+     0.0,
+     0.1
+    ],
+    "body9": [
+     -2.25,
+     0.0,
+     0.1
+    ],
+    "body10": [
+     -2.5,
+     0.0,
+     0.1
+    ],
+    "body11": [
+     -2.75,
+     0.0,
+     0.1
+    ],
+    "body12": [
+     -3.0,
+     0.0,
+     0.1
+    ],
+    "body13": [
+     -3.25,
+     0.0,
+     0.1
+    ],
+    "body14": [
+     -3.5,
+     0.0,
+     0.1
+    ],
+    "body15": [
+     -3.75,
+     0.0,
+     0.1
+    ],
+    "body16": [
+     -4.0,
+     0.0,
+     0.1
+    ],
+    "jaw": [
+     0.05,
+     0.0,
+     0.08
+    ]
+   },
+   "body_length_def": "|head - body4| = 1.0 (serpents: the first 4 segments)",
+   "chains": {
+    "body": [
+     "head",
+     "body1",
+     "body2",
+     "body3",
+     "body4",
+     "body5",
+     "body6",
+     "body7",
+     "body8",
+     "body9",
+     "body10",
+     "body11",
+     "body12",
+     "body13",
+     "body14",
+     "body15",
+     "body16"
+    ],
+    "jaw": [
+     "head",
+     "jaw"
+    ]
+   },
+   "feet": [],
+   "anchors": {
+    "head": {
+     "joint": "head",
+     "offset": [
+      0.12,
+      0.0,
+      0.03
+     ]
+    },
+    "jaw": {
+     "joint": "jaw",
+     "offset": [
+      0.2,
+      0.0,
+      -0.02
+     ]
+    }
+   },
+   "limits": {
+    "body1": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body2": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body3": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body4": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body5": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body6": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body7": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body8": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body9": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body10": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body11": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body12": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body13": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body14": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body15": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "body16": {
+     "angle": [
+      135,
+      180
+     ]
+    },
+    "jaw": {
+     "open": [
+      0,
+      60
+     ]
+    }
+   }
+  }
+ }
+}

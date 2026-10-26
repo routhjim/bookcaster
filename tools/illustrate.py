@@ -166,6 +166,7 @@ def serve(a, device: str) -> int:
     enc = load_encoder(device)
     pipe = load_drawer(device)
     print(json.dumps({"phase": "load drawing model (kept)", "seconds": round(time.time() - t, 1)}), flush=True)
+    cache: dict = {}                          # best-of-N: the candidates of a keyframe share one prompt
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -173,7 +174,11 @@ def serve(a, device: str) -> int:
         t = time.time()
         try:
             if not Path(j["path"]).exists():
-                draw_one(pipe, j, encode(enc, j["prompt"], device), a, device)
+                if j["prompt"] not in cache:
+                    if len(cache) >= 8:
+                        cache.pop(next(iter(cache)))
+                    cache[j["prompt"]] = encode(enc, j["prompt"], device)
+                draw_one(pipe, j, cache[j["prompt"]], a, device)
             print(json.dumps({"id": j["id"], "refs": j.get("_refs", 0), "seconds": round(time.time() - t, 1)}),
                   flush=True)
         except Exception as exc:              # a bad job (an unreadable reference): report, keep serving

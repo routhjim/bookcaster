@@ -1,0 +1,10 @@
+{
+ "check": "clip.speaker_present",
+ "media": "fail_382_tablet.mp4",
+ "verdict": "fail",
+ "ctx": {
+  "speech": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/audio/talk-000382_pad.wav",
+  "speaker_x": 416.02955537675473
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/out/r_talk-000382.mp4"
+}

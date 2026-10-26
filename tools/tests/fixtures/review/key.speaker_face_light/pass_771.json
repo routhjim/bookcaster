@@ -1,0 +1,13 @@
+{
+ "check": "key.speaker_face_light",
+ "media": "pass_771.png",
+ "verdict": "pass",
+ "ctx": {
+  "speaker": "Hulda",
+  "speaker_face": {
+   "h_frac": 0.288,
+   "luma": 57.6
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000771/key.png"
+}

@@ -1,0 +1,7 @@
+{
+ "check": "clip.no_placeholder",
+ "media": "pass_1745_painted_anvil.mp4",
+ "verdict": "pass",
+ "ctx": {"only": ["clip.no_placeholder"]},
+ "source": "knight ch1 10-21 overnight r_action-001745 (thin text staging)"
+}

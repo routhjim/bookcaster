@@ -1,0 +1,11 @@
+{
+ "check": "asset.creature_watertight",
+ "media": "fail_rig6_torn_jaw.json",
+ "verdict": "fail",
+ "ctx": {
+  "file": "/home/jrouth/tts_reader/tools/tests/fixtures/review/asset.creature_watertight/fail_rig6_torn_jaw.json.src",
+  "field": "ok",
+  "rule": "truthy"
+ },
+ "source": "/home/jrouth/tts_reader/eval/blockout/models/vorgrath_rig6/qa/q_checks.json"
+}

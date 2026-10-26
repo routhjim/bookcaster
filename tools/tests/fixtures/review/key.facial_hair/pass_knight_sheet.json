@@ -1,0 +1,23 @@
+{
+ "check": "key.facial_hair",
+ "media": "pass_knight_sheet.png",
+ "verdict": "pass",
+ "ctx": {
+  "size": [
+   1280,
+   896
+  ],
+  "people": {
+   "Knight": {
+    "box": [
+     0,
+     0,
+     640,
+     896
+    ],
+    "beard": "no"
+   }
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/refs/knight-8a8e3755.png"
+}

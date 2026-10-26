@@ -52,7 +52,8 @@ STRATA_UP=${STRATA_UP:-$HOME/strata-eval/strata-best-up.sh}
 FLUSH=${FLUSH:-/usr/local/sbin/gpu-pool-flush}
 # GiB that must be free before each start (its load peak plus margin).
 FISH_NEED_GB=${FISH_NEED_GB:-12}
-ACE_NEED_GB=${ACE_NEED_GB:-16}
+# ACE-Step loads onto its card: 0.7 GB peak RSS measured (10-18); 16 refused it beside Strata at 15 GB free
+ACE_NEED_GB=${ACE_NEED_GB:-12}
 STRATA_NEED_GB=${STRATA_NEED_GB:-96}
 
 music=0; strata=0

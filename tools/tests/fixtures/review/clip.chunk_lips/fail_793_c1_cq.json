@@ -1,0 +1,31 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c1.mp4",
+ "frames": 101,
+ "flags": [
+  "no lip-sync: mouth motion {'voiced': 36, 'corr': -0.031, 'act_voiced': 0.64, 'voiced_vs_pause': 0.99, 'listener_vs_speaker': 0.6, 'ok': False}"
+ ],
+ "cuts": [],
+ "step_median": 0.08,
+ "camera": {
+  "scale_min": 1.0,
+  "scale_max": 1.0,
+  "shift_max": 0.0,
+  "samples": 16,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "transient_max": 0.0,
+ "speaker_present": 1.0,
+ "mouth": {
+  "voiced": 36,
+  "corr": -0.031,
+  "act_voiced": 0.64,
+  "voiced_vs_pause": 0.99,
+  "listener_vs_speaker": 0.6,
+  "ok": false
+ },
+ "pass": false
+}

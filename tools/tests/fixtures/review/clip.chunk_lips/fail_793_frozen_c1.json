@@ -1,0 +1,19 @@
+{
+ "check": "clip.chunk_lips",
+ "media": "fail_793_frozen_c1.mp4",
+ "verdict": "fail",
+ "ctx": {
+  "chunks": [
+   {
+    "mp4": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c0.mp4",
+    "wav": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c0.wav"
+   },
+   {
+    "mp4": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c1.mp4",
+    "wav": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.chunk_lips/fail_793_c1.wav"
+   }
+  ],
+  "speaker_x": 415.9559666913702
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/out/r_talk-000793.mp4"
+}

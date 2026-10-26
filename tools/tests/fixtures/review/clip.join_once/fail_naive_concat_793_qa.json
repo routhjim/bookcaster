@@ -1,0 +1,19 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.join_once/fail_naive_concat_793.mp4",
+ "frames": 222,
+ "flags": [],
+ "cuts": [],
+ "step_median": 0.14,
+ "camera": {
+  "scale_min": 0.997,
+  "scale_max": 1.001,
+  "shift_max": 0.004,
+  "samples": 36,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "pass": true
+}

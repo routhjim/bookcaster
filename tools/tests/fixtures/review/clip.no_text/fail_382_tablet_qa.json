@@ -1,0 +1,19 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.no_text/fail_382_tablet.mp4",
+ "frames": 229,
+ "flags": [],
+ "cuts": [],
+ "step_median": 1.39,
+ "camera": {
+  "scale_min": 1.0,
+  "scale_max": 1.0,
+  "shift_max": 0.0,
+  "samples": 0,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "pass": true
+}

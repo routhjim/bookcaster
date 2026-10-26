@@ -1,0 +1,492 @@
+{
+ "_doc": "Generic prop classification (any book). A chapter prop name is matched by its words (lowercase): the first rule whose word list hits decides. physical props get a 3D model (tools/props_build.py) built on the library entry 'base' (affordances, proxy parts); 'states' words after a comma or before the base word ('Sword, heated', 'Dark Blue Sword') are STATES of that family (one mesh, material variants). mobility: fixed = anchored to the SET (the location's layout, never moved by the planner; a collider and support surface), movable = a state machine across the story (held-by / resting-on / carried / in), semi = carried or set down. joints = articulated parts (split from the mesh by a slab rule in the prop frame: axis + fraction of the bounding box).",
+ "physical": [
+  {
+   "words": [
+    "anvil"
+   ],
+   "base": "anvil",
+   "mobility": "fixed",
+   "size_m": 0.75,
+   "near": {
+    "object": "forge fire",
+    "dist": 1.3,
+    "_doc": "stands in front of the forge fire"
+   },
+   "work_support": true,
+   "impact_fx": {
+    "type": "sparks",
+    "count": 70,
+    "size": 0.3
+   },
+   "work_hot": true,
+   "rest": "long_horizontal",
+   "stand_m": 0.8
+  },
+  {
+   "words": [
+    "workbench",
+    "work bench",
+    "table"
+   ],
+   "base": "workbench",
+   "mobility": "fixed",
+   "size_m": 1.4,
+   "rest": "long_horizontal"
+  },
+  {
+   "words": [
+    "bellows",
+    "bellow"
+   ],
+   "base": "bellows",
+   "mobility": "fixed",
+   "size_m": 1.4,
+   "joints": [
+    {
+     "name": "board",
+     "type": "hinge",
+     "axis": "y",
+     "pivot": [
+      -0.5,
+      0.0,
+      0.5
+     ],
+     "part": {
+      "axis": "z",
+      "above": 0.55
+     },
+     "limits": [
+      0,
+      22
+     ],
+     "rest": 0,
+     "cycle": {
+      "action": "pump",
+      "period_s": 1.4,
+      "range": [
+       0,
+       20
+      ]
+     },
+     "handles": "board"
+    }
+   ],
+   "ref_prompt": "A large blacksmith's forge bellows, about 1.4 m long: two big wooden boards joined by pleated dark leather, a long wooden lever handle on top, standing on a sturdy wooden frame, iron nozzle at the front. The whole object alone, three-quarter view from slightly above, plain flat light grey background, nothing else.",
+   "rest": "long_horizontal",
+   "near": {
+    "object": "forge fire",
+    "dist": 1.0,
+    "beside": 0.9,
+    "aim": true,
+    "aim_yaw": 180.0,
+    "_doc": "beside the hearth, its nozzle pointing into the fire (the board handle away from it, where the smith stands)"
+   }
+  },
+  {
+   "words": [
+    "door"
+   ],
+   "base": "door",
+   "mobility": "fixed",
+   "size_m": 2.0,
+   "joints": [
+    {
+     "name": "leaf",
+     "type": "hinge",
+     "axis": "z",
+     "pivot": [
+      0.0,
+      -0.5,
+      0.0
+     ],
+     "part": {
+      "axis": "x",
+      "above": 0.0
+     },
+     "limits": [
+      0,
+      95
+     ],
+     "rest": 0,
+     "states": {
+      "closed": 0,
+      "ajar": 25,
+      "open": 90
+     }
+    }
+   ],
+   "architectural": true,
+   "opening_m": [
+    1.0,
+    2.1
+   ]
+  },
+  {
+   "words": [
+    "hammer"
+   ],
+   "base": "hammer",
+   "mobility": "movable",
+   "size_m": 0.45,
+   "context_prompts": [
+    {
+     "when": [
+      "blacksmith",
+      "smith",
+      "forge",
+      "forging",
+      "anvil"
+     ],
+     "prompt": "A blacksmith's forging hammer, about 45 cm long: a heavy hand-forged dark iron head, one flat round striking face and one narrow wedge-shaped cross peen on the other side, NO claw, on a plain straight wooden handle worn smooth; medieval, old and sooty. Product shot of the object alone, three-quarter view from slightly above, the whole object in the picture, plain flat light grey background, soft even light, no hands, no people."
+    }
+   ]
+  },
+  {
+   "words": [
+    "tongs"
+   ],
+   "base": "tongs",
+   "mobility": "movable",
+   "size_m": 0.55,
+   "offhand_for": "strike_on_support",
+   "context_prompts": [
+    {
+     "when": [
+      "blacksmith",
+      "smith",
+      "forge",
+      "forging",
+      "anvil"
+     ],
+     "prompt": "A pair of blacksmith's forging tongs, about 55 cm long: two long straight black iron handles crossing at a riveted pivot near the front, short heavy curved jaws for gripping hot metal; hand-forged, sooty dark iron. Product shot of the object alone, three-quarter view from slightly above, the whole object in the picture, plain flat light grey background, soft even light, no hands, no people."
+    }
+   ],
+   "_doc_context": "10-21: the bare word drew kitchen tongs, a 'blacksmith's hammer' a modern claw hammer (user caught both)"
+  },
+  {
+   "words": [
+    "sword",
+    "blade"
+   ],
+   "base": "sword",
+   "mobility": "movable",
+   "size_m": 1.0,
+   "state_words": {
+    "heated": {
+     "emission": 3.0,
+     "tint": [
+      1.0,
+      0.45,
+      0.12
+     ]
+    },
+    "glowing": {
+     "emission": 3.0,
+     "tint": [
+      1.0,
+      0.45,
+      0.12
+     ]
+    },
+    "cooled": {
+     "tint": [
+      0.35,
+      0.37,
+      0.42
+     ]
+    },
+    "dark blue": {
+     "tint": [
+      0.05,
+      0.12,
+      0.55
+     ],
+     "emission": 0.35,
+     "shimmer": true
+    },
+    "finished": {
+     "tint": [
+      0.05,
+      0.12,
+      0.55
+     ],
+     "emission": 0.35,
+     "shimmer": true
+    },
+    "folded": {}
+   },
+   "work_state": {
+    "name": "blank",
+    "library": "blank",
+    "desc": "a rough sword blank mid-forging, orange-hot: a flat tapered blade already drawn out with rough uneven edges and a blunt point, NO crossguard, NO pommel, a bare square tang at one end",
+    "ref_prompt": "A rough sword blank in the middle of forging: one flat tapered blade about 1 m long, already drawn out into a blade shape with rough hammered uneven edges and a blunt point, glowing orange-hot in the middle, NO crossguard, NO grip, NO pommel, only a bare narrow square tang at one end. The whole object alone lying flat, seen from slightly above, plain flat light grey background, nothing else."
+   },
+   "ref_prompt": "A single plain medieval longsword about 1 m long: a straight double-edged grey steel blade, a simple straight crossguard, a leather-wrapped grip and a round pommel, cold unheated metal. The whole sword alone lying horizontally, seen from the side, plain flat light grey background, nothing else."
+  },
+  {
+   "words": [
+    "star-iron",
+    "star iron",
+    "ingot"
+   ],
+   "base": "ingot",
+   "mobility": "movable",
+   "size_m": 0.35,
+   "state_words": {
+    "cracked": {
+     "crack": true,
+     "tint": [
+      0.55,
+      0.55,
+      0.6
+     ]
+    },
+    "flowing": {
+     "crack": true,
+     "emission": 1.5,
+     "tint": [
+      1.0,
+      0.55,
+      0.2
+     ]
+    }
+   },
+   "ref_prompt": "A single rough irregular lump of dark meteoric iron, the size of a loaf of bread, pitted and craggy surface with a faint starry silver shimmer in the metal. The whole object alone, three-quarter view from slightly above, plain flat light grey background, nothing else."
+  },
+  {
+   "words": [
+    "stone"
+   ],
+   "base": "stone",
+   "mobility": "movable",
+   "size_m": 0.9,
+   "ref_prompt": "A single rough, irregular rock of dark grey stone, angular, with deep cracks and a few faint blue glints in the cracks, about 0.9 m long. A natural rock: no carving, no animal shape, no face. The whole rock alone, three-quarter view from slightly above, plain flat light grey background, nothing else.",
+   "_doc_ref_prompt": "10-22: 'a dark stone wrapped in oilcloth' was drawn as a sleeping dog four times; the cloth comes from the keyframes"
+  },
+  {
+   "words": [
+    "oilcloth",
+    "cloth"
+   ],
+   "base": "oilcloth",
+   "mobility": "movable",
+   "size_m": 0.8,
+   "ref_prompt": "A single folded piece of plain dark oilcloth: a dull, plain, waxed brownish-black canvas cloth about 80 cm across, loosely folded, no pattern, no picture, no embroidery. The whole cloth alone, three-quarter view from slightly above, plain flat light grey background, nothing else.",
+   "soft": true
+  },
+  {
+   "words": [
+    "lantern"
+   ],
+   "base": "lantern",
+   "mobility": "semi",
+   "size_m": 0.38,
+   "light": {
+    "part": "glass",
+    "energy": 25,
+    "color": [
+     1.0,
+     0.75,
+     0.4
+    ]
+   },
+   "ref_prompt": "A single old iron lantern with glass panes and a candle flame inside, a ring handle on top. The whole object alone, three-quarter view, plain flat light grey background, nothing else, no plate, no shelf, no table."
+  },
+  {
+   "words": [
+    "torch"
+   ],
+   "base": "torch",
+   "mobility": "semi",
+   "size_m": 0.6,
+   "light": {
+    "part": "head",
+    "energy": 40,
+    "color": [
+     1.0,
+     0.6,
+     0.25
+    ]
+   }
+  },
+  {
+   "words": [
+    "reins"
+   ],
+   "base": "reins",
+   "mobility": "movable",
+   "size_m": 1.2,
+   "procedural": "straps",
+   "soft": true
+  },
+  {
+   "words": [
+    "shield"
+   ],
+   "base": "shield",
+   "mobility": "movable",
+   "size_m": 0.7
+  },
+  {
+   "words": [
+    "bow"
+   ],
+   "base": "bow",
+   "mobility": "movable",
+   "size_m": 1.5
+  },
+  {
+   "words": [
+    "helm",
+    "helmet"
+   ],
+   "base": "helm",
+   "mobility": "movable",
+   "size_m": 0.3
+  },
+  {
+   "words": [
+    "bucket"
+   ],
+   "base": "bucket",
+   "mobility": "semi",
+   "size_m": 0.35
+  },
+  {
+   "words": [
+    "cup",
+    "goblet"
+   ],
+   "base": "cup",
+   "mobility": "movable",
+   "size_m": 0.15
+  },
+  {
+   "words": [
+    "hearth",
+    "fireplace",
+    "forge fire",
+    "forge"
+   ],
+   "base": "hearth",
+   "mobility": "fixed",
+   "size_m": 1.6,
+   "architectural": true,
+   "opening_m": [
+    1.6,
+    1.2
+   ]
+  },
+  {
+   "words": [
+    "window"
+   ],
+   "base": "window",
+   "mobility": "fixed",
+   "size_m": 1.0,
+   "architectural": true,
+   "opening_m": [
+    0.8,
+    1.0
+   ],
+   "sill_m": 1.0
+  },
+  {
+   "words": [
+    "shutters",
+    "shutter"
+   ],
+   "base": "shutters",
+   "mobility": "fixed",
+   "size_m": 1.0,
+   "architectural": true,
+   "opening_m": [
+    0.8,
+    1.0
+   ],
+   "sill_m": 1.0
+  },
+  {
+   "words": [
+    "gate",
+    "gateway"
+   ],
+   "base": "gate",
+   "mobility": "fixed",
+   "size_m": 2.2,
+   "architectural": true,
+   "opening_m": [
+    2.0,
+    2.2
+   ]
+  },
+  {
+   "words": [
+    "throne"
+   ],
+   "base": "throne",
+   "mobility": "fixed",
+   "size_m": 1.6,
+   "rest": "flat_base"
+  }
+ ],
+ "set": [
+  "river",
+  "ledge",
+  "ground",
+  "stumps",
+  "field",
+  "barley",
+  "tower",
+  "cave",
+  "forest",
+  "road",
+  "mountain",
+  "rock",
+  "interior",
+  "water",
+  "ash",
+  "well",
+  "houses",
+  "wall",
+  "walls",
+  "square"
+ ],
+ "character": [
+  "soot",
+  "hands",
+  "dress",
+  "skin",
+  "underbelly",
+  "belly",
+  "wing",
+  "claws",
+  "tail",
+  "breastplate",
+  "plates",
+  "pale shape",
+  "princess",
+  "dragon",
+  "knight",
+  "king"
+ ],
+ "fx": [
+  "moon",
+  "swallows",
+  "birds",
+  "sparks",
+  "steam",
+  "smoke",
+  "fire",
+  "flame",
+  "light",
+  "stars",
+  "vision",
+  "ghostly",
+  "translucent",
+  "apparition",
+  "silhouette"
+ ],
+ "_doc_flags": "architectural: part of a WALL, never free-standing (scene_stage.mount_arch); opening_m [w, h] default size; sill_m: the opening's bottom height. work_support: a support a contact action works on (contact_actions.json); impact_fx / work_hot: what happens at its impact. offhand_for: a second-hand tool of that contact action, used only when the text names it. procedural: built by code, not image-to-3D (thin flexible props). rest: how a FIXED prop stands: long_horizontal (the long axis level: anvil, bench, table) | upright (architecture) | flat_base (default: its largest flat face down); props_bl writes rest_check to its json (QA). state_words entries: tint / emission / crack = a DERIVED state (the base mesh recoloured); shape: true = the state has its own shape (own picture + image-to-3D). soft: a draped / flexible prop (cloth, straps): no rigid rest pose, rest_check skipped. stand_m: the working height of a set prop's top (an anvil on its stump): the renderer adds a plain stump under a lower model."
+}

@@ -1,0 +1,11 @@
+{
+ "check": "clip.join_once",
+ "media": "fail_naive_concat_793.mp4",
+ "verdict": "fail",
+ "ctx": {
+  "stitched": {
+   "n_expected": 214
+  }
+ },
+ "source": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.join_once/naive_793.mp4"
+}

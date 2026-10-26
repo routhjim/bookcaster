@@ -1,0 +1,9 @@
+{
+ "check": "key.set_present",
+ "media": "fail_727_door_no_forge.png",
+ "verdict": "fail",
+ "ctx": {
+  "set_desc": "the inside of a blacksmith's forge with a glowing hearth fire"
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000727/key.png"
+}

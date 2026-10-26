@@ -354,6 +354,35 @@ def set_pace(book: Path, pace: float) -> None:
     (book / "pace.txt").write_text(f"{pace:g}\n")      # always written: no file = DEFAULT_PACE
 
 
+def restore_idle(log=print, llm: bool = True) -> None:
+    """After a stopped job: end its video renderers (they run in scopes of their own, outside the
+    job's unit, and kept rendering) and give the box back its usual servers - a job pauses the music
+    server while drawing and the voice server and language model while rendering, and a stop in the
+    middle left them down (10-18: the next run recorded without music)."""
+    from . import animate
+    found = subprocess.run(["pgrep", "-f", r"run_(i2v|a2v|split|v2v|infinitetalk)\.py"],
+                           capture_output=True, text=True).stdout.split()
+    for pid in found:
+        subprocess.run(["kill", pid], capture_output=True)
+    if found:
+        log(f"  ended {len(found)} video renderer(s)")
+    if llm:      # not after a 3D job (10-21: a stop started the 77 GB model mid-stage; RAM fell under the floor)
+        animate.igpu("strata", log)              # the language model back, the VAE server off
+    # the picture checker holds the voice server's card: left running by a stop, the voice server
+    # couldn't start and the next make refused to run (10-18)
+    subprocess.run(["systemctl", "--user", "stop", "bookcaster-checker"], capture_output=True)
+    subprocess.run(["bash", str(STACK), "up", "--music"], capture_output=True)
+    log("  voice and music servers up")
+
+
+def voices_key(f: Path, args) -> str:
+    """What a chapter's voice track was recorded from: its text and the recording options (cast)."""
+    import hashlib
+    h = hashlib.sha256(f.read_bytes())
+    h.update("\0".join(map(str, args)).encode())
+    return h.hexdigest()
+
+
 def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
     """Bring a chapter's voice track and timeline to the book's pace, from the
     unstretched copies (kept as .raw.*). *fresh*: the voices were just
@@ -386,8 +415,12 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
             seg["t"] = round(float(seg["t"]) / target, 3)
         mark.write_text(f"{target:g}")
     tl.write_text(json.dumps(timeline, ensure_ascii=False))
-    # Everything timed in seconds against the old track is stale now.
-    shutil.rmtree(work / "score" / f.stem, ignore_errors=True)
+    # Everything timed in seconds against the old track is stale now - except, for a fresh recording,
+    # the music composed ahead from estimated lengths: the score run re-times those cues to the real
+    # voices. Deleting them raced the composer still writing into the folder ("composing ahead failed:
+    # no such file cue08.wav") and threw the composed-ahead music away on every recording (10-18).
+    if not fresh:
+        shutil.rmtree(work / "score" / f.stem, ignore_errors=True)
     shutil.rmtree(work / "sfx" / f.stem, ignore_errors=True)
     shutil.rmtree(_video_work(book, f) / "anim", ignore_errors=True)
     log(f"  {f.stem}: voices at {target:g}x (music, effects and animated shots will be redone)")
@@ -494,11 +527,16 @@ def run_storyboard_job(book: Path) -> int:
             if name in prompts and video.canon(name) not in seen:
                 seen.add(video.canon(name))
                 sheets.append((str(video.ref_path(refs, name, prompts[name][0])), name))
+        for name, rows in (plan.get("wardrobe") or {}).items():     # each outfit change, after the base
+            for r in rows:
+                sheets.append((str(video.outfit_ref(refs, plan, style, name, r)), f"{name} ({r['id']})"))
         sheets = [x for x in sheets if Path(x[0]).exists()]
         if sheets:
             made.append(_contact_sheet(sheets, sb / f"characters-{stamp}.jpg", 3, 640))
-            notes.append(f"characters-{stamp}.jpg: how each character looks. Change one with "
-                         f"`bookcaster look {book.name} --do \"Name = new description\"` "
+            notes.append(f"characters-{stamp}.jpg: how each character looks, and each outfit change the "
+                         f"story makes (Name (outfit)). Change one with "
+                         f"`bookcaster look {book.name} --do \"Name = new description\"` or "
+                         f"`--do \"Name (outfit) = what they wear\"` "
                          f"(see `bookcaster look {book.name}` for the current ones).")
         scenes = [(str(work / "img" / f"{p['id']}.png"), f"{p['id']}: {p['prompt'][:46]}") for p in first
                   if (work / "img" / f"{p['id']}.png").exists()]
@@ -563,6 +601,104 @@ def run_storyboard_job(book: Path) -> int:
     return 0
 
 
+def keyframes_sample(book: Path, n: int = 8, chapter: int = 1, replan: bool = False, clips: bool = False) -> str:
+    """The keyframe stage on n key frames spread through a recorded chapter, in a separate folder
+    (<chapter>-sample), with a contact sheet: test a change here before a real run (user 10-18: hours went
+    to fixing things live on the real run). Plans the keyframes first if the chapter has none."""
+    from . import animate, video
+    files = chapter_files(book)
+    f = files[min(max(chapter, 1), len(files)) - 1]
+    work = _video_work(book, f)
+    log = print
+    timeline = book / "work" / f"{f.stem}.timeline.json"
+    if not timeline.exists():
+        sys.exit("record the chapter first (bookcaster make)")
+    animate.igpu("strata", log)
+    draw_pictures_for(book, f, log)
+    prep = animate_for(book, f, "animated", log, phase="plan-only")
+    kf, plan = prep["kf"], prep["plan"]
+    keys = [x for x in kf["frames"] if x.get("mode") == "key"]
+    pick = [keys[round(i * (len(keys) - 1) / max(1, n - 1))] for i in range(min(n, len(keys)))]
+    style = art_style(book) or video.DEFAULT_STYLE
+    if replan:
+        # the sampled scenes planned afresh under the current rules (poses, end frames, ...): the chapter's
+        # keyframes.json stays as it is
+        want = {x["pic"] for x in pick}
+        shots = [s for s in prep["shots"] if s["pic"] in want]
+        fresh = animate.plan_keyframes(shots, prep["pics"], prep["timeline"], prep["total"], plan, style,
+                                       LLM_URL, LLM_MODEL, log, prep["starts"])
+        animate._drop_people_props(fresh, plan)
+        animate._add_creatures(fresh["frames"], video.looks(plan)[0])
+        animate.apply_wardrobe(fresh, plan, prep["starts"])
+        plan["look"]["props"] = {**fresh.get("props", {}), **plan["look"].get("props", {})}
+        keys = [x for x in fresh["frames"] if x.get("mode") == "key"]
+        pick = [keys[round(i * (len(keys) - 1) / max(1, n - 1))] for i in range(min(n, len(keys)))]
+        kf = fresh
+    sample = dict(kf, frames=[dict(x, carry=False) for x in pick])
+    sw = work.with_name(work.name + "-sample")
+    shutil.rmtree(sw, ignore_errors=True)
+    (sw / "anim").mkdir(parents=True)
+    (sw / "anim" / "keyframes.json").write_text(json.dumps(sample, indent=1, ensure_ascii=False))
+    t = time.time()
+    with video.drawing_session(sw / "anim" / "draw.log", log):
+        animate.draw_keyframes(sample, plan, style, sw, log, llm_url=LLM_URL, model=LLM_MODEL)
+    st = json.loads((sw / "anim" / "keyframe_checks.json").read_text())
+    items = []
+    for x in pick:
+        png = sw / "anim" / "keyframes" / f"{x['shot']}.png"
+        c = st.get("chosen", {}).get(x["shot"], {})
+        kept = [e for e in st.get("log", []) if e.get("id") == x["shot"] and e.get("kept")]
+        cap = f"{x['shot']}: {c.get('cand', '?')} of {c.get('of', '?')}" + (" KEPT WITH FAULTS" if kept else "")
+        if png.exists():
+            items.append((str(png), cap))
+            end = animate.end_path(png)
+            if end.exists():
+                items.append((str(end), f"{x['shot']}: END"))
+    t_draw = time.time() - t
+    out = book / "out" / "storyboard" / f"keyframes-sample-{time.strftime('%m%d-%H%M')}.jpg"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _contact_sheet(items, out, 4, 480)
+    msg = (f"{len(pick)} key frame(s) in {t_draw / 60:.1f} min -> {out}\n"
+           f"(folder {sw}; the chapter's own keyframes are untouched)")
+    if clips:
+        msg += "\n" + _sample_clips(sw, pick, kf, plan, style, log)
+    return msg
+
+
+def _sample_clips(sw: Path, pick: list[dict], kf: dict, plan: dict, style: str, log) -> str:
+    """The sample's key frames animated with the action engine (Wan2.2 pipelined: start -> end frame)."""
+    from . import animate
+    kdir = sw / "anim" / "keyframes"
+    shots = [{"id": x["shot"], "kind": "action", "t": animate._shot_t(x["shot"]), "dur": animate.ACTION_S,
+              "pic": x.get("pic"), "seed": 9665, "out": str(sw / "anim" / f"{x['shot']}.mp4"),
+              "prompt": f"{str(x.get('motion', '')).rstrip('. ')}. {animate.MOTION} {style}.",
+              "refs": [str(kdir / f"{x['shot']}.png")], "mode": "key"}
+             for x in pick if (kdir / f"{x['shot']}.png").exists()]
+    resume = animate._servers("down", log)
+    animate.igpu("vae", log)
+    t = time.time()
+    try:
+        if animate.ACTION_ENGINE == "ltx":
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+            import ltx_flow
+            ltx_flow.render_ltx(shots, [], plan, style, sw, sw / "none.wav", log)
+        elif animate.ACTION_ENGINE == "i2v22":
+            for p in animate._action_pipeline(shots, {}, plan, style, sw):
+                p.wait()
+        else:
+            p = animate._action_batch("05", shots, {}, plan, style, sw)
+            if p:
+                p.wait()
+    finally:
+        animate._vae_server("down", log)
+        if resume:
+            animate._servers("up", log)
+        animate.igpu("strata", log)
+    ok = [s for s in shots if Path(s["out"]).exists()]
+    return f"{len(ok)}/{len(shots)} clip(s) in {(time.time() - t) / 60:.1f} min, in {sw / 'anim'}"
+
+
 def show_looks(book: Path) -> str:
     from . import video
     reg = book / "work" / "video" / "look.json"
@@ -574,10 +710,33 @@ def show_looks(book: Path) -> str:
         if video.canon(k) not in seen:
             seen.add(video.canon(k))
             out.append(f"{k}: {v}")
+    for plan_f in sorted((book / "work" / "video").glob("*/plan.json")):
+        for name, rows in (json.loads(plan_f.read_text()).get("wardrobe") or {}).items():
+            for r in rows:
+                out.append(f"{name} ({r['id']}), {plan_f.parent.name} from paragraph {r['from']}: {r['dress']}")
     return "\n".join(out)
 
 
-def set_look(book: Path, name: str, desc: str) -> str:
+def set_outfit(book: Path, name: str, oid: str, dress: str) -> str | None:
+    """Change one wardrobe outfit ("Edric (star-iron armor) = ...") in every chapter that has it: its
+    sheet and the pictures and keyframes with it are redrawn at the next job. None if there's none."""
+    from . import video
+    hit = None
+    for plan_f in sorted((book / "work" / "video").glob("*/plan.json")):
+        plan = json.loads(plan_f.read_text())
+        for n, rows in (plan.get("wardrobe") or {}).items():
+            if video.canon(n) != video.canon(name) and name.lower() not in n.lower():
+                continue
+            for r in rows:
+                if r["id"].lower() == oid.lower() or oid.lower() in r["id"].lower():
+                    r["dress"] = video.literal_safe(dress).rstrip(".")
+                    hit = f"{n} ({r['id']})"
+        if hit:
+            plan_f.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
+    return hit
+
+
+def set_look(book: Path, name: str, desc: str, pinned: bool = False) -> str:
     """Give a character a new look, under every spelling of the name. Their
     reference sheet is redrawn and scenes with them are redrawn at the next
     storyboard / video job (the scene prompts include the look)."""
@@ -598,8 +757,102 @@ def set_look(book: Path, name: str, desc: str) -> str:
     desc = video.literal_safe(desc)
     for k in hits:
         chars[k] = desc
+        if pinned:                               # set by hand (`bookcaster look`): the plan's look audit never
+            reg.setdefault("_pinned", {})[k] = desc   # overrides it (10-22: it took the Knight's armor off)
     reg_path.write_text(json.dumps(reg, indent=1, ensure_ascii=False))
+    # their outfits were written from the old look: planned again from the new one at the next video job
+    # (10-25: the Disciple's new brown + ochre look kept the old white + blue in Acts 2's wardrobe, every key)
+    for pp in sorted(reg_path.parent.glob("[0-9][0-9]_*/plan.json")):
+        plan = json.loads(pp.read_text())
+        pc = (plan.get("look") or {}).get("characters") or {}
+        mine = [n for n in pc if any(video.canon(n) == video.canon(k) for k in hits)]
+        w = plan.get("wardrobe") or {}
+        worn = [n for n in w if any(video.canon(n) == video.canon(k) for k in hits)]
+        if not mine and not worn:
+            continue
+        for n in mine:                  # the chapter's own copy of the looks draws its keys (10-25: still white + blue)
+            pc[n] = desc
+        if worn:
+            plan["wardrobe"] = {n: r for n, r in w.items() if n not in worn}
+            plan.pop("wardrobe_k", None)
+        pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
     return hits[0]
+
+
+def swap_looks(book: Path, a: str, b: str, log=print) -> None:
+    """Two characters trade appearances (10-25 user: "John looks like what most people have seen as Jesus and vice
+    versa ... just swap, no need to redo the LoRA"): the looks (pinned), the trained LoRAs and their base sheets
+    change owner, and each LoRA is stamped current for its new owner's inputs so nothing retrains. Outfits stay with
+    the person (they come from the story); their sheets redraw from the new look. Keys + clips with them redraw at
+    the next video job."""
+    import shutil
+    from . import video
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    vd = book / "work" / "video"
+    reg = json.loads((vd / "look.json").read_text())
+    ch = reg.get("characters", {})
+    ka = next((k for k in ch if video.canon(k) == video.canon(a)), None)
+    kb = next((k for k in ch if video.canon(k) == video.canon(b)), None)
+    if not ka or not kb:
+        sys.exit(f"no look for {a if not ka else b} (bookcaster look shows them)")
+    la, lb = ch[ka], ch[kb]
+    set_look(book, ka, lb, pinned=True)
+    set_look(book, kb, la, pinned=True)
+    for pj in vd.glob("[0-9][0-9]_*/plan.json"):  # the chapter plans carry the looks too
+        P = json.loads(pj.read_text())
+        pc = (P.get("look") or {}).get("characters") or {}
+        if ka in pc and kb in pc:
+            pc[ka], pc[kb] = pc[kb], pc[ka]
+            pj.write_text(json.dumps(P, indent=1, ensure_ascii=False))
+    slug = lambda n: re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_")
+    cl = vd / "charlora"
+    da, db, tmp = cl / slug(ka), cl / slug(kb), cl / f".swap_{slug(ka)}"
+    if da.exists() and db.exists():
+        da.rename(tmp)
+        db.rename(da)
+        tmp.rename(db)
+        for d, old in ((da, db), (db, da)):       # the LoRA's paths name its old folder
+            bj = d / "build.json"
+            if bj.exists():
+                bj.write_text(bj.read_text().replace(f"/charlora/{old.name}/", f"/charlora/{d.name}/"))
+    # the base reference sheets: each drawing goes to the name its look now belongs to (named by prompt hash)
+    # (10-25: the first version read chapter 2's old plan, which lists neither, and deleted both sheets unrenamed)
+    refs = vd / "refs"
+    olds = {n: sorted(refs.glob(f"{video.slug(n)}-*.png")) for n in (ka, kb)}
+    want = {ka: set(), kb: set()}                      # each chapter plan names a sheet by its own prompt
+    for pj in vd.glob("[0-9][0-9]_*/plan.json"):
+        st = pj.parent / "style.txt"
+        pr = video.ref_prompts(json.loads(pj.read_text()), st.read_text().strip() if st.exists() else video.DEFAULT_STYLE)
+        if ka in pr and kb in pr:                      # (a plan naming one of them wasn't swapped)
+            for n in (ka, kb):
+                want[n].add(video.ref_path(refs, n, pr[n][0]))
+    keep = {ka: olds[kb][:1], kb: olds[ka][:1]}         # the drawing of the look each one now has
+    for n in (ka, kb):
+        for dst in want[n]:
+            if keep[n] and dst not in olds[n] + olds[ka if n == kb else kb]:
+                shutil.copy2(keep[n][0], dst)
+    for n in (ka, kb):
+        for f in olds[n]:
+            if f not in want[ka] | want[kb]:
+                f.unlink()                             # stale names (outfit sheets redraw from the new look)
+        for dst in want[n]:
+            if dst in olds[ka] + olds[kb] and keep[n]:
+                shutil.copy2(keep[n][0], dst.with_suffix(".swap"))
+    for n in (ka, kb):
+        for dst in want[n]:
+            if dst.with_suffix(".swap").exists():
+                dst.with_suffix(".swap").rename(dst)
+    log(f"sheets: {sorted(p_.name for p_ in want[ka] | want[kb] if p_.exists())}")
+    import charlora as L
+    for n in (ka, kb):
+        bj = cl / slug(n) / "build.json"
+        if bj.exists():
+            d = json.loads(bj.read_text())
+            c = L.Char(str(book), n)
+            d.update(hash=L.input_hash(c, L.STEPS), shape_hash=L.shape_hash(c, L.STEPS), swapped_from=d.get("trigger"))
+            bj.write_text(json.dumps(d, indent=1))
+    log(f"{ka} now looks like {kb} did and {kb} like {ka} did (looks, LoRAs, sheets); keys and clips with them "
+        f"redraw at the next video job")
 
 
 # --- finished files ------------------------------------------------------------------
@@ -719,10 +972,20 @@ def animate_all(book: Path, files: list[Path], level: str, log, status=lambda **
         status(step=f"planning shots {n}/{len(files)}: {f.stem} ({level})")
         draw_pictures_for(book, f, log)
         animate_for(book, f, level, log, phase="plan")
-    for n, f in enumerate(files, 1):
-        status(step=f"animating {n}/{len(files)}: {f.stem} ({level})")
-        animate_for(book, f, level, log, phase="render")
-    animate.igpu("strata", log)                # the builds after this read plans with the language model
+    for rnd in range(animate.CLIP_ROUNDS + 1):
+        for n, f in enumerate(files, 1):
+            status(step=f"animating {n}/{len(files)}: {f.stem} ({level})"
+                   + (f", again: clips that failed their check" if rnd else ""))
+            animate_for(book, f, level, log, phase="render")
+        # every clip checked against its plan (the language model's turn on the iGPU)
+        animate.igpu("strata", log)
+        again = []
+        for n, f in enumerate(files, 1):
+            status(step=f"checking clips {n}/{len(files)}: {f.stem}")
+            again += animate_for(book, f, level, log,
+                                 phase="check-final" if rnd == animate.CLIP_ROUNDS else "check")
+        if not again:
+            break
 
 
 def animate_for(book: Path, f: Path, level: str, log, phase: str = "all") -> list:
@@ -790,9 +1053,10 @@ def video_for(book: Path, f: Path, log, level: str = "pictures") -> Path:
     return out
 
 
-def to_jellyfin(book: Path, f: Path, log=print) -> bool:
+def to_jellyfin(book: Path, f: Path, log=print, tag: str = "") -> bool:
     """Copy a chapter's finished video to the Jellyfin server, if one is set up
-    (~/.config/bookcaster/jellyfin). A failed copy never fails the job."""
+    (~/.config/bookcaster/jellyfin). A failed copy never fails the job. *tag* names a new version beside the
+    one already there ("v2": "02 Chapter 2 v2.mp4"; 10-25 user: don't clobber the old one)."""
     from . import jellyfin
     mp4 = book / "work" / "final" / f"{f.stem}.mp4"
     if not mp4.exists() or jellyfin.config() is None:
@@ -800,7 +1064,7 @@ def to_jellyfin(book: Path, f: Path, log=print) -> bool:
     meta = json.loads((book / "meta.json").read_text()) if (book / "meta.json").exists() else {}
     title = f.read_text(encoding="utf-8").split("\n", 1)[0]
     num = re.match(r"\d+", f.stem)
-    name = f"{num.group(0) + ' ' if num else ''}{jellyfin.nice_title(title)}.mp4"
+    name = f"{num.group(0) + ' ' if num else ''}{jellyfin.nice_title(title)}{' ' + tag if tag else ''}.mp4"
     try:
         return jellyfin.send(mp4, meta.get("title") or book.name, name, log=log)
     except Exception as exc:
@@ -992,10 +1256,19 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
             break
         _set_status(book, step=f"recording {n}/{len(files)}: {f.stem}"
                     + (" (music composing alongside)" if music else ""))
-        if tts("convert", f, *common, "-o", r, log=log).returncode or not r.exists():
-            _set_status(book, state="failed", step=f"recording {f.stem} (see work/job.log)")
-            return 1
-        apply_pace(book, f, _logger(book), fresh=True)
+        key, key_f = voices_key(f, common), r.with_suffix(".voices")
+        if r.exists() and key_f.exists() and key_f.read_text() == key:
+            # recorded already with this text and cast (a restarted job): Fish samples afresh every run,
+            # so recording again moved every line's timing, and the music and animation plan built on
+            # the old timings were thrown away (10-18: the knight's fixed keyframes were lost that way)
+            _logger(book)(f"  {f.stem}: voices already recorded with this cast, kept")
+        else:
+            key_f.unlink(missing_ok=True)
+            if tts("convert", f, *common, "-o", r, log=log).returncode or not r.exists():
+                _set_status(book, state="failed", step=f"recording {f.stem} (see work/job.log)")
+                return 1
+            apply_pace(book, f, _logger(book), fresh=True)
+            key_f.write_text(key)
         if not music:
             final = final_path(book, f)
             shutil.copyfile(r, final)
@@ -1021,7 +1294,7 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
                 shutil.copyfile(r, final)        # the voices without music beat nothing
                 with open(log, "a") as fh:
                     fh.write(f"music mix failed for {f.stem}; saved it without music\n")
-            if sfx:
+            if sfx and not video:            # a video's effects come after its animation (below)
                 _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
                 try:
                     sfx_for(book, f, final, _logger(book))
@@ -1029,21 +1302,44 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
                     _logger(book)(f"sound effects failed for {f.stem}: {exc}")
             outputs.append(str(publish(book, final)))
             _set_status(book, done=n, outputs=outputs)
+    missing: list[str] = []
     if video:
-        if at_least(level, "moments"):
+        if level == "moments":
             try:
                 animate_all(book, files, level, _logger(book), lambda **k: _set_status(book, **k))
             except Exception as exc:
                 _logger(book)(f"animation failed: {exc}")
+        # sound effects by default for videos, made after the animation (the user's order: effects after
+        # the video, not alongside it) and before the build, so the video carries them (10-18: the knight
+        # video came out without any because --sfx was opt-in)
+        if sfx:
+            for n, f in enumerate(files, 1):
+                _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
+                try:
+                    final = final_path(book, f)
+                    sfx_for(book, f, final, _logger(book))
+                    outputs.append(str(publish(book, final)))
+                except Exception as exc:
+                    _logger(book)(f"sound effects failed for {f.stem}: {exc}")
+                    missing.append(f.stem)
         for n, f in enumerate(files, 1):
             _set_status(book, step=f"building video {n}/{len(files)}: {f.stem}")
+            if level == "animated":              # the shot flow (10-24 user: everything optimised is the default)
+                if run_mannequin_job(book, f.stem, None, flow="shots"):
+                    _logger(book)(f"video failed for {f.stem}: see the shots flow lines above")
+                else:
+                    outputs.append(str(book / "work" / "final" / f"{f.stem}.mp4"))
+                _set_status(book, outputs=outputs)
+                continue
             try:
                 outputs.append(str(video_for(book, f, _logger(book), level)))
             except Exception as exc:
                 _logger(book)(f"video failed for {f.stem}: {exc}")
             _set_status(book, outputs=outputs)
-    _set_status(book, state="done", step="finished", outputs=outputs,
-                finished=time.strftime("%Y-%m-%d %H:%M"))
+    # said in the status, not only the log: the knight video went out without its effects unnoticed (10-19)
+    _set_status(book, state="done", step="finished" + (f" WITHOUT sound effects for {', '.join(missing)} "
+                                                       f"(see work/job.log; bookcaster sfx retries)" if missing else ""),
+                outputs=outputs, finished=time.strftime("%Y-%m-%d %H:%M"))
     return 0
 
 
@@ -1051,16 +1347,184 @@ def unit_name(book: Path) -> str:
     return "bookcaster-" + re.sub(r"[^A-Za-z0-9_-]", "-", book.name)[:40]
 
 
+def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_only: bool = False,
+                      guide: str | None = None, flow: str = "mannequin") -> int:
+    """The mannequin flow (tools/mannequin_flow.py) over one chapter's stretch, as the book's job: needs the 3D plan
+    + stage (the moments' shots and motion); draws the hero images and keys, runs LTX, assembles out/*_mannequin.mp4."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import flow3d
+    import mannequin_flow as MF
+    if flow == "shots":                                       # the shot-list flow (tools/shot_flow.py, 10-23)
+        import shot_flow as MF                                # noqa: F811 - same run() contract
+    from . import animate
+    log = _logger(book)
+    stem = flow3d.chapter_stem(book, chapter or "1")
+    t0, t1 = (float(x) for x in (span or "0:1e9").split(":"))
+    _set_status(book, state="running", step=f"{flow} flow {stem} {t0:.0f}-{min(t1, 9999):.0f}s",
+                started=time.strftime("%Y-%m-%d %H:%M"), outputs=[])
+    resume = animate._servers("down", log)                   # keys + LTX use both cards
+    try:
+        mix = book / "work" / "final" / f"{stem}.mp3"
+        if flow == "shots":
+            shots_ready(book, stem, log, lambda **k: _set_status(book, **k))
+        out = MF.run(book, stem, t0, t1, None, mix, log, until="keys" if keys_only else None, guide=guide)
+        if not keys_only and (span is None or covers_chapter(book, stem, out)):  # a whole chapter is the chapter's video
+            chapter_video(book, stem, out, log, send=span is None)   # a CLI span run is never sent on its own
+        _set_status(book, state="done", step=f"{flow} flow finished: {out}", outputs=[str(out)],
+                    finished=time.strftime("%Y-%m-%d %H:%M"))
+        return 0
+    except (Exception, SystemExit) as exc:                    # noqa: BLE001 - said in the status, not lost
+        # (10-25: the LTX memory floor's sys.exit left the status "stopped", the reason only in the journal)
+        log(f"{flow} flow failed: {exc}")
+        _set_status(book, state="failed", step=f"{flow} flow: {exc}"[:300])
+        return 1
+    finally:
+        if resume:
+            animate._servers("up", log)
+
+
+def covers_chapter(book: Path, stem: str, mp4: Path) -> bool:
+    """True when a video runs the whole chapter's mix (a --from 0 --to <past the end> span is the whole chapter)."""
+    from .score import audio_seconds
+    mix = book / "work" / "final" / f"{stem}.mp3"
+    # (10-25: the Acts cut ends 1.3 s before its mix, the narration's closing silence; 1 s missed it)
+    return mix.exists() and audio_seconds(mp4) >= audio_seconds(mix) - max(3.0, 0.02 * audio_seconds(mix))
+
+
+def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> None:
+    """What the shot flow reads, made first when a chapter has none yet (10-24 user: one bookcaster run from a
+    recorded chapter to its video): the chapter plan (pictures, looks, wardrobe, moments, sheets: flow3d plan),
+    the moment list (flow3d/plan.json, CPU) and a LoRA for every cast member (both XTXs). No LoRA = no run."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import flow3d
+    vd = book / "work" / "video" / stem
+    if not (vd / "plan.json").exists() or not (vd / "anim" / "manifest.json").exists():
+        status(step=f"shots: planning {stem} (looks, moments, sheets)")
+        flow3d.plan(book, stem, log=log)
+    if not (vd / "flow3d" / "plan.json").exists():
+        R, cx = flow3d._ctx(book, stem)
+        try:
+            R.plan(cx)
+        finally:                                 # only the moment routing reads it; the shot flow runs without
+            os.environ.pop("REMAKE_FULL3D", None)
+    import shot_flow                         # the outfits first: each LoRA learns its person's outfits (10-25: a
+    shot_flow.wardrobe(book, stem, log)      # wardrobe planned after the LoRAs made them stale at the keys)
+    from . import video
+    plan = json.loads((vd / "plan.json").read_text())   # then any sheet a changed look or outfit needs: each LoRA
+    st = vd / "style.txt"                               # learns from its sheet (10-25: the Disciple's trained on
+    video.draw([], vd / "img", log=log, plan=plan,     # his old white-and-blue one)
+               style=st.read_text().strip() if st.exists() else video.DEFAULT_STYLE)
+    cast = set(video.looks(plan)[0])                    # this chapter's cast only
+    if flow3d.lora_todo(book, cast):
+        status(step=f"shots: character LoRAs {sorted(flow3d.lora_todo(book, cast))}")
+        # (10-25: planning left the iGPU's language model up, ~90 GB; the LoRA memory floor refused, 15 < 20 GB)
+        from . import animate
+        if subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0:
+            log("stopping the language model (LoRA training needs its memory)")
+            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+            time.sleep(5)
+            animate._flush()
+        left = flow3d.ensure_loras(book, log, only=cast)
+        if left:
+            raise RuntimeError(f"no LoRA for {left} (see work/video/charlora_build_*.log)")
+
+
+def chapter_video(book: Path, stem: str, mp4: Path, log=print, send: bool = True) -> None:
+    """Make a finished whole-chapter video the chapter's video (work/final/<stem>.mp4, what `bookcaster jellyfin`
+    sends) and send it to Jellyfin when a server is set up (send=False: only the first)."""
+    final = book / "work" / "final" / f"{stem}.mp4"
+    final.unlink(missing_ok=True)
+    os.link(mp4, final)
+    log(f"{stem}: chapter video is now {mp4.name}")
+    if send and to_jellyfin(book, book / "chapters" / f"{stem}.txt", log):
+        from . import jellyfin
+        jellyfin.rescan(log)
+
+
+def run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: bool = False,
+                   jellyfin: bool = False, keys_only: bool = False) -> int:
+    """The assets and stage steps draw on both XTX cards too: the voice and music servers are paused for them as
+    for video (10-21: `bookcaster stop` brought the servers back onto card 05 and the stage step's prop drawing
+    ran out of memory there), and come back after."""
+    resume = False
+    if stage in ("assets", "stage"):
+        from . import animate
+        resume = animate._servers("down", _logger(book))
+    try:
+        return _run_flow3d_job(book, stage, chapter, auto, jellyfin, keys_only)
+    finally:
+        if resume:
+            animate._servers("up", _logger(book))
+
+
+def _run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: bool = False,
+                    jellyfin: bool = False, keys_only: bool = False) -> int:
+    """A full-3D stage as the book's job (tools/flow3d.py): plan | assets | stage | video, per chapter."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import flow3d
+    log = _logger(book)
+    chapters = [chapter] if chapter else [f.stem for f in chapter_files(book) if final_path(book, f).exists()]
+    _set_status(book, state="running", step=f"3d {stage}", chapters=len(chapters), done=0, outputs=[],
+                started=time.strftime("%Y-%m-%d %H:%M"))
+    outputs = []
+    try:
+        if stage == "plan":                                   # stage 0: from the text (no animation)
+            for n, c in enumerate(chapters, 1):
+                r = flow3d.plan(book, c, log=log)
+                outputs.append(r["manifest"])
+                _set_status(book, done=n, outputs=outputs)
+            _set_status(book, state="done", step=f"3d plan finished: next `bookcaster assets {book.name}`",
+                        outputs=outputs, finished=time.strftime("%Y-%m-%d %H:%M"))
+            return 0
+        if stage == "assets":
+            r = flow3d.assets(book, chapter, log=log)
+            _set_status(book, state="done", step=f"3d assets: {len(r['pending'])} item(s) wait for review "
+                        f"(`bookcaster review {book.name}`)", finished=time.strftime("%Y-%m-%d %H:%M"))
+            return 0
+        for n, c in enumerate(chapters, 1):
+            if stage == "stage":
+                flow3d.stage(book, c, log=log)
+            else:
+                resume = None
+                from . import animate
+                resume = animate._servers("down", log)        # LTX needs both cards (voice + music paused)
+                try:
+                    mp4 = flow3d.video(book, c, log=log, status=lambda **k: _set_status(book, **k), auto=auto,
+                                       jellyfin=jellyfin, keys_only=keys_only)
+                finally:
+                    if resume:
+                        animate._servers("up", log)
+                if mp4 is None:                               # waiting for review / nothing ready: say so
+                    _set_status(book, state="waiting", step=f"3d {stage}: waiting (see the log: review, holds or blocked)",
+                                finished=time.strftime("%Y-%m-%d %H:%M"))
+                    return 2
+                outputs.append(str(mp4))
+            _set_status(book, done=n, outputs=outputs)
+    except SystemExit as exc:                                 # the preflight / a stage refused: say why
+        log(f"3d {stage} stopped: {exc}")
+        _set_status(book, state="failed", step=f"3d {stage}: {exc}"[:300])
+        return 1
+    except Exception as exc:
+        log(f"3d {stage} failed: {exc}")
+        _set_status(book, state="failed", step=f"3d {stage}: {exc}"[:300])
+        return 1
+    _set_status(book, state="done", step=f"3d {stage} finished", outputs=outputs, finished=time.strftime("%Y-%m-%d %H:%M"))
+    return 0
+
+
 def start_job(book: Path, level: str = "music", music_only: bool = False,
               video_only: bool = False, storyboard: bool = False, sfx: bool = False,
-              sfx_only: bool = False) -> None:
+              sfx_only: bool = False, flow3d: str | None = None, chapter: str | None = None,
+              auto_approve: bool = False, jellyfin: bool = False, keys_only: bool = False,
+              span: str | None = None, guide: str | None = None) -> None:
     unit = unit_name(book)
     if subprocess.run(["systemctl", "--user", "is-active", "-q", unit]).returncode == 0:
         sys.exit(f"already recording {book.name} — `bookcaster status {book.name}`")
     subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True)
     (book / "work").mkdir(exist_ok=True)
     _status_path(book).write_text("{}")
-    cmd = ["systemd-run", "--user", f"--unit={unit}", "-p", "MemoryMax=8G",
+    # the 3D stages run Blender, Qwen-Image and LTX children (host RAM ~20-60 GB): the box's floor rules apply inside
+    cmd = ["systemd-run", "--user", f"--unit={unit}", "-p", f"MemoryMax={'100G' if flow3d else '8G'}",
            "-p", "MemorySwapMax=0", f"--working-directory={book}",
            sys.executable, "-m", "tts_reader.bookcaster", "_job", str(book)]
     cmd += ["--level", level]
@@ -1074,6 +1538,11 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
         cmd.append("--music-only")
     if video_only:
         cmd.append("--video-only")
+    if flow3d:
+        cmd += ["--flow3d", flow3d] + (["--chapter", str(chapter)] if chapter else []) + \
+            (["--auto-approve"] if auto_approve else []) + (["--jellyfin"] if jellyfin else []) + \
+            (["--keys-only"] if keys_only else []) + (["--span", span] if span else []) + \
+            (["--guide", guide] if guide else [])
     subprocess.run(cmd, check=True, capture_output=True)
 
 
@@ -1142,6 +1611,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("style", nargs="*", help="plain words, e.g. 'solo piano, romantic era'")
     s.add_argument("--clear", action="store_true", help="back to the default (the planner picks per scene)")
     s.add_argument("--sample", action="store_true", help="compose a 30 s sample in this style")
+    s = sub.add_parser("period", help="set or show the story's time period (every picture is drawn in it)")
+    s.add_argument("book")
+    s.add_argument("period", nargs="*", help="plain words, e.g. 'early medieval Northern Europe, around 1000 AD'")
+    s.add_argument("--clear", action="store_true")
     s = sub.add_parser("art", help="set or show the picture style for videos (no style = show it)")
     s.add_argument("book")
     s.add_argument("style", nargs="*", help="plain words, e.g. 'moody oil painting'")
@@ -1151,6 +1624,42 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("book")
     s.add_argument("--level", choices=LEVELS[2:], default="pictures",
                    help="pictures (stills, default) | moments (+ animated key moments) | animated")
+    s.add_argument("--flow", choices=["2d", "3d", "mannequin", "shots"], default=None,
+                   help="3d: every moment from the staged 3D scene (bookcaster assets + stage + review first); "
+                        "mannequin: the 3D staging as control maps only (pose + set depth) -> keyframes drawn with "
+                        "ControlNet + the character LoRAs + the place's hero image -> LTX (IC-LoRA for physical action); "
+                        "shots: the director splits the narration into 2-5 s shots of one action each -> one opening "
+                        "picture per shot (LoRAs + the place, no 3D) -> LTX two-stage for action (two takes), pipelined")
+    s.add_argument("--from", dest="t_from", help="mannequin: the stretch's start (seconds or m:ss; default 0)")
+    s.add_argument("--to", dest="t_to", help="mannequin: the stretch's end (seconds or m:ss; default the chapter's end)")
+    s.add_argument("--chapter", help="3d: the chapter number (default: every recorded chapter)")
+    s.add_argument("--auto-approve", action="store_true", help="3d: the automated QA gates instead of the review")
+    s.add_argument("--jellyfin", action="store_true", help="3d: send the finished video to Jellyfin")
+    s.add_argument("--keys-only", action="store_true",
+                   help="3d: draw + check every keyframe and make the keyframe preview video (out/*_keys.mp4); no LTX")
+    s.add_argument("--guide", choices=["depth", "full", "pins"],
+                   help="mannequin: how a landing action's staging steers its clip - depth (the staged depth video, "
+                        "light), full (the depth video at full strength), pins (start/hit/end keys drawn on the staging)")
+    # the full-3D stages (tools/flow3d.py): each resumable, cached under work/video/
+    s = sub.add_parser("plan", help="3d stage 0: plan a chapter from the text (pictures, looks, moments, ref sheets)")
+    s.add_argument("book")
+    s.add_argument("--chapter", required=True)
+    s = sub.add_parser("assets", help="3d: model every character, creature, prop and set of the book (background job)")
+    s.add_argument("book")
+    s.add_argument("--chapter")
+    s.add_argument("--plan-only", action="store_true", help="plan and list, no GPU")
+    s = sub.add_parser("stage", help="3d: stage every scene of a chapter (scenes, marks, cameras, motion)")
+    s.add_argument("book")
+    s.add_argument("--chapter", required=True)
+    s.add_argument("--plan-only", action="store_true")
+    s = sub.add_parser("review", help="3d: the QA sheets to look at and what still waits for approval")
+    s.add_argument("book")
+    s.add_argument("--chapter")
+    s = sub.add_parser("approve", help="3d: approve assets/scenes (names from `bookcaster review`)")
+    s.add_argument("book")
+    s.add_argument("items", nargs="*")
+    s.add_argument("--auto", action="store_true", help="approve whatever passed its automated checks")
+    s.add_argument("--reject", action="store_true")
     s = sub.add_parser("estimate", help="rough box time for each level")
     s.add_argument("book")
     s = sub.add_parser("pace", help="set or show the listening speed (1.25 = a quarter faster, pitch kept)")
@@ -1160,10 +1669,17 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("book")
     s = sub.add_parser("storyboard", help="review pack before recording: voices, looks, music, art (background job)")
     s.add_argument("book")
+    s = sub.add_parser("keyframes", help="preview the keyframe stage on a few frames (minutes)")
+    s.add_argument("book")
+    s.add_argument("--sample", type=int, default=8, help="how many key frames, spread through the chapter")
+    s.add_argument("--replan", action="store_true", help="plan the sampled scenes afresh under the current rules")
+    s.add_argument("--clips", action="store_true", help="also animate the sample (action engine)")
+    s.add_argument("--chapter", type=int, default=1)
     s = sub.add_parser("look", help="show or change how characters look in the pictures")
     s.add_argument("book")
     s.add_argument("--do", action="append", default=[], metavar="NAME = DESCRIPTION",
                    help='full new description, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
+    s.add_argument("--swap", nargs=2, metavar=("A", "B"), help="two characters trade looks (LoRAs + sheets too)")
     s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
     s.add_argument("book")
     s.add_argument("which", nargs="+", help="when it's on screen (12:30) or its number (p021)")
@@ -1177,24 +1693,39 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--music-only", action="store_true",
                    help="keep the recorded voices, redo only the music (after `music` changes the style)")
     s.add_argument("--video", action="store_true", help="same as --level pictures")
-    s.add_argument("--sfx", action="store_true", help="add sound effects (ambience + spot effects)")
+    s.add_argument("--sfx", action="store_true",
+                   help="add sound effects (ambience + spot effects); on by default for the video levels")
+    s.add_argument("--no-sfx", action="store_true", help="no sound effects, even for a video")
     s = sub.add_parser("status", help="recording progress (all books, or one)")
     s.add_argument("book", nargs="?")
     s = sub.add_parser("stop", help="cancel a recording job")
     s.add_argument("book")
     s = sub.add_parser("jellyfin", help="copy finished videos to the Jellyfin server (all books, or one)")
     s.add_argument("book", nargs="?")
+    s.add_argument("--video", default=None, help="first make this finished whole-chapter video the chapter's video")
+    s.add_argument("--chapter", default=None, help="only this chapter (default: every picked chapter)")
+    s.add_argument("--tag", default="", help="send as a new version beside the old one: --tag v2")
     sub.add_parser("library", help="books on this machine")
     sub.add_parser("services", help="voice / music / LLM server status")
     s = sub.add_parser("_job")
     s.add_argument("book")
+    s.add_argument("--span", default=None)
     s.add_argument("--level", choices=LEVELS, default="music")
     s.add_argument("--music-only", action="store_true")
     s.add_argument("--video-only", action="store_true")
     s.add_argument("--storyboard", action="store_true")
     s.add_argument("--sfx", action="store_true")
     s.add_argument("--sfx-only", action="store_true")
+    s.add_argument("--flow3d", choices=["plan", "assets", "stage", "video", "mannequin", "shots"], help="a full-3D stage (tools/flow3d.py)")
+    s.add_argument("--chapter")
+    s.add_argument("--plan-only", action="store_true")
+    s.add_argument("--auto-approve", action="store_true")
+    s.add_argument("--jellyfin", action="store_true")
+    s.add_argument("--keys-only", action="store_true")
+    s.add_argument("--guide")
     a = ap.parse_args(argv)
+    if a.cmd == "video" and a.flow is None:          # animated = the shot flow (10-24); stills keep the 2D path
+        a.flow = "shots" if a.level == "animated" else "2d"
 
     if a.cmd == "search":
         res = search(" ".join(a.query))
@@ -1259,6 +1790,14 @@ def main(argv: list[str] | None = None) -> int:
             if not http_ok(f"{ACE_URL}/health"):
                 sys.exit("the music server isn't up: tools/fish_stack.sh up all")
             print(music_sample(d))
+    elif a.cmd == "period":
+        d = book_dir(a.book)
+        f = d / "period.txt"
+        if a.clear and f.exists():
+            f.unlink()
+        elif a.period:
+            f.write_text(" ".join(a.period).strip() + "\n", encoding="utf-8")
+        print(f"time period for {d.name}: {f.read_text().strip() if f.exists() else '(not set: the 3D plan reads it from the text)'}")
     elif a.cmd == "art":
         d = book_dir(a.book)
         if a.clear or a.style:
@@ -1267,6 +1806,48 @@ def main(argv: list[str] | None = None) -> int:
         print(f"picture style for {d.name}: {art_style(d) or DEFAULT_STYLE + ' (default)'}")
         if a.sample:
             print(art_sample(d))
+    elif a.cmd == "video" and a.flow in ("mannequin", "shots"):
+        d = book_dir(a.book)
+
+        def secs(v, dflt):
+            if not v:
+                return dflt
+            m_, _, s_ = v.rpartition(":")
+            return float(m_ or 0) * 60 + float(s_)
+        span = f"{secs(a.t_from, 0.0)}:{secs(a.t_to, 1e9)}"
+        start_job(d, flow3d=a.flow, chapter=a.chapter or "1", span=span, keys_only=a.keys_only, guide=a.guide)
+        print(f"making the {a.flow}-flow {'keyframes (stops before the video; review sheet in out/)' if a.keys_only else 'video'} "
+              f"of {d.name} ({a.t_from or '0'}-{a.t_to or 'end'}) in the background — `bookcaster status {d.name}`")
+    elif a.cmd == "video" and a.flow == "3d":
+        d = book_dir(a.book)
+        start_job(d, flow3d="video", chapter=a.chapter, auto_approve=a.auto_approve, jellyfin=a.jellyfin,
+                  keys_only=a.keys_only)
+        print(f"making the 3D video of {d.name} in the background — `bookcaster status {d.name}`"
+              + ("" if a.auto_approve else f"; it stops for review when assets wait (`bookcaster review {d.name}`)"))
+    elif a.cmd == "plan":
+        d = book_dir(a.book)
+        start_job(d, flow3d="plan", chapter=a.chapter)
+        print(f"3d plan for {d.name} in the background — `bookcaster status {d.name}`, then `bookcaster assets {d.name}`")
+    elif a.cmd in ("assets", "stage"):
+        d = book_dir(a.book)
+        if a.plan_only:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+            import flow3d
+            r = (flow3d.assets(d, a.chapter, plan_only=True) if a.cmd == "assets"
+                 else flow3d.stage(d, a.chapter, plan_only=True))
+            print("\n".join(r.get("blocked", [])) or json.dumps(r.get("pending", r.get("rc", {})), indent=1))
+        else:
+            start_job(d, flow3d=a.cmd, chapter=a.chapter)
+            print(f"3d {a.cmd} for {d.name} in the background — `bookcaster status {d.name}`, then `bookcaster review {d.name}`")
+    elif a.cmd in ("review", "approve"):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import flow3d
+        d = book_dir(a.book)
+        if a.cmd == "review":
+            flow3d.review(d, a.chapter)
+        else:
+            done = flow3d.auto_approve(d) if a.auto else flow3d.approve(d, a.items, "rejected" if a.reject else "approved")
+            print(f"{'rejected' if a.reject else 'approved'}: {', '.join(done)}" if done else "nothing matched")
     elif a.cmd == "video":
         d = book_dir(a.book)
         if not any(final_path(d, f).exists() for f in chapter_files(d)):
@@ -1296,7 +1877,10 @@ def main(argv: list[str] | None = None) -> int:
         level = a.level or ("pictures" if a.video else "audio" if a.no_music else "music")
         if a.no_music and at_least(level, "music"):
             sys.exit("--no-music conflicts with --level " + level)
-        start_job(d, level=level, music_only=a.music_only, sfx=a.sfx)
+        # videos get sound effects unless told not to (user 10-18: "why didn't the sound effects go in
+        # by default?"); audio-only levels keep them opt-in
+        sfx = (a.sfx or at_least(level, "pictures")) and not a.no_sfx
+        start_job(d, level=level, music_only=a.music_only, sfx=sfx)
         if at_least(level, "moments"):
             print(estimate_text(d, only=level))
         print(f"recording {d.name} in the background — `bookcaster status {d.name}`; "
@@ -1306,15 +1890,33 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(describe_status(b) for b in books) or "nothing recorded yet")
     elif a.cmd == "stop":
         d = book_dir(a.book)
+        was3d = str((json.loads(_status_path(d).read_text()) if _status_path(d).exists() else {}).get("step", "")
+                    ).startswith("3d")
         subprocess.run(["systemctl", "--user", "stop", unit_name(d)])
         _set_status(d, state="stopped", step="cancelled")
         print(f"stopped {d.name}")
+        restore_idle(print, llm=not was3d)
     elif a.cmd == "jellyfin":
         from . import jellyfin
         if jellyfin.config() is None:
             sys.exit(f"no Jellyfin server set up ({jellyfin.CONFIG})")
         books = [book_dir(a.book)] if a.book else [p.parent for p in sorted(HOME.glob("*/book.txt"))]
-        sent = [to_jellyfin(b, f) for b in books for f in chapter_files(b)]
+        if a.video:
+            if not a.book:
+                sys.exit("--video needs the book")
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+            import flow3d
+            stem, v = flow3d.chapter_stem(books[0], a.chapter or "1"), Path(a.video).expanduser().resolve()
+            if not v.exists() or not covers_chapter(books[0], stem, v):
+                sys.exit(f"{v} is missing or doesn't run the whole of {stem}")
+            chapter_video(books[0], stem, v, send=False)
+        if a.chapter and not a.book:
+            sys.exit("--chapter needs the book")
+        if a.chapter:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+            import flow3d
+        sent = [to_jellyfin(b, f, tag=a.tag) for b in books for f in chapter_files(b)
+                if not a.chapter or f.stem == flow3d.chapter_stem(b, a.chapter)]
         if any(sent):
             jellyfin.rescan()
         elif not any((b / "work" / "final" / f"{f.stem}.mp4").exists()
@@ -1329,6 +1931,12 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "services":
         return subprocess.run(["bash", str(STACK), "status"]).returncode
     elif a.cmd == "_job":
+        if a.flow3d in ("mannequin", "shots"):
+            return run_mannequin_job(Path(a.book), a.chapter, a.span, keys_only=a.keys_only, guide=a.guide,
+                                     flow=a.flow3d)
+        if a.flow3d:
+            return run_flow3d_job(Path(a.book), a.flow3d, a.chapter, auto=a.auto_approve, jellyfin=a.jellyfin,
+                                  keys_only=a.keys_only)
         if a.storyboard:
             return run_storyboard_job(Path(a.book))
         if a.sfx_only:
@@ -1368,13 +1976,25 @@ def main(argv: list[str] | None = None) -> int:
         start_job(d, storyboard=True)
         print(f"making the storyboard for {d.name} in the background (a few minutes) — "
               f"`bookcaster status {d.name}`; files appear in {d / 'out' / 'storyboard'}")
+    elif a.cmd == "keyframes":
+        print(keyframes_sample(book_dir(a.book), a.sample, a.chapter, a.replan, a.clips))
     elif a.cmd == "look":
         d = book_dir(a.book)
+        if a.swap:
+            swap_looks(d, *a.swap)
+            return 0
         for cmd in a.do:
             if "=" not in cmd:
                 sys.exit('use "Name = full new description"')
             name, desc = (x.strip() for x in cmd.split("=", 1))
-            print(f"{set_look(d, name, desc)} now: {desc}")
+            m = re.fullmatch(r"(.+?)\s*\((.+)\)", name)
+            if m:                      # "Edric (star-iron armor) = ..." : one outfit from the wardrobe
+                who = set_outfit(d, m.group(1).strip(), m.group(2).strip(), desc)
+                if not who:
+                    sys.exit(f"no outfit '{m.group(2)}' for {m.group(1)} (bookcaster look shows them)")
+                print(f"{who} now: {desc}")
+                continue
+            print(f"{set_look(d, name, desc, pinned=True)} now: {desc} (pinned: the look audit keeps it)")
         if a.do:
             print("their character sheet and scenes are redrawn at the next storyboard or video job")
         else:
