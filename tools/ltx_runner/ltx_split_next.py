@@ -1,0 +1,1427 @@
+"""LTX-2.5 distilled on two 7900 XTX cards (bus 05 = cuda:0, bus 65 = cuda:1).
+
+  encode JOBS.json   Gemma4-12B bf16 split over both cards -> cached embeddings (emb/<name>.pt)
+  gen    JOBS.json   DiT fp8-cast, blocks split over both cards; conv VAE; mp4 per job
+
+Weights are streamed tensor by tensor from safetensors straight to the target card;
+page cache is dropped as we go; the process exits if MemAvailable < 6 GiB.
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import gc
+import json
+import os
+import re
+import sys
+import threading
+import types
+import time
+from contextlib import nullcontext
+from pathlib import Path
+
+os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
+
+import safetensors  # noqa: E402
+import torch  # noqa: E402
+
+M = Path.home() / "models" / "ltx-2.5"
+DIT = str(M / "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors")
+TE = str(M / "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors")
+VAE = str(M / "vae/ltx-2.5-video-vae-conv-bf16.safetensors")
+AVAE = str(M / "vae/ltx-2.5-audio-vae-bf16.safetensors")
+UPS = str(M / "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors")
+DUR = str(M / "model_patches/ltx-2.5-duration-head-bf16.safetensors")
+DIT_DEV = str(M / "diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors")
+DLORA = str(M / "loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors")
+D0, D1 = torch.device("cuda:0"), torch.device("cuda:1")
+T0 = time.time()
+PP_BACK_DEV = "1"
+
+
+def log(*a):
+    print(f"[{time.time() - T0:7.1f}s]", *a, flush=True)
+
+
+def mem_avail_gib() -> float:
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 2**20
+    return 99.0
+
+
+def ram_guard(min_gib: float = 6.0) -> None:
+    def run():
+        while True:
+            a = mem_avail_gib()
+            if a < min_gib:
+                print(f"RAM GUARD: MemAvailable {a:.1f} GiB < {min_gib} -> abort", flush=True)
+                os._exit(3)
+            time.sleep(0.5)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def vram() -> str:
+    out = []
+    for d in range(torch.cuda.device_count()):
+        free, tot = torch.cuda.mem_get_info(d)
+        out.append(f"cuda:{d} alloc {torch.cuda.memory_allocated(d) / 2**30:.1f} "
+                   f"peak {torch.cuda.max_memory_allocated(d) / 2**30:.1f} used {(tot - free) / 2**30:.1f} GiB")
+    return " | ".join(out)
+
+
+# ---------------------------------------------------------------- split loading
+def split_load(paths, sd_ops, devfn):
+    """{renamed_key: tensor on devfn(key)}; one tensor in RAM at a time, page cache dropped."""
+    from ltx_core.loader.primitives import StateDict
+
+    sd, size, dtypes = {}, 0, set()
+    for p in paths:
+        fd = os.open(p, os.O_RDONLY)
+        try:
+            with safetensors.safe_open(p, framework="pt", device="cpu") as f:
+                for i, name in enumerate(f.keys()):
+                    key = name if sd_ops is None else sd_ops.apply_to_key(name)
+                    if key is None or devfn(key) is None:
+                        continue
+                    v = f.get_tensor(name)
+                    if v.dtype == torch.uint8 and v.ndim == 1:  # asset blob (tokenizer json etc.)
+                        pairs = ((key, v),) if sd_ops is None else sd_ops.apply_to_key_value(key, v)
+                    else:
+                        v = v.to(devfn(key))
+                        pairs = ((key, v),) if sd_ops is None else sd_ops.apply_to_key_value(key, v)
+                    for k, t in pairs:
+                        sd[k] = t
+                        size += t.nbytes
+                        dtypes.add(t.dtype)
+                    del v
+                    if i % 32 == 0:
+                        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    return StateDict(sd=sd, device=D0, size=size, dtype=dtypes)
+
+
+def place(model: torch.nn.Module, devfn) -> None:
+    """Move every param/buffer not already on devfn(name) (catches buffers created on CPU)."""
+    for mname, mod in model.named_modules():
+        pre = f"{mname}." if mname else ""
+        for n, t in list(mod._parameters.items()):
+            if devfn(pre + n) is None:
+                continue
+            if t is not None and not t.is_meta and t.device != devfn(pre + n):
+                mod._parameters[n] = torch.nn.Parameter(t.to(devfn(pre + n)), requires_grad=False)
+        for n, t in list(mod._buffers.items()):
+            if devfn(pre + n) is None:
+                continue
+            if t is not None and not t.is_meta and t.device != devfn(pre + n):
+                mod._buffers[n] = t.to(devfn(pre + n))
+    meta = [n for n, t in list(model.named_parameters()) + list(model.named_buffers())
+            if t.is_meta and devfn(n) is not None]
+    if meta:
+        log("WARNING still-meta tensors:", meta[:10], len(meta))
+
+
+def build_split(builder, devfn):
+    from ltx_core.loader.helpers import as_path_list, assign_state_dict, create_meta_model
+
+    metadata = builder.model_metadata()
+    model = create_meta_model(builder._model_class_configurator, metadata, builder.module_ops)
+    sd = split_load(as_path_list(builder.model_path), builder.model_sd_ops, devfn)
+    assign_state_dict(model, sd.sd)
+    del sd
+    gc.collect()
+    place(model, devfn)
+    return model
+
+
+def move(obj, dev):
+    """Recursively move tensors inside dataclasses / tuples / lists / dicts."""
+    if obj is None:
+        return None
+    if isinstance(obj, torch.Tensor):
+        return obj if obj.device == dev else obj.to(dev, non_blocking=False)
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        ch = {}
+        for f in dataclasses.fields(obj):
+            v = getattr(obj, f.name)
+            nv = move(v, dev)
+            if nv is not v:
+                ch[f.name] = nv
+        return dataclasses.replace(obj, **ch) if ch else obj
+    if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        return type(obj)(*(move(v, dev) for v in obj))
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(move(v, dev) for v in obj)
+    if isinstance(obj, dict):
+        return {k: move(v, dev) for k, v in obj.items()}
+    return obj
+
+
+def layer_devfn(pattern: str, split: int, part: str = "both"):
+    """part='both': blocks >= split on cuda:1, rest cuda:0. 'front': only blocks < split + non-block params
+    (cuda:0), back blocks skipped. 'back': only blocks >= split, on THIS process's cuda:0."""
+    rx = re.compile(pattern)
+
+    def devfn(key: str):
+        m = rx.search(key)
+        back = bool(m and int(m.group(1)) >= split)
+        if part == "front":
+            return None if back else D0
+        if part == "back":
+            return D0 if back else None
+        return D1 if back else D0
+
+    return devfn
+
+
+# ---------------------------------------------------------------- process-per-card pipelining
+HASHLOG = {"on": False}
+
+
+_TM = threading.local()
+
+
+def tm_reset():
+    _TM.d = {"a_dit_s": 0.0, "a_copy_s": 0.0, "wait_b_s": 0.0, "b_dit_s": 0.0, "b_copy_s": 0.0}
+
+
+def tm_add(k, v):
+    d = getattr(_TM, "d", None)
+    if d is not None:
+        d[k] = d.get(k, 0.0) + v
+
+
+def tm_snapshot():
+    return {k: round(v, 2) for k, v in getattr(_TM, "d", {}).items()}
+
+
+def gen_with_seam_retries(p, kw: dict, j: dict, dev, out_dir: Path):
+    """Run the pipeline for job j; a chained chunk is re-rolled (seed + 1000) up to 3 tries while its seam check
+    fails. All tries failing keeps the smoothest try and flags it (j["seam_flag"]) instead of raising
+    (port of the remake agent's fix for an UnboundLocalError on `frames`). -> (frames, j)"""
+    best = None
+    for attempt in range(max(1, j.get("seam_tries", 3)) if j.get("chain_from") else 1):   # shot flow: 0 = no seam check
+        with torch.inference_mode():
+            res = p(**kw)
+            vids = [v for v in res.video]
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(dev)
+        frames = torch.cat([v if v.ndim == 4 else v[0] for v in vids], 0)
+        del res, vids
+        if not j.get("chain_from") or j.get("seam_tries") == 0:
+            best = None
+            break
+        ok, info = seam_ok(out_dir / f"{j['chain_from']}.mp4", j["chain_frame"], frames, j.get("overlap", 12))
+        log(f"[{dev}] {j['name']} seam check (try {attempt + 1}): {info}")
+        if ok:
+            best = None
+            break
+        step = seam_step(info)
+        if best is None or step < best[0]:
+            best = (step, frames.cpu())
+        kw["seed"] = kw["seed"] + 1000  # re-roll this chunk
+        del frames
+        frames = None
+    if best is not None:
+        frames = best[1]
+        j = {**j, "seam_flag": f"all {attempt + 1} tries failed the seam check; kept step {best[0]:.2f}"}
+        log(f"[{dev}] {j['name']} SEAM FLAG: {j['seam_flag']}")
+    return frames, j
+
+
+def gpu_waiters(locks=("/tmp/gpu-05.lock", "/tmp/gpu-65.lock")) -> bool:
+    """True when a process outside our own ancestry has a GPU lock file open (waiting on it, with flock or gaprun).
+    Off unless LTX_YIELD=1 (the remake driver sets it). Checked between jobs, at most every 30 s."""
+    import os as _os
+    import subprocess as _sp
+    import time as _t
+    if _os.environ.get("LTX_YIELD") != "1":
+        return False
+    now = _t.time()
+    if now - getattr(gpu_waiters, "_t", 0) < 30:
+        return getattr(gpu_waiters, "_v", False)
+    gpu_waiters._t = now
+    mine, pid = set(), _os.getpid()
+    while pid > 1:
+        mine.add(pid)
+        try:
+            pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    def tree_of(p):          # our children too (process B of --pp)
+        try:
+            return {int(x) for x in _sp.run(["pgrep", "-P", str(p)], capture_output=True, text=True).stdout.split()}
+        except Exception:
+            return set()
+    kids, frontier = set(), {_os.getpid()}
+    while frontier:
+        nxt = set()
+        for q in frontier:
+            nxt |= tree_of(q) - kids
+        kids |= nxt
+        frontier = nxt
+    mine |= kids
+    r = _sp.run(["fuser", *locks], capture_output=True, text=True)
+    pids = {int(x) for x in (r.stdout + " " + r.stderr).replace(":", " ").split() if x.isdigit()}
+    others = pids - mine
+    gpu_waiters._v = bool(others)
+    return gpu_waiters._v
+
+
+def seam_step(info: str) -> float:
+    """'seam max step 5.74 vs prev median 5.10' -> 5.74 (inf when unparsable)."""
+    m = re.search(r"step ([0-9.]+)", info or "")
+    return float(m.group(1)) if m else float("inf")
+
+
+def tmap(obj, fn):
+    """fn applied to every tensor inside dataclasses / namedtuples / tuples / lists / dicts (as to_shm / move)."""
+    if obj is None:
+        return None
+    if isinstance(obj, torch.Tensor):
+        return fn(obj)
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        ch = {}
+        for f in dataclasses.fields(obj):
+            v = getattr(obj, f.name)
+            nv = tmap(v, fn)
+            if nv is not v:
+                ch[f.name] = nv
+        return dataclasses.replace(obj, **ch) if ch else obj
+    if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        return type(obj)(*(tmap(v, fn) for v in obj))
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(tmap(v, fn) for v in obj)
+    if isinstance(obj, dict):
+        return {k: tmap(v, fn) for k, v in obj.items()}
+    return obj
+
+
+class _Ref:
+    """A pool buffer the other process already has: sent by name only."""
+
+    def __init__(self, name, buf=None):
+        self.name, self.buf = name, buf
+
+
+class ShmPool:
+    """--pp-pool (10-24): the activations cross between the two processes through REUSED, PINNED shared-memory
+    buffers (one per lane, direction, tensor slot and shape) instead of fresh pageable ones per hop: no allocation
+    and page-faulting per hop, DMA straight from pinned pages; a buffer travels once, then only its name.
+    Reuse is safe: a lane's next hop waits for the other side's reply, and the receiver copies a buffer onto its
+    card (synchronously) before it replies."""
+
+    def __init__(self):
+        self.bufs = {}
+
+    def _pin(self, t):
+        try:
+            torch.cuda.cudart().cudaHostRegister(t.data_ptr(), t.numel() * t.element_size(), 0)
+        except Exception:                    # noqa: BLE001  (unpinned still works)
+            pass
+        return t
+
+    def pack(self, obj, tag):
+        n = [0]
+
+        def put(t):
+            n[0] += 1
+            name = f"{tag}:{n[0]}:{tuple(t.shape)}:{t.dtype}"
+            new = name not in self.bufs
+            if new:
+                self.bufs[name] = self._pin(torch.empty(t.shape, dtype=t.dtype).share_memory_())
+            b = self.bufs[name]
+            b.copy_(t, non_blocking=True)
+            return _Ref(name, b if new else None)
+        out = tmap(obj, put)
+        torch.cuda.current_stream().synchronize()      # landed before the other side reads it
+        return out
+
+    def unpack(self, obj, dev):
+        def walk(o):
+            if isinstance(o, _Ref):
+                if o.buf is not None:
+                    self.bufs[o.name] = self._pin(o.buf)
+                return self.bufs[o.name].to(dev, non_blocking=False)
+            if dataclasses.is_dataclass(o) and not isinstance(o, type):
+                ch = {f.name: walk(getattr(o, f.name)) for f in dataclasses.fields(o)}
+                return dataclasses.replace(o, **ch)
+            if isinstance(o, tuple) and hasattr(o, "_fields"):
+                return type(o)(*(walk(v) for v in o))
+            if isinstance(o, (tuple, list)):
+                return type(o)(walk(v) for v in o)
+            if isinstance(o, dict):
+                return {k: walk(v) for k, v in o.items()}
+            return o
+        return walk(obj)
+
+
+POOL = None
+
+
+def thash(t):
+    """Exact-ish fingerprint of a tensor's bits (int64 sums of the raw 16-bit words, plain and position-weighted)."""
+    if t is None:
+        return "None"
+    w = t.detach().contiguous().view(-1)
+    w = w.view(torch.int16).to(torch.int64) if w.element_size() == 2 else w.view(torch.int32).to(torch.int64)
+    idx = torch.arange(w.numel(), device=w.device, dtype=torch.int64) % 9973
+    return f"{int(w.sum())}:{int((w * idx).sum())}"
+
+
+def hlog(job, call, where, video):
+    if HASHLOG["on"] and video is not None:
+        print(f"HASH job={job} call={call} where={where} x={thash(video.x)}", flush=True)
+
+
+def to_shm(obj):
+    """GPU tensors (recursively) -> fresh CPU shared-memory tensors. The D2H copy is blocking, so the data
+    has landed before the caller hands the object to the queue. Every hop gets NEW buffers: a slot is never
+    reused, it is freed when both processes drop their reference (the strictest handshake)."""
+    if obj is None:
+        return None
+    if isinstance(obj, torch.Tensor):
+        if obj.device.type == "cpu":
+            return obj.clone().share_memory_()
+        t = torch.empty(obj.shape, dtype=obj.dtype).share_memory_()
+        t.copy_(obj)
+        return t
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        ch = {}
+        for f in dataclasses.fields(obj):
+            v = getattr(obj, f.name)
+            nv = to_shm(v)
+            if nv is not v:
+                ch[f.name] = nv
+        return dataclasses.replace(obj, **ch) if ch else obj
+    if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        return type(obj)(*(to_shm(v) for v in obj))
+    if isinstance(obj, (tuple, list)):
+        return type(obj)(to_shm(v) for v in obj)
+    if isinstance(obj, dict):
+        return {k: to_shm(v) for k, v in obj.items()}
+    return obj
+
+
+def ic_loras(args):
+    """--ic-lora a.safetensors[,b.safetensors] with --lora-strength s[,t] -> [(path, strength)]."""
+    paths = [x for x in args.ic_lora.split(",") if x]
+    st = [float(x) for x in str(args.lora_strength).split(",")]
+    st = st + [st[-1]] * (len(paths) - len(st))
+    return list(zip(paths, st))
+
+
+def prepared_builder(args):
+    """The DiT builder (fp8 policy, module ops) for the current mode; no weights are touched."""
+    from ltx_core.quantization.fp8_cast import build_policy
+    from ltx_pipelines.utils.model_paths import ModelPaths
+    if args.a2vid or args.ti2v:
+        from ltx_pipelines.a2vid_two_stage import A2VidPipelineTwoStage
+        from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+        from ltx_core.loader import LoraPathStrengthAndSDOps
+        from ltx_core.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
+        paths = ModelPaths.from_split(transformer_path=DIT_DEV, text_encoder_path=TE, video_vae_path=VAE,
+                                      audio_vae_path=AVAE, duration_head_path=DUR)
+        dl = LoraPathStrengthAndSDOps(DLORA, args.dlora_strength, LTXV_LORA_COMFY_RENAMING_MAP)
+        p = (TI2VidTwoStagesPipeline if args.ti2v else A2VidPipelineTwoStage)(
+            model_paths=paths, distilled_lora=[dl], spatial_upsampler_path=UPS, loras=[], device=D0,
+            quantization=build_policy(DIT_DEV))
+        return p.stage_1._prepared_builder()
+    from ltx_pipelines.distilled import DistilledPipeline
+    base = DIT_DEV if args.base == "dev" else DIT
+    paths = ModelPaths.from_split(transformer_path=base, text_encoder_path=TE, video_vae_path=VAE,
+                                  audio_vae_path=AVAE, duration_head_path=DUR)
+    p = DistilledPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=(), device=D0,
+                          quantization=build_policy(base))
+    return p.stage._prepared_builder()  # the IC pipeline's stage builds the same model (LoRA is runtime)
+
+
+def _die_with_parent():
+    """The back half must never outlive its parent (10-20: an orphan held 12 GB on XTX 65 and OOM'd two holds):
+    PR_SET_PDEATHSIG SIGKILL + a parent-pid watchdog."""
+    import ctypes
+    import signal
+    ppid = os.getppid()
+    try:
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)       # PR_SET_PDEATHSIG
+    except OSError:
+        pass
+
+    def watch():
+        while True:
+            if os.getppid() != ppid:
+                os._exit(3)
+            time.sleep(2)
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def vram_guard(limit_gb: float = 1.5):
+    """Before a hold: every visible card must be (nearly) empty; else name the processes that have /dev/kfd open."""
+    bad = []
+    for d_ in range(torch.cuda.device_count()):
+        free, total = torch.cuda.mem_get_info(d_)
+        used = (total - free - torch.cuda.memory_reserved(d_)) / 2**30 - 0.6   # minus our own + the HIP context
+        if used > limit_gb:
+            bad.append((d_, round(used, 1)))
+    if bad:
+        pids = []
+        for pd in os.listdir("/proc"):
+            if not pd.isdigit() or int(pd) == os.getpid():
+                continue
+            try:
+                if any(os.readlink(f"/proc/{pd}/fd/{fd}") == "/dev/kfd" for fd in os.listdir(f"/proc/{pd}/fd")):
+                    pids.append(f"{pd}:{open(f'/proc/{pd}/cmdline').read().replace(chr(0), ' ')[:80]}")
+            except OSError:
+                pass
+        raise SystemExit(f"VRAM held before the hold: {bad} (GiB used per visible card); GPU processes: {pids}")
+
+
+def back_server(args, inq, outqs, ready):
+    """Process B (its own Python, its own card as cuda:0): DiT blocks >= split, served FIFO for all lanes."""
+    global T0
+    T0 = time.time()
+    _die_with_parent()
+    try:
+        torch.cuda.set_device(0)
+        if not args.miopen:
+            torch.backends.cudnn.enabled = False
+        if args.blaslt:
+            torch.backends.cuda.preferred_blas_library("cublaslt")
+        from ltx_core.guidance.perturbations import PerturbationType as P
+        ltx = build_split(prepared_builder(args), layer_devfn(r"^transformer_blocks\.(\d+)\.", args.split, "back")).eval()
+        if args.fa_amd:
+            install_fa_amd(ltx)
+        state = types.SimpleNamespace(on=False)
+        if args.ic_lora:
+            for lp, ls in ic_loras(args):
+                attach_runtime_lora(ltx, lp, ls, state)
+        if args.a2vid or args.ti2v:
+            attach_runtime_lora(ltx, DLORA, args.dlora_strength, state)
+        elif args.base == "dev":
+            attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
+        nb = len(ltx.transformer_blocks)
+        dec = None
+        if args.decode_b:   # (10-24) the clips' VAE decode here, on the card that idles while card A decodes
+            from ltx_pipelines.utils.blocks.video_decoder import VideoDecoder
+            vd = VideoDecoder(VAE, torch.bfloat16, D0)
+            dec = vd._prepared_builder().build(device=D0, dtype=torch.bfloat16).eval()
+        log(f"[B] back half loaded: blocks {args.split}..{nb - 1}; alloc {torch.cuda.memory_allocated(0) / 2**30:.1f} GiB"
+            + (" (+ VAE decoder)" if dec is not None else ""))
+        ready.put(("ok", torch.cuda.memory_allocated(0)))
+        busy = 0.0
+        bpool = ShmPool()
+        with torch.inference_mode():
+            while True:
+                msg = inq.get()
+                if msg is None:
+                    break
+                if msg[0] == "decode":
+                    _, lane, latent, tiling, dt, gstate = msg
+                    t = time.time()
+                    g = None
+                    if gstate is not None:
+                        g = torch.Generator(device=D0)
+                        g.set_state(gstate)
+                    fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
+                    fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+                    torch.cuda.synchronize(0)
+                    out = to_shm(fr)
+                    busy += time.time() - t
+                    outqs[lane].put((out, time.time() - t))
+                    del latent, fr, out, msg
+                    continue
+                lane, video, audio, pert, on = msg
+                t = time.time()
+                state.on = on
+                if args.pp_pool:
+                    video, audio, pert = (bpool.unpack(x, D0) for x in (video, audio, pert))
+                else:
+                    video, audio, pert = move(video, D0), move(audio, D0), move(pert, D0)
+                del msg
+                torch.cuda.synchronize(0)
+                t_in = time.time()
+                for i in range(args.split, nb):
+                    if video is not None:
+                        video = ltx.block_input_processor(video, pert, i, self_attn_type=P.SKIP_VIDEO_SELF_ATTN,
+                                                          cross_attn_type=P.SKIP_A2V_CROSS_ATTN)
+                    if audio is not None:
+                        audio = ltx.block_input_processor(audio, pert, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
+                                                          cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
+                    video, audio = ltx.transformer_blocks[i](video=video, audio=audio)
+                torch.cuda.synchronize(0)
+                t_c = time.time()
+                out = bpool.pack((video, audio), f"b{lane}") if args.pp_pool else (to_shm(video), to_shm(audio))
+                t_out = time.time()
+                busy += t_out - t
+                outqs[lane].put((*out, (t_c - t_in, (t_in - t) + (t_out - t_c))))
+                del video, audio, pert, out
+        log(f"[B] done; busy {busy:.1f}s; peak {torch.cuda.max_memory_allocated(0) / 2**30:.1f} GiB")
+        ready.put(("busy", busy, torch.cuda.max_memory_allocated(0)))
+    except BaseException as e:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        ready.put(("error", repr(e)))
+
+
+# ---------------------------------------------------------------- encode
+def cmd_encode(args, jobs):
+    from ltx_core.loader.registry import ModelRegistry
+    from ltx_core.loader.single_gpu_model_builder import SingleGPUModelBuilder as Builder
+    from ltx_core.text_encoders.gemma import (
+        EMBEDDINGS_PROCESSOR_KEY_OPS,
+        EmbeddingsProcessorConfigurator,
+        GemmaTextEncoderConfigurator,
+        get_gemma_ops,
+        resolve_gemma_weight_paths,
+    )
+
+    emb_dir = Path(args.emb)
+    emb_dir.mkdir(parents=True, exist_ok=True)
+    todo = [j for j in jobs if not (emb_dir / f"{j['name']}.pt").exists() or args.force]
+    if not todo:
+        log("all embeddings cached")
+        return
+    reg = ModelRegistry(cache_models=False, cache_weights=False)
+    ops, mops = get_gemma_ops(TE)
+    b = Builder(model_path=resolve_gemma_weight_paths(TE),
+                model_class_configurator=GemmaTextEncoderConfigurator.with_gemma_model_path(TE),
+                model_sd_ops=ops, module_ops=mops, registry=reg)
+    devfn = layer_devfn(r"layers\.(\d+)\.", 24)
+    log("loading Gemma split 24/24 ...")
+    te = build_split(b, devfn).to(torch.bfloat16).eval()
+    log("Gemma loaded;", vram())
+    lm = te.model.model
+    # find the decoder layer list and hook every layer + final norm to pull inputs to its device
+    layers = None
+    for n, mod in lm.named_modules():
+        if n.endswith("layers") and isinstance(mod, torch.nn.ModuleList) and len(mod) == 48:
+            layers, lname = mod, n
+    assert layers is not None
+    log("decoder layers at", lname)
+
+    def hook(mod, a, kw):
+        d = next(mod.parameters()).device
+        return move(a, d), move(kw, d)
+
+    for L in layers:
+        L.register_forward_pre_hook(hook, with_kwargs=True)
+    parent = lm.get_submodule(lname.rsplit(".", 1)[0]) if "." in lname else lm
+    if hasattr(parent, "norm"):
+        parent.norm.register_forward_pre_hook(hook, with_kwargs=True)
+    raw = []
+    with torch.inference_mode():
+        for j in todo:
+            t = time.time()
+            (hs, mask), = te.encode([j["prompt"]])
+            # hidden states of all layers are ~0.4 GB per prompt: park them in host RAM, not on cuda:0
+            # (52 prompts on the card = 20 GB -> OOM inside Gemma SDPA)
+            raw.append((tuple(h.to("cpu") for h in hs), mask.to("cpu")))
+            log(f"encoded {j['name']} in {time.time() - t:.1f}s")
+    te.dispose() if hasattr(te, "dispose") else None
+    del te, lm, layers
+    gc.collect()
+    torch.cuda.empty_cache()
+    ep = Builder(model_path=(DIT_DEV if args.dev else DIT, TE),
+                 model_class_configurator=EmbeddingsProcessorConfigurator.with_gemma_model_path(TE),
+                 model_sd_ops=EMBEDDINGS_PROCESSOR_KEY_OPS, registry=reg)
+    proc = build_split(ep, lambda k: D0).to(torch.bfloat16).eval()
+    with torch.inference_mode():
+        for j, (hs, mask) in zip(todo, raw):
+            out = proc.process_hidden_states(tuple(h.to(D0) for h in hs), mask.to(D0))
+            torch.save({k: (v.cpu() if isinstance(v, torch.Tensor) else v) for k, v in out._asdict().items()},
+                       emb_dir / f"{j['name']}.pt")
+            log("saved", j["name"], {k: tuple(v.shape) for k, v in out._asdict().items() if v is not None})
+
+
+# ---------------------------------------------------------------- gen
+CARD_LOCKS = {0: threading.Lock(), 1: threading.Lock()}
+# --pp: ONE lane at a time owns card A (process A's cuda:0). A lane gives the card up only while its activations are
+# in process B (after a synchronous D2H), and takes it back when B's answer arrives. So card A never runs two
+# lanes' kernels concurrently (bitwise-reproducible), while B's half of lane X overlaps A's work for lane Y.
+class _TimedLock:
+    """threading.Lock that accumulates the time it is held (= process A's card busy time under --pp)."""
+
+    def __init__(self):
+        self._l, self.held, self._t = threading.Lock(), 0.0, 0.0
+
+    def acquire(self):
+        self._l.acquire()
+        self._t = time.time()
+
+    def release(self):
+        self.held += time.time() - self._t
+        self._l.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *a):
+        self.release()
+
+
+class _SharedOwner(_TimedLock):
+    """--pp-shared-a (10-21): no exclusive ownership of card A; each lane runs on its own stream, so one lane's VAE
+    work overlaps the other lane's DiT steps instead of convoying (lanes waited 28-58 s per clip on B for 14-28 s of
+    B work: both lanes in the DiT, then both in the VAE). Counts nothing: 'owned' then reads 0."""
+
+    def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+
+A_OWNER = _TimedLock()
+
+
+def install_pp_forward(ltx, split, pp, get_state):
+    """Process A side: blocks < split here (cuda:0), then hand the activations to process B and wait."""
+    from ltx_core.guidance.perturbations import PerturbationType as P
+
+    def proc(video, audio, perturbations):
+        st = get_state()
+        st.dcalls = getattr(st, "dcalls", 0) + 1
+        hlog(getattr(st, "job", st.name), st.dcalls, "in", video)
+        t0 = time.time()
+        with CARD_LOCKS[0]:  # launch the whole front run at once (no op interleaving between lanes)
+            for i in range(split):
+                if video is not None:
+                    video = ltx.block_input_processor(video, perturbations, i, self_attn_type=P.SKIP_VIDEO_SELF_ATTN,
+                                                      cross_attn_type=P.SKIP_A2V_CROSS_ATTN)
+                if audio is not None:
+                    audio = ltx.block_input_processor(audio, perturbations, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
+                                                      cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
+                video, audio = ltx.transformer_blocks[i](video=video, audio=audio)
+        torch.cuda.synchronize(0)
+        t1 = time.time()
+        tm_add("a_dit_s", t1 - t0)
+        hlog(getattr(st, "job", st.name), st.dcalls, "handoff", video)
+        if POOL is not None:
+            msg = (st.lane, *POOL.pack((video, audio, perturbations), f"a{st.lane}"), st.on)
+        else:
+            msg = (st.lane, to_shm(video), to_shm(audio), to_shm(perturbations), st.on)  # blocking D2H: card A idle for us
+        t2 = time.time()
+        tm_add("a_copy_s", t2 - t1)
+        A_OWNER.release()
+        try:
+            pp["inq"].put(msg)
+            del msg
+            v, a, bt = pp["outqs"][st.lane].get()
+        finally:
+            A_OWNER.acquire()
+        t3 = time.time()
+        tm_add("wait_b_s", t3 - t2)
+        tm_add("b_dit_s", bt[0])
+        tm_add("b_copy_s", bt[1])
+        v, a = (POOL.unpack(v, D0), POOL.unpack(a, D0)) if POOL is not None else (move(v, D0), move(a, D0))
+        tm_add("a_copy_s", time.time() - t3)
+        hlog(getattr(st, "job", st.name), st.dcalls, "back", v)
+        return v, a
+
+    ltx._process_transformer_blocks = proc
+
+
+class RemoteDecoder:
+    """--decode-b (10-24): a lane's VAE decode on process B's card (which waits while card A decodes: quiet clips
+    spent 22 of their 45 s of work there). Same latent, dtype, tiling and generator state; keyframe decodes stay
+    local."""
+
+    def __init__(self, local, pp, get_state):
+        self.local, self.pp, self.get_state = local, pp, get_state
+
+    def __getattr__(self, k):
+        return getattr(self.local, k)
+
+    def __call__(self, latent, tiling_config=None, generator=None, *, dtype=None, keyframes=None, device_fn=None):
+        if keyframes is not None:
+            return self.local(latent, tiling_config, generator, dtype=dtype, keyframes=keyframes, device_fn=device_fn)
+        st = self.get_state()
+        dt = dtype or self.local._dtype
+        t0 = time.time()
+        msg = ("decode", st.lane, to_shm(latent.to(dtype=dt)), tiling_config, dt,
+               generator.get_state() if generator is not None else None)
+        A_OWNER.release()
+        try:
+            self.pp["inq"].put(msg)
+            del msg
+            fr, bt = self.pp["outqs"][st.lane].get()
+        finally:
+            A_OWNER.acquire()
+        tm_add("b_decode_s", bt)
+        tm_add("decode_wait_s", time.time() - t0)
+        return iter([fr.to(latent.device)])
+
+
+def install_split_forward(ltx, devs, get_state=None):
+    """Blocks run on their card. Each run of consecutive same-card blocks is LAUNCHED under that card's lock,
+    so with two lanes (threads) one lane's whole front half is queued before the other's: the stream FIFO then
+    executes them back to back and the lanes fall into a pipeline (A on cuda:1 while B on cuda:0) instead of a
+    convoy (both interleaved on one card, then both on the other)."""
+    from ltx_core.guidance.perturbations import PerturbationType as P
+
+    runs, start = [], 0
+    for i in range(1, len(devs) + 1):
+        if i == len(devs) or devs[i] != devs[start]:
+            runs.append((start, i, devs[start]))
+            start = i
+
+    def proc(video, audio, perturbations):
+        blocks = ltx.transformer_blocks
+        st = get_state() if get_state else None
+        if st is not None:
+            st.dcalls = getattr(st, "dcalls", 0) + 1
+            hlog(getattr(st, "job", st.name), st.dcalls, "in", video)
+        for ri, (a, b, d) in enumerate(runs):
+            if st is not None and ri == 1:
+                hlog(getattr(st, "job", st.name), st.dcalls, "handoff", video)
+            with CARD_LOCKS[d.index]:
+                for i in range(a, b):
+                    block = blocks[i]
+                    if video is not None:
+                        video = ltx.block_input_processor(video, perturbations, i, self_attn_type=P.SKIP_VIDEO_SELF_ATTN,
+                                                          cross_attn_type=P.SKIP_A2V_CROSS_ATTN)
+                    if audio is not None:
+                        audio = ltx.block_input_processor(audio, perturbations, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
+                                                          cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
+                    video, audio = move(video, d), move(audio, d)
+                    video, audio = block(video=video, audio=audio)
+        video, audio = move(video, D0), move(audio, D0)
+        if st is not None:
+            hlog(getattr(st, "job", st.name), st.dcalls, "back", video)
+        return video, audio
+
+    ltx._process_transformer_blocks = proc
+
+
+def stereo_audio(path, out_dir):
+    """LTX's audio VAE wants 2 channels; TTS wavs are mono. Returns a stereo 48 kHz copy when needed."""
+    import subprocess
+    ch = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
+                         "-of", "csv=p=0", path], capture_output=True, text=True).stdout.strip()
+    if ch == "2":
+        return path
+    dst = Path(out_dir) / "audio_st" / (Path(path).stem + "_st48.wav")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-ac", "2", "-ar", "48000", str(dst)], check=True)
+    log(f"audio {Path(path).name}: {ch or '?'} channel(s) -> stereo copy {dst}")
+    return str(dst)
+
+
+def seam_ok(prev_mp4, chain_frame, frames, overlap, factor=3.0):
+    """Simulate the stitch's crossfade over `overlap` frames and compare the largest frame-to-frame step in
+    the seam window with the previous chunk's median step. ok = max <= factor * median."""
+    import av
+    import numpy as np
+    prev = np.stack([f.to_ndarray(format="rgb24") for f in av.open(str(prev_mp4)).decode(video=0)]).astype(np.float32)
+    new = (frames.float().clamp(0, 1) * 255).cpu().numpy()
+    a = prev[chain_frame:chain_frame + overlap]
+    o = min(len(a), overlap)
+    w = np.linspace(0, 1, o + 2)[1:-1][:, None, None, None]
+    blend = (1 - w) * a[:o] + w * new[:o]
+    seq = np.concatenate([prev[max(chain_frame - 3, 0):chain_frame], blend, new[o:o + 4]], 0)
+    d = np.abs(np.diff(seq, axis=0)).mean(axis=(1, 2, 3))
+    med = float(np.median(np.abs(np.diff(prev, axis=0)).mean(axis=(1, 2, 3))))
+    return float(d.max()) <= factor * max(med, 0.5), f"seam max step {d.max():.2f} vs prev median {med:.2f}"
+
+
+def save_mp4(frames: torch.Tensor, path: str, fps: float, crf: int = 20):
+    import av
+    import numpy as np
+
+    if frames.dtype != torch.uint8:
+        f = frames.float()
+        if f.min() < -0.01:
+            f = (f + 1) / 2
+        frames = (f.clamp(0, 1) * 255).round().to(torch.uint8)
+    arr = frames.cpu().numpy()
+    if arr.shape[-1] != 3:  # F,C,H,W -> F,H,W,C
+        arr = np.ascontiguousarray(arr.transpose(0, 2, 3, 1))
+    h, w = arr.shape[1:3]
+    c = av.open(path, "w")
+    s = c.add_stream("libx264", rate=int(round(fps)), options={"crf": str(crf), "preset": "medium"})
+    s.width, s.height, s.pix_fmt = w, h, "yuv420p"
+    for fr in arr:
+        for pk in s.encode(av.VideoFrame.from_ndarray(fr, format="rgb24")):
+            c.mux(pk)
+    for pk in s.encode():
+        c.mux(pk)
+    c.close()
+    return arr
+
+
+def tstats(t):
+    if t is None:
+        return "None"
+    f = t.float()
+    return (f"{tuple(t.shape)} {t.dtype} mean {f.mean().item():.3f} std {f.std().item():.3f} "
+            f"absmax {f.abs().max().item():.2f} nan {int(f.isnan().sum())}")
+
+
+def install_debug(pipe, x0, ddir, name_fn=lambda: "job"):
+    """Log latent stats per DiT call, stage-1/upsample/stage-2 latents, and decode output; save latents."""
+    ddir.mkdir(parents=True, exist_ok=True)
+    calls = {"n": 0, "t": time.time()}
+
+    def post(mod, a, kw, out):
+        torch.cuda.synchronize()
+        v = out[0] if isinstance(out, (tuple, list)) else getattr(out, "video", out)
+        calls["n"] += 1
+        log(f"DiT call {calls['n']} {time.time() - calls['t']:.1f}s x0", tstats(v if isinstance(v, torch.Tensor) else None))
+        calls["t"] = time.time()
+
+    x0.register_forward_hook(post, with_kwargs=True)
+
+    class Wrap:
+        def __init__(self, inner, tag):
+            self.inner, self.tag = inner, tag
+
+        def __getattr__(self, k):
+            return getattr(self.inner, k)
+
+        def __call__(self, latent, *a, **kw):
+            log(f"{self.tag} in", tstats(latent))
+            torch.save(latent.detach().cpu(), ddir / f"{name_fn()}_{self.tag}_in.pt")
+            t = time.time()
+            out = self.inner(latent, *a, **kw)
+            if isinstance(out, torch.Tensor):
+                torch.cuda.synchronize()
+                log(f"{self.tag} out {time.time() - t:.1f}s", tstats(out))
+                return out
+
+            def it():
+                for c in out:
+                    torch.cuda.synchronize()
+                    log(f"{self.tag} chunk {time.time() - t:.1f}s", tstats(c))
+                    yield c
+            return it()
+
+    pipe.upsampler = Wrap(pipe.upsampler, "upsample")
+    pipe.video_decoder = Wrap(pipe.video_decoder, "vdecode")
+
+
+def attach_runtime_lora(ltx, path, strength, state):
+    """Unfused LoRA: forward hooks add strength * (x A^T) B^T on each target Linear, on that Linear's card.
+    One resident fp8 DiT serves both the LoRA stage (state.on=True) and the bare stage.
+    Streams: each A/B pair goes to its card as soon as both halves are read (no full LoRA in RAM)."""
+    n, nbytes, missing, pend = 0, 0, [], {}
+    with safetensors.safe_open(path, framework="pt", device="cpu") as f:
+        for k in f.keys():
+            name = k.removeprefix("diffusion_model.")
+            mod_name, ab = name.rsplit(".lora_", 1)
+            pend.setdefault(mod_name, {})[ab[0]] = k
+            if len(pend[mod_name]) < 2:
+                continue
+            keys = pend.pop(mod_name)
+            try:
+                m = ltx.get_submodule(mod_name)
+            except AttributeError:
+                missing.append(mod_name)
+                continue
+            dev = m.weight.device
+            if dev.type == "meta":
+                continue
+            A = f.get_tensor(keys["A"]).to(dev, torch.bfloat16)
+            B = (f.get_tensor(keys["B"]).to(dev, torch.float32) * strength).to(torch.bfloat16)
+            nbytes += A.nbytes + B.nbytes
+
+            def hook(mod, inp, out, A=A, B=B):
+                if not state.on:
+                    return out
+                x = inp[0]
+                return out + torch.nn.functional.linear(torch.nn.functional.linear(x.to(A.dtype), A), B).to(out.dtype)
+
+            m.register_forward_hook(hook)
+            n += 1
+    log(f"runtime LoRA {Path(path).name} x{strength}: {n} linears hooked, {nbytes / 2**20:.0f} MiB, "
+        f"missing {len(missing)} {missing[:5]}, unpaired {len(pend)}")
+    return n
+
+
+def serialize_sdpa():
+    """ltx_core's PytorchAttention enters torch's sdpa_kernel(..., set_priority=True) on EVERY call. That mutates
+    process-global backend flags and restores them on exit, so with two lanes (threads) one lane can launch its
+    SDPA while the other has the flags half-restored, and get a different backend (tiny numeric differences,
+    41 dB vs sequential). One lock around the call keeps every SDPA launch inside a consistent flag state."""
+    import ltx_core.model.transformer.attention as LA
+    if getattr(LA.PytorchAttention, "_serialized", False):
+        return
+    orig, lk = LA.PytorchAttention.__call__, threading.Lock()
+
+    def call(self, *a, **k):
+        with lk:
+            return orig(self, *a, **k)
+
+    LA.PytorchAttention.__call__ = call
+    LA.PytorchAttention._serialized = True
+
+
+def cmd_gen(args, jobs):
+    from ltx_core.quantization.fp8_cast import build_policy
+    from ltx_pipelines.distilled import DistilledPipeline
+    from ltx_pipelines.ic_lora import ICLoraPipeline
+    from ltx_core.loader import LoraPathStrengthAndSDOps
+    from ltx_core.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
+    from ltx_pipelines.utils.blocks.diffusion_stage import DiffusionStage
+    from ltx_core.model.transformer import X0Model
+    from ltx_core.text_encoders.gemma.embeddings_processor import EmbeddingsProcessorOutput
+    from ltx_pipelines.utils.model_paths import ModelPaths
+    from ltx_pipelines.utils.types import ImageConditioningInput
+
+    torch.cuda.set_device(0)
+    HASHLOG["on"] = args.hashlog
+    if args.lanes > 1:
+        serialize_sdpa()
+    if not args.miopen:  # MIOpen conv3d on gfx1100: VAE round trip 13.8 dB + 60x slower; off = 32.3 dB (= CPU)
+        torch.backends.cudnn.enabled = False
+        log("MIOpen (cudnn backend) disabled")
+    if args.blaslt:
+        torch.backends.cuda.preferred_blas_library("cublaslt")
+        log("preferred BLAS: hipBLASLt")
+    BASE = DIT_DEV if args.base == "dev" else DIT
+    paths = ModelPaths.from_split(transformer_path=BASE, text_encoder_path=TE, video_vae_path=VAE,
+                                  audio_vae_path=AVAE, duration_head_path=DUR)
+    ic = bool(args.ic_lora)
+    loras_ic = [LoraPathStrengthAndSDOps(lp, ls, LTXV_LORA_COMFY_RENAMING_MAP) for lp, ls in ic_loras(args)] if ic else []
+
+    a2v = bool(args.a2vid)
+    # --ti2v (10-23): image-to-video on the same two stages as A2Vid (dev DiT + CFG/STG at half size, distilled
+    # LoRA refine) with a negative prompt - the fight route; pipelined like A2Vid
+    ti2v = bool(args.ti2v)
+    if a2v or ti2v:
+        from ltx_pipelines.a2vid_two_stage import A2VidPipelineTwoStage
+        from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+        from ltx_pipelines.utils.constants import detect_params
+        a2v_params = detect_params(DIT_DEV)
+        paths = ModelPaths.from_split(transformer_path=DIT_DEV, text_encoder_path=TE, video_vae_path=VAE,
+                                      audio_vae_path=AVAE, duration_head_path=DUR)
+        dlora = LoraPathStrengthAndSDOps(DLORA, args.dlora_strength, LTXV_LORA_COMFY_RENAMING_MAP)
+
+    def make_pipe(dev):
+        if ti2v:
+            return TI2VidTwoStagesPipeline(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
+                                           loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
+        if a2v:
+            return A2VidPipelineTwoStage(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
+                                         loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
+        if ic:
+            return ICLoraPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=loras_ic, device=dev,
+                                  quantization=build_policy(BASE)), "_diffusion_stage"
+        return DistilledPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=(), device=dev,
+                                 quantization=build_policy(BASE)), "stage"
+
+    pipe, stage_attr = make_pipe(D0)
+    if ic:
+        log("IC-LoRA pipeline; reference downscale", pipe.reference_downscale_factor,
+            "temporal", pipe.reference_temporal_scale_factor)
+    elif not (a2v or ti2v):
+        log("ancestral sampler:", pipe.use_ancestral_sampler)
+    builder = getattr(pipe, stage_attr)._prepared_builder()
+    split = args.split
+    pp = None
+    global A_OWNER, POOL
+    if args.pp and args.pp_shared_a:
+        A_OWNER = _SharedOwner()
+        args.pp_streams = True       # lanes must not share one stream once they overlap on card A
+    if args.pp:
+        import torch.multiprocessing as tmp
+        ctx = tmp.get_context("spawn")
+        inq, ready = ctx.Queue(), ctx.Queue()
+        outqs = [ctx.Queue() for _ in range(args.lanes)]
+        env_keep = os.environ.get("HIP_VISIBLE_DEVICES")
+        os.environ["HIP_VISIBLE_DEVICES"] = PP_BACK_DEV
+        vram_guard()
+        procB = ctx.Process(target=back_server, args=(args, inq, outqs, ready), daemon=True)
+        procB.start()
+        import atexit
+        atexit.register(lambda: (procB.terminate(), procB.join(10)) if procB.is_alive() else None)
+        os.environ["HIP_VISIBLE_DEVICES"] = env_keep
+        pp = dict(inq=inq, outqs=outqs, ready=ready, proc=procB)
+        log(f"[A] spawned back-half process pid {procB.pid} on HIP device {PP_BACK_DEV}; loading front half ...")
+        ltx = build_split(builder, layer_devfn(r"^transformer_blocks\.(\d+)\.", split, "front")).eval()
+        r = ready.get()
+        if r[0] != "ok":
+            raise SystemExit(f"back-half process failed: {r}")
+        nb = len(ltx.transformer_blocks)
+        if args.pp_pool:
+            POOL = ShmPool()
+        install_pp_forward(ltx, split, pp, lambda: lstate)
+    else:
+        log(f"loading DiT fp8, blocks <{split} on cuda:0, rest on cuda:1 ...")
+        ltx = build_split(builder, layer_devfn(r"^transformer_blocks\.(\d+)\.", split)).eval()
+        nb = len(ltx.transformer_blocks)
+        install_split_forward(ltx, [D0 if i < split else D1 for i in range(nb)], lambda: lstate)
+    if args.fa_amd:
+        install_fa_amd(ltx)
+    x0 = X0Model(ltx).eval()
+
+    class LoraState(threading.local):  # per lane (thread): LoRA on/off + current job
+        on = False
+        job_has_control = False
+        name = None
+        calls = 0       # DiT calls in the current stage
+        stage_has_lora = False
+        lane = 0
+        gate = None     # stage-1 DiT calls with control; later calls cut the reference tokens off
+        n_ref = 0       # reference tokens appended after the noisy tokens (stage 1)
+
+    lstate = LoraState()
+    if ic:
+        for lp, ls in ic_loras(args):
+            attach_runtime_lora(ltx, lp, ls, lstate)
+    if a2v or ti2v:
+        attach_runtime_lora(ltx, DLORA, args.dlora_strength, lstate)
+    elif args.base == "dev":  # distilled behaviour = dev + distilled LoRA, always on
+        attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
+    log("DiT loaded;", vram())
+
+    def gate_hook(mod, a, kw):
+        """Control gating: after `gate` stage-1 calls, LoRA off and noisy<->reference attention masked to 0."""
+        lstate.calls += 1
+        if lstate.gate is None or not lstate.stage_has_lora or not lstate.job_has_control:
+            return None
+        if lstate.calls <= lstate.gate:
+            return None
+        lstate.on = False
+        video = a[0] if a else kw["video"]
+        T = video.latent.shape[1]
+        n = T - lstate.n_ref
+        m = video.attention_mask
+        m = torch.ones(video.latent.shape[0], T, T, device=video.latent.device, dtype=torch.float32) if m is None else m.clone()
+        m[:, :n, n:] = 0
+        m[:, n:, :n] = 0
+        video = dataclasses.replace(video, attention_mask=m)
+        if lstate.calls == lstate.gate + 1:
+            log(f"control gated off from DiT call {lstate.calls} (T={T}, ref={lstate.n_ref})")
+        if a:
+            return (video, *a[1:]), kw
+        kw["video"] = video
+        return a, kw
+
+    if ic:
+        x0.register_forward_pre_hook(gate_hook, with_kwargs=True)
+
+    class OnDevice(torch.nn.Module):
+        """Lane on cuda:1: run the shared DiT (non-block params on cuda:0) and hand results back."""
+
+        def __init__(self, inner, dev):
+            super().__init__()
+            self.inner, self.dev = inner, dev
+
+        def forward(self, video, audio, perturbations):
+            with torch.cuda.device(0):
+                out = self.inner(move(video, D0), move(audio, D0), move(perturbations, D0))
+            return move(out, self.dev)
+
+    emb_dir = Path(args.emb)
+
+    def prepare(p, dev):
+        model = x0 if dev == D0 else OnDevice(x0, dev)
+
+        class SplitStage(DiffusionStage):
+            def _transformer_ctx(self, **kw):
+                lstate.calls = 0
+                lstate.stage_has_lora = bool(self._transformer_builder.loras)
+                lstate.on = lstate.stage_has_lora and lstate.job_has_control
+                log(f"[{dev}] stage ctx: LoRA {'ON' if lstate.on else 'off'}")
+                return nullcontext(model)
+
+        for attr in ([stage_attr, "stage_2"] if a2v or ti2v else [stage_attr]):
+            st = getattr(p, attr)
+            setattr(p, attr, SplitStage(st._transformer_builder, st._dtype, st._device,
+                                        quantization=st._quantization, scale_factors=st.video_scale_factors))
+
+        def fake_encoder(prompts, **kw):
+            out = []
+            for i in range(len(prompts)):
+                d = torch.load(emb_dir / f"{lstate.name}{'' if i == 0 else '__neg'}.pt")
+                out.append(EmbeddingsProcessorOutput(**{k: (v.to(dev) if isinstance(v, torch.Tensor) else v)
+                                                        for k, v in d.items()}))
+            return out
+
+        p.prompt_encoder = fake_encoder
+        if pp and args.decode_b and hasattr(p, "video_decoder"):
+            p.video_decoder = RemoteDecoder(p.video_decoder, pp, lambda: lstate)
+        return p
+
+    lanes = [(prepare(pipe, D0), D0)]
+    if args.lanes >= 2 and pp:
+        for _ in range(args.lanes - 1):   # every lane drives cuda:0; process B serves cuda:1 (FIFO over lanes)
+            lanes.append((prepare(make_pipe(D0)[0], D0), D0))
+    elif args.lanes == 2:
+        lanes.append((prepare(make_pipe(D1)[0], D1), D1))
+    if args.debug:
+        for i, (lp, _d) in enumerate(lanes):
+            install_debug(lp, x0 if i == 0 else torch.nn.Module(), Path(args.out) / "dbg", name_fn=lambda: lstate.name)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    todo = []
+    for j in jobs:
+        if args.only and j["name"] not in args.only.split(","):
+            continue
+        if (out_dir / f"{j['name']}.mp4").exists() and not args.force:
+            log("skip existing", j["name"])
+            continue
+        todo.append(j)
+    if pp and args.stagger and len(lanes) > 1:
+        # 10-24: the two takes of a shot (same length) ran side by side in lockstep, so both lanes decoded on card A
+        # at once while card B sat idle (0% for 6-8 s at a time); takes apart + a late second lane keep them out of step
+        todo = [j for j in todo if not re.search(r"_t\d+$", j["name"])] + [j for j in todo if re.search(r"_t\d+$", j["name"])]
+    timings, lock, errors = {}, threading.Lock(), []
+    t_all = time.time()
+
+    def run_job(p, dev, j):
+        mp4 = out_dir / f"{j['name']}.mp4"
+        lstate.name = j.get("emb", j["name"])
+        lstate.dcalls = 0
+        lstate.job = j["name"]
+        if j.get("chain_from"):  # long-line chunk: frame 0 = a frame of the previous chunk's output
+            import av as _av
+            prev = out_dir / f"{j['chain_from']}.mp4"
+            fr = [f for i, f in enumerate(_av.open(str(prev)).decode(video=0)) if i == j["chain_frame"]][0]
+            png = out_dir / f"{j['name']}_first.png"
+            fr.to_image().save(png)
+            j = {**j, "images": [{"path": str(png), "frame": 0, "strength": j.get("chain_strength", 1.0)}] + j.get("images", [])}
+        if j.get("lock_end") and j.get("images"):  # camera lock: weak copy of frame 0 at the last frame
+            j = {**j, "images": j["images"] + [{"path": j["images"][0]["path"], "frame": j["frames"] - 1,
+                                                 "strength": j["lock_end"]}]}
+        imgs = [ImageConditioningInput.at(im["path"], im["frame"], im.get("strength", 1.0), crf=im.get("crf"))
+                for im in j.get("images", [])]
+        kw = dict(prompt=j["prompt"], seed=j.get("seed", 42), height=j["height"], width=j["width"],
+                  frame_rate=j.get("fps", 24), images=imgs, num_frames=j.get("frames"))
+        ctl = j.get("control")
+        if a2v:
+            lstate.job_has_control = True  # = "LoRA allowed": distilled LoRA on in stage 2 only
+            from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT
+            kw.update(negative_prompt=DEFAULT_NEGATIVE_PROMPT + j.get("neg_extra", ""), num_inference_steps=j.get("steps", a2v_params.num_inference_steps),
+                      video_guider_params=dataclasses.replace(a2v_params.video_guider_params, **j.get("guider", {})), audio_path=stereo_audio(j["audio"], out_dir),
+                      audio_start_time=j.get("audio_start", 0.0))
+            kw["num_frames"] = j.get("frames")
+        elif ti2v:
+            lstate.job_has_control = True  # = "LoRA allowed": distilled LoRA on in stage 2 only
+            from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT
+            kw.update(negative_prompt=DEFAULT_NEGATIVE_PROMPT + j.get("neg_extra", ""),
+                      num_inference_steps=j.get("steps", a2v_params.num_inference_steps),
+                      video_guider_params=dataclasses.replace(a2v_params.video_guider_params, **j.get("guider", {})),
+                      audio_guider_params=dataclasses.replace(a2v_params.audio_guider_params, **j.get("aguider", {})))
+        elif ic:
+            lstate.job_has_control = bool(ctl)
+            c0 = (ctl[0] if isinstance(ctl, list) else ctl) or {}
+            lstate.gate = c0.get("gate_steps")
+            lstate.n_ref = ((j["frames"] - 1) // 8 + 1) * (j["height"] // 128) * (j["width"] // 128) * (
+                len(ctl) if isinstance(ctl, list) else 1)
+            ctls = ctl if isinstance(ctl, list) else ([ctl] if ctl else [])
+            kw["video_conditioning"] = [(c["path"], c.get("strength", 1.0)) for c in ctls]
+            kw["conditioning_attention_strength"] = ctls[0].get("attn", 1.0) if ctls else 1.0
+        elif ctl:
+            raise SystemExit(f"job {j['name']} has control but --ic-lora not given")
+        t = time.time()
+        tm_reset()
+        frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
+        t_gen = time.time() - t
+        log(f"[{dev}] {j['name']}: video {tuple(frames.shape)} gen {t_gen:.1f}s ;", vram())
+        part = str(mp4) + ".part.mp4"      # atomic: a clip killed mid-write never counts as done (10-21 dry run)
+        save_mp4(frames, part, j.get("fps", 24))
+        if j.get("audio"):
+            import subprocess
+            tmp = str(mp4) + ".noaudio.mp4"
+            os.replace(part, tmp)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-ss", str(j.get("audio_start", 0.0)), "-i", j.get("audio_mux", j["audio"]),
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", part], check=True)
+            os.remove(tmp)
+        os.replace(part, mp4)
+        with lock:
+            timings[j["name"]] = {"sec": round(t_gen, 1), "lane": str(dev), "vram": vram(),
+                                  "shape": list(frames.shape)}
+            (out_dir / f"{j['name']}.json").write_text(json.dumps({**j, **timings[j["name"]]}, indent=1))
+        tm = tm_snapshot()
+        rec = {"job": j["name"], "route": "a2vid" if a2v else "ti2v" if ti2v else ("ic" if ic else "distilled"), "pp": bool(pp),
+               "lanes": args.lanes, "split": split, "w": j["width"], "h": j["height"], "frames": int(frames.shape[0]),
+               "dit_calls": lstate.dcalls, "wall_s": round(t_gen, 2), **tm}
+        if pp:  # card A's non-DiT busy = the job's time on card A minus its DiT front and copies
+            rec["a_other_s"] = round(t_gen - tm["wait_b_s"] - tm["a_dit_s"] - tm["a_copy_s"] - tm.get("decode_wait_s", 0), 2)
+            rec["a_idle_s"] = round(tm["wait_b_s"], 2)  # this job's lane waiting on B (A may serve the other lane)
+        with lock, open(out_dir / "pp_timing.jsonl", "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        del frames
+
+    lane_ids = {}
+
+    def lane(p, dev):
+        torch.cuda.set_device(dev)
+        with lock:
+            lstate.lane = lane_ids.setdefault(threading.get_ident(), len(lane_ids))
+        if pp and lstate.lane:
+            time.sleep(args.stagger * lstate.lane)      # out of step with lane 0 (see the take order above)
+        stream = torch.cuda.Stream(dev) if (pp and args.pp_streams) else None
+        with (torch.cuda.stream(stream) if stream is not None else nullcontext()):
+            lane_loop(p, dev)
+
+    running: set = set()
+    queued = {j["name"] for j in todo}
+
+    def more_jobs() -> bool:
+        """--more (10-24): jobs appended while we run (the take judge's retakes, judged on the iGPU as the clips
+        land) join the queue on the loaded model; False once --more-done exists and nothing new came."""
+        try:
+            extra = json.loads(Path(args.more).read_text())
+        except (OSError, ValueError):
+            extra = []
+        new = [x for x in extra if x["name"] not in queued and not (out_dir / f"{x['name']}.mp4").exists()]
+        for x in new:
+            queued.add(x["name"])
+            todo.append(x)
+        if new:
+            log(f"{len(new)} more job(s) queued: {[x['name'] for x in new]}")
+        return bool(new) or not Path(args.more_done).exists()
+
+    def lane_loop(p, dev):
+        while True:
+            with lock:
+                if errors:
+                    return
+                if not todo and not (args.more and more_jobs()):
+                    return
+                if time.time() - T0 > args.budget:
+                    log("GPU-hold budget reached; lane", dev, "stops;", len(todo), "left")
+                    return
+                if len(timings) >= 2 and gpu_waiters():   # fairness (10-20 remake): another job waits on our GPU locks -> stop starting jobs
+                    log("another GPU job is waiting on our locks; lane", dev, "yields;", len(todo), "left")
+                    return
+                # a chained chunk waits for its source (10-20: with 2 lanes, 382_c1 started beside c0 and found no
+                # c0.mp4): take the first job whose chain source is neither queued nor running
+                pend = {x["name"] for x in todo} | running
+                k = next((i for i, x in enumerate(todo) if x.get("chain_from") not in pend), None)
+                if not todo:
+                    j = "wait"                  # --more: the judge may still add some
+                elif k is None:
+                    j = None
+                else:
+                    j = todo.pop(k)
+                    running.add(j["name"])
+            if j is None:
+                time.sleep(2)
+                continue
+            if j == "wait":
+                time.sleep(3)
+                continue
+            try:
+                if pp:
+                    with A_OWNER:
+                        run_job(p, dev, j)
+                        torch.cuda.synchronize(0)
+                else:
+                    run_job(p, dev, j)
+            except BaseException as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                with lock:
+                    errors.append(e)
+                    running.discard(j["name"])
+                return
+            with lock:
+                running.discard(j["name"])
+            gc.collect()
+
+    for d in range(torch.cuda.device_count()):
+        torch.cuda.reset_peak_memory_stats(d)
+    threads = [threading.Thread(target=lane, args=lp) for lp in lanes]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    wall = time.time() - t_all
+    n = len(timings)
+    log(f"done {n} jobs in {wall:.1f}s wall ({60 * n / max(wall, 1e-9):.2f} jobs/min, lanes={len(lanes)}); peak", vram())
+    log(json.dumps(timings, indent=1))
+    if pp:
+        pp["inq"].put(None)
+        r = pp["ready"].get(timeout=120)
+        log(f"[B] busy {r[1]:.1f}s of {wall:.1f}s wall ({100 * r[1] / wall:.0f}%), peak {r[2] / 2**30:.1f} GiB; "
+            f"[A] owned {A_OWNER.held:.1f}s ({100 * A_OWNER.held / wall:.0f}%)")
+        pp["proc"].join(timeout=60)
+    if errors:
+        raise SystemExit(f"{len(errors)} lane error(s)")
+
+
+def install_fa_amd(ltx):
+    """Unmasked attention -> AMD Triton flash kernel (~/src/attn-lab/fa_amd); masked calls stay on SDPA."""
+    sys.path.insert(0, str(Path.home() / "src/attn-lab"))
+    from fa_amd import interface_v2 as fa
+    from ltx_core.model.transformer.attention import Attention
+
+    def fa_attn(q, k, v, heads):
+        b, _, hd = q.shape
+        d = hd // heads
+        q, k, v = (t.reshape(b, -1, heads, d).contiguous() for t in (q, k, v))
+        with torch.cuda.device(q.device):
+            out = fa.fwd(q, k.to(q.dtype), v.to(q.dtype), None, None, 0.0, d ** -0.5, False, -1, -1, 0.0, False)[0]
+        return out.reshape(b, -1, heads * d)
+
+    n = 0
+    for m in ltx.modules():
+        if isinstance(m, Attention):
+            m.attention_function = fa_attn
+            n += 1
+    log(f"fa_amd attention on {n} attention modules (unmasked path)")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=["encode", "gen"])
+    ap.add_argument("jobs")
+    ap.add_argument("--emb", default=str(Path(__file__).with_name("emb")))
+    ap.add_argument("--out", default=str(Path(__file__).with_name("out")))
+    ap.add_argument("--split", type=int, default=None,
+                    help="first block on card 2 (blocks < split on card 1). Default per route: a2vid 24, else 17 "
+                         "(card 05 also carries all VAE/upsampler work; pp2 data: A ~22.7 s vs B 18.6 s per job at 20)")
+    ap.add_argument("--only", default="")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--ic-lora", default="", help="IC-LoRA safetensors -> ICLoraPipeline (jobs may carry control)")
+    ap.add_argument("--lora-strength", default="1.0", help="one value, or one per --ic-lora (comma list)")
+    ap.add_argument("--dev", action="store_true", help="encode: use the dev checkpoint's embeddings connector")
+    ap.add_argument("--a2vid", action="store_true", help="A2Vid two-stage: dev DiT + CFG/STG stage 1, distilled LoRA stage 2")
+    ap.add_argument("--ti2v", action="store_true", help="image-to-video two-stage: dev DiT + CFG/STG stage 1, distilled LoRA stage 2")
+    ap.add_argument("--dlora-strength", type=float, default=0.8)
+    ap.add_argument("--lanes", type=int, default=1, choices=[1, 2, 3],
+                    help="jobs in flight: 2 = lane 2 on cuda:1 (no --pp); with --pp all lanes on card A (3 needs --pp)")
+    ap.add_argument("--pp-shared-a", action="store_true",
+                    help="--pp: lanes overlap on card A (per-lane streams, no exclusive owner); prove identity first")
+    ap.add_argument("--base", default="distilled", choices=["distilled", "dev"],
+                    help="dev = dev DiT + distilled LoRA (always on) for distilled/IC jobs: one resident model for all job types")
+    ap.add_argument("--hashlog", action="store_true", help="log bit fingerprints of the DiT activations per call")
+    ap.add_argument("--pp-streams", action="store_true", help="per-lane CUDA streams in process A (default: one stream)")
+    ap.add_argument("--pp", action="store_true", help="process-per-card pipelining (process B = back half on card 2)")
+    ap.add_argument("--blaslt", action="store_true", help="prefer hipBLASLt for GEMMs")
+    ap.add_argument("--fa-amd", action="store_true", help="fa_amd attention instead of SDPA")
+    ap.add_argument("--miopen", action="store_true", help="re-enable MIOpen convs (BROKEN on gfx1100)")
+    ap.add_argument("--stagger", type=float, default=0.0,
+                    help="--pp: lane k starts k*S s late, takes ordered apart, so lanes don't decode on card A together")
+    ap.add_argument("--pp-pool", action="store_true",
+                    help="--pp: reused pinned shared-memory buffers for the activations between the processes")
+    ap.add_argument("--decode-b", action="store_true",
+                    help="--pp: VAE decode on process B's card (B keeps a decoder loaded)")
+    ap.add_argument("--more", default="", help="a jobs file read again whenever the queue runs dry")
+    ap.add_argument("--more-done", default="", help="--more: this file existing = no more jobs will come")
+    ap.add_argument("--budget", type=float, default=780.0, help="stop starting new jobs after this many s")
+    args = ap.parse_args()
+    if args.split is None:
+        args.split = 24 if args.a2vid or args.ti2v else 17
+    if args.pp:  # process A sees only the first card; process B gets the second
+        global PP_BACK_DEV
+        devs = os.environ.get("HIP_VISIBLE_DEVICES", "0,1").split(",")
+        os.environ["HIP_VISIBLE_DEVICES"], PP_BACK_DEV = devs[0], devs[1]
+    ram_guard()
+    jobs = json.loads(Path(args.jobs).read_text())
+    log("MemAvailable", f"{mem_avail_gib():.1f} GiB; devices", [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])
+    (cmd_encode if args.cmd == "encode" else cmd_gen)(args, jobs)
+
+
+if __name__ == "__main__":
+    main()

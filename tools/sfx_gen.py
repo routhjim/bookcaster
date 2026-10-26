@@ -27,6 +27,8 @@ import soundfile as sf                                 # noqa: E402
 import torch                                           # noqa: E402
 
 BATCH = int(os.environ.get("MOSS_BATCH", "8"))
+# 30 s beds: 8 at once ran the audio decoder out of the card's 24 GB, every bed lost (10-19)
+BED_BATCH = int(os.environ.get("MOSS_BED_BATCH", "2"))
 STEPS = int(os.environ.get("MOSS_STEPS", "100"))
 
 
@@ -45,14 +47,24 @@ def main() -> int:
         groups.setdefault(10 if float(j["seconds"]) <= 10 else 30, []).append(j)
     for canvas, group in sorted(groups.items()):
         group.sort(key=lambda j: float(j["seconds"]))
-        for k in range(0, len(group), BATCH):
-            batch = group[k:k + BATCH]
+        size, k = BATCH if canvas <= 10 else BED_BATCH, 0
+        while k < len(group):
+            batch = group[k:k + size]
             # one length per call: the batch's longest, each cropped to its own below
             secs = round(max(float(j["seconds"]) for j in batch), 1)
             t = time.time()
-            audio = pipe(prompt=[j["prompt"] for j in batch], seconds=secs, num_inference_steps=STEPS,
-                         cfg_scale=4.0, sigma_shift=5.0, seed=int(batch[0].get("seed", 7)),
-                         max_inference_seconds=canvas, progress_bar_cmd=lambda x, **kw: x)
+            try:
+                audio = pipe(prompt=[j["prompt"] for j in batch], seconds=secs, num_inference_steps=STEPS,
+                             cfg_scale=4.0, sigma_shift=5.0, seed=int(batch[0].get("seed", 7)),
+                             max_inference_seconds=canvas, progress_bar_cmd=lambda x, **kw: x)
+            except torch.OutOfMemoryError:
+                if size == 1:
+                    raise
+                torch.cuda.empty_cache()
+                size = max(1, size // 2)       # the same jobs again, fewer at a time
+                print(json.dumps({"oom": True, "batch_now": size}), flush=True)
+                continue
+            k += len(batch)
             audio = audio.float().cpu().numpy()
             for j, a in zip(batch, audio):
                 a = a[:, :int(pipe.sample_rate * float(j["seconds"]))]

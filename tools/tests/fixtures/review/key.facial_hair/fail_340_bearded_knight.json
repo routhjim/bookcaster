@@ -1,0 +1,23 @@
+{
+ "check": "key.facial_hair",
+ "media": "fail_340_bearded_knight.png",
+ "verdict": "fail",
+ "ctx": {
+  "size": [
+   832,
+   448
+  ],
+  "people": {
+   "Knight": {
+    "box": [
+     319.2477102807421,
+     88.86794519814336,
+     512.8114004727673,
+     448.0
+    ],
+    "beard": "no"
+   }
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000340/key.png"
+}

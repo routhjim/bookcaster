@@ -30,6 +30,36 @@ from .score import _chat, audio_seconds, paragraph_times, paragraphs
 
 FPS = 24
 W, H = 1920, 1080
+def period_of(path) -> str:
+    """The book's time period (<book>/period.txt, `bookcaster period`; the 3D plan writes it from the text when
+    missing). Any path inside the book works (the book dir, work/video, a chapter dir). '' = not set."""
+    from pathlib import Path as _P
+    p = _P(path).expanduser().resolve()
+    for d in (p, *p.parents):
+        f = d / "period.txt"
+        if f.exists():
+            return f.read_text(encoding="utf-8").strip()
+        if (d / "work").is_dir() and (d / "chapters").is_dir():
+            break
+    return ""
+
+
+def period_line(path_or_period: str = "", period: str | None = None) -> str:
+    """The sentence every drawing prompt carries (user 10-21: a modern claw hammer in a forge 1000 years ago):
+    the period, and everything as made then. '' when no period is set."""
+    per = period if period is not None else period_of(path_or_period)
+    if not per:
+        return ""
+    return (f" Set in {per}: every object, tool, garment, building and material exactly as made in that time, "
+            f"hand-made, nothing modern.")
+
+
+def period_question(per: str) -> str:
+    """The vision judge's period check (yes = in period)."""
+    return (f"Answer yes or no: could everything in this picture (objects, tools, clothes, buildings, materials) "
+            f"have existed in {per}? Answer no if anything looks modern or machine-made.")
+
+
 DEFAULT_STYLE = ("detailed 19th-century book illustration, pen and ink linework with a soft "
                  "watercolour wash, muted period colours")
 ART_PYTHON = Path(os.environ.get("BOOKCASTER_ART_PYTHON",
@@ -51,8 +81,17 @@ def hip_index(bus: str) -> str:
 
 
 # HIP index of the music XTX (the drawing model shares it with ACE)
-ART_GPU = os.environ.get("BOOKCASTER_ART_GPU") or hip_index(os.environ.get("BOOKCASTER_ART_BUS", "65"))
+ART_BUS = os.environ.get("BOOKCASTER_ART_BUS", "65")
+ART_GPU = os.environ.get("BOOKCASTER_ART_GPU") or hip_index(ART_BUS)
 ILLUSTRATE = Path(__file__).resolve().parents[1] / "tools" / "illustrate.py"
+# Which picture model draws: "klein" (FLUX.2 klein 4B, tools/illustrate.py, Apache) or "qwen"
+# (Qwen-Image-2.1 + Lightning + ControlNet Union, tools/qwen_image.py, non-commercial licence, its own
+# venv). Both speak the same jobs / --serve protocol; a job may carry "control" (qwen only, klein ignores it).
+# default qwen since 10-19 (its ControlNet poses + reference edits drew every knight sample)
+DRAWER = os.environ.get("BOOKCASTER_DRAWER", "qwen").strip().lower()
+DRAW_SCRIPT = (ILLUSTRATE.with_name("qwen_image.py") if DRAWER == "qwen" else ILLUSTRATE)
+DRAW_PYTHON = Path(os.environ.get("BOOKCASTER_DRAW_PYTHON") or (
+    Path.home() / "tts-ab" / ".venv-qwenimage" / "bin" / "python" if DRAWER == "qwen" else ART_PYTHON))
 # Fedora's ffmpeg has no libx264 and its VAAPI drivers have no H.264 encoder;
 # OpenH264 (CPU) plays everywhere. Mostly-still pictures need little bitrate.
 VIDEO_CODEC = os.environ.get("BOOKCASTER_VIDEO_CODEC", "libopenh264").split()
@@ -109,6 +148,11 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
         "composition and camera distance, lighting and mood. Don't describe the characters' "
         "or places' looks (the references carry them). No written words, captions or "
         "signatures.\n\n"
+        "Each PLACE is one side of a location, inside OR outside, never both: its description starts with "
+        "\"Inside:\" (a room, walls and ceiling around) or \"Outside:\" (seen from outdoors). A location the "
+        "story uses both ways is two places, e.g. \"The Mill (inside)\" and \"The Mill (outside)\", and the "
+        "outside one describes the building so it can be recognised from anywhere around it. A place "
+        "description names no movable objects (tools, weapons, furniture people use): those are drawn separately.\n"
         'Reply with ONLY JSON: {"look": {"characters": {"Name": "description"}, '
         '"places": {"Name": "description"}}, '
         '"pictures": [{"start": 0, "who": ["Name"], "where": "Name", "crowd": "", "prompt": "..."}]}\n\n'
@@ -143,6 +187,257 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
     chars = check_looks(chars, llm_url, model)
     return {"version": PLAN_VERSION, "look": {"characters": chars, "places": places},
             "pictures": pics}
+
+
+SCENE_SIDE_RX = re.compile(r"^\s*(inside|outside)\s*:", re.I)
+
+
+def scene_side(name: str, desc: str) -> str:
+    """'inside' / 'outside' / '' of a place, from its name's variant or its description's prefix."""
+    m = re.search(r"\((inside|outside)\)\s*$", name or "", re.I)
+    if m:
+        return m.group(1).lower()
+    m = SCENE_SIDE_RX.match(desc or "")
+    return m.group(1).lower() if m else ""
+
+
+def plan_scenes(paras: list[str], look: dict, llm_url: str, model: str) -> dict:
+    """The chapter's SCENES from the text, once, before any picture or moment is placed (user 10-22: the forge
+    work drifted outside, the throne room only began at "in the corner of the hall", the King was never shown:
+    each picture and moment picked its place on its own). A scene = continuous action in ONE place, ONE side
+    (inside or outside); everyone physically present (the silent ones too); the props used there.
+    -> {"scenes": [{"id", "from", "where", "side", "present", "props", "first_words", "why"}], "new_places": {}}"""
+    places = look.get("places") or {}
+    chars = look.get("characters") or {}
+    numbered = "\n\n".join(f"[P{i}] {p}" for i, p in enumerate(paras))
+    plist = "\n".join(f"- {n}: {d[:160]}" for n, d in places.items())
+    prompt = (
+        "You are the script supervisor of a film of this chapter. Split it into SCENES.\n"
+        "A scene is continuous action in ONE place, seen from ONE side: inside it or outside it. A new scene starts "
+        "ONLY when the action moves to another place, goes from inside to outside (or back), or jumps in time "
+        "(a flashback, 'the next morning'). Narration that describes the place, or a line that mentions another "
+        "place, while the people stay where they are, does NOT start a scene. Work done at a forge, a bench or a "
+        "hearth is inside unless the text says it is done outdoors. The first scene starts at P0.\n"
+        "For each scene give:\n"
+        "- from: the number of its first paragraph (increasing)\n"
+        "- where: EXACTLY one of the place names below. One location has ONE name: if two names below are the "
+        "same room (a king's hall and a throne room), always use the same one. If no name fits, invent a short "
+        "name and describe it in new_places\n"
+        "- side: \"inside\" or \"outside\"\n"
+        "- present: the names (from the characters below) of EVERYONE physically there during the scene, also "
+        "those who never speak (a king on his throne listening, a guard at the door). Not people only spoken of\n"
+        "- props: the objects people handle or use there (a hammer, bellows, a lantern), [] for none\n"
+        "- first_words: the first 6-10 words of its first paragraph, copied exactly\n"
+        "- why: 3-8 words, what changes here\n\n"
+        f"Places:\n{plist}\n\nCharacters: {', '.join(chars)}\n\n"
+        'Reply with ONLY JSON: {"scenes": [{"from": 0, "where": "Name", "side": "inside", "present": ["Name"], '
+        '"props": [], "first_words": "...", "why": "..."}], "new_places": {"Name": "Inside: ..."}}\n\n'
+        f"Chapter:\n{numbered}")
+    reply = _chat(llm_url, model, prompt, max_tokens=6000)
+    m = re.search(r"\{.*\}", reply, re.S)
+    data = json.loads(m.group(0)) if m else {}
+    return clean_scenes(data, paras, look)
+
+
+def clean_scenes(data: dict, paras: list[str], look: dict) -> dict:
+    """The model's scene list made usable: increasing starts from P0, known places (new ones kept with an
+    Inside:/Outside: description), the side matched to the place's own side (its "(inside)"/"(outside)"
+    variant when the book has one), present = known characters."""
+    places = dict(look.get("places") or {})
+    chars = look.get("characters") or {}
+    new = {n: d for n, d in (data.get("new_places") or {}).items() if n and n not in places and SCENE_SIDE_RX.match(d or "")}
+    places.update(new)
+    out, last = [], -1
+    for sc in data.get("scenes") or []:
+        try:
+            s = int(sc.get("from"))
+        except (TypeError, ValueError):
+            continue
+        if s <= last or s >= len(paras):
+            continue
+        w = sc.get("where") or ""
+        if w not in places and re.sub(r"\s*\((inside|outside)\)\s*$", "", w) in places:
+            places.setdefault(w, "")                  # a side variant of a known place
+        if w not in places:
+            hit = [n for n in places if n.lower() in w.lower() or w.lower() in n.lower()]
+            w = hit[0] if len(hit) == 1 else ""
+        side = str(sc.get("side") or "").lower()
+        side = side if side in ("inside", "outside") else scene_side(w, places.get(w, ""))
+        if w and scene_side(w, places.get(w, "")) not in ("", side):
+            base = re.sub(r"\s*\((inside|outside)\)\s*$", "", w)
+            alt = next((n for n in places if re.sub(r"\s*\((inside|outside)\)\s*$", "", n) == base
+                        and scene_side(n, places[n]) == side), None)
+            # the other side of a known place: its "(inside)"/"(outside)" variant (the set builder draws a variant
+            # from the base place's words, one side only)
+            w = alt or f"{base} ({side})"
+            places.setdefault(w, "")
+        out.append({"id": f"s{len(out) + 1:02d}", "from": s, "where": w, "side": side,
+                    "present": [n for n in dict.fromkeys(sc.get("present") or []) if n in chars],
+                    "props": [str(x) for x in sc.get("props") or []][:8],
+                    "first_words": str(sc.get("first_words") or paras[s][:60]),
+                    "why": str(sc.get("why") or "")})
+        last = s
+    if not out:
+        raise ValueError("the scene planner returned no usable scenes")
+    out[0]["from"] = 0
+    for a, b in zip(out, out[1:] + [None]):
+        a["to"] = (b["from"] - 1) if b else len(paras) - 1
+    return {"scenes": out, "new_places": new}
+
+
+def merge_scenes(scenes: list[dict]) -> list[dict]:
+    """Consecutive scenes in the same place and side are ONE scene (10-22: a split and its return landing on the same
+    start left s12/s13 "The Barren Lands" twice); the first keeps its start, the present lists join."""
+    out = []
+    for sc in scenes:
+        if out and out[-1].get("where") == sc.get("where") and out[-1].get("side") == sc.get("side"):
+            out[-1]["present"] = list(dict.fromkeys((out[-1].get("present") or []) + (sc.get("present") or [])))
+            out[-1]["props"] = list(dict.fromkeys((out[-1].get("props") or []) + (sc.get("props") or [])))
+            continue
+        out.append(sc)
+    for i, sc in enumerate(out):
+        sc["id"] = f"s{i + 1:02d}"
+    return out
+
+
+def scene_at(scenes: list[dict], para: int) -> dict | None:
+    """The scene a paragraph is in."""
+    cur = None
+    for sc in scenes:
+        if sc["from"] <= para:
+            cur = sc
+    return cur
+
+
+def scenes_for(plan: dict, text: str, llm_url: str, llm_model: str, log=print, known: dict | None = None) -> list[dict]:
+    """The plan's scenes (planned once, kept in plan.json), every picture's `where` set to its scene's place.
+    known: more place names the book already has ({name: description}: built sets, side variants)."""
+    paras = paragraphs(text)
+    if not plan.get("scenes"):
+        look = dict(plan.get("look") or {})
+        # a BUILT set's side (its world kind) wins over the look's words (10-22: "The River Bank" was built inside)
+        look["places"] = {**(known or {}), **(look.get("places") or {}), **{k: v for k, v in (known or {}).items() if v}}
+        res = plan_scenes(paras, look, llm_url, llm_model)
+        plan["scenes"] = res["scenes"]
+        if res["new_places"]:
+            plan.setdefault("look", {}).setdefault("places", {}).update(res["new_places"])
+            log(f"  scenes: new place(s) {sorted(res['new_places'])}")
+    places = {**(known or {}), **((plan.get("look") or {}).get("places") or {}), **{k: v for k, v in (known or {}).items() if v}}
+    for sc in plan["scenes"]:                       # a planned scene whose place is built on the other side: the
+        w = sc.get("where") or ""                    # place's set on the scene's side (re-checked every plan run)
+        if w and sc.get("side") in ("inside", "outside") and scene_side(w, places.get(w, "")) not in ("", sc["side"]):
+            base = re.sub(r"\s*\((inside|outside)\)\s*$", "", w)
+            alt = next((n for n in places if re.sub(r"\s*\((inside|outside)\)\s*$", "", n) == base
+                        and scene_side(n, places[n]) == sc["side"]), None) or f"{base} ({sc['side']})"
+            log(f"  scene {sc.get('id')}: {w!r} is built {scene_side(w, places.get(w, ''))}: -> {alt!r}")
+            sc["where"] = alt
+    for p in plan.get("pictures") or []:
+        sc = scene_at(plan["scenes"], int(p.get("start", 0)))
+        if sc and sc["where"] and p.get("where") != sc["where"]:
+            p["where_text"], p["where"] = p.get("where"), sc["where"]
+    return plan["scenes"]
+
+
+CREATURE_WORDS = ("dragon", "wyvern", "drake", "griffin", "gryphon", "serpent", "wolf", "bear", "horse", "troll",
+                  "giant", "eagle", "lion", "beast", "monster", "unicorn", "basilisk", "hydra")
+
+
+def creature_kinds(chars: dict) -> dict:
+    """{creature cast name: its kind word} from the looks ("Vorgrath": "a massive black dragon ..." -> "dragon");
+    people (a man, a woman ...) are not creatures."""
+    out = {}
+    for n, d in (chars or {}).items():
+        head = " ".join(re.findall(r"[a-z]+", (d or "").lower())[:14])
+        if re.search(r"\b(man|woman|boy|girl|knight|king|queen|princess|prince|smith|person|child|lady|lord)\b", head):
+            continue
+        k = next((w for w in CREATURE_WORDS if re.search(rf"\b{w}s?\b", head)), None)
+        if k:
+            out[n] = k
+    return out
+
+
+PLACE_GENERIC = {"inside", "outside", "the", "edge", "behind", "below", "above", "north", "south", "east", "west",
+                 "near", "with", "from", "into", "old", "great"}
+
+
+def place_words(name: str | None) -> set:
+    """The distinctive words of a place name ("Outside Hulda's Forge (outside)" -> {hulda, forge})."""
+    return {w for w in re.findall(r"[a-z]{4,}", (name or "").lower()) if w not in PLACE_GENERIC}
+
+
+def place_phrase(name: str) -> str:
+    """A place NAMED in a prompt, as a phrase (10-22: "coiled like a river of iron" put the dragon's cave in The River):
+    a one-word name needs its article ("the river"), a longer one its words in order ("barley fields")."""
+    base = re.sub(r"\s*\((inside|outside)\)\s*$", "", name or "").lower().strip()
+    rest = re.sub(r"^(the|a|an)\s+", "", base)
+    words = re.findall(r"[a-z']+", rest)
+    if len(words) <= 1:
+        return rf"\bthe\s+{re.escape(rest)}\b"
+    return r"\b" + r"\W+".join(re.escape(w) for w in words) + r"\b"
+
+
+def scene_starts(plan: dict, text: str, timeline: list[dict]) -> list[tuple[float, dict]]:
+    """[(start seconds, scene)] of the plan's scenes in the recording."""
+    sc = plan.get("scenes") or []
+    if not sc:
+        return []
+    st = paragraph_times(paragraphs(text), timeline)
+    # a scene the plan review split off INSIDE a paragraph starts at its first moment (t_split)
+    return [(0.0 if i == 0 else max(st[s["from"]], float(s.get("t_split") or 0.0)), s) for i, s in enumerate(sc)]
+
+
+def scene_at_t(starts: list, t: float) -> dict | None:
+    cur = None
+    for t0, s in starts:
+        if t0 <= t + 0.05:
+            cur = s
+    return cur
+
+
+def apply_scene(f: dict, sc: dict, chars: dict, places: dict | None = None) -> list[str]:
+    """One moment's frame made to agree with its scene: the scene's place, the scene id, who is present; a cast
+    creature its text names ("a massive black dragon ...") is a figure, not a prop (10-22: the opening's dragon
+    was planned as the prop "Dragon Silhouette" and never staged). -> what changed (for the log)."""
+    ch = []
+    own = f.get("where_text") if f.get("scene") else f.get("where")       # the moment's own place (first planned)
+    txt_ = " ".join([f.get("prompt") or "", f.get("motion") or ""]).lower()
+    # a known place the PROMPT names (other than the scene's) is the moment's own place (10-22: the dragon over "the
+    # Barley Fields" during the throne-room speech: a cutaway, never the hall)
+    named = [n for n in (places or {}) if n != sc.get("where") and place_words(n)
+             and re.search(place_phrase(n), txt_)
+             and not (place_words(n) <= place_words(sc.get("where")))]
+    if named:
+        own = max(named, key=lambda n: len(place_words(n)))
+    ow, sw = place_words(own), place_words(sc.get("where"))
+    # the moment's OWN text names its own place and not the scene's: a disagreement for the plan review to
+    # settle (a missed scene change: 10-22 Hulda's closing forge shots inside "The King's Hall"), never overwritten
+    same = bool(own and sc.get("where") and (own.startswith(sc["where"]) or sc["where"].startswith(own.split(":")[0])))
+    if own and sc.get("where") and own != sc["where"] and not same and re.search(place_phrase(own), txt_) \
+            and not re.search(place_phrase(sc["where"]), txt_):
+        f["scene_conflict"] = {"scene": sc["id"], "scene_where": sc["where"], "own_where": own}
+        f["where"] = own
+        f["where_text"] = own
+        ch.append(f"CONFLICT: its text names {own!r}, the scene is {sc['where']!r} (kept; the plan review decides)")
+    elif sc.get("where") and f.get("where") != sc["where"]:
+        f.pop("scene_conflict", None)
+        ch.append(f"where {f.get('where')!r} -> {sc['where']!r}")
+        f["where_text"], f["where"] = own, sc["where"]
+    else:
+        f.pop("scene_conflict", None)
+    f["scene"] = sc["id"]
+    f["present"] = list(sc.get("present") or [])
+    txt = " ".join([f.get("prompt") or "", f.get("motion") or ""]).lower()     # (not "must": it can be stale)
+    for n, k in creature_kinds(chars).items():
+        named = re.search(rf"\b{k}s?\b", txt) or any(re.search(rf"\b{k}", str(p).lower()) for p in f.get("props") or [])
+        if named and n not in (f.get("who") or []):
+            f["who"] = list(f.get("who") or []) + [n]
+            ch.append(f"+{n} (the text's {k})")
+        if n in (f.get("who") or []):
+            keep = [p for p in f.get("props") or [] if not re.search(rf"\b{k}", str(p).lower())]
+            if len(keep) != len(f.get("props") or []):
+                ch.append(f"{k} prop(s) dropped: {n} is the figure")
+                f["props"] = keep
+    return ch
 
 
 # Words an image model takes the wrong way in a character's reference
@@ -246,12 +541,14 @@ def ensure_plan(text: str, work: Path, llm_url: str, llm_model: str, style: str,
             p.setdefault("full_prompt", full_prompt(p["prompt"], plan.get("look", {}), style))
         before = {p["id"]: p["full_prompt"] for p in plan["pictures"]}
         refresh_looks(plan, work.parent / "look.json", llm_url, llm_model, style, log)
+        if ensure_wardrobe(plan, text, llm_url, llm_model, log):
+            plan_path.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
         changed = []
         for p in plan["pictures"]:       # the prompt rules may have changed since: redraw what differs
             if "who" in p:
                 p["who"] = present(p["who"], p["prompt"], plan["look"].get("characters", {}))
                 p["full_prompt"] = full_prompt(p["prompt"], plan["look"], style, p["who"], p.get("where", ""),
-                                               p.get("crowd", ""))
+                                               p.get("crowd", ""), scene_dress(plan, p))
             if p["full_prompt"] != before[p["id"]]:
                 changed.append(p["id"])
                 (work / "img" / f"{p['id']}.png").unlink(missing_ok=True)
@@ -265,10 +562,12 @@ def ensure_plan(text: str, work: Path, llm_url: str, llm_model: str, style: str,
     plan = plan_pictures(paragraphs(text), llm_url, llm_model, style, count)
     keep_looks(plan, work.parent / "look.json")
     refresh_looks(plan, work.parent / "look.json", llm_url, llm_model, style, log)
+    ensure_wardrobe(plan, text, llm_url, llm_model, log)
     for n, p in enumerate(plan["pictures"]):
         p.update(id=f"p{n + 1:03d}", seed=1000 + n,
                  full_prompt=full_prompt(p["prompt"], plan.get("look", {}), style,
-                                         p.get("who"), p.get("where", ""), p.get("crowd", "")))
+                                         p.get("who"), p.get("where", ""), p.get("crowd", ""),
+                                         scene_dress(plan, p)))
     plan_path.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
     log(f"  planned {len(plan['pictures'])} picture(s)")
     return plan
@@ -320,7 +619,8 @@ def refresh_looks(plan: dict, registry: Path, llm_url: str, model: str, style: s
         for p in plan["pictures"]:
             if "who" in p:
                 p["full_prompt"] = full_prompt(p["prompt"], plan["look"], style,
-                                               p["who"], p.get("where", ""), p.get("crowd", ""))
+                                               p["who"], p.get("where", ""), p.get("crowd", ""),
+                                               scene_dress(plan, p))
     return changed
 
 
@@ -447,7 +747,7 @@ ANATOMY = "Each person has exactly two arms, two hands and two legs, natural ana
 
 
 def full_prompt(prompt: str, look: dict, style: str, who: list[str] | None = None,
-                where: str = "", crowd: str = "") -> str:
+                where: str = "", crowd: str = "", dress: dict | None = None) -> str:
     """The scene prompt for the image model. With references (who/where
     known), each person is tied to their reference image and said to appear
     once: writing out their full look as well made the model draw a second
@@ -469,6 +769,9 @@ def full_prompt(prompt: str, look: dict, style: str, who: list[str] | None = Non
                      f"Exactly {len(who)} {'person' if len(who) == 1 else 'people'} in the "
                      f"picture, each appearing once: " + "; ".join(cast))
         parts.append(ANATOMY)
+        for n in who:
+            if (dress or {}).get(n):
+                parts.append(f"{n} wears {dress[n]}, as in image {who.index(n) + 1}")
     elif crowd:
         parts.append(f"Unnamed people only: {crowd}")
     else:
@@ -530,10 +833,53 @@ def ref_path(refs_dir: Path, name: str, prompt: str) -> Path:
     return refs_dir / f"{slug(name)}-{hashlib.sha1(prompt.encode()).hexdigest()[:8]}.png"
 
 
+INSIDE_RX = re.compile(r"(?i)^\s*inside\b|\((inside)\)\s*$")
+OUTSIDE_RX = re.compile(r"(?i)^\s*outside\b|\((outside)\)\s*$")
+
+
+def place_side(plan: dict, name: str, desc: str) -> str:
+    """'Show the inside of X: ...' / 'Show the outside of X: ...' for a place picture (user 10-21: the forge's
+    picture showed the building from outside though the story works inside it). The place's own name/description
+    says it ("(inside)", "Inside:"); else its scenes' words vote (tools/world.py classify_kind). '' if no vote.
+    NOTE: changes the prompt (and so the file name) of places that get a side: their pictures are redrawn."""
+    if INSIDE_RX.search(name) or INSIDE_RX.search(desc or ""):
+        kind = "interior"
+    elif OUTSIDE_RX.search(name) or OUTSIDE_RX.search(desc or ""):
+        kind = "exterior"
+    else:
+        import sys as _s
+        _s.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import world as _W
+        prompts = [p.get("prompt", "") for p in plan.get("pictures", []) if p.get("where") == name]
+        kind, why = _W.classify_kind(desc or "", prompts)
+        if not (why["pictures_interior"] or why["pictures_exterior"] or why["description_score"]):
+            return ""
+    base = re.sub(r"\s*\((inside|outside)\)\s*$", "", name)
+    return (f"Show the INSIDE of {base}: an interior room, walls, floor and ceiling around, no sky. "
+            if kind == "interior" else f"Show the OUTSIDE of {base}, seen from outdoors. ")
+
+
+def place_desc(plan: dict, name: str, desc: str) -> str:
+    """The description without the other side's clauses or story props (tools/world.py clean_description):
+    "anvil outside" has no place in a picture of the forge's inside."""
+    side = place_side(plan, name, desc)
+    if not side:
+        return str(desc)
+    import sys as _s
+    _s.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import world as _W
+    kind = "interior" if "INSIDE" in side else "exterior"
+    props = list(((plan.get("look") or {}).get("props") or {}).keys()) if isinstance(plan.get("look"), dict) else []
+    return _W.clean_description(re.sub(r"(?i)^\s*(inside|outside)\s*:\s*", "", str(desc)), kind,
+                                _W.prop_names({"props": {p: "" for p in props}}))
+
+
 def ref_prompts(plan: dict, style: str) -> dict[str, tuple[str, list[int]]]:
     """name -> (prompt, [w, h]) for every reference the plan's scenes use."""
     chars, places = looks(plan)
-    used = set()
+    # the 3D flow builds a model + LoRA for the whole cast, so it lists them all (10-22 knight_forged_v3: the King
+    # was in no still picture -> no sheet -> his LoRA failed with no reference face)
+    used = set(plan.get("sheet_cast") or [])
     for p in plan["pictures"]:
         if "who" in p:
             used.update(p["who"] + ([p["where"]] if p.get("where") else []))
@@ -551,9 +897,182 @@ def ref_prompts(plan: dict, style: str) -> dict[str, tuple[str, list[int]]]:
                          f"{style}. No text, no lettering, no signature.", [1280, 896])
     for name, desc in places.items():
         if name in used:
-            out[name] = (f"Establishing view of {name}, no people. {str(desc).rstrip('.')}. "
+            out[name] = (f"Establishing view of {name}, no people. {place_side(plan, name, desc)}"
+                         f"{place_desc(plan, name, desc).rstrip('.')}. "
                          f"{style}. No text, no lettering, no signature.", [1024, 576])
     return out
+
+
+# --- the wardrobe ------------------------------------------------------------------
+# A look is one description per person, but people change in a story: the knight forges his armor
+# and fights in it, the princess's dress is torn and grey with ash, a lame man walks. Planned one scene
+# at a time, the pictures forgot every change at the next scene and the reference sheet (the usual
+# clothes) pulled the knight back into his stable leathers for the fight (10-18). So one pass over the
+# whole chapter lists every lasting change and the paragraph it starts at; each change gets its own
+# reference sheet, drawn from the person's sheet (same face); every picture, keyframe and portrait
+# uses the outfit in force at its moment, and the checks look for it.
+
+WARDROBE_PROMPT = """You keep the wardrobe for an illustrated audiobook. Below are the people with their
+usual look, then the chapter in numbered paragraphs.
+
+List every LASTING change to how a person looks, in story order: clothes or armor put on or taken off,
+something worn given away or picked up, and visible changes to the body or clothes (bound wounds, torn and
+ash-stained clothes, a beard shaved, a lame man healed and standing). Only what the text states or plainly
+implies; a change that ends (armor taken off again) is another entry.
+MAKING or buying something is NOT wearing it. Armor a smith forges is on the anvil and in his hands while he makes
+it; it is worn from the first paragraph where the text has him put it on, wear it, or set out in it (he forges his
+armor in one paragraph and walks north to the fight in a later one: "from" = the walking paragraph).
+
+For each change: "from" = the number of the first paragraph where it is already true, "id" = 2-4 words
+naming the look ("star-iron armor"), "dress" = EVERYTHING the person wears from then on, described so a
+painter can draw it with no other context (materials, colors, what covers what; a helm on or off).
+Never describe the face, hair or age (those never change here). People who never change are left out.
+Only things WORN: fire, light, a glow, a halo, a cloud or anything resting on or hovering over someone is a moment of
+the story, not clothing, and is never a wardrobe entry; nor is being unseen or gone.
+
+People:
+{people}
+
+Chapter:
+{paras}
+
+Reply with ONLY JSON: {{"<name>": [{{"from": <n>, "id": "<look>", "dress": "<everything worn>"}}]}}, or {{}}."""
+
+
+NOT_WORN = re.compile(r"\b(fire|flames?|tongues|glow\w*|halo|aura|hover\w*|resting on|sparks?|no longer|"
+                      r"vanish\w*|ascend\w*)\b", re.I)
+
+
+def worn_only(dress: str) -> str:
+    """The parts of an outfit that are clothes (10-25: Acts 2 dressed Peter in "divided tongues as of fire resting
+    on head" for the whole chapter, and Acts 1 dressed the ascended Jesus in "No longer visible")."""
+    return ", ".join(p.strip() for p in dress.strip().rstrip(".").split(",") if p.strip() and not NOT_WORN.search(p))
+
+
+def changes_nothing(dress: str, look: str) -> bool:
+    """True when every word of an outfit is already in the person's usual look: no outfit, only a repeat of it
+    (10-25: Acts 2 gave Peter "tunic and belt" = his usual tunic and belt, and an outfit costs a sheet + LoRA retrain)."""
+    words = set(re.findall(r"[a-z]{4,}", dress.lower())) - {"with", "over", "under", "wearing", "worn"}
+    return bool(words) and words <= set(re.findall(r"[a-z]{4,}", str(look).lower()))
+
+
+def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str) -> dict | None:
+    """{name: [{"from": paragraph, "id", "dress"}, ...]} (in story order), from one language-model
+    pass over the whole chapter; {} when nobody changes, None when the server gave no usable answer
+    (10-25: Acts 2's answer filtered down to {} read as "no answer", and the stale fire outfits stayed)."""
+    if not chars:
+        return {}
+    people = "\n".join(f"- {n}: {str(d).strip()}" for n, d in chars.items())
+    numbered = "\n".join(f"[{i}] {p}" for i, p in enumerate(paras))
+    try:
+        reply = _chat(llm_url, model, WARDROBE_PROMPT.format(people=people, paras=numbered), max_tokens=4000)
+    except Exception:
+        return None
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = {}
+    for name, changes in (data or {}).items():
+        if name not in chars or not isinstance(changes, list):
+            continue
+        rows = []
+        for c in changes:
+            try:
+                n = max(0, min(len(paras) - 1, int(c.get("from"))))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            dress = worn_only(str(c.get("dress") or ""))
+            if dress:
+                rows.append({"from": n, "id": str(c.get("id") or "changed").strip()[:40], "dress": dress})
+        rows.sort(key=lambda r: r["from"])
+        while rows and changes_nothing(rows[0]["dress"], chars[name]):
+            rows.pop(0)                 # the usual clothes before any change (back to them later is a change)
+        if rows:
+            out[name] = rows
+    return out
+
+
+def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print) -> bool:
+    """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
+    worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
+    words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes."""
+    import hashlib
+    k = hashlib.sha1(WARDROBE_PROMPT.encode()).hexdigest()[:8]
+    if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
+        return False
+    old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
+    chars, _ = looks(plan)
+    new = plan_wardrobe(paragraphs(text), chars, llm_url, model)
+    if new is None:
+        log("  wardrobe: the language model gave no usable answer; the old outfits stay")
+        return False
+    for n, rows in new.items():
+        for r in rows:
+            r["dress"] = worn_only(old.get((n, r["id"].lower()), r["dress"])) or r["dress"]
+    plan["wardrobe"], plan["wardrobe_k"] = new, k
+    for name, rows in plan["wardrobe"].items():
+        log(f"  wardrobe: {name}: " + " -> ".join(f"{r['id']} (from paragraph {r['from']})" for r in rows))
+    if not plan["wardrobe"]:
+        log("  wardrobe: nobody changes")
+    return True
+
+
+def scene_dress(plan: dict, p: dict) -> dict:
+    """{name: dress} for the people of scene picture *p* whose outfit isn't their usual one."""
+    return {n: r["dress"] for n in p.get("who") or [] if (r := outfit(plan, n, p.get("start")))}
+
+
+def outfit(plan: dict, name: str, para: int | None) -> dict | None:
+    """The wardrobe entry in force for *name* at paragraph *para*: None = their usual look."""
+    if para is None:
+        return None
+    rows = [r for r in (plan.get("wardrobe") or {}).get(name, []) if r["from"] <= para]
+    return rows[-1] if rows else None
+
+
+def para_at(starts: list[float], t: float) -> int:
+    """The paragraph being read at *t* seconds (*starts*: each paragraph's start time)."""
+    n = 0
+    for i, s in enumerate(starts):
+        if s <= t + 0.05:
+            n = i
+    return n
+
+
+def outfit_prompt(name: str, desc: str, row: dict, style: str) -> str:
+    return (f"Character sheet of one person, two views side by side on a plain light background: on the "
+            f"left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on the "
+            f"right the same person full length, standing. The same person as in image 1: exactly the same "
+            f"face, hair, age and build ({_short(desc)}), but now wearing {row['dress']}. Only the face and "
+            f"body come from image 1: everything worn or held is as written here, not as in image 1 (copied, "
+            f"the knight's melted shield stayed a whole shield, 10-18). Even light. "
+            f"{style}. No text, no lettering, no signature.")
+
+
+def outfit_ref(refs_dir: Path, plan: dict, style: str, name: str, row: dict) -> Path:
+    chars, _ = looks(plan)
+    return ref_path(refs_dir, f"{name} {row['id']}", outfit_prompt(name, chars.get(name, ""), row, style))
+
+
+def outfit_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
+    """One reference sheet per wardrobe change, drawn from the person's own sheet (image 1), so the
+    face stays theirs. Listed after reference_jobs: a drawing batch runs in order."""
+    chars, _ = looks(plan)
+    known = ref_prompts(plan, style)
+    jobs = []
+    for name, rows in (plan.get("wardrobe") or {}).items():
+        if name not in chars:
+            continue
+        base = [str(ref_path(refs_dir, name, known[name][0]))] if name in known else []
+        for row in rows:
+            prompt = outfit_prompt(name, chars[name], row, style)
+            jobs.append({"id": f"ref_{slug(name)}_{slug(row['id'])}", "size": [1280, 896], "seed": 7,
+                         "prompt": prompt, "refs": base, "path": str(ref_path(refs_dir, f"{name} {row['id']}", prompt))})
+    return jobs
 
 
 def reference_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
@@ -579,7 +1098,13 @@ def scene_jobs(pics: list[dict], plan: dict, img_dir: Path, refs_dir: Path,
             who = mentions(p["prompt"], chars)[:max_refs]
             where = mentions(p["prompt"], places)[:max(0, max_refs - len(who))][:1]
         prompts = ref_prompts(plan, style)
-        refs = [str(ref_path(refs_dir, n, prompts[n][0])) for n in who + where if n in prompts]
+        refs = []
+        for n in who + where:
+            row = outfit(plan, n, p.get("start")) if n in chars else None
+            if row:
+                refs.append(str(outfit_ref(refs_dir, plan, style, n, row)))
+            elif n in prompts:
+                refs.append(str(ref_path(refs_dir, n, prompts[n][0])))
         refs += p.get("extra_refs", [])          # e.g. a talking portrait's scene still
         jobs.append({"id": p["id"], "prompt": p["full_prompt"], "seed": p["seed"],
                      "path": str(img_dir / f"{p['id']}.png"), "refs": refs})
@@ -596,7 +1121,7 @@ def _run_drawer(jobs_file: Path, img_dir: Path, n_jobs: int, log) -> str:
     """One illustrate.py run: 'ok', 'failed' or 'stalled' (killed)."""
     with open(img_dir.parent / "draw.log", "w") as err:   # a file: a full stderr pipe would block it
         proc = subprocess.Popen(
-            [*memory_scope(), str(ART_PYTHON), "-I", str(ILLUSTRATE), str(jobs_file), str(img_dir)],
+            [*memory_scope(), str(DRAW_PYTHON), "-I", str(DRAW_SCRIPT), str(jobs_file), str(img_dir)],
             stdout=subprocess.PIPE, stderr=err, text=True,
             env={**os.environ, "HIP_VISIBLE_DEVICES": ART_GPU,
                  "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
@@ -618,11 +1143,13 @@ def _run_drawer(jobs_file: Path, img_dir: Path, n_jobs: int, log) -> str:
             except ValueError:
                 continue
             if "phase" in msg:
-                log(f"    {msg['phase']}: {msg['seconds']} s")
-            if "id" in msg:
+                log(f"    {msg['phase']}: {msg.get('seconds', '?')} s")
+            if "id" in msg and msg.get("error"):          # a per-job error: loud, never a KeyError (10-21)
+                log(f"    !!! {msg['id']}: {msg['error'][:300]}")
+            elif "id" in msg:
                 done += 1
                 if done == 1 or done % 10 == 0 or done == n_jobs:
-                    log(f"    drew {done}/{n_jobs} ({msg['seconds']} s each)")
+                    log(f"    drew {done}/{n_jobs} ({msg.get('seconds', '?')} s each)")
         rc = proc.wait()
     if stalled.is_set():
         return "stalled"
@@ -636,7 +1163,7 @@ def draw(pics: list[dict], img_dir: Path, log=print, plan: dict | None = None,
     the scenes, in one model load."""
     refs_dir = refs_dir or img_dir.parent.parent / "refs"
     if plan is not None:
-        jobs = (reference_jobs(plan, style, refs_dir)
+        jobs = (reference_jobs(plan, style, refs_dir) + outfit_jobs(plan, style, refs_dir)
                 + scene_jobs(pics, plan, img_dir, refs_dir, style=style))
     else:
         jobs = [{"id": p["id"], "prompt": p["full_prompt"], "seed": p["seed"],
@@ -678,6 +1205,161 @@ def draw_jobs(jobs: list[dict], img_dir: Path, log=print, on_done=None) -> None:
 
 _SESSION = None
 
+# The cards that draw during a keyframe stage: the music card and the voice server's card (both servers
+# are paused meanwhile). Best-of-N draws ~3 candidates a keyframe; two cards halve that (10-18 plan).
+DRAW_BUSES = [b for b in os.environ.get("BOOKCASTER_DRAW_BUSES", "65,05").split(",") if b.strip()]
+
+
+class DrawPool:
+    """One illustrate.py --serve process per card, all taking jobs from one queue: pictures can be added
+    at any time (a failed keyframe's redraw, the next keyframe once the one it is drawn from is chosen) and
+    draw on whichever card is free. A job waits while a reference it uses is still being drawn by another
+    job (an outfit sheet needs its base sheet: with two cards, order alone no longer guarantees that). A
+    card that stalls or dies twice drops out; its jobs go to the others."""
+
+    def __init__(self, log_file: Path, buses: list[str], log=print):
+        import queue
+        self.log_file, self.log = log_file, log
+        self.q, self.cv = queue.Queue(), threading.Condition()
+        self.pending, self.outputs, self.alive, self.broken = 0, set(), 0, False
+        self.on_done = None
+        self.threads = []
+        for bus in buses:
+            t = threading.Thread(target=self._worker, args=(bus,), daemon=True)
+            self.threads.append(t)
+            self.alive += 1
+            t.start()
+
+    # --- the draw_jobs / requeue interface -------------------------------------------------
+    def put(self, job: dict, on_done=None) -> None:
+        with self.cv:
+            self.pending += 1
+            self.outputs.add(str(job["path"]))
+        self.q.put((job, on_done or self.on_done))
+
+    def wait(self) -> None:
+        with self.cv:
+            while self.pending and self.alive:
+                self.cv.wait(timeout=5)
+
+    def draw(self, jobs: list[dict], log, on_done=None) -> None:
+        self.on_done = on_done
+        for j in jobs:
+            self.put(j, on_done)
+        self.wait()
+
+    def add(self, job: dict) -> bool:
+        if not self.alive:
+            return False
+        self.put(job)
+        return True
+
+    def stop(self) -> None:
+        for _ in self.threads:
+            self.q.put((None, None))
+        for t in self.threads:
+            t.join(timeout=90)
+
+    # --- one card -----------------------------------------------------------------------------
+    def _start(self, bus: str):
+        import queue
+        err = open(self.log_file.with_name(f"{self.log_file.stem}-{bus}.log"), "a")
+        proc = subprocess.Popen(
+            [*memory_scope(), str(DRAW_PYTHON), "-I", str(DRAW_SCRIPT), "--serve"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True,
+            env={**os.environ, "HIP_VISIBLE_DEVICES": hip_index(bus),
+                 "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
+        err.close()
+        lines = queue.Queue()
+
+        def read():
+            for line in proc.stdout:
+                lines.put(line)
+            lines.put(None)
+        threading.Thread(target=read, daemon=True).start()
+        return proc, lines
+
+    def _ready(self, job: dict) -> bool:
+        """No reference of this job is still waiting to be drawn."""
+        with self.cv:
+            return not any(str(r) in self.outputs and not Path(r).exists() for r in job.get("refs", []))
+
+    def _done(self, job: dict) -> None:
+        with self.cv:
+            self.pending -= 1
+            self.outputs.discard(str(job["path"]))
+            self.cv.notify_all()
+
+    def _worker(self, bus: str) -> None:
+        import queue
+        keep = ("id", "prompt", "seed", "path", "refs", "size", "control")
+        proc, lines, first, fails = None, None, True, 0
+        while True:
+            job, cb = self.q.get()
+            if job is None:
+                break
+            if not self._ready(job):                 # its reference is still being drawn: later
+                self.q.put((job, cb))
+                time.sleep(0.5)
+                continue
+            if Path(job["path"]).exists():
+                self._done(job)
+                if cb:
+                    cb(job)
+                continue
+            if proc is None or proc.poll() is not None:
+                proc, lines = self._start(bus)
+                first = True
+            proc.stdin.write(json.dumps({k: v for k, v in job.items() if k in keep}, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            status = None
+            while status is None:
+                try:     # the first wait includes the model load
+                    line = lines.get(timeout=DRAW_STALL_S + (120 if first else 0))
+                except queue.Empty:
+                    status = "stalled"
+                    break
+                if line is None:
+                    status = "died"
+                    break
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "phase" in msg:
+                    self.log(f"    [{bus}] {msg['phase']}: {msg['seconds']} s")
+                elif msg.get("id") == job["id"]:
+                    status = "error" if "error" in msg else "ok"
+                    if "error" in msg:
+                        self.log(f"    [{bus}] {job['id']}: {msg['error']}")
+            first = False
+            if status in ("ok", "error"):
+                self._done(job)
+                if cb and (Path(job["path"]).exists() or job.get("_report_errors", True)):
+                    try:
+                        cb(job)             # also on an error: a caller counting its jobs must not wait forever
+                    except Exception as exc:
+                        self.log(f"    [{bus}] callback for {job['id']}: {exc}")
+                continue
+            fails += 1                                  # stalled or died: the job goes back for any card
+            proc.kill()
+            proc.wait()
+            proc = None
+            self.q.put((job, cb))
+            if fails >= 2:
+                self.log(f"    [{bus}] drawing card dropped out ({status} twice)")
+                break
+        if proc and proc.poll() is None:
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=60)
+            except Exception:
+                proc.kill()
+        with self.cv:
+            self.alive -= 1
+            self.broken = self.alive == 0
+            self.cv.notify_all()
+
 
 class _DrawSession:
     """illustrate.py --serve for a run of draw_jobs calls: the model loads once.
@@ -688,12 +1370,30 @@ class _DrawSession:
 
     def __init__(self, log_file: Path):
         self.log_file, self.proc, self.lines, self.broken = log_file, None, None, False
+        self.lock, self.batch = threading.Lock(), None     # batch: {"expected", "jobs"} while draw() runs
+
+    def add(self, job: dict) -> bool:
+        """Queue one more picture into the batch being drawn (a keyframe that just failed its check goes
+        straight back, user 10-18). False when no batch is running: the caller redraws it later."""
+        keep = ("id", "prompt", "seed", "path", "refs", "size", "control")
+        with self.lock:
+            if self.batch is None or self.proc is None or self.proc.poll() is not None:
+                return False
+            try:
+                self.proc.stdin.write(json.dumps({k: v for k, v in job.items() if k in keep},
+                                                 ensure_ascii=False) + "\n")
+                self.proc.stdin.flush()
+            except OSError:
+                return False
+            self.batch["expected"] += 1
+            self.batch["jobs"][job["id"]] = job
+            return True
 
     def _start(self, log):
         import queue
         err = open(self.log_file, "a")
         self.proc = subprocess.Popen(
-            [*memory_scope(), str(ART_PYTHON), "-I", str(ILLUSTRATE), "--serve"],
+            [*memory_scope(), str(DRAW_PYTHON), "-I", str(DRAW_SCRIPT), "--serve"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True,
             env={**os.environ, "HIP_VISIBLE_DEVICES": ART_GPU,
                  "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
@@ -724,13 +1424,19 @@ class _DrawSession:
                 return
             if self.proc is None or self.proc.poll() is not None:
                 self._start(log)
-            keep = ("id", "prompt", "seed", "path", "refs", "size")
-            for j in left:
-                self.proc.stdin.write(json.dumps({k: v for k, v in j.items() if k in keep},
-                                                 ensure_ascii=False) + "\n")
-            self.proc.stdin.flush()
-            by_id, done, status = {j["id"]: j for j in left}, 0, "ok"
-            while done < len(left):
+            keep = ("id", "prompt", "seed", "path", "refs", "size", "control")
+            with self.lock:
+                for j in left:
+                    self.proc.stdin.write(json.dumps({k: v for k, v in j.items() if k in keep},
+                                                     ensure_ascii=False) + "\n")
+                self.proc.stdin.flush()
+                self.batch = {"expected": len(left), "jobs": {j["id"]: j for j in left}}
+            by_id, done, status = self.batch["jobs"], 0, "ok"
+            while True:
+                with self.lock:
+                    if done >= self.batch["expected"]:
+                        self.batch = None
+                        break
                 try:     # the first wait includes the model load
                     line = self.lines.get(timeout=DRAW_STALL_S + (120 if done == 0 else 0))
                 except queue.Empty:
@@ -750,9 +1456,11 @@ class _DrawSession:
                     if "error" in msg:
                         log(f"    {msg['id']}: {msg['error']}")
                     elif on_done and msg["id"] in by_id:
-                        on_done(by_id[msg["id"]])
-                    if done == 1 or done % 10 == 0 or done == len(left):
-                        log(f"    drew {done}/{len(left)} ({msg.get('seconds', '?')} s each)")
+                        on_done(by_id[msg["id"]])     # a re-queued picture comes back through here too
+                    if done == 1 or done % 10 == 0 or done == self.batch["expected"]:
+                        log(f"    drew {done}/{self.batch['expected']} ({msg.get('seconds', '?')} s each)")
+            with self.lock:
+                self.batch = None
             if status == "ok":
                 return
             self.proc.kill()
@@ -769,21 +1477,45 @@ class _DrawSession:
 
 
 @contextlib.contextmanager
+def requeue(job: dict) -> bool:
+    """Put a picture back into the drawing batch now running (see _DrawSession.add)."""
+    return bool(_SESSION and not _SESSION.broken and _SESSION.add(job))
+
+
+@contextlib.contextmanager
 def drawing_session(log_file: Path, log=print):
-    """Keep the drawing model loaded across the draw_jobs calls inside (a
-    keyframe phase: draw, check, redraw, then the talking portraits). The music
-    server shares its card and stays stopped for the whole session."""
+    """Keep the drawing model loaded across the draw_jobs calls inside (a keyframe phase: draw, check,
+    redraw, then the talking portraits), on every card in DRAW_BUSES. The music server shares the first
+    card and the voice server the second: both stay stopped for the whole session."""
     global _SESSION
     if _SESSION:                     # nested: the outer session serves
         yield
         return
+    voice_card = any(b != ART_BUS for b in DRAW_BUSES)
+    fish = voice_card and subprocess.run(["systemctl", "--user", "is-active", "-q", "tts-fish"]).returncode == 0
+    if fish:
+        log("    pausing the voice server: its card draws too")
+        subprocess.run(["systemctl", "--user", "stop", "tts-fish-adapter", "tts-fish"], capture_output=True)
+    # the session HOLDS its cards' locks while its drawers are loaded (10-21 v3 plan: a resident drawer on 05 without
+    # the lock; the sheet check's judge took 05 as "free" and ran out of memory): other GPU users see them busy
+    import fcntl
+    locks = []
+    for b in DRAW_BUSES:
+        lf = open(f"/tmp/gpu-{b}.lock", "a")
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        locks.append(lf)
     with _music_paused(log):
-        _SESSION = _DrawSession(log_file)
+        _SESSION = DrawPool(log_file, DRAW_BUSES, log)
         try:
             yield
         finally:
             _SESSION.stop()
             _SESSION = None
+            for lf in locks:
+                lf.close()
+            if fish:
+                subprocess.run(["bash", str(Path(__file__).resolve().parent.parent / "tools" / "fish_stack.sh"), "up"],
+                               capture_output=True)
 
 
 @contextlib.contextmanager
@@ -827,6 +1559,157 @@ def _draw_attempts(jobs, jobs_file, img_dir, log) -> None:
 CHECK_ROUNDS = int(os.environ.get("BOOKCASTER_CHECK_ROUNDS", "2"))
 
 
+# --- the picture checker on an XTX -------------------------------------------------------
+# Keyframe checks ran on the language model on the iGPU, one at a time, ~40 s a picture: three times
+# slower than drawing, so the keyframe stage was the checks (45+ min for 56 pictures, user 10-18).
+# During the keyframe stage the voice server's XTX sits idle: a vision model there (Qwen3.8-27B Q4 +
+# its projector, ~17 GB) checks CHECKER_SLOTS pictures at once. Small context, no flash attention
+# (the XTX reset its ring at 8k + fa, 09-12). Without it, checks go to the iGPU as before.
+CHECKER_BIN = Path(os.environ.get("BOOKCASTER_CHECKER_BIN", Path.home() / "llama.cpp-merge/build/bin/llama-server"))
+CHECKER_MODEL = Path(os.environ.get("BOOKCASTER_CHECKER_MODEL", Path.home() / "models/Qwen3.8-27B-Q4_K_S.gguf"))
+CHECKER_MMPROJ = Path(os.environ.get("BOOKCASTER_CHECKER_MMPROJ", Path.home() / "models/Qwen3.8-27B-mmproj-F16.gguf"))
+CHECKER_PORT = int(os.environ.get("BOOKCASTER_CHECKER_PORT", "18111"))
+CHECKER_SLOTS = int(os.environ.get("BOOKCASTER_CHECKER_SLOTS", "4"))
+CHECKER_BUS = os.environ.get("BOOKCASTER_CHECKER_BUS", "05")
+# On llama.cpp-merge with hand-picked flags the 27B decoded 13 tok/s (2 each at 4 slots); through the
+# production launcher ~30 per stream at 2 slots (10-18). It checks beside the iGPU model, not instead.
+CHECKER_ON = os.environ.get("BOOKCASTER_CHECKER", "1") == "1"
+CHECKER_LAUNCHER = Path(os.environ.get("BOOKCASTER_CHECKER_LAUNCHER", Path.home() / "models/run-qwen38.sh"))
+CHECKER_UNIT = "bookcaster-checker"
+CHECKER: dict = {"url": None}        # set while checker_session() runs
+
+
+def _vulkan_index(bus: str) -> str | None:
+    """ggml's Vulkan index (GGML_VK_VISIBLE_DEVICES) of the GPU on PCI bus *bus* (hex). ggml lists the
+    discrete GPUs first, then the integrated one, each in Vulkan's order: vulkaninfo's own index (which
+    counts the iGPU first here) put the checker on the drawing model's card - two models on one 24 GB
+    card spilled into system RAM (1 GB left) and reset its ring (10-18)."""
+    out = subprocess.run(["vulkaninfo"], capture_output=True, text=True).stdout
+    devs, cur = [], None
+    for line in out.splitlines():
+        if re.match(r"GPU\d+:", line.strip()):
+            cur = {"bus": None, "type": ""}
+            devs.append(cur)
+        elif cur is not None:
+            m = re.search(r"pciBus\s*=\s*(\d+)", line)
+            if m and cur["bus"] is None:
+                cur["bus"] = int(m.group(1))
+            m = re.search(r"deviceType\s*=\s*PHYSICAL_DEVICE_TYPE_(\w+)", line)
+            if m and not cur["type"]:
+                cur["type"] = m.group(1)
+    gpus = [d for d in devs if d["type"] in ("DISCRETE_GPU", "INTEGRATED_GPU")]
+    order = [d for d in gpus if d["type"] == "DISCRETE_GPU"] + [d for d in gpus if d["type"] == "INTEGRATED_GPU"]
+    for i, d in enumerate(order):
+        if d["bus"] == int(bus, 16):
+            return str(i)
+    return None
+
+
+def _vram_used_gb(bus: str) -> float:
+    f = Path(f"/sys/bus/pci/devices/0000:{bus}:00.0/mem_info_vram_used")
+    try:
+        return int(f.read_text()) / 2**30
+    except (OSError, ValueError):
+        return -1.0
+
+
+@contextlib.contextmanager
+def checker_session(log=print):
+    """The vision checker on the voice server's XTX for the length of the block (the voice server is
+    paused and started again after). Yields its URL, or None when it can't run (checks then use the
+    iGPU language model)."""
+    # never beside a drawer: the checker and the second drawing card both took bus 05 and the 24 GB
+    # card spilled into system RAM (1 GB left, 10-19). When its card draws, Strata checks.
+    if CHECKER["url"] or not CHECKER_ON or not CHECKER_LAUNCHER.exists() or CHECKER_BUS in DRAW_BUSES:
+        yield CHECKER["url"]
+        return
+    vk = _vulkan_index(CHECKER_BUS)
+    if vk is None:
+        yield None
+        return
+    fish = subprocess.run(["systemctl", "--user", "is-active", "-q", "tts-fish"]).returncode == 0
+    if fish:
+        log("    pausing the voice server: its card checks the pictures")
+        subprocess.run(["systemctl", "--user", "stop", "tts-fish-adapter", "tts-fish"], capture_output=True)
+    subprocess.run(["systemctl", "--user", "reset-failed", CHECKER_UNIT], capture_output=True)
+    # the production launcher (tuned build snapshot, fa on, q8 KV, draft model): hand-picked flags on
+    # another build decoded 13 tok/s; this one ~30 per stream (10-18). GPU=egpu = the first XTX by name.
+    subprocess.run(["systemd-run", "--user", f"--unit={CHECKER_UNIT}", "-p", "MemoryMax=24G",
+                    "--setenv=GPU=egpu", "--setenv=VISION=1", f"--setenv=NP_EGPU={CHECKER_SLOTS}",
+                    f"--setenv=CTX_OVERRIDE={16384 * CHECKER_SLOTS}", "--setenv=MODEL_RUN=0",
+                    f"--setenv=PORT={CHECKER_PORT}", "bash", str(CHECKER_LAUNCHER)], capture_output=True)
+    url = f"http://127.0.0.1:{CHECKER_PORT}/v1/chat/completions"
+    from urllib.request import urlopen
+    ok = False
+    for _ in range(180):
+        try:
+            urlopen(f"http://127.0.0.1:{CHECKER_PORT}/health", timeout=3)
+            ok = True
+            break
+        except OSError:
+            if subprocess.run(["systemctl", "--user", "is-active", "-q", CHECKER_UNIT]).returncode != 0:
+                break
+            time.sleep(2)
+    if ok and _vram_used_gb(CHECKER_BUS) < 12:     # loaded somewhere else: never beside the drawer
+        log(f"    picture checker isn't on the bus-{CHECKER_BUS} card: stopped, checking on the language model")
+        subprocess.run(["systemctl", "--user", "stop", CHECKER_UNIT], capture_output=True)
+        ok = False
+    if ok:
+        log(f"    picture checker up on the bus-{CHECKER_BUS} XTX ({CHECKER_SLOTS} at a time)")
+        CHECKER["url"] = url
+    else:
+        log("    picture checker didn't start: checking on the language model instead")
+    try:
+        yield CHECKER["url"]
+    finally:
+        CHECKER["url"] = None
+        subprocess.run(["systemctl", "--user", "stop", CHECKER_UNIT], capture_output=True)
+        if fish:
+            subprocess.run(["bash", str(Path(__file__).resolve().parent.parent / "tools" / "fish_stack.sh"), "up"],
+                           capture_output=True)
+
+
+_ROTA = {"n": 0}
+_ROTA_LOCK = threading.Lock()
+
+
+def checker_url(llm_url: str | None) -> str | None:
+    """Where a picture check goes: in turn the XTX checker's slots and the iGPU language model while the
+    checker runs (both at once), else the language model."""
+    if not CHECKER["url"] or not llm_url:
+        return CHECKER["url"] or llm_url
+    pool = [CHECKER["url"]] * CHECKER_SLOTS + [llm_url]
+    with _ROTA_LOCK:
+        _ROTA["n"] += 1
+        return pool[_ROTA["n"] % len(pool)]
+
+
+def checker_workers() -> int:
+    return CHECKER_SLOTS + 1 if CHECKER["url"] else 1
+
+
+def _look_at_probs(llm_url: str, model: str, png: Path, question: str, max_tokens: int = 200):
+    """_look_at with the answer's token log-probabilities: (text, [(token, {alt: logprob})]), or the text
+    and [] where the server gives none."""
+    import base64
+    from urllib.request import Request, urlopen
+    body = {"model": model, "temperature": 0, "max_tokens": max_tokens, "logprobs": True, "top_logprobs": 5,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()}},
+                {"type": "text", "text": question}]}]}
+    req = Request(llm_url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=300) as r:
+        ch = json.loads(r.read())["choices"][0]
+    toks = []
+    for t in ((ch.get("logprobs") or {}).get("content") or []):
+        alts = {a["token"]: a["logprob"] for a in t.get("top_logprobs") or []}
+        alts.setdefault(t.get("token", ""), t.get("logprob", 0.0))
+        toks.append((t.get("token", ""), alts))
+    return ch["message"]["content"], toks
+
+
 def _look_at(llm_url: str, model: str, png: Path, question: str) -> str:
     import base64
     from urllib.request import Request, urlopen
@@ -844,7 +1727,8 @@ def _look_at(llm_url: str, model: str, png: Path, question: str) -> str:
 CHECK_VERSION = 2   # bump when check_picture changes: pictures that passed are checked again
 
 
-def check_picture(png: Path, people: int | None, llm_url: str, model: str) -> list[str]:
+def check_picture(png: Path, people: int | None, llm_url: str, model: str,
+                  dress: dict | None = None) -> list[str]:
     """What is wrong with one drawing ([] = fine). *people*: how many should be
     in it. Asked for "problems" the model invented some (two of every three
     flags were wrong); asked for counts it missed a four-armed man. Tracing
@@ -875,6 +1759,18 @@ def check_picture(png: Path, people: int | None, llm_url: str, model: str) -> li
         n = None
     if people is not None and n is not None and n > people:
         probs.append(f"{n} people instead of {people}")
+    for name, worn in (dress or {}).items():
+        # the wardrobe's outfit of this moment: a scene of the fight had the knight in his stable leathers
+        q = (f"Look at {name.split()[0]} in this illustration ({_short(str(worn))}...). Is that person wearing "
+             f"this: {worn}? Small differences in detail are fine; a different kind of clothing is not. "
+             'Answer with a final line of JSON: {"wears": true/false, "why": "..."}')
+        r = _look_at(llm_url, model, png, q)
+        m = re.findall(r"\{[^{}]*\"wears\"[^{}]*\}", r or "")
+        try:
+            if m and json.loads(m[-1]).get("wears") is False:
+                probs.append(f"{name} is not wearing {worn[:80]}: {json.loads(m[-1]).get('why', '')[:100]}")
+        except ValueError:
+            pass
     return probs
 
 
@@ -947,7 +1843,7 @@ def draw_checked(pics: list[dict], img_dir: Path, plan: dict, style: str, llm_ur
             try:
                 # a crowd has no fixed count: only the drawing-mistake flags count there
                 probs = check_picture(png, len(p["who"]) if "who" in p and not p.get("crowd") else None,
-                                      llm_url, model)
+                                      llm_url, model, scene_dress(plan, p))
             except Exception as exc:          # the server can't see pictures, or is down
                 log(f"  picture check skipped ({exc})")
                 return

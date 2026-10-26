@@ -1,0 +1,245 @@
+[
+ {
+  "check": "asset.creature_watertight",
+  "fixture": "asset.creature_watertight/fail_rig6_torn_jaw",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   false
+  ]
+ },
+ {
+  "check": "asset.prop_rest",
+  "fixture": "asset.prop_rest/fail_stone",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   false
+  ]
+ },
+ {
+  "check": "asset.prop_rest",
+  "fixture": "asset.prop_rest/pass_hammer",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   true
+  ]
+ },
+ {
+  "check": "clip.chunk_lips",
+  "fixture": "clip.chunk_lips/fail_793_frozen_c1",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   [
+    2.009,
+    0.64
+   ]
+  ]
+ },
+ {
+  "check": "clip.join_once",
+  "fixture": "clip.join_once/fail_naive_concat_793",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "222 vs 214"
+  ]
+ },
+ {
+  "check": "clip.join_once",
+  "fixture": "clip.join_once/pass_stitched_793",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "210 vs 214"
+  ]
+ },
+ {
+  "check": "clip.no_text",
+  "fixture": "clip.no_text/fail_382_tablet",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "text in 4/4 frames"
+  ]
+ },
+ {
+  "check": "clip.no_text",
+  "fixture": "clip.no_text/pass_771",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "text in 0/4 frames"
+  ]
+ },
+ {
+  "check": "clip.speaker_present",
+  "fixture": "clip.speaker_present/fail_382_tablet",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   0.12
+  ]
+ },
+ {
+  "check": "clip.speaker_present",
+  "fixture": "clip.speaker_present/pass_771",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   1.0
+  ]
+ },
+ {
+  "check": "key.age_band",
+  "fixture": "key.age_band/fail_727_edric_older",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "30"
+  ]
+ },
+ {
+  "check": "key.back_hair",
+  "fixture": "key.back_hair/fail_727_hulda_brown_hair",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "no."
+  ]
+ },
+ {
+  "check": "key.back_hair",
+  "fixture": "key.back_hair/pass_727_hulda_grey",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "yes"
+  ]
+ },
+ {
+  "check": "key.facial_hair",
+  "fixture": "key.facial_hair/fail_340_bearded_knight",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "yes"
+  ]
+ },
+ {
+  "check": "key.facial_hair",
+  "fixture": "key.facial_hair/pass_knight_sheet",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "no"
+  ]
+ },
+ {
+  "check": "key.location_interior",
+  "fixture": "key.location_interior/fail_771_seascape",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "no"
+  ]
+ },
+ {
+  "check": "key.location_interior",
+  "fixture": "key.location_interior/pass_340_castle_hall",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "yes"
+  ]
+ },
+ {
+  "check": "key.no_sea_sky_interior",
+  "fixture": "key.no_sea_sky_interior/fail_771_seascape",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "yes"
+  ]
+ },
+ {
+  "check": "key.outfit",
+  "fixture": "key.outfit/fail_727_black_shirt",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "dark, textured, button-up shirt."
+  ]
+ },
+ {
+  "check": "key.set_present",
+  "fixture": "key.set_present/fail_727_door_no_forge",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "no"
+  ]
+ },
+ {
+  "check": "key.speaker_face_light",
+  "fixture": "key.speaker_face_light/fail_340_dark",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "luma 42"
+  ]
+ },
+ {
+  "check": "key.speaker_face_light",
+  "fixture": "key.speaker_face_light/pass_771",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "luma 58"
+  ]
+ },
+ {
+  "check": "key.story_prop",
+  "fixture": "key.story_prop/fail_727_no_lantern",
+  "user": "fail",
+  "registry": "fail",
+  "agree": true,
+  "why": [
+   "no"
+  ]
+ },
+ {
+  "check": "key.story_prop",
+  "fixture": "key.story_prop/pass_727_original_lantern",
+  "user": "pass",
+  "registry": "pass",
+  "agree": true,
+  "why": [
+   "yes"
+  ]
+ }
+]

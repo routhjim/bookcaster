@@ -1,0 +1,23 @@
+{
+ "check": "key.outfit",
+ "media": "fail_727_black_shirt.png",
+ "verdict": "fail",
+ "ctx": {
+  "size": [
+   832,
+   448
+  ],
+  "people": {
+   "Edric": {
+    "box": [
+     319.3662481281407,
+     62.35387601829885,
+     512.5456852545997,
+     448.0
+    ],
+    "outfit": "a rough leather jerkin and simple trousers, no helm, no armor, everyday look"
+   }
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000727/key.png"
+}

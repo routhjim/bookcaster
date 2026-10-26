@@ -1,0 +1,9 @@
+{
+ "check": "clip.speaker_present",
+ "media": "pass_771.mp4",
+ "verdict": "pass",
+ "ctx": {
+  "speech": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/audio/talk-000771_pad.wav"
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/ltx/out/r_talk-000771.mp4"
+}

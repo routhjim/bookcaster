@@ -1,0 +1,116 @@
+{
+ "_doc": "Generic motion recipes (any story): matched by the figure's own action sentences (verb regex) AND the affordances of the props it holds (tools/stage_props/props.json). First match wins; a book's choreography.json overrides; else tools/motion_batch.py ACTION_MAP. prompt = a body-only HY-Motion phrase (no subject); mode = the impact rule for motion_shot (surface|reach|stop|none); hold = freeze the pose (top|end); from = start|windup; gen_dur = generate this length (a proven clip) and retime to the shot.",
+ "recipes": [
+  {
+   "name": "strike_tool_held_raised",
+   "verb": "\\bholds?\\b.*\\b(steady|raised|aloft|in the air)\\b|\\bpreparing to\\b|\\bpoised\\b",
+   "holds": {
+    "right": "strike_face"
+   },
+   "prompt": "raises a hammer above the right shoulder with the right hand, the left hand low in front of the body, and holds it there, ready to strike",
+   "mode": "none",
+   "hold": "top"
+  },
+  {
+   "name": "strike_face_on_flat_work",
+   "verb": "\\b(brings?|swings?) (the |his |her )?\\w* ?down\\b|\\bstrikes?\\b|\\bhammers?\\b|\\bpounds?\\b",
+   "holds": {
+    "right": "strike_face",
+    "left": "flat"
+   },
+   "prompt": "leans over a table, pressing down on it with the left hand, raises a hammer overhead with the right hand and strikes down hard once",
+   "mode": "surface",
+   "from": "windup",
+   "gen_dur": 4.0
+  },
+  {
+   "name": "strike_face",
+   "verb": "\\b(brings?|swings?) (the |his |her )?\\w* ?down\\b|\\bstrikes?\\b|\\bhammers?\\b|\\bpounds?\\b",
+   "holds": {
+    "right": "strike_face"
+   },
+   "prompt": "raises a hammer overhead with the right hand and strikes down hard, holding tongs low in the left hand",
+   "mode": "surface",
+   "from": "windup",
+   "gen_dur": 4.0
+  },
+  {
+   "name": "thrust_with_tip",
+   "verb": "\\bthrusts?\\b|\\bstabs?\\b|\\bdriv(es|ing)\\b.*\\binto\\b|\\blunges?\\b",
+   "holds_any": "tip",
+   "prompt": "lunges forward with the right leg, thrusts a sword forward with both hands and holds the extended thrust",
+   "mode": "reach",
+   "contact": {
+    "point": "tip",
+    "affordance": "tip",
+    "to": "nearest_creature",
+    "anchor": [
+     "belly",
+     "chest"
+    ],
+    "frame": "end",
+    "penetrate": true,
+    "follow": 0.0,
+    "hold_frames": 6
+   }
+  },
+  {
+   "name": "overhead_block_with_edge",
+   "verb": "\\bblocks?\\b|\\bparr(y|ies)\\b|\\bto meet the blow\\b|\\bholds? the block\\b|\\braises?\\b.*\\bto (block|meet)\\b",
+   "holds_any": "edge",
+   "prompt": "raises a sword horizontally above the head with both hands to block a blow from above",
+   "mode": "none",
+   "hold": "top"
+  },
+  {
+   "name": "quench_point_down",
+   "verb": "\\b(above|over|into|in) the water\\b|\\bquench|\\bsteam\\b",
+   "holds_any": "tip",
+   "prompt": "holds a sword with both hands, point down in front of the body, very still",
+   "mode": "none",
+   "hold": "end",
+   "grip": "stacked"
+  },
+  {
+   "name": "inspect_blade",
+   "verb": "\\blooks? at the (sword|blade)\\b|\\bobserv\\w* the (sword|blade)\\b|\\b(sword|blade)\\b.*\\bclearly\\b",
+   "holds_any": "edge",
+   "prompt": "holds a sword upright in front of the face with both hands, looking at the blade",
+   "mode": "none",
+   "hold": "end"
+  },
+  {
+   "name": "carried_by_creature",
+   "attached": true,
+   "prompt": "hangs limp, arms hanging down at the sides, legs dangling and swaying gently",
+   "mode": "none",
+   "attach": {
+    "by": "shoulders",
+    "below": 0.12
+   }
+  }
+ ],
+ "creature_rules": [
+  {
+   "name": "recoil_when_struck",
+   "when": "a human contact targets this creature's anchor (to = '<creature>:<anchor>')",
+   "verbs": [
+    {
+     "verb": "recoil",
+     "t": "impact",
+     "from": [
+      -1,
+      0,
+      0
+     ],
+     "strength": 1.0
+    }
+   ]
+  },
+  {
+   "name": "claw_onto_blade",
+   "when": "the creature strikes and a human holds an edge prop",
+   "target": "human:<who>:hands+0.25"
+  }
+ ]
+}

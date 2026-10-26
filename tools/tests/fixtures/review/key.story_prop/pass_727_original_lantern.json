@@ -1,0 +1,11 @@
+{
+ "check": "key.story_prop",
+ "media": "pass_727_original_lantern.png",
+ "verdict": "pass",
+ "ctx": {
+  "props": [
+   "a lantern"
+  ]
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1/anim/talk-000727_first.png"
+}

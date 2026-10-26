@@ -1,0 +1,13 @@
+{
+ "check": "key.speaker_face_light",
+ "media": "fail_340_dark.png",
+ "verdict": "fail",
+ "ctx": {
+  "speaker": "Knight",
+  "speaker_face": {
+   "h_frac": 0.234,
+   "luma": 42.2
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000340/key.png"
+}

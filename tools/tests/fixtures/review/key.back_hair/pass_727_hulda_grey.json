@@ -1,0 +1,24 @@
+{
+ "check": "key.back_hair",
+ "media": "pass_727_hulda_grey.png",
+ "verdict": "pass",
+ "ctx": {
+  "size": [
+   832,
+   448
+  ],
+  "people": {
+   "Hulda": {
+    "box": [
+     561.9934869331522,
+     55.07228460723067,
+     832.0,
+     448.0
+    ],
+    "hair": "long gray hair tied back",
+    "behind": true
+   }
+  }
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000727/key.png"
+}

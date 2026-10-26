@@ -1,0 +1,13 @@
+{
+ "_doc": "Generic CONTACT-ACTION templates (any book): a figure works a WORK piece lying on a SUPPORT with a STRIKER tool held in one hand. Every role is found by AFFORDANCE / prop-class flag, never by name: the striker = a held prop whose library entry (stage_props/props.json) has the striker affordance; the support = a set prop whose prop class (prop_classes.json) has the support flag; the work = the moment's own movable prop (else what rests on the support by the prop state machine), in its class's work_state when it has one; an offhand tool (a prop class with offhand_for: <template>) only when the text names it. Modes from the text: rest (the striker lies somewhere: no action), hold (raised/poised: no impact contact), strike (the striker's face ENDS flush on the work: a contact; the support class's impact_fx at the impact). Examples: a smith's hammer on a blade on an anvil; a cook's cleaver on meat on a chopping block; a mason's mallet on a chisel on stone.",
+ "strike_on_support": {
+  "striker": {"affordance": "strike_face", "hand": "right"},
+  "support": {"class_flag": "work_support"},
+  "offhand_hand": "left",
+  "poses": {"raise": "hammer_raised", "strike": "hammer_strike", "rest": "standing"},
+  "stand_off_m": 0.58,
+  "rest_rx": "\\b{striker}\\w*[^.]{{0,25}}\\b(rests?|lies|lying|lay|on the (ground|floor|table|bench))\\b",
+  "hold_rx": "\\b(prepar\\w*|about to|ready to|poised|steady|holds? (the {striker}|it) (up|high|aloft|above)|raised|hovers?|frozen|pauses?|waits?)\\b",
+  "strike_rx": "\\b(strikes|struck|hits|hit the|slams|chops?|brings? (it|the {striker}) down on|blows? (land|ring|fall))"
+ }
+}

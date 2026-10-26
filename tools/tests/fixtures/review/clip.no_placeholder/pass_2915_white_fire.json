@@ -1,0 +1,7 @@
+{
+ "check": "clip.no_placeholder",
+ "media": "pass_2915_white_fire.mp4",
+ "verdict": "pass",
+ "ctx": {"only": ["clip.no_placeholder"]},
+ "source": "knight ch1 10-21 overnight r_action-002915 (thin text staging)"
+}

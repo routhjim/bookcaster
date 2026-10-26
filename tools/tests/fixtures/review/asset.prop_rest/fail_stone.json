@@ -1,0 +1,11 @@
+{
+ "check": "asset.prop_rest",
+ "media": "fail_stone.json",
+ "verdict": "fail",
+ "ctx": {
+  "file": "/home/jrouth/tts_reader/tools/tests/fixtures/review/asset.prop_rest/fail_stone.model.json",
+  "field": "rest_check.ok",
+  "rule": "truthy"
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/stage/props/stone/model.json"
+}

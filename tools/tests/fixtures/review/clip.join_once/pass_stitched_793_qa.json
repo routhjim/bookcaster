@@ -1,0 +1,19 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.join_once/pass_stitched_793.mp4",
+ "frames": 210,
+ "flags": [],
+ "cuts": [],
+ "step_median": 0.15,
+ "camera": {
+  "scale_min": 0.996,
+  "scale_max": 1.001,
+  "shift_max": 0.004,
+  "samples": 34,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "pass": true
+}

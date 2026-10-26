@@ -1,0 +1,19 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.no_text/pass_771.mp4",
+ "frames": 61,
+ "flags": [],
+ "cuts": [],
+ "step_median": 0.18,
+ "camera": {
+  "scale_min": 0.999,
+  "scale_max": 1.005,
+  "shift_max": 0.005,
+  "samples": 10,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "pass": true
+}

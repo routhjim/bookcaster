@@ -1,0 +1,1063 @@
+{
+ "_doc": "Composite / procedural creature templates (any book): a skeleton graph in A-pose (joint positions as FRACTIONS of the height S = the skull top; the model faces +X, left = +Y, Z up) with a radius profile per bone (fractions of S), turned into ONE implicit volume (smooth-min union of tapered capsules + ellipsoids + membrane slabs) by tools/creature_sdf.py, meshed by marching cubes, rigged by heat weights on the human bone names + extra chains (neck, jaw, tail, wings) by tools/creature_sdf_bl.py. A book's creature spec (stage/characters/<slug>/creature_spec.json) names a template and overrides any value. Bones are named like the human rig (pelvis, spine, neck, head, r_clav/r_uarm/r_farm/r_hand, r_hipb/r_thigh/r_shin/r_foot) so humanoid motion drives the body; the extra chains use the creature names (neck2.., jaw, tail1.., wing_<s>_shoulder/elbow/wrist/tip/finger1-3: a bone is named by its TAIL joint).",
+ "winged_biped": {
+  "voxel_frac": 0.0055,
+  "blend_frac": 0.55,
+  "joints": {
+   "pelvis": [
+    0.0,
+    0.0,
+    0.45
+   ],
+   "spine": [
+    0.0,
+    0.0,
+    0.57
+   ],
+   "chest": [
+    0.01,
+    0.0,
+    0.68
+   ],
+   "neck": [
+    0.02,
+    0.0,
+    0.71
+   ],
+   "neck2": [
+    0.035,
+    0.0,
+    0.765
+   ],
+   "neck3": [
+    0.06,
+    0.0,
+    0.82
+   ],
+   "neck4": [
+    0.095,
+    0.0,
+    0.865
+   ],
+   "neck5": [
+    0.13,
+    0.0,
+    0.9
+   ],
+   "head": [
+    0.16,
+    0.0,
+    0.925
+   ],
+   "snout": [
+    0.33,
+    0.0,
+    0.9
+   ],
+   "head_top": [
+    0.18,
+    0.0,
+    1.0
+   ],
+   "jaw": [
+    0.31,
+    0.0,
+    0.875
+   ],
+   "r_clav": [
+    0.0,
+    -0.13,
+    0.675
+   ],
+   "r_uarm": [
+    0.02,
+    -0.32,
+    0.55
+   ],
+   "r_farm": [
+    0.05,
+    -0.42,
+    0.43
+   ],
+   "r_hand": [
+    0.07,
+    -0.46,
+    0.37
+   ],
+   "r_hipb": [
+    0.0,
+    -0.085,
+    0.43
+   ],
+   "r_thigh": [
+    0.07,
+    -0.095,
+    0.27
+   ],
+   "r_shin": [
+    -0.05,
+    -0.1,
+    0.09
+   ],
+   "r_foot": [
+    0.08,
+    -0.1,
+    0.012
+   ],
+   "tail1": [
+    -0.07,
+    0.0,
+    0.42
+   ],
+   "tail2": [
+    -0.15,
+    0.0,
+    0.37
+   ],
+   "tail3": [
+    -0.23,
+    0.0,
+    0.31
+   ],
+   "tail4": [
+    -0.31,
+    0.0,
+    0.25
+   ],
+   "tail5": [
+    -0.39,
+    0.0,
+    0.19
+   ],
+   "tail6": [
+    -0.47,
+    0.0,
+    0.14
+   ],
+   "tail7": [
+    -0.55,
+    0.0,
+    0.1
+   ],
+   "tail8": [
+    -0.63,
+    0.0,
+    0.07
+   ],
+   "tail9": [
+    -0.71,
+    0.0,
+    0.05
+   ],
+   "tail10": [
+    -0.79,
+    0.0,
+    0.04
+   ],
+   "tail11": [
+    -0.87,
+    0.0,
+    0.035
+   ],
+   "tail12": [
+    -0.95,
+    0.0,
+    0.04
+   ],
+   "wing_r_root": [
+    -0.06,
+    -0.07,
+    0.655
+   ],
+   "wing_r_shoulder": [
+    -0.08,
+    -0.12,
+    0.7
+   ],
+   "wing_r_elbow": [
+    -0.14,
+    -0.33,
+    0.83
+   ],
+   "wing_r_wrist": [
+    -0.12,
+    -0.52,
+    0.95
+   ],
+   "wing_r_tip": [
+    -0.02,
+    -0.9,
+    1.04
+   ],
+   "wing_r_finger1": [
+    -0.26,
+    -0.86,
+    0.78
+   ],
+   "wing_r_finger2": [
+    -0.36,
+    -0.66,
+    0.57
+   ],
+   "wing_r_finger3": [
+    -0.3,
+    -0.42,
+    0.46
+   ],
+   "wing_r_back": [
+    -0.08,
+    -0.09,
+    0.58
+   ]
+  },
+  "bones": [
+   [
+    "pelvis",
+    null,
+    "pelvis",
+    "spine"
+   ],
+   [
+    "spine",
+    "pelvis",
+    "spine",
+    "chest"
+   ],
+   [
+    "neck",
+    "spine",
+    "chest",
+    "neck"
+   ],
+   [
+    "neck2",
+    "neck",
+    "neck",
+    "neck2"
+   ],
+   [
+    "neck3",
+    "neck2",
+    "neck2",
+    "neck3"
+   ],
+   [
+    "neck4",
+    "neck3",
+    "neck3",
+    "neck4"
+   ],
+   [
+    "neck5",
+    "neck4",
+    "neck4",
+    "neck5"
+   ],
+   [
+    "head",
+    "neck5",
+    "neck5",
+    "head"
+   ],
+   [
+    "head_end",
+    "head",
+    "head",
+    "snout"
+   ],
+   [
+    "jaw",
+    "head",
+    "head",
+    "jaw"
+   ],
+   [
+    "r_clav",
+    "spine",
+    "chest",
+    "r_clav"
+   ],
+   [
+    "r_uarm",
+    "r_clav",
+    "r_clav",
+    "r_uarm"
+   ],
+   [
+    "r_farm",
+    "r_uarm",
+    "r_uarm",
+    "r_farm"
+   ],
+   [
+    "r_hand",
+    "r_farm",
+    "r_farm",
+    "r_hand"
+   ],
+   [
+    "r_hipb",
+    "pelvis",
+    "pelvis",
+    "r_hipb"
+   ],
+   [
+    "r_thigh",
+    "r_hipb",
+    "r_hipb",
+    "r_thigh"
+   ],
+   [
+    "r_shin",
+    "r_thigh",
+    "r_thigh",
+    "r_shin"
+   ],
+   [
+    "r_foot",
+    "r_shin",
+    "r_shin",
+    "r_foot"
+   ],
+   [
+    "tail1",
+    "pelvis",
+    "pelvis",
+    "tail1"
+   ],
+   [
+    "tail2",
+    "tail1",
+    "tail1",
+    "tail2"
+   ],
+   [
+    "tail3",
+    "tail2",
+    "tail2",
+    "tail3"
+   ],
+   [
+    "tail4",
+    "tail3",
+    "tail3",
+    "tail4"
+   ],
+   [
+    "tail5",
+    "tail4",
+    "tail4",
+    "tail5"
+   ],
+   [
+    "tail6",
+    "tail5",
+    "tail5",
+    "tail6"
+   ],
+   [
+    "tail7",
+    "tail6",
+    "tail6",
+    "tail7"
+   ],
+   [
+    "tail8",
+    "tail7",
+    "tail7",
+    "tail8"
+   ],
+   [
+    "tail9",
+    "tail8",
+    "tail8",
+    "tail9"
+   ],
+   [
+    "tail10",
+    "tail9",
+    "tail9",
+    "tail10"
+   ],
+   [
+    "tail11",
+    "tail10",
+    "tail10",
+    "tail11"
+   ],
+   [
+    "tail12",
+    "tail11",
+    "tail11",
+    "tail12"
+   ],
+   [
+    "wing_r_shoulder",
+    "spine",
+    "wing_r_root",
+    "wing_r_shoulder"
+   ],
+   [
+    "wing_r_elbow",
+    "wing_r_shoulder",
+    "wing_r_shoulder",
+    "wing_r_elbow"
+   ],
+   [
+    "wing_r_wrist",
+    "wing_r_elbow",
+    "wing_r_elbow",
+    "wing_r_wrist"
+   ],
+   [
+    "wing_r_tip",
+    "wing_r_wrist",
+    "wing_r_wrist",
+    "wing_r_tip"
+   ],
+   [
+    "wing_r_finger1",
+    "wing_r_wrist",
+    "wing_r_wrist",
+    "wing_r_finger1"
+   ],
+   [
+    "wing_r_finger2",
+    "wing_r_wrist",
+    "wing_r_wrist",
+    "wing_r_finger2"
+   ],
+   [
+    "wing_r_finger3",
+    "wing_r_wrist",
+    "wing_r_wrist",
+    "wing_r_finger3"
+   ]
+  ],
+  "_doc_bones": "[bone, parent, head joint, tail joint]; r_* bones are mirrored to l_* (y -> -y).",
+  "volumes": [
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.0,
+     0.0,
+     0.47
+    ],
+    "r": [
+     0.11,
+     0.12,
+     0.095
+    ]
+   },
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.025,
+     0.0,
+     0.565
+    ],
+    "r": [
+     0.14,
+     0.13,
+     0.115
+    ],
+    "_doc": "the belly: deep in front"
+   },
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.02,
+     0.0,
+     0.645
+    ],
+    "r": [
+     0.13,
+     0.15,
+     0.1
+    ],
+    "_doc": "the chest"
+   },
+   {
+    "t": "capsule",
+    "a": "chest",
+    "b": "neck",
+    "r": [
+     0.085,
+     0.075
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "neck",
+    "b": "neck2",
+    "r": [
+     0.075,
+     0.066
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "neck2",
+    "b": "neck3",
+    "r": [
+     0.066,
+     0.058
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "neck3",
+    "b": "neck4",
+    "r": [
+     0.058,
+     0.052
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "neck4",
+    "b": "neck5",
+    "r": [
+     0.052,
+     0.048
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "neck5",
+    "b": "head",
+    "r": [
+     0.048,
+     0.05
+    ]
+   },
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.19,
+     0.0,
+     0.94
+    ],
+    "r": [
+     0.07,
+     0.05,
+     0.052
+    ],
+    "_doc": "the skull"
+   },
+   {
+    "t": "capsule",
+    "a": [
+     0.2,
+     0.0,
+     0.93
+    ],
+    "b": [
+     0.325,
+     0.0,
+     0.905
+    ],
+    "r": [
+     0.042,
+     0.024
+    ],
+    "_doc": "the snout wedge"
+   },
+   {
+    "t": "capsule",
+    "a": [
+     0.17,
+     0.0,
+     0.895
+    ],
+    "b": "jaw",
+    "r": [
+     0.034,
+     0.018
+    ],
+    "_doc": "the lower jaw"
+   },
+   {
+    "t": "capsule",
+    "a": [
+     0.165,
+     0.035,
+     0.97
+    ],
+    "b": [
+     0.03,
+     0.055,
+     1.0
+    ],
+    "r": [
+     0.03,
+     0.004
+    ],
+    "mirror": true,
+    "_doc": "a swept-back horn"
+   },
+   {
+    "t": "capsule",
+    "a": [
+     0.2,
+     0.025,
+     0.955
+    ],
+    "b": [
+     0.12,
+     0.04,
+     0.99
+    ],
+    "r": [
+     0.009,
+     0.002
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "r_clav",
+    "b": "r_uarm",
+    "r": [
+     0.05,
+     0.036
+    ],
+    "mirror": true,
+    "blend": 0.3
+   },
+   {
+    "t": "capsule",
+    "a": "r_uarm",
+    "b": "r_farm",
+    "r": [
+     0.036,
+     0.028
+    ],
+    "mirror": true,
+    "blend": 0.15
+   },
+   {
+    "t": "capsule",
+    "a": "r_farm",
+    "b": "r_hand",
+    "r": [
+     0.028,
+     0.022
+    ],
+    "mirror": true,
+    "blend": 0.15
+   },
+   {
+    "t": "claws",
+    "at": "r_hand",
+    "dir": [
+     0.25,
+     -0.1,
+     -1.0
+    ],
+    "n": 3,
+    "len": 0.05,
+    "r": 0.008,
+    "spread": 0.02,
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "r_hipb",
+    "b": "r_thigh",
+    "r": [
+     0.09,
+     0.052
+    ],
+    "mirror": true,
+    "blend": 0.3
+   },
+   {
+    "t": "capsule",
+    "a": "r_thigh",
+    "b": "r_shin",
+    "r": [
+     0.052,
+     0.033
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "r_shin",
+    "b": "r_foot",
+    "r": [
+     0.034,
+     0.024
+    ],
+    "mirror": true
+   },
+   {
+    "t": "claws",
+    "at": "r_foot",
+    "dir": [
+     1.0,
+     0.0,
+     -0.15
+    ],
+    "n": 3,
+    "len": 0.04,
+    "r": 0.01,
+    "spread": 0.025,
+    "mirror": true
+   },
+   {
+    "t": "chain",
+    "joints": [
+     "pelvis",
+     "tail1",
+     "tail2",
+     "tail3",
+     "tail4",
+     "tail5",
+     "tail6",
+     "tail7",
+     "tail8",
+     "tail9",
+     "tail10",
+     "tail11",
+     "tail12"
+    ],
+    "r": [
+     0.1,
+     0.006
+    ]
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_root",
+    "b": "wing_r_shoulder",
+    "r": [
+     0.035,
+     0.025
+    ],
+    "mirror": true,
+    "_doc": "the wing root grows out of the shoulder blades"
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_shoulder",
+    "b": "wing_r_elbow",
+    "r": [
+     0.022,
+     0.016
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_elbow",
+    "b": "wing_r_wrist",
+    "r": [
+     0.016,
+     0.012
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_wrist",
+    "b": "wing_r_tip",
+    "r": [
+     0.012,
+     0.004
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_wrist",
+    "b": "wing_r_finger1",
+    "r": [
+     0.009,
+     0.003
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_wrist",
+    "b": "wing_r_finger2",
+    "r": [
+     0.009,
+     0.003
+    ],
+    "mirror": true
+   },
+   {
+    "t": "capsule",
+    "a": "wing_r_wrist",
+    "b": "wing_r_finger3",
+    "r": [
+     0.009,
+     0.003
+    ],
+    "mirror": true
+   },
+   {
+    "t": "membrane",
+    "outline": [
+     "wing_r_shoulder",
+     "wing_r_elbow",
+     "wing_r_wrist",
+     "wing_r_tip",
+     "wing_r_finger1",
+     "wing_r_finger2",
+     "wing_r_finger3",
+     "wing_r_back"
+    ],
+    "fan": "wing_r_wrist",
+    "thick": 0.006,
+    "scallop": 0.06,
+    "mirror": true
+   },
+   {
+    "t": "spikes",
+    "along": [
+     "neck2",
+     "neck3",
+     "neck4",
+     "neck5",
+     "chest",
+     "spine",
+     "pelvis",
+     "tail1",
+     "tail2",
+     "tail3",
+     "tail4",
+     "tail5",
+     "tail6"
+    ],
+    "len": 0.035,
+    "r": 0.01,
+    "side": [
+     -1.0,
+     0.0,
+     0.25
+    ],
+    "from_surface": true
+   },
+   {
+    "t": "cut",
+    "quad": [
+     [
+      0.205,
+      -0.07,
+      0.905
+     ],
+     [
+      0.37,
+      -0.07,
+      0.896
+     ],
+     [
+      0.37,
+      0.07,
+      0.896
+     ],
+     [
+      0.205,
+      0.07,
+      0.905
+     ]
+    ],
+    "half": 0.0035,
+    "_doc": "the MOUTH: a thin slit through the snout front (the corners behind stay joined skin)"
+   },
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.215,
+     0.032,
+     0.962
+    ],
+    "r": [
+     0.04,
+     0.026,
+     0.02
+    ],
+    "mirror": true,
+    "_doc": "the brow ridge"
+   },
+   {
+    "t": "ellipsoid",
+    "c": [
+     0.02,
+     -0.11,
+     0.665
+    ],
+    "r": [
+     0.06,
+     0.06,
+     0.06
+    ],
+    "mirror": true,
+    "_doc": "the shoulder mass"
+   },
+   {
+    "t": "capsule",
+    "a": "r_shin",
+    "b": [
+     -0.02,
+     -0.1,
+     0.03
+    ],
+    "r": [
+     0.028,
+     0.024
+    ],
+    "mirror": true,
+    "_doc": "the raised heel (digitigrade)"
+   }
+  ],
+  "anchors": {
+   "head": {
+    "joint": "head",
+    "offset": [
+     0.06,
+     0.0,
+     0.0
+    ]
+   },
+   "snout": {
+    "joint": "head",
+    "offset": [
+     0.25,
+     0.0,
+     -0.03
+    ]
+   },
+   "jaw": {
+    "joint": "jaw",
+    "offset": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "chest": {
+    "joint": "spine",
+    "offset": [
+     0.1,
+     0.0,
+     0.08
+    ]
+   },
+   "claw_r": {
+    "joint": "r_hand",
+    "offset": [
+     0.03,
+     0.0,
+     -0.06
+    ]
+   },
+   "claw_l": {
+    "joint": "l_hand",
+    "offset": [
+     0.03,
+     0.0,
+     -0.06
+    ]
+   },
+   "pelvis": {
+    "joint": "pelvis",
+    "offset": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "qa_poses": {
+   "strike": [
+    [
+     "r_uarm",
+     [
+      0,
+      1,
+      0
+     ],
+     -95
+    ],
+    [
+     "r_farm",
+     [
+      0,
+      1,
+      0
+     ],
+     -20
+    ],
+    [
+     "jaw",
+     [
+      0,
+      1,
+      0
+     ],
+     25
+    ]
+   ],
+   "carry": [
+    [
+     "l_uarm",
+     [
+      0,
+      1,
+      0
+     ],
+     -70
+    ],
+    [
+     "r_uarm",
+     [
+      0,
+      1,
+      0
+     ],
+     -70
+    ],
+    [
+     "l_farm",
+     [
+      0,
+      0,
+      1
+     ],
+     -35
+    ],
+    [
+     "r_farm",
+     [
+      0,
+      0,
+      1
+     ],
+     35
+    ]
+   ]
+  },
+  "jaw": {
+   "plane": [
+    [
+     0.205,
+     0,
+     0.905
+    ],
+    [
+     0.37,
+     0,
+     0.896
+    ]
+   ],
+   "corner_x": 0.205,
+   "band": 0.07,
+   "head_r": 0.2
+  }
+ }
+}

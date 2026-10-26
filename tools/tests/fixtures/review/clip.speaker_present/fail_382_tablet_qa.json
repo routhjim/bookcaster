@@ -1,0 +1,27 @@
+{
+ "clip": "/home/jrouth/tts_reader/tools/tests/fixtures/review/clip.speaker_present/fail_382_tablet.mp4",
+ "frames": 229,
+ "flags": [
+  "speaker missing in 7 of 8 sampled frames",
+  "speaker's mouth not found while the line plays"
+ ],
+ "cuts": [],
+ "step_median": 1.39,
+ "camera": {
+  "scale_min": 1.0,
+  "scale_max": 1.0,
+  "shift_max": 0.0,
+  "samples": 0,
+  "expected": {
+   "scale": 1.0,
+   "shift": 0.0,
+   "static": true
+  }
+ },
+ "speaker_present": 0.12,
+ "mouth": {
+  "ok": null,
+  "why": "speaker's mouth not found"
+ },
+ "pass": false
+}

@@ -1,0 +1,83 @@
+{
+ "poses": {
+  "rest": {
+   "torn_edges": 0,
+   "max_stretch": 1.0,
+   "by_bone": {},
+   "ok": true
+  },
+  "jaw_open": {
+   "torn_edges": 602,
+   "max_stretch": 1480.55,
+   "by_bone": {
+    "jaw": 264,
+    "head_end": 193,
+    "head": 99,
+    "neck4": 46
+   },
+   "ok": false
+  },
+  "wings_spread": {
+   "torn_edges": 0,
+   "max_stretch": 2.29,
+   "by_bone": {},
+   "ok": true
+  },
+  "wings_folded": {
+   "torn_edges": 10,
+   "max_stretch": 3.97,
+   "by_bone": {
+    "pelvis": 9,
+    "spine2": 1
+   },
+   "ok": false
+  },
+  "flap_up": {
+   "torn_edges": 2,
+   "max_stretch": 2.81,
+   "by_bone": {
+    "pelvis": 2
+   },
+   "ok": false
+  },
+  "flap_down": {
+   "torn_edges": 2,
+   "max_stretch": 2.64,
+   "by_bone": {
+    "pelvis": 2
+   },
+   "ok": false
+  },
+  "strike": {
+   "torn_edges": 1346,
+   "max_stretch": 984.6,
+   "by_bone": {
+    "fleg_r_knee": 265,
+    "jaw": 173,
+    "head_end": 155,
+    "spine2": 105,
+    "hleg_r_knee": 102,
+    "chest": 101,
+    "neck1": 97,
+    "fleg_r_ankle": 88
+   },
+   "ok": false
+  },
+  "carry": {
+   "torn_edges": 1074,
+   "max_stretch": 153.13,
+   "by_bone": {
+    "fleg_r_knee": 221,
+    "chest": 134,
+    "spine3": 132,
+    "spine2": 117,
+    "hleg_r_knee": 102,
+    "fleg_l_knee": 92,
+    "neck1": 85,
+    "fleg_r_ankle": 78
+   },
+   "ok": false
+  }
+ },
+ "ok": false
+}

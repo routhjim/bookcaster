@@ -1,0 +1,11 @@
+{
+ "check": "asset.prop_rest",
+ "media": "pass_hammer.json",
+ "verdict": "pass",
+ "ctx": {
+  "file": "/home/jrouth/tts_reader/tools/tests/fixtures/review/asset.prop_rest/pass_hammer.model.json",
+  "field": "rest_check.ok",
+  "rule": "truthy"
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/stage/props/hammer/model.json"
+}

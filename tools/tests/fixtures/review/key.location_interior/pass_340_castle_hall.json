@@ -1,0 +1,9 @@
+{
+ "check": "key.location_interior",
+ "media": "pass_340_castle_hall.png",
+ "verdict": "pass",
+ "ctx": {
+  "kind": "interior"
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000340/key.png"
+}

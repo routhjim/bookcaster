@@ -1,0 +1,11 @@
+{
+ "check": "key.story_prop",
+ "media": "fail_727_no_lantern.png",
+ "verdict": "fail",
+ "ctx": {
+  "props": [
+   "a lantern"
+  ]
+ },
+ "source": "/home/jrouth/audiobooks/knight_forged/work/video/01_chapter_1_remake3d/preview_talk/stage/talk-000727/key.png"
+}

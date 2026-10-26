@@ -1,0 +1,16 @@
+{
+ "fit": 0.0849,
+ "scale": 0.5006592160883231,
+ "joints": [],
+ "extent_m": [
+  0.914,
+  0.548,
+  0.61
+ ],
+ "rest_check": {
+  "rest": "flat_base",
+  "longest_horizontal": true,
+  "base_ratio": 0.241,
+  "ok": false
+ }
+}

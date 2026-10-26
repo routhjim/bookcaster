@@ -1,0 +1,7 @@
+{
+ "check": "clip.no_placeholder",
+ "media": "fail_1568_anvil_box.mp4",
+ "verdict": "fail",
+ "ctx": {"only": ["clip.no_placeholder"]},
+ "source": "knight ch1 10-21 overnight r_action-001568 (thin text staging)"
+}

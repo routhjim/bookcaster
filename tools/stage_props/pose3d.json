@@ -1,0 +1,86 @@
+{
+ "sword_ready": {
+  "grip": "both"
+ },
+ "sword_raised_overhead": {
+  "grip": "both",
+  "hold": {
+   "right": 285
+  }
+ },
+ "kneel_with_sword": {
+  "grip": "both",
+  "hold": {
+   "right": 95
+  }
+ },
+ "sword_block": {
+  "grip": "both",
+  "hold": {
+   "right": 272
+  },
+  "second": "flat"
+ },
+ "sword_parry_high": {
+  "hold": {
+   "right": [
+    0.25,
+    1.0,
+    0.12
+   ]
+  },
+  "second": "flat"
+ },
+ "sword_thrust_lunge": {
+  "hold": {
+   "right": 2
+  }
+ },
+ "sword_slash": {
+  "hold": {
+   "right": 70
+  }
+ },
+ "sword_draw": {
+  "hold": {
+   "right": 20
+  }
+ },
+ "hammer_raised": {
+  "hold": {
+   "right": 260
+  }
+ },
+ "hammer_strike": {
+  "hold": {
+   "right": 15
+  }
+ },
+ "tongs_over_anvil": {
+  "hold": {
+   "left": 10
+  }
+ },
+ "quenching": {
+  "grip": "both",
+  "hold": {
+   "right": 90
+  },
+  "second": "stack"
+ },
+ "helm_put_on": {
+  "grip": "head"
+ },
+ "helm_remove": {
+  "grip": "between"
+ },
+ "lying_back": {
+  "mirror": true
+ },
+ "embrace_a": {
+  "hug": true
+ },
+ "embrace_b": {
+  "hug": true
+ }
+}
