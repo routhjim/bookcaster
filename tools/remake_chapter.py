@@ -175,18 +175,19 @@ def probe_dur(p: Path) -> float:
                                 capture_output=True, text=True).stdout.strip() or 0)
 
 
-def talk_chunks(total: int, env, mx: int = TALK_MAX) -> list[tuple[int, int]]:
-    """chunk k covers [s, s+n), n = 8m+1 <= mx; the overlap window lands on the quietest frames."""
+def talk_chunks(total: int, env, mx: int = TALK_MAX, overlap: int = TALK_OVERLAP) -> list[tuple[int, int]]:
+    """chunk k covers [s, s+n), n = 8m+1 <= mx; the overlap window lands on the quietest frames. overlap 1 = each chunk
+    starts ON the previous one's last frame (the shots flow's chained pieces, 10-26)."""
     chunks, s = [], 0
     while True:
         rest = 8 * math.ceil((total - s - 1) / 8) + 1
         if rest <= mx:
             chunks.append((s, rest))
             return chunks
-        cands = [n for n in range(mx - 24, mx + 1) if (n - 1) % 8 == 0 and n > TALK_OVERLAP + 16]
-        n = min(cands, key=lambda n: float(env[s + n - TALK_OVERLAP:s + n].mean()))
+        cands = [n for n in range(mx - 24, mx + 1) if (n - 1) % 8 == 0 and n > overlap + 16]
+        n = min(cands, key=lambda n: float(env[s + n - max(overlap, 3):s + n].mean()))
         chunks.append((s, n))
-        s = s + n - TALK_OVERLAP
+        s = s + n - overlap
 
 
 # --------------------------------------------------------------------------------------------- context
