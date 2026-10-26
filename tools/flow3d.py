@@ -1390,11 +1390,9 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
         return None
     talk = {**P, "entries": [e for e in ready if e["route"] == "talk"]}
     act = {**P, "entries": [e for e in ready if e["route"] == "stage"]}
-    os.environ["REMAKE_LTX_PP"] = "1"
     os.environ["REMAKE_LTX_SPLIT_TALK"] = str(_pp_split(cx.OUT, "a2vid", 25))
     os.environ["REMAKE_LTX_SPLIT_ACT"] = str(_pp_split(cx.OUT, "ic", 17))
-    os.environ.setdefault("REMAKE_LTX_PP_ARGS", "--lanes 2 --pp-shared-a")   # user 10-21: lanes overlap on card A (pp_bench.sh pending)
-    R.PP = True
+    R.PP = True                             # lanes/stagger/pool/decode-b = R.LTX_PP_ARGS (10-26: one default set)
     # the action moments' motion + renders (CPU) run while the talk moments draw and render
     bg_err = []
 

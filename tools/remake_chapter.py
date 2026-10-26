@@ -73,8 +73,17 @@ END_GUIDE = 0.6              # the END keyframe of an authored camera move, as a
 ACT_TAIL = 0.0               # build() holds the last frame if a clip is short; 121 frames cover a 5.0 s slot
 LTX_DIR = TTS / "eval" / "ltx"
 RUNNER_DIR = HERE / "ltx_runner"
-# REMAKE_LTX_PP=1: gen through ltx_runner/ltx_split_next.py --pp (process per card), once the LTX agent signs it off
-PP = bool(os.environ.get("REMAKE_LTX_PP"))     # the driver's own ltx_split.py (+ the all-seam-retries-failed fix, 10-20)
+# The measured-best two-XTX LTX setup, the DEFAULT for every gen whatever flow calls ltx_step (user 10-26: "all future
+# runs use the most optimal ltx by default"): ltx_split_next.py --pp (process per card), two lanes sharing card A,
+# lanes 70 s out of step (~12%/frame, 10-24), pooled pinned buffers between the cards, fa_amd attention (-10% e2e) +
+# hipBLASLt (-12%), VAE decode on card 65 for the distilled (quiet) route only (A/B 10-24: frames identical, 58.3 ->
+# 52.5 s; on talk card 65 is already the slower card), and the per-route layer split pp_fit fits from this chapter's
+# timing, else the book's newest chapter (flow3d._pp_split). REMAKE_LTX_PP=0 = the old one-process ltx_split.py;
+# REMAKE_LTX_PP_ARGS replaces LTX_PP_ARGS.
+PP = os.environ.get("REMAKE_LTX_PP", "1") != "0"
+LTX_PP_ARGS = "--lanes 2 --pp-shared-a --stagger 70 --pp-pool"
+LTX_GEN_ARGS = ("--fa-amd", "--blaslt")
+SPLIT_DEFAULT = {"a2vid": 25, "ti2v": 24, "ic": 17, "distilled": 17}
 LTX_PY = HOME / "tts-ab" / ".venv-ltx" / "bin" / "python"
 POSE_PY = HOME / "tts-ab" / ".venv-pose" / "bin" / "python"
 QWEN_PY = HOME / "tts-ab" / ".venv-qwenimage" / "bin" / "python"
@@ -2679,10 +2688,35 @@ def kernel_check(out: Path, since: str = "-10min") -> None:
         raise SystemExit("KERNEL LOG HIT: stopping (see KERNEL_HIT.txt)")
 
 
-def _split_arg(args: list) -> list:
-    """The per-route pipelining split (flow3d sets them from pp_fit): A2Vid talk vs the IC/distilled action route."""
+def _route(args: list) -> str:
+    """The runner route a gen call takes (the names pp_fit / pp_timing.jsonl use)."""
+    return "a2vid" if "--a2vid" in args else "ti2v" if "--ti2v" in args else "ic" if "--ic-lora" in args else "distilled"
+
+
+def _split_arg(cx: Ctx, args: list) -> list:
+    """The per-route pipelining split: a flow's REMAKE_LTX_SPLIT_TALK/_ACT if set, else pp_fit on this chapter's own
+    timing (else the book's newest chapter, else SPLIT_DEFAULT)."""
+    if "--split" in args or "--split" in os.environ.get("REMAKE_LTX_PP_ARGS", ""):
+        return []
     v = os.environ.get("REMAKE_LTX_SPLIT_TALK" if "--a2vid" in args else "REMAKE_LTX_SPLIT_ACT")
-    return ["--split", v] if v and "--split" not in os.environ.get("REMAKE_LTX_PP_ARGS", "") else []
+    if not v:
+        import flow3d as F
+        r = _route(args)
+        v = F._pp_split(cx.OUT, r, SPLIT_DEFAULT[r])
+    return ["--split", str(v)]
+
+
+def _gen_args(cx: Ctx, args: list) -> list:
+    """A gen call's args with the default fast set added (see PP above); encode calls pass through unchanged."""
+    if not (args and args[0] == "gen"):
+        return list(args)
+    out = list(args) + [a for a in LTX_GEN_ARGS if a not in args]
+    if not PP:
+        return out
+    pp = os.environ.get("REMAKE_LTX_PP_ARGS", LTX_PP_ARGS).split()
+    if _route(args) == "distilled" and "--decode-b" not in out:
+        pp.append("--decode-b")
+    return out + ["--pp", *[a for a in pp if a not in out]] + _split_arg(cx, out)
 
 
 def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
@@ -2700,9 +2734,10 @@ def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
         ["flock", "/tmp/gpu-05.lock", "flock", "/tmp/gpu-65.lock"]      # no gap runner: plain blocking locks
     with open(lf, "w") as fh:
         runner = L / ("ltx_split_next.py" if PP and args and args[0] == "gen" else "ltx_split.py")
+        if not runner.exists():
+            shutil.copy(RUNNER_DIR / runner.name, runner)
         r = subprocess.run([*gate, "timeout", str(HOLD_TIMEOUT), str(LTX_PY),
-                            str(runner), *args, *((["--pp"] + os.environ.get("REMAKE_LTX_PP_ARGS", "").split() + _split_arg(args)) if PP and args and args[0] == "gen" else []),
-                            "--emb", str(L / "emb")],
+                            str(runner), *_gen_args(cx, args), "--emb", str(L / "emb")],
                            stdout=fh, stderr=subprocess.STDOUT, env=env, cwd=str(L))
     log_entry(cx.OUT, {"phase": "ltx", "step": name, "rc": r.returncode, "sec": round(time.time() - t), "log": str(lf)})
     kernel_check(cx.OUT, f"-{HOLD_TIMEOUT // 60 + 6}min")
