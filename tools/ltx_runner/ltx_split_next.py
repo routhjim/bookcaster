@@ -830,6 +830,24 @@ def seam_ok(prev_mp4, chain_frame, frames, overlap, factor=3.0):
     return float(d.max()) <= factor * max(med, 0.5), f"seam max step {d.max():.2f} vs prev median {med:.2f}"
 
 
+def save_last_png(frames: torch.Tensor, path) -> None:
+    """The clip's last frame as a lossless PNG (the next chained piece's first frame, no mp4 round trip)."""
+    import numpy as np
+    from PIL import Image
+    f = frames[-1:]
+    if f.dtype != torch.uint8:
+        f = f.float()
+        if f.min() < -0.01:
+            f = (f + 1) / 2
+        f = (f.clamp(0, 1) * 255).round().to(torch.uint8)
+    a = f[0].cpu().numpy()
+    if a.shape[-1] != 3:
+        a = np.ascontiguousarray(a.transpose(1, 2, 0))
+    tmp = str(path) + ".part.png"
+    Image.fromarray(a).save(tmp)
+    __import__("os").replace(tmp, path)
+
+
 def save_mp4(frames: torch.Tensor, path: str, fps: float, crf: int = 20):
     import av
     import numpy as np
@@ -1183,9 +1201,14 @@ def cmd_gen(args, jobs):
         if j.get("chain_from"):  # long-line chunk: frame 0 = a frame of the previous chunk's output
             import av as _av
             prev = out_dir / f"{j['chain_from']}.mp4"
-            fr = [f for i, f in enumerate(_av.open(str(prev)).decode(video=0)) if i == j["chain_frame"]][0]
             png = out_dir / f"{j['name']}_first.png"
-            fr.to_image().save(png)
+            last = out_dir / f"{j['chain_from']}_last.png"   # 10-26: the previous piece's last frame, lossless
+            if j.get("overlap", 12) <= 1 and last.exists():
+                import shutil as _sh
+                _sh.copy(last, png)
+            else:
+                fr = [f for i, f in enumerate(_av.open(str(prev)).decode(video=0)) if i == j["chain_frame"]][0]
+                fr.to_image().save(png)
             j = {**j, "images": [{"path": str(png), "frame": 0, "strength": j.get("chain_strength", 1.0)}] + j.get("images", [])}
         if j.get("lock_end") and j.get("images"):  # camera lock: weak copy of frame 0 at the last frame
             j = {**j, "images": j["images"] + [{"path": j["images"][0]["path"], "frame": j["frames"] - 1,
@@ -1226,6 +1249,8 @@ def cmd_gen(args, jobs):
         t_gen = time.time() - t
         log(f"[{dev}] {j['name']}: video {tuple(frames.shape)} gen {t_gen:.1f}s ;", vram())
         part = str(mp4) + ".part.mp4"      # atomic: a clip killed mid-write never counts as done (10-21 dry run)
+        if j.get("chunk"):                 # a talk piece: its last frame, lossless, starts the next piece (10-26)
+            save_last_png(frames, out_dir / f"{j['name']}_last.png")
         save_mp4(frames, part, j.get("fps", 24))
         if j.get("audio"):
             import subprocess

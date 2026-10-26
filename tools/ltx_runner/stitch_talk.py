@@ -21,6 +21,10 @@ for line, cs in lines.items():
             frames = f
             continue
         ov = frames.shape[0] - st
+        if ov <= 1:     # 10-26: the piece starts ON the previous one's last frame: hand over there, no blend
+            seams.append(float(np.abs(frames[st:] - f[:ov]).mean()) if ov else 0.0)
+            frames = np.concatenate([frames[:st], f], 0)
+            continue
         w = np.linspace(0, 1, ov + 2)[1:-1][:, None, None, None]
         blend = (1 - w) * frames[st:] + w * f[:ov]
         seam_raw = float(np.abs(frames[st:] - f[:ov]).mean())

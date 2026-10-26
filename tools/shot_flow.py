@@ -42,6 +42,11 @@ RETAKE = 1042
 PP_POOL = True                      # activations between the cards through reused pinned buffers (runner --pp-pool)
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
 TALK_PIECE = 97                     # talk lines in 3-4 s pieces (73-97 frames), chained (10-24 user; was <= 5 s)
+# 10-26 user ("Peter's sermon just gets further and further out ... the last frame from one 3s clip should be the
+# starting frame for the next"): each piece starts ON the previous piece's last frame (lossless, from the render, not
+# the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
+# every seam and an mp4 round trip per piece (sharpness 1.4-5x and drift from the key growing piece after piece)
+TALK_CHAIN_OVERLAP = 1
 KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
 GUIDER = json.loads(os.environ.get("SHOTS_GUIDER", "{\"modality_scale\": 1.0}"))   # the audio-video pass off (we keep our own sound): 105 -> 64 s a 3 s clip with 2 in flight, same picture by eye (10-23)
@@ -1159,7 +1164,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if s["kind"] == "talk":
             e = dict(byid[mid])
             n_all = max(st + nn for st, nn in e["chunks"])
-            e["chunks"] = R.talk_chunks(n_all, R.audio_env(Path(e["wav"]), n_all + TALK_PIECE), TALK_PIECE)
+            e["chunks"] = R.talk_chunks(n_all, R.audio_env(Path(e["wav"]), n_all + TALK_PIECE), TALK_PIECE,
+                                        TALK_CHAIN_OVERLAP)
             pad = L / "audio" / f"{mid}_pad.wav"
             n_all = max(st + nn for st, nn in e["chunks"])
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", e["wav"], "-ac", "2", "-ar", "48000", "-af",
