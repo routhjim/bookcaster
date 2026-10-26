@@ -483,8 +483,7 @@ def _fight_prompt(book: Path, stem: str, mid: str, lay: dict) -> str:
     place = re.sub(r"\s*\((inside|outside)\)$", "", _place_of(book, stem, mid) or "")
     who_ = f"{one(L, 'left', Rt)}. {one(Rt, 'right', L)}. Both bodies whole and clearly apart." if Rt else f"{one(L, '', None)}."
     return (f"{str(lay.get('framing') or 'wide').capitalize()} shot{' in ' + place if place else ''}. {lay['layout']} "
-            f"{who_} Set in early medieval "
-            f"Northern Europe, around 1000 AD: every object, tool and garment hand-made, nothing modern. {style} "
+            f"{who_} {period_line(book)} {style} "
             f"No text.").replace("..", ".").replace("  ", " ")
 
 
@@ -701,6 +700,14 @@ def _lora(book: Path, who: str):
     return b.get("lora"), b.get("trigger")
 
 
+def period_line(book: Path, what: str = "every object, tool and garment") -> str:
+    """The drawing prompts' period sentence from <book>/period.txt (10-26: "early medieval Northern Europe, around
+    1000 AD" was hardcoded from the knight book, so Acts (Roman Judea, around 30 AD) was drawn as medieval)."""
+    f = Path(book) / "period.txt"
+    per = f.read_text().strip().rstrip(".") if f.exists() else ""
+    return f"Set in {per}: {what} as it was then, nothing from a later time." if per else ""
+
+
 def _place_of(book: Path, stem: str, mid: str) -> str:
     """The moment's place: its own, else the scene it sits in (a talk moment has none of its own)."""
     vd, _, _ = paths(book, stem)
@@ -745,8 +752,7 @@ def _prompt(book: Path, stem: str, mid: str, who: list, setting_line: bool = Fal
                f"single painted scene, never a character sheet, never a plain or white background.") if place else \
         " A single painted scene filling the picture to its edges, never a plain or white background."
     # (only on the retry of a moment whose seeds were all sheets: the first draw keeps its cached keys)
-    return (f"{base}{setting} {people} Set in early medieval Northern Europe, around 1000 AD: every object, tool and garment "
-            f"hand-made, nothing modern. {style} No text.").replace("  ", " ")
+    return (f"{base}{setting} {people} {period_line(book)} {style} No text.").replace("  ", " ")
 
 
 POSTURE = re.compile(r"\b(stand(s|ing)?|sit(s|ting)?|seated|kneel\w*|lying|lies|stance|posture|stooped|upright|"
@@ -782,7 +788,7 @@ def _dress(book: Path, stem: str, mid: str, who: list) -> dict:
     starts = video.paragraph_times(video.paragraphs((book / "chapters" / f"{stem}.txt").read_text()),
                                    json.loads(tl.read_text()))
     para = video.para_at(starts, float(e["t"]))
-    return {w: row["dress"] for w in who if (row := video.outfit(plan, w, para))}
+    return {w: d for w in who if (row := video.outfit(plan, w, para)) and (d := video.worn_only(row["dress"]))}
 
 
 def _bg_init(md: Path, mid: str, hero: Path, strength_bg: float) -> dict | None:
@@ -1618,7 +1624,7 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     import world as WO
     pic = WO.set_picture_prompt(f"Wide shot of {side} {where}: {desc}", style, "interior" if side.startswith("the inside")
                                 else "exterior")
-    prompt = (f"{pic} Set in early medieval Northern Europe, around 1000 AD: every object hand-made, nothing modern. "
+    prompt = (f"{pic} {period_line(book, 'every building and object')} "
               f"No people. A full-frame picture with no border, no page and no text.")
     jp = hd / f"job_{out.stem}.json"
     try:

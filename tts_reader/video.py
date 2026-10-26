@@ -917,7 +917,9 @@ usual look, then the chapter in numbered paragraphs.
 
 List every LASTING change to how a person looks, in story order: clothes or armor put on or taken off,
 something worn given away or picked up, and visible changes to the body or clothes (bound wounds, torn and
-ash-stained clothes, a beard shaved, a lame man healed and standing). Only what the text states or plainly
+ash-stained clothes, a beard shaved).
+POSTURE AND MOVEMENT ARE NOT CLOTHES: sitting, standing, lying, kneeling, walking or leaping, being healed or able to
+walk, and where someone is are never a wardrobe entry and never part of a "dress" (the shots show them). Only what the text states or plainly
 implies; a change that ends (armor taken off again) is another entry.
 MAKING or buying something is NOT wearing it. Armor a smith forges is on the anvil and in his hands while he makes
 it; it is worn from the first paragraph where the text has him put it on, wear it, or set out in it (he forges his
@@ -940,7 +942,11 @@ Reply with ONLY JSON: {{"<name>": [{{"from": <n>, "id": "<look>", "dress": "<eve
 
 
 NOT_WORN = re.compile(r"\b(fire|flames?|tongues|glow\w*|halo|aura|hover\w*|resting on|sparks?|no longer|"
-                      r"vanish\w*|ascend\w*)\b", re.I)
+                      r"vanish\w*|ascend\w*|"
+                      # posture / movement / healing (10-26 Acts 3: the lame man's "standing upright with legs bearing
+                      # weight" as his outfit from the begging paragraph on drew him standing before he was healed)
+                      r"stand\w*|sit|sits|sitting|seated|lying|lies|kneel\w*|crouch\w*|walk\w*|leap\w*|jump\w*|"
+                      r"upright|bearing weight|posture|heal\w*|lame|crippled)\b", re.I)
 
 
 def worn_only(dress: str) -> str:
