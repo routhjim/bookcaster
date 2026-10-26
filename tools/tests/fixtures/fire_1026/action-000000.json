@@ -1,0 +1,35 @@
+{
+ "k": "2218e030",
+ "shots": [
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Disciple",
+    "Early Believer"
+   ],
+   "framing": "wide",
+   "picture": "Peter sits on the left facing right, Disciple sits in the center facing forward, and Early Believer sits on the right facing left, all seated on reed mats with heads tilted back and eyes fixed upward.",
+   "action": "Small flame-like shapes of light descend from the high arched window and rest steadily above the heads of the three seated figures.",
+   "kind": "quiet",
+   "crowd": false,
+   "id": "action-000000_s0",
+   "place": "The Upper Room"
+  },
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Disciple"
+   ],
+   "framing": "medium",
+   "picture": "Peter sits on the left facing right, and Disciple sits on the right facing left, both with heads tilted back and eyes fixed upward.",
+   "action": "The mouths of the man in the grey tunic and the man in the ochre mantle open and close rhythmically as they speak.",
+   "kind": "quiet",
+   "crowd": false,
+   "id": "action-000000_s1",
+   "place": "The Upper Room"
+  }
+ ],
+ "checked": true
+}

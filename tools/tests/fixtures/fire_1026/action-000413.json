@@ -1,0 +1,33 @@
+{
+ "k": "3195766c",
+ "shots": [
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter"
+   ],
+   "framing": "close",
+   "picture": "Peter's face fills the frame, facing forward, mouth closed, eyes wide, with small orange flames resting on his short curly grey-brown hair.",
+   "action": "Peter's mouth opens wide and closes repeatedly as he speaks, his jaw moving up and down, while the small orange flames on his hair flicker and dance.",
+   "kind": "quiet",
+   "crowd": false,
+   "id": "action-000413_s0",
+   "place": "Jerusalem Street"
+  },
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Jerusalem Crowd Member"
+   ],
+   "framing": "medium",
+   "picture": "Peter stands on the left facing right, mouth open, with small orange flames on his hair; a Jerusalem Crowd Member stands on the right facing left, listening.",
+   "action": "Peter continues to speak, his mouth opening and closing rhythmically, while the small orange flames on his hair flicker gently.",
+   "kind": "quiet",
+   "crowd": true,
+   "id": "action-000413_s1",
+   "place": "Jerusalem Street"
+  }
+ ],
+ "checked": true
+}
