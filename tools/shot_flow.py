@@ -103,9 +103,13 @@ Rules:
   written as visible steps ("the blade's edge glows faint blue, brighter with each blow"). Say what the hands hold.
   Call each one by a plain description (a young man in a leather apron, a huge black dragon), never by name. No magic
   words (magic, enchanted, spell) and no camera directions. At most 50 words.
+- "pose": each person's body position in the OPENING picture, one word each: standing, sitting, lying, kneeling or
+  crouching; "pose_end": the same at the shot's END. A pose carries over from the end of the shot before and changes
+  only in a shot whose action changes it (he is pulled to his feet: "pose" sitting, "pose_end" standing). Someone the
+  narration says cannot stand or walk stays sitting or lying in every shot until the narration changes that.
 - "kind": "action" when a body or object moves with force (a strike, a fall, a lunge, fire, a hammer blow), else
   "quiet" (breathing, looking, a few steps).
-{fix}Reply with JSON only: {{"shots": [{{"dur": 3.0, "who": ["..."], "framing": "...", "picture": "...", "action": "...", "kind": "...", "crowd": false}}]}}"""
+{fix}Reply with JSON only: {{"shots": [{{"dur": 3.0, "who": ["..."], "framing": "...", "picture": "...", "action": "...", "pose": {{"<name>": "sitting"}}, "pose_end": {{"<name>": "sitting"}}, "kind": "...", "crowd": false}}]}}"""
 
 TALK_PICTURE = ("{who}, seen from the chest up and filling much of the picture, turned three-quarters toward someone just "
                 "beside the viewer, mid-word")
@@ -131,6 +135,78 @@ TONGUE = re.compile(r"\btongues?\b", re.I)
 PASSING = {"fire": re.compile(r"\b(fire|flames?|flame-like|blaz\w*|burning|embers?)\b", re.I),
            "smoke": re.compile(r"\bsmok\w*\b", re.I), "wind": re.compile(r"\b(wind|gusts?|gale)\b", re.I),
            "lightning": re.compile(r"\blightning\b", re.I)}
+# body positions, carried shot to shot (10-26 Acts 3: the lame man was drawn up, down and up again before he was
+# healed; the keys and clips are told each person's held pose and the key judge checks the not-standing ones)
+POSE_CAT = (("lie", re.compile(r"\b(ly\w*|lie\w*|lain|prone|sprawl\w*|flat on)\b", re.I)),
+            ("kneel", re.compile(r"\bkneel\w*|\bknelt\b", re.I)),
+            ("crouch", re.compile(r"\b(crouch\w*|squat\w*|hunch\w*)\b", re.I)),
+            ("sit", re.compile(r"\b(sit\w*|sat|seated)\b", re.I)),
+            ("stand", re.compile(r"\b(stand\w*|stood|upright|walk\w*|on (his|her|their) feet)\b", re.I)))
+POSE_WORDS = {"lie": "lying on the ground", "kneel": "kneeling", "crouch": "crouching low",
+              "sit": "sitting on the ground", "stand": "standing"}
+
+
+def no_pose(look: str) -> str:
+    """A look without its posture clauses (10-26: the lame man's look ends "sitting on the ground with legs extended",
+    still said after he was healed); the shot's held pose is the only posture a picture or clip is told."""
+    parts = [x for x in re.split(r",\s*", str(look or "")) if x.strip()]
+    return ", ".join(x for x in parts if not (pose_cat(x) and not re.search(r"\bwearing\b", x)))
+
+
+def video_dress(cx, who: str, t: float) -> str:
+    """The look in force at t (the wardrobe's dress if any, clothes only), for the key judge's outfit question."""
+    from tts_reader import video
+    d = cx.dress(who, t) if hasattr(cx, "dress") else ""
+    return f"wearing {video.worn_only(d)}" if d and video.worn_only(d) else ""
+
+
+def clothes_of(look: str) -> str:
+    """The clothing words of a look: what follows "wearing", posture left out."""
+    m = re.search(r"\bwearing\b\s+(.*)", no_pose(look))
+    return m.group(1).strip().rstrip(".") if m else ""
+
+
+def pose_cat(text) -> str:
+    """'sit' / 'stand' / 'lie' / 'kneel' / 'crouch' for a pose word or phrase, '' when it names none."""
+    return next((c for c, rx in POSE_CAT if rx.search(str(text or ""))), "")
+
+
+def _pose_hold(cx, s: dict) -> str:
+    """' The man in a ragged brown tunic stays sitting on the ground throughout.' for each person whose held pose is not
+    standing and does not change in this shot (the video model's words: a plain description, never a name)."""
+    out = []
+    for w, c in (s.get("pose_held") or {}).items():
+        if c == "stand" or (s.get("pose_after") or {}).get(w, c) != c:
+            continue
+        lk = cx.look(w, 0) or ""
+        first = re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk.strip(), maxsplit=1)[0]).strip().rstrip(".")
+        if first:
+            out.append(f" {first[0].upper() + first[1:]} stays {POSE_WORDS[c]} throughout.")
+    return "".join(out)
+
+
+def carry_poses(es: list, out: dict) -> None:
+    """Each shot's "held" pose per person: the pose the shot before ended with (a person's first shot: the director's
+    opening pose); it changes only where the director has a shot's own action change it (pose != pose_end). A
+    director's opening pose that contradicts the carried one (up / down / up) is overruled."""
+    cur = {}
+    for e in es:
+        for s in out.get(e["id"]) or []:
+            if s.get("kind") == "talk":
+                continue
+            p0 = {w: pose_cat(v) for w, v in (s.get("pose") or {}).items()}
+            p1 = {w: pose_cat(v) for w, v in (s.get("pose_end") or {}).items()}
+            held = {}
+            for w in s.get("who") or []:
+                c0 = cur.get(w) or p0.get(w) or ""
+                if not c0:
+                    continue
+                held[w] = c0
+                cur[w] = p1[w] if (p0.get(w) and p1.get(w) and p1[w] != p0[w]) else c0
+            s["pose_held"] = held
+            s["pose_after"] = {w: cur[w] for w in held}
+
+
 # words the image model draws as something else (10-23: "bellows" = a bell, twice)
 GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, joined by pleated leather sides, a short "
                           "iron nozzle pointing into the fire)"}
@@ -281,6 +357,9 @@ def _faults(a: dict, cast: list, sec: float) -> list:
                                               act)]
         if named:
             out.append(f"shot {i} names {', '.join(named)} in the action (use a plain description)")
+        if s.get("who") and not all(pose_cat((s.get("pose") or {}).get(w)) for w in s["who"]):
+            out.append(f"shot {i}: give \"pose\" (and \"pose_end\") for each person: standing, sitting, lying, "
+                       f"kneeling or crouching")
         if TONGUE.search(f"{s.get('picture', '')} {act}"):
             out.append(f"shot {i} says 'tongue': draw what is seen (small flames above heads, people talking), never a tongue")
         if SHOT_MAGIC.search(act):
@@ -432,12 +511,13 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     out[mid] = shots
         finally:
             subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+    carry_poses(es, out)
     return out
 
 
 PLACE_ASK = """Describe the place "{where}" as a painter would see it {side}, empty: no people and no animals. One sentence
 of under 35 words: the ground, the buildings or the landscape, what stands there, the light. Early medieval Northern
-Europe, around 1000 AD. Use what this passage says and things that belong in such a place. Only the place itself:
+{period}. Use what this passage says and things that belong in such a place. Only the place itself:
 no swords, weapons or other things the story's people make, carry or fight with, and no light that is not the sky's
 or a fire's.
 
@@ -671,7 +751,8 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
                    {"interior": "inside", "exterior": "outside"}.get(kind, "outside"))
             text = " ".join(x["text"] for x in tl for mid in sorted(mids, key=t_of.get)
                             if t_of[mid] - 0.5 <= x["t"] < t_of[mid] + span[mid] - 0.5)[:1500]
-            reply = (_chat(BC.LLM_URL, BC.LLM_MODEL, PLACE_ASK.format(where=base, side=f"from {sd_}", text=text),
+            reply = (_chat(BC.LLM_URL, BC.LLM_MODEL, PLACE_ASK.format(where=base, side=f"from {sd_}", text=text,
+                                                                        period=MF.period_line(book, "everything there")),
                            max_tokens=300) or "").strip().strip('"')
             reply = re.sub(r"(?s)<think>.*?</think>", "", reply).strip().splitlines()[0:1]
             if reply and reply[0].strip():
@@ -735,7 +816,7 @@ def _key_style(style: str) -> str:
 def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     vd, _, _ = MF.paths(book, stem)
     plan = json.loads((vd / "plan.json").read_text())
-    looks = {w: MF._appearance(d) for w, d in ((plan.get("look") or {}).get("characters") or {}).items()}
+    looks = {w: no_pose(MF._appearance(d)) for w, d in ((plan.get("look") or {}).get("characters") or {}).items()}
     style_p = book / "art_style.txt"
     style = _key_style(style_p.read_text().strip()) if style_p.exists() else ""
     dress = MF._dress(book, stem, mid, s["who"])
@@ -750,7 +831,8 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         if w == s.get("ots"):           # over the shoulder: the back of the head, out of focus
             people.append(f"{w}, seen from behind{side}: {re.split(r',', lk)[0]}")
             continue
-        people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}"
+        pz = POSE_WORDS.get((s.get("pose_held") or {}).get(w, ""), "")
+        people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}{', ' + pz if pz else ''}"
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
     pic = figurative(s["picture"])
@@ -763,8 +845,8 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     cont = crowd + (f" The room: {room.rstrip('.')}." if room else "") + \
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
     return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + place if place else ''}. {pic}. "
-            f"{'. '.join(people)}.{cont}{SETTING.format(place=place) if place else ''} Set in early medieval Northern Europe, "
-            f"around 1000 AD: every object, tool and garment hand-made, nothing modern. {style} No text."
+            f"{'. '.join(people)}.{cont}{SETTING.format(place=place) if place else ''} "
+            f"{MF.period_line(book)} {style} No text."
             ).replace("..", ".").replace("  ", " ")
 
 
@@ -860,6 +942,13 @@ def _key_questions(cx, s: dict) -> tuple:
         first = re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk.strip(), maxsplit=1)[0]).strip().rstrip(".")
         if first:
             q[f"who{i}"] = f"Answer yes or no: is there {first} in this picture?"
+        m_ = re.search(r"-(\d{4,})", s.get("id") or "")     # the shot's time (ids carry it in tenths of a second)
+        cl = clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0) or lk)
+        if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
+            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {' '.join(cl.split()[:14])}?"
+        pz = (s.get("pose_held") or {}).get(w, "")
+        if first and pz in ("sit", "lie", "kneel", "crouch"):
+            q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
         if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
@@ -1078,7 +1167,7 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     import characters as CH
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
-                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs")))
+                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose")))
                         and not (need and c and int(c.group(0)) != need))
 
 
@@ -1188,7 +1277,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = figurative(s["action"]) + STILL_CROWD * bool(s.get("crowd"))
+            act = figurative(s["action"]) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -1197,7 +1286,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img})
         else:
-            p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + STILL_CROWD * bool(s.get("crowd"))
+            p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + _pose_hold(cx, s) + \
+                STILL_CROWD * bool(s.get("crowd"))
             emb = f"q_{s['id']}_{MF._h(p_)}"
             enc_dist.append({"name": emb, "prompt": p_})
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):

@@ -21,9 +21,11 @@ def check(ok, what, got=""):
 cast = ["Edric", "Vorgrath", "The Knight"]
 good = {"shots": [
     {"dur": 3, "who": ["Edric"], "framing": "medium", "picture": "x", "kind": "action",
+     "pose": {"Edric": "standing"}, "pose_end": {"Edric": "standing"},
      "action": "The young man brings the hammer down; sparks fly from the hammer striking the blade. The blade's edge "
                "takes on a faint blue sheen."},
     {"dur": 2, "who": ["Vorgrath"], "framing": "wide", "picture": "y", "kind": "action",
+     "pose": {"Vorgrath": "crouching"}, "pose_end": {"Vorgrath": "crouching"},
      "action": "The huge black dragon breathes a stream of fire from its mouth."}]}
 check(SF._faults(good, cast, 5.0) == [], "director: sourced effects, plain words, lengths that add up", SF._faults(good, cast, 5.0))
 bad = json.loads(json.dumps(good))
