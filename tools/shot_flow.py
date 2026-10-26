@@ -53,7 +53,7 @@ Each shot starts from ONE painted picture of its opening and the video model ani
 so every shot must be simple, physical and unambiguous.
 
 The stretch lasts {sec:.1f} seconds.
-The narration over it: {text}
+The narration over it, [seconds from the stretch's start] before each sentence: {text}
 The director's beats for it: {beats}
 Who is here: {people}
 The place: {place}
@@ -71,6 +71,13 @@ Rules:
   (up to {maxp}), where each stands and which way each faces; then shots of the two or three who act or speak, and
   close reactions. A wide shot holds up to {maxp}; a medium or close shot at most {closemax}. A shot of one alone only
   for a close reaction or a detail.
+- WHEN: a shot that starts at second X shows only what the narration has said by its end. Nothing of an event (fire,
+  light, wind, a sound, an arrival) is in any shot before the second its sentence starts.
+- A passing effect (fire, flames, smoke, wind, lightning) is in the shots of the sentence that describes it and the
+  shots after it in THIS stretch only; it is not in the shots before it, and not carried in from the stretch before.
+- Figurative words are drawn as what a viewer would literally see, never the figure of speech: "tongues of fire" are
+  small flames resting above the heads; people "speaking in tongues" or in other languages talk normally and eagerly.
+  Never draw a tongue (or any body part) an idiom names, and no wide-open mouths or working jaws for speech.
 - "crowd": true when the scene's crowd ({crowd}) is in the picture, in the background, small and still; else false. A fight is covered as intent (wide: both fighters, the attacker
   coils, the other sees the opening), action (both in the picture: the one blow or move and the one it reaches),
   reaction (close: the one hit, or a witness).
@@ -107,6 +114,17 @@ TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen f
             "{listener}'s head and one shoulder, facing {who}")
 TALK_CREATURE = ("a close view of {who}'s head and long neck, low to the ground, jaws slightly parted, the body behind it "
                  "on four legs")
+# figures of speech the director and the video model took literally (10-26 Acts 2: "tongues of fire" drawn as tongues,
+# "speaking in tongues" as wide-open mouths with working jaws): the literal sight, in every picture and action prompt
+FIGURATIVE = {r"\b(?:divided\s+)?tongues?\s+(?:as\s+)?of\s+(?:fire|flame)s?\b": "small flames",
+              r"\btongue-like\s+flames?\b|\bflame-like\s+tongues?\b": "small flames",
+              r"\bspeak(?:ing|s)?\s+in\s+(?:other\s+|many\s+|strange\s+)?tongues\b": "talking eagerly"}
+TONGUE = re.compile(r"\btongues?\b", re.I)
+# passing effects: only from the sentence that describes them, in its own stretch (10-26 Acts 2: flames from 0:00 and on
+# Peter's head out in the street)
+PASSING = {"fire": re.compile(r"\b(fire|flames?|flame-like|blaz\w*|burning|embers?)\b", re.I),
+           "smoke": re.compile(r"\bsmok\w*\b", re.I), "wind": re.compile(r"\b(wind|gusts?|gale)\b", re.I),
+           "lightning": re.compile(r"\blightning\b", re.I)}
 # words the image model draws as something else (10-23: "bellows" = a bell, twice)
 GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, joined by pleated leather sides, a short "
                           "iron nozzle pointing into the fire)"}
@@ -195,6 +213,48 @@ def _spans(es: list) -> dict:
             for i, e in enumerate(es)}
 
 
+def figurative(text: str) -> str:
+    """A prompt with its figures of speech replaced by what is literally seen (FIGURATIVE)."""
+    for k_, v_ in FIGURATIVE.items():
+        text = re.sub(k_, v_, text, flags=re.I)
+    return text
+
+
+def timed(tl: list, t0: float, sec: float) -> list:
+    """[(seconds from t0, sentence)] for the narration starting in [t0 - 0.5, t0 + sec - 0.5): a timeline entry is a
+    paragraph, so each sentence's start is estimated from its word position (the narration's pace is steady)."""
+    out = []
+    for i, x in enumerate(tl):
+        t, nxt = float(x["t"]), float(tl[i + 1]["t"]) if i + 1 < len(tl) else float(x["t"]) + 0.4 * len(x["text"].split())
+        sents = [z for z in re.split(r"(?<=[.!?;])\s+", x["text"].strip()) if z]
+        n = sum(len(z.split()) for z in sents) or 1
+        done = 0
+        for z in sents:
+            ts = t + (nxt - t) * done / n
+            done += len(z.split())
+            if t0 - 0.5 <= ts < t0 + sec - 0.5:
+                out.append((round(max(0.0, ts - t0), 1), z))
+    return out
+
+
+def _passing(a: dict, tim: list, room: str) -> list:
+    """Faults for a passing effect in a shot before its sentence, or with no sentence in this stretch (PASSING)."""
+    out, start = [], 0.0
+    for i, s in enumerate(a.get("shots") if isinstance(a.get("shots"), list) else [], 1):
+        end = start + float(s.get("dur") or 0)
+        seen = f"{s.get('picture', '')} {s.get('action', '')}"
+        for g, rx in PASSING.items():
+            if not rx.search(seen) or rx.search(room or ""):
+                continue
+            said = [t for t, z in tim if rx.search(z) or (g == "fire" and re.search(r"\btongues?\s+(as\s+)?of\b", z, re.I))]
+            if not said:
+                out.append(f"shot {i} shows {g}, but the narration of this stretch never has it (leave it out)")
+            elif min(said) > end + 0.5:
+                out.append(f"shot {i} ({start:.1f}-{end:.1f} s) shows {g} before the narration has it at {min(said):.1f} s")
+        start = end
+    return out
+
+
 def _faults(a: dict, cast: list, sec: float) -> list:
     out = []
     shots = a.get("shots") if isinstance(a.get("shots"), list) else []
@@ -215,6 +275,8 @@ def _faults(a: dict, cast: list, sec: float) -> list:
                                               act)]
         if named:
             out.append(f"shot {i} names {', '.join(named)} in the action (use a plain description)")
+        if TONGUE.search(f"{s.get('picture', '')} {act}"):
+            out.append(f"shot {i} says 'tongue': draw what is seen (small flames above heads, people talking), never a tongue")
         if SHOT_MAGIC.search(act):
             out.append(f"shot {i} uses the word '{SHOT_MAGIC.search(act).group(0)}'")
         if HAND_GLOW.search(act):
@@ -297,7 +359,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         cast = list(dict.fromkeys(cast + sh_.get("present", [])))      # the silent ones in the room too
         f = MF._frame(book, stem, e["id"])
         looks = {w: MF._brief(MF._appearance(cx.look(w, e["t"]) or "")) for w in cast}
-        q0 = SHOT_RULES.format(sec=sec, text=(said or f.get("prompt") or "")[:900],
+        tim = timed(tl, float(e["t"]), sec)
+        q0 = SHOT_RULES.format(sec=sec, text=(" ".join(f"[{t:.1f}] {z}" for t, z in tim) or said or
+                                              f.get("prompt") or "")[:1100],
                                beats=" / ".join(f.get("beats") or []) or "(none)",
                                people="; ".join(f"{w} ({looks.get(w, '')})" for w in cast) or "nobody", place=at,
                                room=sh_.get("room") or "(as the narration says)", now=sh_.get("now") or "(nothing noted)",
@@ -314,12 +378,12 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 _worn(got, " ".join(MF._dress(book, stem, e["id"], cast).values())) or _making(got, said))):
             out[e["id"]] = json.loads(cp.read_text())["shots"]
             continue                    # (a cached answer a newer check faults is asked again)
-        todo.append((e, q0, k, cast, crs, sec, at, said))
+        todo.append((e, q0, k, cast, crs, sec, at, said, tim, sh_.get("room") or ""))
     if todo:
         animate.igpu("strata", log)
 
         def ask(t):
-            e, q0, k, cast, crs, sec, here, said = t
+            e, q0, k, cast, crs, sec, here, said, tim, room = t
             a, faults = {}, []
             for _ in range(3):
                 fix = ("Your last answer broke the rules: " + "; ".join(faults) + ". Write it again.\n") if faults else ""
@@ -333,7 +397,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     s["who"] = list(dict.fromkeys(w for w in (MF._cast_name(x, cast, crs) for x in (s.get("who") or []))
                                                   if w))
                 faults = _faults(a, cast, sec) + _worn(a, " ".join(MF._dress(book, stem, e["id"], cast).values())) + \
-                    _making(a, said)
+                    _making(a, said) + _passing(a, tim, room)
                 if not faults:
                     break
             shots = [s for s in (a.get("shots") or []) if s.get("picture") and s.get("action")]
@@ -683,7 +747,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}"
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
-    pic = s["picture"]
+    pic = figurative(s["picture"])
     for k_, v_ in GLOSS.items():
         pic = re.sub(k_, v_, pic, count=1, flags=re.I)
     room = s.get("room") or ""
@@ -1117,7 +1181,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = s["action"] + STILL_CROWD * bool(s.get("crowd"))
+            act = figurative(s["action"]) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -1126,7 +1190,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img})
         else:
-            p_ = (s["action"] or "Small, natural movements; the camera holds still.") + STILL_CROWD * bool(s.get("crowd"))
+            p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + STILL_CROWD * bool(s.get("crowd"))
             emb = f"q_{s['id']}_{MF._h(p_)}"
             enc_dist.append({"name": emb, "prompt": p_})
             quiet.append({"name": s["id"], "emb": emb, "prompt": p_, "width": W, "height": H, "fps": FPS, "seed": 7,

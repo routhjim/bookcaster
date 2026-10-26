@@ -1,0 +1,34 @@
+{
+ "k": "312b47b7",
+ "shots": [
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Disciple",
+    "Early Believer"
+   ],
+   "framing": "wide",
+   "picture": "Peter sits on the left, Disciple in the center, and Early Believer on the right, all seated on reed mats around a low wooden table, facing forward with heads tilted back and eyes closed.",
+   "action": "Three distinct tongues of fire descend from the ceiling and rest on the heads of the three seated figures, illuminating their faces from above.",
+   "kind": "action",
+   "crowd": false,
+   "id": "action-000100_s0",
+   "place": "The Upper Room"
+  },
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter"
+   ],
+   "framing": "close",
+   "picture": "Peter sits alone in the frame, head tilted back, eyes closed, with a small flame hovering just above his curly grey-brown hair.",
+   "action": "The tongue of fire from above settles onto Peter's head, casting a bright warm glow on his face as he remains still in awe.",
+   "kind": "quiet",
+   "crowd": false,
+   "id": "action-000100_s1",
+   "place": "The Upper Room"
+  }
+ ],
+ "checked": true
+}

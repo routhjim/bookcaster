@@ -1,0 +1,37 @@
+{
+ "k": "bbae74f6",
+ "shots": [
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Disciple",
+    "Early Believer"
+   ],
+   "framing": "wide",
+   "picture": "Peter stands center facing forward, Disciple stands to his left facing forward, and Early Believer stands to his right facing forward, all on grey cobblestones with small orange flames resting on their heads.",
+   "action": "The three figures stand still, flames on their heads flickering gently from the fire source above, while the crowd in the background remains static.",
+   "kind": "quiet",
+   "crowd": true,
+   "id": "action-000213_s0",
+   "place": "Jerusalem Street"
+  },
+  {
+   "dur": 2.5,
+   "who": [
+    "Peter",
+    "Disciple",
+    "Early Believer",
+    "Jerusalem Crowd Member"
+   ],
+   "framing": "medium",
+   "picture": "Peter, Disciple, and Early Believer stand in a line facing forward, while a man in a striped tunic and dark cloak stands in the foreground right, initially facing away from them.",
+   "action": "The man in the striped tunic shifts his weight and turns his head to the left to look at the three figures, his expression changing to bewilderment.",
+   "kind": "quiet",
+   "crowd": true,
+   "id": "action-000213_s1",
+   "place": "Jerusalem Street"
+  }
+ ],
+ "checked": true
+}
