@@ -1149,10 +1149,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
     # yields to a waiting GPU job (LTX_YIELD)
     R.HOLD_TIMEOUT = 4 * 3600
-    R.PP = True
-    os.environ["REMAKE_LTX_PP"] = "1"
-    # --stagger 70 (10-24): the two lanes out of step, so they never decode on card A at the same time
-    os.environ.setdefault("REMAKE_LTX_PP_ARGS", "--lanes 2 --pp-shared-a --stagger 70" + " --pp-pool" * PP_POOL)
+    R.PP = True                         # the fast runner set itself (lanes, stagger, pool, decode-b, split) = R.LTX_PP_ARGS
+    if not PP_POOL:
+        os.environ.setdefault("REMAKE_LTX_PP_ARGS", R.LTX_PP_ARGS.replace(" --pp-pool", ""))
     cxl = SimpleNamespace(OUT=sd)
 
     def step(args, name):

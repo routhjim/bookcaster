@@ -1389,11 +1389,9 @@ def ltx(book: Path, stem: str, es: list, log=print, redo: dict | None = None, pr
     # --pp --lanes 2 --pp-shared-a for gen, the per-route split pp_fit fits from this stretch's own timing, the gap
     # runner, the RAM floor and the kernel-log check, all from remake_chapter.ltx_step
     from types import SimpleNamespace
-    os.environ["REMAKE_LTX_PP"] = "1"
     os.environ["REMAKE_LTX_SPLIT_TALK"] = str(F._pp_split(md, "a2vid", 25))
     os.environ["REMAKE_LTX_SPLIT_ACT"] = str(F._pp_split(md, "ic", 17))
-    os.environ.setdefault("REMAKE_LTX_PP_ARGS", "--lanes 2 --pp-shared-a")
-    R.PP = True
+    R.PP = True                             # lanes/stagger/pool/decode-b = R.LTX_PP_ARGS (10-26: one default set)
     shutil.copy(HERE / "ltx_runner" / "ltx_split_next.py", L / "ltx_split_next.py")
     cxl = SimpleNamespace(OUT=md)
 
@@ -1431,13 +1429,10 @@ def ltx(book: Path, stem: str, es: list, log=print, redo: dict | None = None, pr
                            cwd=str(L), capture_output=True)
     if act:
         gen("act", act, ["--ic-lora", str(R.IC_LORA), "--fa-amd", "--blaslt"])
-    if fight:                               # two-stage on the plain runner (the pipelined one has no --ti2v)
+    if fight:                               # two-stage, pipelined (--ti2v ported to the pp runner 10-23)
         step(["encode", "enc_fight.json", "--dev"], "enc_fight")
-        R.PP = False
-        try:
-            gen("fight", fight, ["--ti2v", "--fa-amd", "--blaslt"])
-        finally:
-            R.PP = True
+        os.environ["REMAKE_LTX_SPLIT_ACT"] = str(F._pp_split(md, "ti2v", 24))
+        gen("fight", fight, ["--ti2v", "--fa-amd", "--blaslt"])
     return {j["name"]: (L / "out" / f"{j['name']}.mp4").exists() for j in talk + act + fight}
 
 
