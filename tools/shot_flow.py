@@ -39,6 +39,7 @@ SHOT_MIN, SHOT_MAX = 2.0, 5.0
 # second take changed 4 of 47 shots for ~45 min of both cards; take 1 was faulted in 8 of 47)
 TAKES = (42,)
 RETAKE = 1042
+QUIET_SEED = 7                      # a quiet shot's first take (its retake: RETAKE)
 PP_POOL = True                      # activations between the cards through reused pinned buffers (runner --pp-pool)
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
 TALK_PIECE = 97                     # talk lines in 3-4 s pieces (73-97 frames), chained (10-24 user; was <= 5 s)
@@ -1199,8 +1200,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + STILL_CROWD * bool(s.get("crowd"))
             emb = f"q_{s['id']}_{MF._h(p_)}"
             enc_dist.append({"name": emb, "prompt": p_})
-            quiet.append({"name": s["id"], "emb": emb, "prompt": p_, "width": W, "height": H, "fps": FPS, "seed": 7,
-                          "frames": n, "line": s["id"], "route": "i2v", "images": img})
+            for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
+                quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_,
+                              "width": W, "height": H, "fps": FPS, "seed": seed, "frames": n, "line": s["id"],
+                              "route": "i2v", "images": img})
     for j in talk + two + quiet:            # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
@@ -1263,7 +1266,20 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out"],
                            cwd=str(L), capture_output=True)
     if quiet:
-        gen("quiet", quiet, ["--fa-amd", "--blaslt", *(["--decode-b"] if DECODE_B else [])], F._pp_split(sd, "distilled", 17))
+        # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
+        # faulted one's retake queued on the loaded runner
+        more, done = L / "quiet_more.json", L / "quiet_more.done"
+        more.write_text("[]")
+        done.unlink(missing_ok=True)
+        stop = threading.Event()
+        th = threading.Thread(target=_judge_as_they_land, args=(L / "out", quiet, more, done, stop, log), daemon=True)
+        th.start()
+        try:
+            gen("quiet", quiet, ["--fa-amd", "--blaslt", *(["--decode-b"] if DECODE_B else []),
+                                 "--more", more.name, "--more-done", done.name], F._pp_split(sd, "distilled", 17))
+        finally:
+            stop.set()
+            th.join(60)
 
 
 def judge_talk(book: Path, stem: str, es: list, shots: list, log=print) -> set:
@@ -1317,7 +1333,7 @@ def judge_talk(book: Path, stem: str, es: list, shots: list, log=print) -> set:
 
 
 def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, log) -> None:
-    """Judge each action shot's first take as soon as its clip exists (the vision judge stays loaded); a faulted one
+    """Judge each action or quiet shot's first take as soon as its clip exists (the vision judge stays loaded); a faulted one
     gets its retake job (seed RETAKE, name <id>_t2) appended to `more`; `done` once every first take is judged (or
     the render stopped). judge_takes() afterwards keeps the better take of each pair."""
     sys.path.insert(0, str(HERE.parent))
@@ -1353,7 +1369,7 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
 
 
 def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
-    """Each action shot: its takes judged (melted / merged bodies, fire from hands); the take with the fewest faults
+    """Each action or quiet shot (quiet too since 10-26): its takes judged (melted / merged bodies, fire from hands); the take with the fewest faults
     becomes <id>.mp4 (a tie keeps the first), the other stays as <id>_t2.mp4. -> the shots whose only take is
     faulted (to be taken once more)."""
     sys.path.insert(0, str(HERE.parent))
@@ -1362,7 +1378,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     out_ = shot_dir(book, stem) / "ltx" / "out"
     again = set()
     for s in shots:
-        if s["kind"] != "action":
+        if s["kind"] not in ("action", "quiet"):
             continue
         a, b = out_ / f"{s['id']}.mp4", out_ / f"{s['id']}_t2.mp4"
         if not a.exists() or (out_ / f"{s['id']}.judged").exists():

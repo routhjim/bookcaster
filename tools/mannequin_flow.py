@@ -492,7 +492,12 @@ def fight_clip_ok(mp4: Path) -> list:
     """The fight clip's faults from frames across it (the vision judge): a melted/swollen/merged body, fire from hands."""
     import characters as CH
     items = []
-    for t in (1.5, 3.0, 4.5):
+    try:                                    # a short clip (a ~2.5 s quiet shot) is sampled at 30% and 75% of it, not
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                    str(mp4)], capture_output=True, text=True).stdout.strip())   # once at 1.5 s (10-26)
+    except ValueError:
+        dur = 5.0
+    for t in ((1.5, 3.0, 4.5) if dur >= 3.2 else (round(dur * 0.3, 1), round(dur * 0.75, 1))):
         png = mp4.with_name(f"{mp4.stem}_chk{int(t * 10)}.png")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(t), "-i", str(mp4), "-frames:v", "1", str(png)])
         if png.exists():
