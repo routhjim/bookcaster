@@ -47,8 +47,9 @@ check("a shot with no pose is sent back to the director", any('"pose"' in x for 
 check("the director is told about poses", '"pose_end"' in SF.SHOT_RULES and "cannot stand or walk" in SF.SHOT_RULES)
 
 # --- the key: each person's held pose in the words, the not-standing one checked
-cx = SimpleNamespace(look=lambda w, t: {"Lame Man": "a man of about 40, thin, wearing a ragged patched brown tunic",
-                                        "Peter": "a man of about 40, grey-brown beard"}[w])
+import fakebook
+cx = fakebook.book({"Lame Man": "a man of about 40, thin, wearing a ragged patched brown tunic",
+                    "Peter": "a man of about 40, grey-brown beard"})
 s5 = dict(out["m2"][0], picture="Peter stands; the lame man sits.")
 q, _ = SF._key_questions(cx, s5)
 check("key judge asks the lame man's pose", any(k.startswith("pose") and "is a man sitting (not standing)" in v for k, v in q.items()), q)
@@ -60,20 +61,21 @@ with tempfile.TemporaryDirectory() as d:
     check("a seed with the lame man sitting passes", SF._clean(good, k, 0))
     check("a seed with him standing fails (redrawn)", not SF._clean(dict(good, pose1="no"), k, 0))
 hold = SF._pose_hold(cx, out["m2"][0])
-check("clip prompt: 'A man stays sitting throughout.'", hold == " A man stays sitting throughout.", hold)
+check("clip prompt: the one description of him, held: 'The man in the ragged patched brown tunic stays sitting'",
+      hold == " The man in the ragged patched brown tunic stays sitting throughout.", hold)
 check("clip prompt: nothing held in the shot that heals him", SF._pose_hold(cx, out["m4"][0]) == "")
 
 # --- posture out of the looks; the outfit checked in the key
 lk = "a man of about 35, gaunt build, wearing a ragged patched brown tunic, sitting on the ground with legs extended"
 check("look without its posture", SF.no_pose(lk) == "a man of about 35, gaunt build, wearing a ragged patched brown tunic", SF.no_pose(lk))
 check("clothes of a look", SF.clothes_of(lk) == "a ragged patched brown tunic", SF.clothes_of(lk))
-cx2 = SimpleNamespace(look=lambda w, t: "a man of about 33, short beard, wearing a simple beige linen tunic and a "
-                      "cream-colored himation draped over one shoulder", dress=lambda w, t: "")
+cx2 = fakebook.book({"John": "a man of about 33, short beard, wearing a simple beige linen tunic and a "
+                            "cream-colored himation draped over one shoulder"})
 q2, _ = SF._key_questions(cx2, {"id": "action-000372_s0", "who": ["John"], "picture": "", "framing": "wide"})
 check("key judge asks each person's clothes (wide/medium)", "who0w" in q2 and "himation" in q2["who0w"], q2)
 q3, _ = SF._key_questions(cx2, {"id": "action-000372_s0", "who": ["John"], "picture": "", "framing": "close"})
 check("not in a close shot (clothes mostly out of the picture)", "who0w" not in q3, q3)
-cx3 = SimpleNamespace(look=cx2.look, dress=lambda w, t: "a white festival robe" if t >= 30 else "")
+cx3 = fakebook.book({"John": cx2.look("John")}, dress=lambda w, t: "a white festival robe" if t >= 30 else "")
 q4, _ = SF._key_questions(cx3, {"id": "action-000372_s0", "who": ["John"], "picture": "", "framing": "wide"})
 check("outfit question follows the wardrobe in force at the shot's time", "white festival robe" in q4.get("who0w", ""), q4)
 

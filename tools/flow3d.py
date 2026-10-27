@@ -171,7 +171,7 @@ def inventory(book) -> dict:
                                         "qa": str(sheets[0]) if sheets else None,
                                         "auto": {"built": bool(s.get("built")), "pass": s.get("usable", True)}}
     for n in cast_names(book):
-        cd = vd / "charlora" / re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_")
+        cd = vd / "charlora" / _reg(book).slug(n)
         lo = sorted((cd / "lora").glob("*.safetensors")) if (cd / "lora").exists() else []
         sheet = cd / "data" / "sheet.jpg"
         out[f"lora:{n}"] = {"kind": "lora", "name": n, "lora": str(lo[-1]) if lo else None,
@@ -179,22 +179,23 @@ def inventory(book) -> dict:
     return out
 
 
+def _reg(book):
+    """The book's registry (tools/registry.py): the one owner of who and where (10-27)."""
+    sys.path.insert(0, str(HERE))
+    import registry as RG
+    return RG.Book(Path(book))
+
+
 def person_key(n: str) -> str:
-    """One key per person, whatever the spelling ('Dr. Watson' = 'Doctor Watson')."""
-    return re.sub(r"[^a-z]", "", re.sub(r"\bdr\b\.?", "doctor", str(n or "").lower()))
+    """One key per person, whatever the spelling ('Dr. Watson' = 'Doctor Watson'): registry.person_key."""
+    sys.path.insert(0, str(HERE))
+    import registry as RG
+    return RG.person_key(n)
 
 
 def cast_names(book) -> list:
     """look.json's characters, one per person ('Dr. Watson' = 'Doctor Watson': the first-stored key wins)."""
-    lj = vdir(book) / "look.json"
-    names = list((json.loads(lj.read_text()).get("characters") or {}).keys()) if lj.exists() else []
-    seen, out = set(), []
-    for n in names:
-        k = person_key(n)
-        if k not in seen:
-            seen.add(k)
-            out.append(n)
-    return out
+    return _reg(book).people()
 
 
 CHARLORA_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"
@@ -212,7 +213,7 @@ def _sheet_facts(plan, style, refs):
     "base" (the base sheet path, outfit sheets)}. Creatures and places are not checked here."""
     from tts_reader import video
     import remake_chapter as R
-    chars, _ = video.looks(plan)
+    chars, _ = video.looks(plan, video.registry_at(refs))
     out = []
     by_id = {j["id"]: j for j in video.reference_jobs(plan, style, refs)}
     for n, desc in chars.items():
@@ -345,32 +346,40 @@ def audit_looks(book, text, plan, log=print) -> dict:
     into the chapter plan, so their sheets are redrawn. -> {name: {"was", "now", "why"}} (refs/look_audit.json)"""
     from tts_reader import bookcaster as BC, video
     from tts_reader.score import _chat
-    chars, _ = video.looks(plan)
+    RG = _reg(book)
+    chars, _ = video.looks(plan, RG)             # the plan's cast, each with the registry's one look (10-27)
     paras = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
     fixed = {}
     import hashlib
     lj = vdir(book) / "look.json"
     pinned = (json.loads(lj.read_text()).get("_pinned") or {}) if lj.exists() else {}
+    plan_chars = plan.setdefault("look", {}).setdefault("characters", {})
     ck = vdir(book) / "refs" / "look_audit_checked.json"
     checked = json.loads(ck.read_text()) if ck.exists() else {}
 
     def sig(d):
         return hashlib.sha1((d or "").encode()).hexdigest()[:12]
     for n, desc in chars.items():
-        if n in pinned:                              # a look set by hand: kept, and the chapter plan follows it
-            if desc != pinned[n]:
-                plan["look"]["characters"][n] = pinned[n]
-                fixed[n] = {"was": desc, "now": pinned[n], "why": "pinned (bookcaster look)"}
+        pk = RG.key_in(n, list(pinned))              # a pin under any spelling of them (10-27: exact names only)
+        if pk is not None:                           # a look set by hand: kept, and the chapter plan follows it
+            if plan_chars.get(n) != pinned[pk]:      # (only a real change is a fix: 10-27 no-op "fixes" were logged)
+                was = plan_chars.get(n, desc)
+                plan_chars[n] = pinned[pk]
+                fixed[n] = {"was": was, "now": pinned[pk], "why": "pinned (bookcaster look)"}
                 _log(f"look audit: {n}: the pinned look (set by hand) restored", log)
             continue
         if checked.get(n) == sig(desc):              # audited before with this very look: not asked again (10-22: the
             continue                                 # same look audited each run flipped the Knight's armor off)
-        words = {n.lower(), n.split()[-1].lower()}
-        rx = re.compile(r"\b(" + "|".join(re.escape(w) for w in words) + r")s?\b", re.I)
+        # the passages naming THIS person: the full name, or a word of it that names only them (10-27: the last word
+        # "Stoner" audited Julia's look on Helen's passages)
+        words = {n.lower()} | {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", n)
+                               if len(w) > 2 and RG.person(w, narrator=False) is not None and RG.same(w, n)}
+        rx = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + r")s?\b", re.I)
         hits = [p.strip() for p in paras if rx.search(p)][:14]
         if not hits:
             continue
-        later = [f"- {w['id']}: {w.get('dress', '')}" for w in (plan.get("wardrobe") or {}).get(n, [])]
+        wk = video.wardrobe_key(plan, n, RG)
+        later = [f"- {w['id']}: {w.get('dress', '')}" for w in (plan.get("wardrobe") or {}).get(wk, [])] if wk else []
         later_txt = ("\n\nLater outfit changes are ALREADY handled separately (do NOT put these into the look):\n"
                      + "\n".join(later)) if later else ""
         prompt = (f"A story character, {n}, will be drawn with this look:\n{desc}{later_txt}\n\nEvery passage of the story that "
@@ -387,9 +396,9 @@ def audit_looks(book, text, plan, log=print) -> dict:
             v = json.loads(m.group()) if m else {}
         except (OSError, ValueError) as ex:
             raise SystemExit(f"look audit: the language model failed for {n}: {ex}")
-        if v.get("ok") is False and v.get("look"):
+        if v.get("ok") is False and v.get("look") and video.literal_safe(v["look"]) != desc:
             key = BC.set_look(Path(book), n, v["look"])
-            plan["look"]["characters"][n] = video.literal_safe(v["look"])
+            plan_chars[n] = video.literal_safe(v["look"])
             fixed[n] = {"was": desc, "now": v["look"], "why": v.get("why", "")}
             _log(f"!!! look audit: {key}: {v.get('why', '')} -> {v['look'][:160]}", log)
             checked[n] = sig(video.literal_safe(v["look"]))
@@ -485,9 +494,10 @@ def plan_lint(book, stems, log=print) -> list:
         kp = vd / st / "anim" / "keyframes.json"
         if not kp.exists():
             continue
+        RG = _reg(book)                              # any spelling of a described place is that place (10-27)
         bad = sorted({f.get("where") for f in json.loads(kp.read_text()).get("frames", [])
                       if f.get("where") and f["where"] not in set(places) | built
-                      and Wd.VARIANT_RX.sub("", f["where"]) not in places})
+                      and not RG.place_look(f["where"])})
         if bad:
             out.append(f"{st}: moments set in unknown places {[b[:40] for b in bad]}: re-homed by the stage step")
     for ln in out:
@@ -513,11 +523,12 @@ def normalize_wheres(book, work: Path, log=print, sets: set | None = None) -> li
     frames = kf.get("frames") or []
     look = json.loads((vdir(book) / "look.json").read_text())
     places = dict(look.get("places") or {})
+    RG = _reg(book)                                  # a place under any spelling: the registry's (10-27)
     clean = {f.get("where") for f in frames if f.get("where") and ":" not in f["where"]}
     known = {**{w: "" for w in clean}, **places}
     if sets is not None:
         # the stage step: ONLY the built sets (user 10-21: "only state places in keyframes that have been rendered")
-        known = {w: places.get(w) or places.get(Wd.VARIANT_RX.sub("", w), "") for w in sets}
+        known = {w: places.get(w) or RG.place_look(w) for w in sets}
     stop = {"the", "a", "an", "of", "below", "above", "behind", "near", "edge", "with", "and", "in", "on", "at"}
 
     def words(t):
@@ -525,9 +536,9 @@ def normalize_wheres(book, work: Path, log=print, sets: set | None = None) -> li
     changed = []
     for i, f in enumerate(frames):
         w = f.get("where") or ""
-        if not w or w in known or (sets is None and Wd.VARIANT_RX.sub("", w) in known):
+        if not w or w in known or (sets is None and (Wd.VARIANT_RX.sub("", w) in known or RG.place_look(w))):
             continue
-        if sets is not None and (w in places or Wd.VARIANT_RX.sub("", w) in places):
+        if sets is not None and (w in places or RG.place_look(w)):
             continue                                 # a real place whose set is missing: build it, never re-home
         txt = words(f.get("prompt", "") + " " + f.get("motion", ""))
         best = max(known, key=lambda k: 3 * len(words(k) & txt) + len(words(known[k]) & txt))
@@ -569,9 +580,14 @@ def plan_scenes(book, f, work: Path, log=print) -> list:
     pj.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
     lk = vdir(book) / "look.json"
     look = json.loads(lk.read_text()) if lk.exists() else {}
-    new = {n: d for n, d in (plan.get("look") or {}).get("places", {}).items() if n not in (look.get("places") or {})}
+    sys.path.insert(0, str(HERE))
+    import registry as RGm
+    new = False
+    for n, d in ((plan.get("look") or {}).get("places") or {}).items():   # (10-27: stored under each new spelling)
+        k, known = RGm.place_slot(look.setdefault("places", {}), n, d)
+        if not known and str(d or "").strip():
+            look["places"][k], new = d, True
     if new:
-        look.setdefault("places", {}).update(new)
         lk.write_text(json.dumps(look, indent=1, ensure_ascii=False))
     tl = Path(book) / "work" / f"{f.stem}.timeline.json"
     starts = {id(s_): t for t, s_ in video.scene_starts(plan, text, json.loads(tl.read_text()))} if tl.exists() else {}
@@ -615,7 +631,7 @@ def scene_frames(book, f, work: Path, shots: list, log=print) -> int:
     starts = video.scene_starts(plan, BC._chapter_text(f), json.loads(tl.read_text()))
     tof = {s_["id"]: s_["t"] + 0.5 * float(s_.get("dur") or 0) for s_ in shots}     # the MIDDLE of the moment
     kf = json.loads(kp.read_text())
-    chars = (plan.get("look") or {}).get("characters") or {}
+    chars, _ = video.looks(plan, _reg(book))
     n = 0
     for fr in kf.get("frames") or []:
         t = tof.get(fr.get("shot"))
@@ -670,8 +686,10 @@ def plan(book, chapter, log=print) -> dict:
     fx = audit_looks(book, BC._chapter_text(f), r["plan"], log)
     # every cast member gets a sheet, not only those in a still picture: assets builds each one's model + LoRA
     # from it (10-22: the King, only in moments, had none and his LoRA failed after 50 min of drawing)
+    # (in the PLAN's spelling of each person: 10-27, look.json's "Doctor Watson" was never `in` the plan's "Dr. Watson")
     chars = (r["plan"].get("look") or {}).get("characters") or {}
-    r["plan"]["sheet_cast"] = [n for n in cast_names(book) if n in chars]
+    RG = _reg(book)
+    r["plan"]["sheet_cast"] = [k for k in (RG.key_in(n, list(chars)) for n in RG.people()) if k]
     pj = work / "plan.json"
     saved = json.loads(pj.read_text())
     saved["sheet_cast"] = r["plan"]["sheet_cast"]
@@ -739,12 +757,13 @@ def lora_todo(book, only=None) -> dict:
     input hash decides a retrain when the look/refs change; this is the cheap plan-time listing."""
     vd = vdir(book)
     out = {}
-    for n in cast_names(book):
+    RG = _reg(book)
+    for n in RG.people():
         # one chapter's cast (10-25: Acts 2 would retrain Acts 1's Jesus), matched PER PERSON (10-27: look.json keeps
         # "Doctor Watson" first, the chapter says "Dr. Watson": Watson never got a LoRA and was drawn from words alone)
-        if only is not None and person_key(n) not in {person_key(o) for o in only}:
+        if only is not None and not any(RG.same(n, o) for o in only):
             continue
-        d = vd / "charlora" / re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_") / "lora"
+        d = vd / "charlora" / RG.slug(n) / "lora"
         if not any(d.glob("*.safetensors")) if d.exists() else True:
             out[n] = "no LoRA yet"
             continue
@@ -832,9 +851,11 @@ def pending(book) -> list:
 
 # ------------------------------------------------------------------------------------------------- stages
 
-def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "any", only=None) -> dict:
+def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "any", only=None,
+           gpu_on=None, gpu_off=None) -> dict:
     """Characters (+ creature sheets), props, sets: each tool's own resumable entry point; GPU steps take their card
-    lock per call and yield to a waiting LTX gaprun (the tools' own rule)."""
+    lock per call and yield to a waiting LTX gaprun (the tools' own rule). gpu_on() / gpu_off(): called around the GPU
+    steps (bookcaster pauses the voice and music servers only for those; 10-27: they were down the whole 35 min)."""
     JOB_LOG[0] = log
     disk_check(book, log)
     book = Path(book)
@@ -845,6 +866,8 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
     rc = {}
     plan_lint(book, stems, log)                  # the plan's words, before any GPU (10-21)
     rc["characters.plan"] = run([POSE_PY, "-I", HERE / "characters.py", "plan", book], lg)
+    if not plan_only and gpu_on:
+        gpu_on()
     if not plan_only:
         rc["characters.build"] = run([POSE_PY, "-I", HERE / "characters.py", "build", book, "--card", card,
                                       *(["--only", *only] if only else [])], lg)
@@ -880,6 +903,8 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
     if not plan_only and todo:
         lth.join()
         rc["loras"] = 1 if lora_res.get("left") else 0
+    if not plan_only and gpu_off:
+        gpu_off()
     ap = register(book)
     bad = {k: v for k, v in rc.items() if v}
     _log(f"assets: {len(ap['items'])} item(s), {len(pending(book))} pending review" +

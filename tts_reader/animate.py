@@ -117,8 +117,12 @@ def speaker_key(speaker: str, chars: dict, labels=()) -> str | None:
         s = label.lower().strip()
         return [k for k in chars if s == k.lower() or s in {n.lower() for n in video._names(k)}]
 
-    if not speaker.strip() or speaker.lower() in ("narrator", "driver"):
+    # 10-27: no story's bit parts here ("driver" was the Speckled Band's): a label with no look is None anyway
+    if not speaker.strip() or speaker.lower() == "narrator":
         return None
+    R = getattr(chars, "R", None)            # a registry.Looks: the registry resolves the label (voice labels jointly)
+    if R is not None and (k := R.key_in(speaker, list(chars))) is not None:
+        return k
     found = hits(speaker)
     if len(found) > 1:
         claimed = {h[0] for lb in labels if lb != speaker and len(h := hits(lb)) == 1}
@@ -2365,19 +2369,34 @@ def _gpu(bus: str) -> str:
     return subprocess.run([str(HIP_INDEX), bus], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def _servers(action: str, log) -> bool:
+def _servers(action: str, log, which=None) -> list:
     """Pause ("down") or resume ("up") the voice and music servers, which hold
-    both cards. Returns whether they were running (so only those come back)."""
+    both cards. "down" returns the ones that were running (["fish", "ace"]; empty = nothing paused), and "up" brings
+    back *which* (default both). 10-27: "up" always restarted both, from any job and onto any card - now only the box
+    lease holder (or anyone when nobody holds it) restarts them, never onto a card whose gpu lock is held; it returns
+    what it started."""
+    from . import boxlease
+    units = {"fish": "tts-fish", "ace": "tts-ace"}
     if action == "down":
-        running = any(subprocess.run(["systemctl", "--user", "is-active", "-q", u]).returncode == 0
-                      for u in ("tts-fish", "tts-ace"))
+        running = [k for k, u in units.items()
+                   if subprocess.run(["systemctl", "--user", "is-active", "-q", u]).returncode == 0]
         if running:
             log("  pausing the voice and music servers (the video models need both cards)")
             subprocess.run([str(STACK), "down", "--music"], capture_output=True)
         return running
-    log("  restarting the voice and music servers")
-    subprocess.run([str(STACK), "up", "--music"], capture_output=True)
-    return True
+    which = list(which if which is not None else units)
+    if not which:
+        return []
+    if not boxlease.mine_or_free():
+        log(f"  not restarting the voice and music servers: {boxlease.who(boxlease.holder())} holds the box")
+        return []
+    busy = boxlease.busy_cards()
+    if busy:
+        log(f"  not restarting the voice and music servers: card(s) {', '.join(busy)} busy (gpu lock held)")
+        return []
+    log("  restarting the voice" + (" and music servers" if "ace" in which else " server"))
+    subprocess.run([str(STACK), "up", *(["--music"] if "ace" in which else [])], capture_output=True)
+    return which
 
 
 def _scope(mem_gb: int, env: dict, cmd: list[str], log_file: Path) -> subprocess.Popen:
@@ -2512,7 +2531,7 @@ def render(shots: list[dict], pics: list[dict], plan: dict, style: str, work: Pa
             if started:
                 _vae_server("down", log)
             if resume:
-                _servers("up", log)
+                _servers("up", log, resume)
     done = [{k: s[k] for k in ("id", "kind", "t", "dur", "pic", "out")} for s in shots
             if Path(s["out"]).exists()]
     (anim / "manifest.json").write_text(json.dumps(done, indent=1))
@@ -2624,11 +2643,15 @@ def igpu(tenant: str, log=print) -> None:
     if tenant == "strata":
         if active(STRATA_UNIT):
             return
+        from . import boxlease
+        if not boxlease.mine_or_free():        # 10-27: the lease holder owns the iGPU
+            raise RuntimeError(f"not starting the language model: {boxlease.who(boxlease.holder())} holds the box")
         ch = sys.modules.get("characters")      # the loaded vision judge (10-24) can't share the iGPU with it
         if ch is not None and hasattr(ch, "vl_close"):
             ch.vl_close()
         _vae_server("down", log)
         _flush()
+        strata_room(log)
         log("  starting the language model on the iGPU")
         subprocess.run([str(STRATA_UP)], capture_output=True)
         from urllib.request import urlopen
@@ -2645,6 +2668,34 @@ def igpu(tenant: str, log=print) -> None:
         time.sleep(5)
     _flush()
     _vae_server("up", log)
+
+
+STRATA_NEED_GB = int(os.environ.get("STRATA_NEED_GB", "96"))       # fish_stack.sh's figure: ~90 GB pinned + margin
+STRATA_ROOM_WAIT_S = int(os.environ.get("BOOKCASTER_STRATA_ROOM_WAIT", "600"))
+
+
+def mem_avail_gb() -> int:
+    with open("/proc/meminfo") as f:
+        return int(f.read().split("MemAvailable:")[1].split()[0]) // 1048576
+
+
+def strata_room(log=print) -> None:
+    """Refuse to start the ~90 GB language model without the room for it (10-27: igpu("strata") skipped fish_stack's
+    room check and started it beside LoRA training / Qwen; the box has OOM-crashed before). Waits up to
+    STRATA_ROOM_WAIT_S for memory to come back (a finishing step frees it), then raises with the numbers."""
+    t_end, said = time.time() + STRATA_ROOM_WAIT_S, 0.0
+    while True:
+        free = mem_avail_gb()
+        if free >= STRATA_NEED_GB:
+            return
+        if time.time() >= t_end:
+            raise RuntimeError(f"not starting the language model: {free} GiB free, it needs {STRATA_NEED_GB} "
+                               "(something else holds the memory: tools/fish_stack.sh status, systemctl --user list-units)")
+        if time.time() - said >= 60:
+            log(f"  waiting for memory before starting the language model: {free} GiB free, it needs {STRATA_NEED_GB}")
+            said = time.time()
+        time.sleep(10)
+        _flush()
 
 
 def _flush() -> None:

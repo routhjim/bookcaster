@@ -62,7 +62,8 @@ with tempfile.TemporaryDirectory() as d:
     check("quiet: a single faulted take is taken once more; talk is never judged", again == {"Q3_s0"}, again)
 # the render wiring: quiet gen gets the as-they-land judge + --more queue; a retake builds a second quiet job
 src = inspect.getsource(SF)
-q = src[src.index("    if quiet:\n        # 10-26"):src.index("def judge_talk")]
+_q0 = src.index("    if quiet:\n        # 10-26")
+q = src[_q0:src.index("\ndef ", _q0)]
 check("quiet gen runs _judge_as_they_land with --more/--more-done", "_judge_as_they_land" in q and "--more" in q
       and "--more-done" in q, q[:200])
 check("quiet job builder adds the RETAKE take for a shot in retake", "(QUIET_SEED,) + ((RETAKE,) if s[\"id\"] in (retake or ())" in src)

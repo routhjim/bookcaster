@@ -32,6 +32,9 @@ CONFIG = Path(os.environ.get("BOOKCASTER_JELLYFIN_CONFIG",
 # 40 MiB/s leaves most of the link free.
 RATE = int(float(os.environ.get("BOOKCASTER_JELLYFIN_MBPS", "40")) * 2**20)
 CHUNK = 1 << 20
+# what was sent, by content: {remote path: sha256}. 10-27: "already there" and a reusable .part were judged by size
+# alone, so a remade video of the same size (a re-encode, a fixed shot) was never sent
+SENT = Path(os.environ.get("BOOKCASTER_JELLYFIN_SENT", CONFIG.with_name("jellyfin.sent.json"))).expanduser()
 
 
 def config() -> dict | None:
@@ -87,21 +90,50 @@ def remote_size(cfg: dict, path: str) -> int | None:
     return None
 
 
+def digest(src: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(src, "rb") as f:
+        while chunk := f.read(8 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sent() -> dict:
+    try:
+        return json.loads(SENT.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _record(path: str, dg: str | None) -> None:
+    d = _sent()
+    if dg is None:
+        d.pop(path, None)
+    else:
+        d[path] = dg
+    SENT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SENT.with_name(SENT.name + ".tmp")
+    tmp.write_text(json.dumps(d, indent=1))
+    tmp.replace(SENT)
+
+
 def send(src: Path, folder: str, name: str, log=print) -> bool:
-    """Copy *src* to <share>/<folder>/<name>, rate-capped; skip if already there."""
+    """Copy *src* to <share>/<folder>/<name>, rate-capped; skip if this very file (by content) is already there."""
     cfg = config()
     if cfg is None:
         return False
     folder, name = safe_name(folder), safe_name(name)
     dest = f"{folder}\\{name}"
-    size = src.stat().st_size
-    if remote_size(cfg, dest) == size:
+    size, dg = src.stat().st_size, digest(src)
+    if remote_size(cfg, dest) == size and _sent().get(dest) == dg:
         log(f"jellyfin: {dest} is already there")
         return True
     _smb(cfg, f'mkdir "{folder}"').communicate()
     tmp = f"{folder}\\.{name}.part"
     t0 = time.time()
-    if remote_size(cfg, tmp) != size:     # an earlier upload may be waiting to be swapped in
+    # an earlier upload of THIS file may be waiting to be swapped in (one of another file of the same size is not)
+    if not (remote_size(cfg, tmp) == size and _sent().get(tmp) == dg):
         p = _smb(cfg, f'put /dev/stdin "{tmp}"', stdin=subprocess.PIPE)
         sent = 0
         with open(src, "rb") as f:
@@ -116,11 +148,14 @@ def send(src: Path, folder: str, name: str, log=print) -> bool:
         if p.wait() != 0 or remote_size(cfg, tmp) != size:
             log(f"jellyfin: copying {name} failed: {out.strip()[-300:]}")
             return False
+        _record(tmp, dg)
     # Windows won't replace a file that's open, and Jellyfin holds the old
     # copy while it's playing or being scanned: retry for a few minutes.
     for attempt in range(10):
         out = _smb(cfg, f'del "{dest}"; rename "{tmp}" "{dest}"').communicate()[0]
-        if remote_size(cfg, dest) == size:
+        if remote_size(cfg, dest) == size and remote_size(cfg, tmp) is None:
+            _record(dest, dg)
+            _record(tmp, None)
             log(f"jellyfin: sent {dest} ({size / 2**20:.0f} MiB in {time.time() - t0:.0f} s)")
             return True
         time.sleep(30)
