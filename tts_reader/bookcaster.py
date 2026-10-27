@@ -1361,6 +1361,13 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
     log = _logger(book)
     stem = flow3d.chapter_stem(book, chapter or "1")
     t0, t1 = (float(x) for x in (span or "0:1e9").split(":"))
+    if not mix_matches_voices(book, stem):                  # the music again, on the paced voices, while the servers are up
+        log(f"{stem}: the mix doesn't match the voices (a pace change since?): mixing the music again first")
+        run_job(book, "music", music_only=True)
+        if not mix_matches_voices(book, stem):
+            _set_status(book, state="failed", step=f"{flow} flow: the mix of {stem} doesn't match its voices "
+                        "(`bookcaster make --music-only` failed)")
+            return 1
     _set_status(book, state="running", step=f"{flow} flow {stem} {t0:.0f}-{min(t1, 9999):.0f}s",
                 started=time.strftime("%Y-%m-%d %H:%M"), outputs=[])
     resume = animate._servers("down", log)                   # keys + LTX use both cards
@@ -1382,6 +1389,18 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
     finally:
         if resume:
             animate._servers("up", log)
+
+
+def mix_matches_voices(book: Path, stem: str) -> bool:
+    """True when the chapter's mix (work/final) is as long as its voices (work/<stem>.mp3). 10-27 Speckled Band: the
+    1.25x pace re-timed the voices and the timeline (57.4 -> 45.9 min) but the mix stayed the 1.0x one, so the shot
+    video, timed from the timeline, played over audio that ran 25% slower ("completely out of sync")."""
+    from .score import audio_seconds
+    mix, voices = book / "work" / "final" / f"{stem}.mp3", book / "work" / f"{stem}.mp3"
+    if not (mix.exists() and voices.exists()):
+        return False
+    v = audio_seconds(voices)
+    return abs(audio_seconds(mix) - v) <= max(2.0, 0.01 * v)
 
 
 def covers_chapter(book: Path, stem: str, mp4: Path) -> bool:
