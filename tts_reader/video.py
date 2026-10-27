@@ -928,7 +928,7 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     only when its words do."""
     chars, places = looks(plan, R)
     if style is None:
-        style = R.style() if R is not None else DEFAULT_STYLE
+        style = R.ref_style() if R is not None else DEFAULT_STYLE   # sheets: the reference style
     # the 3D flow builds a model + LoRA for the whole cast, so it lists them all (10-22 knight_forged_v3: the King
     # was in no still picture -> no sheet -> his LoRA failed with no reference face)
     used = set(plan.get("sheet_cast") or [])
@@ -961,22 +961,24 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
 # reference sheet, drawn from the person's sheet (same face); every picture, keyframe and portrait
 # uses the outfit in force at its moment, and the checks look for it.
 
+# 10-27 audit: the prompt asked only for "LASTING" changes and its examples were one story's (armor a smith forges),
+# so a chapter that opens with Watson woken in bed had no nightclothes and he was drawn in bed in his tweed jacket
 WARDROBE_PROMPT = """You keep the wardrobe for an illustrated audiobook. Below are the people with their
 usual look, then the chapter in numbered paragraphs.
 
-List every LASTING change to how a person looks, in story order: clothes or armor put on or taken off,
-something worn given away or picked up, and visible changes to the body or clothes (bound wounds, torn and
-ash-stained clothes, a beard shaved).
+List every change to what a person WEARS, in story order, whenever the text states or plainly implies they are
+dressed differently from their usual look: night clothes while they are in bed or have just woken, a coat, cloak or
+hat put on to go out (and off again indoors), a disguise, clothes soaked, torn, stained or burnt, a garment given
+away or picked up, a bandage. Getting dressed again is its own entry with their usual clothes.
 POSTURE AND MOVEMENT ARE NOT CLOTHES: sitting, standing, lying, kneeling, walking or leaping, being healed or able to
-walk, and where someone is are never a wardrobe entry and never part of a "dress" (the shots show them). Only what the text states or plainly
-implies; a change that ends (armor taken off again) is another entry.
-MAKING or buying something is NOT wearing it. Armor a smith forges is on the anvil and in his hands while he makes
-it; it is worn from the first paragraph where the text has him put it on, wear it, or set out in it (he forges his
-armor in one paragraph and walks north to the fight in a later one: "from" = the walking paragraph).
+walk, and where someone is are never a wardrobe entry and never part of a "dress" (the shots show them). Only what the
+text states or plainly implies.
+Something being made, bought or carried is not worn: it is worn from the first paragraph where the text has them put
+it on or wear it.
 
 For each change: "from" = the number of the first paragraph where it is already true, "id" = 2-4 words
-naming the look ("star-iron armor"), "dress" = EVERYTHING the person wears from then on, described so a
-painter can draw it with no other context (materials, colors, what covers what; a helm on or off).
+naming the look ("night clothes", "travelling cloak"), "dress" = EVERYTHING the person wears from then on, described
+so a painter can draw it with no other context (materials, colors, what covers what; a hat on or off).
 Never describe the face, hair or age (those never change here). People who never change are left out.
 Only things WORN: fire, light, a glow, a halo, a cloud or anything resting on or hovering over someone is a moment of
 the story, not clothing, and is never a wardrobe entry; nor is being unseen or gone.
@@ -1051,12 +1053,20 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str) -> di
     return out
 
 
+def wardrobe_inputs_key(plan: dict, text: str) -> str:
+    """What a chapter's wardrobe is planned from: its rules, the cast's looks and the chapter (10-27 audit: the key was
+    the prompt alone, so a look change or a fixed cast never re-planned it)."""
+    import hashlib
+    chars, _ = looks(plan)
+    return hashlib.sha1(json.dumps([WARDROBE_PROMPT, sorted(chars.items()), hashlib.sha1(text.encode()).hexdigest()],
+                                   sort_keys=True).encode()).hexdigest()[:8]
+
+
 def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print) -> bool:
     """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
     worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
     words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes."""
-    import hashlib
-    k = hashlib.sha1(WARDROBE_PROMPT.encode()).hexdigest()[:8]
+    k = wardrobe_inputs_key(plan, text)
     if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
         return False
     old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}

@@ -101,5 +101,12 @@ S._converse = lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked the di
 new2, by2, _ = S.direct(b, stem, es, log=lambda m: None)
 check("a second run replays the cache (no director call) to the same shots",
       [by2[e["id"]][0]["picture"] for e in new2] == [s["picture"] for _, s in shots])
+scr = {}
+S.compose({"people": [{"name": "Helen Stoner", "side": "right"}], "setting": ""}, ["Helen Stoner", "Sherlock Holmes"], [], scr)
+S.compose({"people": [{"name": "Sherlock Holmes", "side": "right"}], "setting": ""}, ["Helen Stoner", "Sherlock Holmes"], [], scr)
+two = S.compose({"people": [{"name": "Helen Stoner", "side": "left"}, {"name": "Sherlock Holmes", "side": "right"}],
+                 "setting": ""}, ["Helen Stoner", "Sherlock Holmes"], [], scr)
+check("a side tie (both first placed 'right') is settled by the order drawn, and kept: Helen then Holmes",
+      two["who"] == ["Helen Stoner", "Sherlock Holmes"] and scr["Helen Stoner"] < scr["Sherlock Holmes"], (two["who"], scr))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

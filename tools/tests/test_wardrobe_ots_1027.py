@@ -1,0 +1,37 @@
+"""10-27 keys: Watson in bed in his tweed jacket (no nightclothes: the wardrobe asked only for LASTING changes, in one
+story's armor examples, and was keyed on its prompt alone) and the back of Helen's head drawn as a stranger in green
+(an over-the-shoulder listener had no hair or clothes in the key prompt)."""
+import json, sys
+from pathlib import Path
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE.parent.parent)); sys.path.insert(0, str(HERE))
+from tts_reader import video
+import shot_flow as SF, mannequin_flow as MF
+import fakebook
+
+fails = []
+def check(name, ok, got=None):
+    print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  got {got}"))
+    ok or fails.append(name)
+
+check("the wardrobe asks for night clothes, coats, disguises and getting dressed again; no armor/forge examples",
+      "night clothes" in video.WARDROBE_PROMPT and "Getting dressed again" in video.WARDROBE_PROMPT
+      and "armor" not in video.WARDROBE_PROMPT.lower() and "smith" not in video.WARDROBE_PROMPT.lower())
+p1 = {"look": {"characters": {"Watson": "a man of about 35, wearing a tweed jacket"}}}
+p2 = {"look": {"characters": {"Watson": "a man of about 35, wearing a tweed jacket and a cap"}}}
+k1 = video.wardrobe_inputs_key(p1, "chapter one")
+check("the wardrobe is planned again when a look or the chapter changes",
+      k1 != video.wardrobe_inputs_key(p2, "chapter one") and k1 != video.wardrobe_inputs_key(p1, "chapter two")
+      and k1 == video.wardrobe_inputs_key(p1, "chapter one"))
+cx = fakebook.book({"Helen Stoner": "a woman of about 30, dark hair with a few grey streaks, wearing a black mourning dress",
+                    "Sherlock Holmes": "a man of about 40, black hair, wearing a dark frock coat"}, loras="all")
+(cx.book / "work" / "video" / "x").mkdir(parents=True, exist_ok=True)
+(cx.book / "work" / "video" / "x" / "plan.json").write_text(json.dumps({"look": {"characters": {}}}))
+MF._dress = lambda *a, **k: {}
+p = SF._key_prompt(cx.book, "x", "talk-001595", {"id": "talk-001595_s0", "who": ["Sherlock Holmes", "Helen Stoner"],
+                                                 "ots": "Helen Stoner", "picture": "over-the-shoulder", "framing": "medium",
+                                                 "place": "Baker Street Sitting Room"})
+seg = p[p.index("Helen Stoner, seen from behind"):][:160]
+check("the listener seen from behind has her hair and clothes", "dark hair" in seg and "black mourning dress" in seg, seg)
+print(json.dumps({"fails": fails}))
+sys.exit(1 if fails else 0)

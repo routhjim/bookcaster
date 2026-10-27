@@ -111,7 +111,7 @@ class Char:
         self.plans = {c.name: json.loads((c / "plan.json").read_text()) for c in self.chapters}
         # the book's one style (registry: art_style.txt > a chapter's style.txt > the default), as the sheets are drawn
         # and the keys are prompted: their names hash it (10-27: the first chapter's style.txt only, '' without one)
-        self.draw_style = R.style()
+        self.draw_style = R.ref_style()     # the sheets' own style, never the picture's (10-27)
         self.style = self.draw_style.strip().rstrip(".") + "."
         self.period_s = V.period_line(str(self.refs_dir)).strip() + " " if V.period_of(str(self.refs_dir)) else ""  # not in input_hash
         # outfits: None = the usual look; then each wardrobe row (by id) across the chapters
