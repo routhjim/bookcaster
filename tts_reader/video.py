@@ -983,7 +983,7 @@ Never describe the face, hair or age (those never change here). People who never
 Only things WORN: fire, light, a glow, a halo, a cloud or anything resting on or hovering over someone is a moment of
 the story, not clothing, and is never a wardrobe entry; nor is being unseen or gone.
 
-People:
+{notes}People:
 {people}
 
 Chapter:
@@ -1013,7 +1013,8 @@ def changes_nothing(dress: str, look: str) -> bool:
     return bool(words) and words <= set(re.findall(r"[a-z]{4,}", str(look).lower()))
 
 
-def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narrator: str = "") -> dict | None:
+def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narrator: str = "",
+                   notes: str = "") -> dict | None:
     """{name: [{"from": paragraph, "id", "dress"}, ...]} (in story order), from one language-model
     pass over the whole chapter; {} when nobody changes, None when the server gave no usable answer
     (10-25: Acts 2's answer filtered down to {} read as "no answer", and the stale fire outfits stayed)."""
@@ -1024,7 +1025,11 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narra
                                                      if narrator and n == narrator else "") for n, d in chars.items())
     numbered = "\n".join(f"[{i}] {p}" for i, p in enumerate(paras))
     try:
-        reply = _chat(llm_url, model, WARDROBE_PROMPT.format(people=people, paras=numbered), max_tokens=4000)
+        # the director's notes on how each scene opens are evidence of clothes (10-27: its breakdown had "Watson in a
+        # nightshirt" for the waking scene while the wardrobe, reading "I", gave him none)
+        nt = (f"The film director's notes on how each scene opens (evidence of what people wear there):\n{notes}\n\n"
+              if notes else "")
+        reply = _chat(llm_url, model, WARDROBE_PROMPT.format(notes=nt, people=people, paras=numbered), max_tokens=4000)
     except Exception:
         return None
     m = re.search(r"\{.*\}", reply or "", re.S)
@@ -1055,26 +1060,27 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narra
     return out
 
 
-def wardrobe_inputs_key(plan: dict, text: str, narrator: str = "") -> str:
+def wardrobe_inputs_key(plan: dict, text: str, narrator: str = "", notes: str = "") -> str:
     """What a chapter's wardrobe is planned from: its rules, the cast's looks and the chapter (10-27 audit: the key was
     the prompt alone, so a look change or a fixed cast never re-planned it)."""
     import hashlib
     chars, _ = looks(plan)
     return hashlib.sha1(json.dumps([WARDROBE_PROMPT, sorted(chars.items()), hashlib.sha1(text.encode()).hexdigest(),
-                                    narrator],
+                                    narrator, notes],
                                    sort_keys=True).encode()).hexdigest()[:8]
 
 
-def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print, narrator: str = "") -> bool:
+def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print, narrator: str = "",
+                    notes: str = "") -> bool:
     """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
     worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
     words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes."""
-    k = wardrobe_inputs_key(plan, text, narrator)
+    k = wardrobe_inputs_key(plan, text, narrator, notes)
     if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
         return False
     old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
     chars, _ = looks(plan)
-    new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator)
+    new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator, notes)
     if new is None:
         log("  wardrobe: the language model gave no usable answer; the old outfits stay")
         return False
