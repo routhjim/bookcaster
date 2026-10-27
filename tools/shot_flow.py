@@ -773,7 +773,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                          else sc_["opens"])[-700:]
         nxt = scenes[si + 1] if si + 1 < len(scenes) else None
         scene_txt = (f"THE SCENE: scene {si + 1} of the chapter ({sc_['start']:.0f}-{sc_['end']:.0f} s of it), at "
-                     f"{home}, with {', '.join(sc_['who']) or 'nobody'}: {sc_.get('what', '')}"
+                     f"{home}, with {', '.join(sc_['who']) or 'nobody'}. The whole scene, for context (show only what "
+                     f"THIS passage tells, never what comes later in it): {sc_.get('what', '')}"
                      + "{CUTS}"
                      + (f"\nThe scene after it (not this one): at {nxt['place']}: {nxt.get('what', '')}" if nxt else ""))
         lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
@@ -1221,6 +1222,10 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
             cp.write_text(json.dumps({"k": k if not faults else "", "scenes": sc}, indent=1))
     sc = [x for x in sc if isinstance(x, dict) and x.get("place")]
     sc.sort(key=lambda x: float(x.get("start") or 0))
+    starts = sorted(float(x["t"]) for x in tl)
+    for x in sc[1:]:                    # a scene starts where a paragraph or a spoken line starts (10-27: a scene cut
+        x["start"] = min(starts, key=lambda t: abs(t - float(x.get("start") or 0)))  # at 130.0 split Watson's line)
+    sc = [x for i, x in enumerate(sc) if i == 0 or x["start"] > sc[i - 1]["start"]]
     if sc:
         sc[0]["start"] = 0.0
     for a, b in zip(sc, sc[1:] + [{"start": end}]):
