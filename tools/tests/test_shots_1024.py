@@ -62,7 +62,6 @@ class Cx:
 
 
 SF._ctx = lambda b, s: (None, Cx())
-MF._lora = lambda b, w: (None,)
 MF._blank_edges = lambda k: False
 SF._cast = lambda b, s, e: ([], [])
 SF._key_prompt = lambda *a: "prompt"
@@ -84,8 +83,13 @@ def ask(items):
 CH.vl_ask = ask
 book = td / "book"
 (book / "work" / "video").mkdir(parents=True)
-(book / "work" / "video" / "look.json").write_text(json.dumps({"places": {"Place A": "Inside: a hall.",
+(book / "work" / "video" / "look.json").write_text(json.dumps({"characters": {"Edric": "a young man"},
+                                                              "places": {"Place A": "Inside: a hall.",
                                                                           "Place B": "Outside: a field."}}))
+(book / "work" / "video" / "charlora" / "edric").mkdir(parents=True)     # every person in a key has a LoRA (10-27)
+(book / "work" / "video" / "charlora" / "edric" / "build.json").write_text(json.dumps(
+    {"lora": "edric.safetensors", "trigger": "chr_edric", "hash": "h1"}))
+Cx.book, Cx.stem = book, "s"
 shots = [{"id": f"{x}-1_s0", "who": ["Edric"], "picture": "x", "place": "Place " + ("B" if x == "B" else "A")}
          for x in "ABCDE"]
 dirty = SF.keys_judged(book, "s", shots, print)
