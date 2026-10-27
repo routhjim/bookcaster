@@ -99,18 +99,19 @@ Rules:
   medium or close shot at most {closemax}. One person alone only for a close reaction or a detail.
 - WHEN: nothing of an event (an arrival, a light, a sound, a change) is in any shot before the second its sentence
   starts.
-- "place": where the shot is, one of the passage's places. "who": the names in the picture, left to right, only from
-  the passage's names. "framing": "wide", "medium" or "close".
-- "picture": one sentence for the OPENING picture only: where each one is and which way each faces, what each holds,
-  each body's posture, the same as its "pose" (and as the passage says: someone leaning back in a chair is sitting).
-  Every body part or object the action will use is in the picture. Nothing in mid-action. Never writing, a title or a
-  caption: the video model can't draw letters.
+- "place": where the shot is, one of the passage's places. "framing": "wide", "medium" or "close".
+- "people": everyone in the OPENING picture, left to right, only from the passage's names, each with "name", "side"
+  ("left", "centre" or "right"), "pose" (standing, sitting, lying, kneeling or crouching: as the passage says, someone
+  leaning back in a chair is sitting), "at" (where on the set: "in the armchair by the fire", "at the writing desk",
+  "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
+- "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
+  action will use. Never a person's position or posture here (they are in "people"), nothing in mid-action, never
+  writing, a title or a caption: the video model can't draw letters.
 - "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
   change over time is written as visible steps. Say what the hands hold. Call each one by a plain description (a tall
   man in a dark frock coat), never by name. No magic words (magic, enchanted, spell), no camera directions, no
   written words or titles. At most 50 words.
-- "pose": each person's body position in the OPENING picture, one word each: standing, sitting, lying, kneeling or
-  crouching; "pose_end": the same at the shot's END. A pose carries over from the end of the shot before and changes
+- "pose_end": each person's pose at the shot's END, one word each. A pose carries over from the end of the shot before and changes
   only in a shot whose action changes it (he is pulled to his feet: "pose" sitting, "pose_end" standing). Someone the
   narration says cannot stand or walk stays sitting or lying in every shot until the narration changes that.
 - "kind": "talk" (above), "action" when a body or object moves with force (a strike, a fall, a lunge, a hammer blow),
@@ -118,7 +119,7 @@ Rules:
 - "state_end": how things stand at the END of the passage: each person's clothes (what they wear now), what each
   holds, each one's posture and where they are, and any visible change to the place (a lamp lit, a door open, a letter
   on the table). Plain words, at most 80.
-Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "who": ["..."], "framing": "...", "picture": "...", "action": "...", "pose": {{"<name>": "sitting"}}, "pose_end": {{"<name>": "sitting"}}, "crowd": false}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
+Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": ""}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}, "crowd": false}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
 PASSAGE_ASK = """{scene}
 The story just before: {before}
 THE PASSAGE ({sec:.1f} seconds). Each line: [seconds from the passage's start] who: the words. Spoken lines say
@@ -488,6 +489,37 @@ def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effo
 
 
 SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
+POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
+
+
+def compose(s: dict, cast: list, crs: list) -> dict:
+    """A shot's "who", "pose" and "picture" from the director's "people" (name, side, pose, at, facing, holds) and
+    "setting" (10-27 user: "the goal is to prevent the errors more than detect and fix them": who stands where and in
+    what posture was written twice - the who list's order and the picture's free words - and they disagreed: Helen
+    drawn at the desk opened Holmes's drawer, Holmes "stood" while leaning back in his chair). Now it is said once."""
+    ppl = [x for x in s.get("people") or [] if isinstance(x, dict)]
+    if not ppl and not s.get("setting"):
+        return s                        # an old-style answer: as it is
+    rows = []
+    for x in ppl:
+        w = MF._cast_name(x.get("name"), cast, crs)
+        if w and w not in [r[0] for r in rows]:
+            rows.append((w, SIDE.get(str(x.get("side") or "").lower(), 1), pose_cat(x.get("pose")) or "stand", x))
+    rows.sort(key=lambda r: r[1])       # left to right, stable
+    many = len(rows) > 1
+    parts = []
+    for w, sd_, pz, x in rows:
+        where = str(x.get("at") or "").strip().rstrip(".")
+        side = f" on the {['left', 'centre', 'right'][sd_]}" if many else ""
+        face = str(x.get("facing") or "").strip().rstrip(".")
+        hold = str(x.get("holds") or "").strip().rstrip(".")
+        parts.append(f"{w} {POSE_VERB[pz]}{' ' + where if where else ''}{side}"
+                     f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
+                     f"{', holding ' + re.sub(r'^holding\s+', '', hold) if hold and hold.lower() not in ('nothing', 'none') else ''}")
+    setting = str(s.get("setting") or "").strip().rstrip(".")
+    s = dict(s, who=[r[0] for r in rows], pose={r[0]: POSE_WORDS[r[2]].split()[0] for r in rows},
+             picture=("; ".join(parts) + (". " if parts and setting else "") + setting).strip() + ".")
+    return s
 
 
 def picture_order(who: list, picture: str) -> list:
@@ -569,6 +601,17 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
     return out
 
 
+def load_timeline(book: Path, stem: str, chars: list) -> list:
+    """The chapter's timeline with every speaker as their CAST name ("Stoner" -> "Helen Stoner", "Watson" ->
+    "Dr. Watson"; 10-27: Helen's talk prompts said "Stoner speaks ... Helen Stoner listens with a closed mouth" and
+    the model moved Holmes's lips). Read through here, nothing after it sees a second name for anyone."""
+    tl = json.loads((book / "work" / f"{stem}.timeline.json").read_text())
+    for x in tl:
+        if x.get("speaker") and x["speaker"] != "narrator":
+            x["speaker"] = _who_full(x["speaker"], chars) or x["speaker"]
+    return tl
+
+
 def _who_full(spk: str, names: list) -> str:
     """A timeline speaker ("Holmes", "Stoner") as a cast name ("Sherlock Holmes", "Helen Stoner")."""
     if not spk or spk == "narrator":
@@ -640,13 +683,13 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     _, cx = _ctx(book, stem)
     sd = shot_dir(book, stem)
     (sd / "passages").mkdir(parents=True, exist_ok=True)
-    tl = json.loads((book / "work" / f"{stem}.timeline.json").read_text())
     sheets = sheets or {}
     span = _spans(es)
     t_a, t_b = float(es[0]["t"]), float(es[-1]["t"]) + span[es[-1]["id"]]
-    sents = sentences(tl)
     plan = json.loads((MF.paths(book, stem)[0] / "plan.json").read_text())
     chars = sorted((plan.get("look") or {}).get("characters") or {}) or sorted({w for e in es for w in _cast(book, stem, e)[0]})
+    tl = load_timeline(book, stem, chars)
+    sents = sentences(tl)
     nar = BC.narrator_character(book)
     nar = _who_full(nar, chars) if nar else ""
     talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
@@ -810,13 +853,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     a = json.loads(m.group(0)) if m else {}
                 except ValueError:
                     a = {}
+                a["shots"] = [compose(s, cast, crs) if isinstance(s, dict) and s.get("kind") != "talk" else s
+                              for s in a.get("shots") or []] if isinstance(a.get("shots"), list) else []
                 for s in a.get("shots") or []:
                     s["who"] = list(dict.fromkeys(w for w in (MF._cast_name(x, cast, crs) for x in (s.get("who") or []))
                                                   if w))
                     if s.get("action"):
                         s["action"] = unname(str(s["action"]), cast, dress)
-                    if s.get("kind") != "talk":
-                        s["who"] = picture_order(s["who"], str(s.get("picture") or ""))
+
                 faults = _shot_faults(a, cast, sec, quotes) + _repeats(a, pics_before, pics_scene) + [
                     f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
                                                                                    if others else "")
@@ -1210,7 +1254,7 @@ def place_sheets(book: Path, stem: str, es: list, by: dict, log=print) -> dict:
     vd, _, _ = MF.paths(book, stem)
     plan = json.loads((vd / "plan.json").read_text())
     chars = sorted(((plan.get("look") or {}).get("characters") or {}))
-    tl = json.loads((book / "work" / f"{stem}.timeline.json").read_text())
+    tl = load_timeline(book, stem, chars)
     pf = book / "period.txt"
     period = f"The time and place of the story: {pf.read_text().strip()}\n" if pf.exists() else ""
     at = {}

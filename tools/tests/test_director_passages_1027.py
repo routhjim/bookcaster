@@ -107,5 +107,28 @@ check("a picture that places nobody keeps who as given",
 check("'Watson sits on the left while Holmes stands on the right' keeps that order",
       S.picture_order(["Sherlock Holmes", "Dr. Watson"], "Dr. Watson sits at the desk on the left, while Sherlock Holmes "
                       "stands on the right") == ["Dr. Watson", "Sherlock Holmes"])
+_c = S.compose({"kind": "quiet", "people": [
+        {"name": "Holmes", "side": "right", "pose": "standing", "at": "at the writing desk", "facing": "Helen", "holds": ""},
+        {"name": "Helen Stoner", "side": "left", "pose": "sitting", "at": "in a chair by the window", "facing": "toward Holmes",
+         "holds": "nothing"}], "setting": "Morning light through the window; the desk drawer is closed."},
+    ["Sherlock Holmes", "Dr. Watson", "Helen Stoner"], [])
+check("people -> who in left-to-right order, by construction", _c["who"] == ["Helen Stoner", "Sherlock Holmes"], _c["who"])
+check("people -> one picture that says the same", _c["picture"].startswith(
+      "Helen Stoner sits in a chair by the window on the left, facing toward Holmes; Sherlock Holmes stands at the writing "
+      "desk on the right, facing Helen. Morning light"), _c["picture"])
+check("people -> pose from the same words", _c["pose"] == {"Helen Stoner": "sitting", "Sherlock Holmes": "standing"}, _c["pose"])
+check("an old-style answer is left as it is", S.compose({"who": ["A"], "picture": "x"}, ["A"], []) == {"who": ["A"], "picture": "x"})
+check("the rules ask for people and setting, not free placement", '"people"' in S.SHOT_RULES and '"setting"' in S.SHOT_RULES
+      and '"who": the names in the picture' not in S.SHOT_RULES)
+import tempfile as _tf
+with _tf.TemporaryDirectory() as _d:
+    (Path(_d) / "work").mkdir()
+    (Path(_d) / "work" / "x.timeline.json").write_text(json.dumps([
+        {"t": 0, "kind": "narration", "speaker": "narrator", "text": "She spoke."},
+        {"t": 2, "kind": "quote", "speaker": "Stoner", "text": "It is fear."},
+        {"t": 4, "kind": "quote", "speaker": "Watson", "text": "Indeed."}]))
+    _tl = S.load_timeline(Path(_d), "x", ["Dr. Watson", "Helen Stoner", "Sherlock Holmes"])
+check("the timeline is read with cast names only (one name per person)",
+      [x["speaker"] for x in _tl] == ["narrator", "Helen Stoner", "Dr. Watson"], [x["speaker"] for x in _tl])
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
