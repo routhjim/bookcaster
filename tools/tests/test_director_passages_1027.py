@@ -132,5 +132,15 @@ check("the timeline is read with cast names only (one name per person)",
       [x["speaker"] for x in _tl] == ["narrator", "Helen Stoner", "Dr. Watson"], [x["speaker"] for x in _tl])
 check("the passage turn shows the scene summary as context only", "show only what" in S.direct.__code__.co_consts.__repr__()
       or "never what comes later" in Path(S.__file__).read_text())
+_scr = {}
+_cast3 = ["Sherlock Holmes", "Dr. Watson", "Helen Stoner"]
+S.compose({"people": [{"name": "Watson", "side": "left"}, {"name": "Holmes", "side": "right"}], "setting": "x"}, _cast3, [], _scr)
+_flip = S.compose({"people": [{"name": "Holmes", "side": "left"}, {"name": "Watson", "side": "right"}], "setting": "x"},
+                  _cast3, [], _scr)
+check("a scene keeps each one's screen side (10-27: Holmes right, then left)", _flip["who"] == ["Dr. Watson", "Sherlock Holmes"],
+      _flip["who"])
+check("a repeated setup gets its own seed per shot", S.shot_seed("action-000000_s0") != S.shot_seed("action-000332_s0")
+      and S.shot_seed("x") == 0)
+check("the narration outranks carried state", "THE NARRATION FIRST" in S.SHOT_RULES)
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

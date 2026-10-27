@@ -90,6 +90,8 @@ Rules:
   where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
   shot shows ONE physical action (one move, one gesture, one exchange) or a quiet held moment, played through to its
   result. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+- THE NARRATION FIRST: whatever the passage says about where someone is or how they are (sitting, lying, holding,
+  wearing; "he had been leaning back in his chair" too) is how the picture shows them, whatever earlier shots had.
 - CONTINUITY: the first shot of a passage continues from the last shot before: the same people in the same places,
   clothes and postures, unless the passage changes them. Nobody lies down, sits or stands up again unless the passage
   says so.
@@ -492,7 +494,14 @@ SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
 POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
 
 
-def compose(s: dict, cast: list, crs: list) -> dict:
+def shot_seed(sid: str) -> int:
+    """A shot's own seed offset, from its time (10-27 user: Watson's preamble may repeat its desk shots, but the same
+    words and seed drew the same pixels: a repeated setup is a fresh take of it)."""
+    m = re.search(r"-(\d{4,})", sid or "")
+    return 1000 * (int(m.group(1)) % 997) if m else 0
+
+
+def compose(s: dict, cast: list, crs: list, sides: dict | None = None) -> dict:
     """A shot's "who", "pose" and "picture" from the director's "people" (name, side, pose, at, facing, holds) and
     "setting" (10-27 user: "the goal is to prevent the errors more than detect and fix them": who stands where and in
     what posture was written twice - the who list's order and the picture's free words - and they disagreed: Helen
@@ -505,6 +514,12 @@ def compose(s: dict, cast: list, crs: list) -> dict:
         w = MF._cast_name(x.get("name"), cast, crs)
         if w and w not in [r[0] for r in rows]:
             rows.append((w, SIDE.get(str(x.get("side") or "").lower(), 1), pose_cat(x.get("pose")) or "stand", x))
+    if sides is not None:               # a scene keeps each one's side (10-27: Holmes right, then left, then right: the
+        if len(rows) > 1:               # 180-degree rule). The first shot that places two sets them; later ones keep them
+            known = [r for r in rows if r[0] in sides]
+            rows = [(w, sides[w] if w in sides and len(known) >= 1 else sd_, pz, x) for w, sd_, pz, x in rows]
+            for w, sd_, pz, x in rows:
+                sides.setdefault(w, sd_)
     rows.sort(key=lambda r: r[1])       # left to right, stable
     many = len(rows) > 1
     parts = []
@@ -747,7 +762,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     state, prev_shot, people_here = "(the start of the chapter)" if t_a < 1 else "", None, []
     new_es, by, new_sheets = [], {}, {}
     system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
-    pics_before, pics_scene = [], []
+    pics_before, pics_scene, screen = [], [], {}
     sides, pair = {}, None
     animate_up = False
     known = list(dict.fromkeys(real + [w for w in ((json.loads(lp.read_text()).get("places") or {}) if lp.exists() else {})]))
@@ -766,7 +781,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                                          "start": t_a, "end": t_b}
         if si != cur:                   # a new scene: its place; the conversation starts again (no old shots to copy)
             cur, home = si, sc_["place"] or home
-            sides, pair, people_here, where_of, talk_ = {}, None, [], {}, []
+            sides, pair, people_here, where_of, talk_, screen = {}, None, [], {}, [], {}
             pics_before, pics_scene = pics_before + pics_scene, []
             if sc_.get("opens"):
                 state = (f"{state} Now, as this scene opens: {sc_['opens']}" if state and not state.startswith("(")
@@ -861,7 +876,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     a = json.loads(m.group(0)) if m else {}
                 except ValueError:
                     a = {}
-                a["shots"] = [compose(s, cast, crs) if isinstance(s, dict) and s.get("kind") != "talk" else s
+                a["shots"] = [compose(s, cast, crs, dict(screen)) if isinstance(s, dict) and s.get("kind") != "talk" else s
                               for s in a.get("shots") or []] if isinstance(a.get("shots"), list) else []
                 for s in a.get("shots") or []:
                     s["who"] = list(dict.fromkeys(w for w in (MF._cast_name(x, cast, crs) for x in (s.get("who") or []))
@@ -875,14 +890,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     for i, x in enumerate(a.get("shots") or [], 1) if x.get("kind") != "talk" and scenes and
                     not any(str(x.get("place") or "").strip().lower() in (w.lower(), re.sub(r"\s*\((inside|outside)\)$",
                             "", w).lower()) for w in [home] + others)]
-                rest = [s for s in a.get("shots") or [] if s.get("kind") != "talk"]
-                if rest and not faults:
-                    said = " ".join(z for *_, z in lines_)
-                    tim = [(max(0.0, x0 - pa), z) for x0, _, _, _, z in lines_]
-                    st_ = [float(s.get("start") or 0) for s in a["shots"]]
-                    durd = [dict(s, dur=b - x) for s, x, b in zip(a["shots"], st_, st_[1:] + [sec]) if s.get("kind") != "talk"]
-                    faults = _worn({"shots": durd}, " ".join(dress.values())) + _making({"shots": durd}, narr) + \
-                        _passing({"shots": durd}, tim, hs.get("room") or "")
+                # (10-27: the worn-armor, making and passing-effect checks were band-aids for the moment-at-a-time
+                # director; with the scenes and the carried state they never fired true - the lit fireplace of Baker
+                # Street failed "shows fire" - and are gone from here)
                 if not faults:
                     break
                 turn.append({"role": "user", "content": "Your last answer broke the rules: " + "; ".join(faults) +
@@ -891,6 +901,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 log(f"!!! passage {pa:.1f}-{pb:.1f} s: the director's shots still break the rules: {faults}")
             if a.get("shots"):
                 cp.write_text(json.dumps({"k": k if not faults else "", "a": a, "reply": reply}, indent=1))
+        for x in a.get("shots") or []:   # the scene's screen sides, from the answer kept
+            if x.get("kind") != "talk":
+                compose(x, cast, crs, screen) if x.get("people") else None
         if a.get("shots"):               # the conversation goes on with this passage and its answer (the bad tries dropped)
             talk_ += [{"role": "user", "content": q0.replace("{fix}", "")},
                       {"role": "assistant", "content": (got.get("reply") if hit else reply) or json.dumps(a)}]
@@ -1737,7 +1750,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                                                  str(HERE / "qwen_image.py"), "--serve"], stdin=subprocess.PIPE,
                                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                                 bufsize=1, env=dict(os.environ, HIP_VISIBLE_DEVICES=hip))
-                    job = dict(t["job"], id=f"{t['s']['id']}_key_{seed}", seed=seed, path=str(k))
+                    job = dict(t["job"], id=f"{t['s']['id']}_key_{seed}", seed=seed + shot_seed(t["s"]["id"]), path=str(k))
                     proc.stdin.write(json.dumps(job) + "\n")
                     proc.stdin.flush()
                     while True:
@@ -1957,7 +1970,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 two.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": act,
-                            "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())),
+                            "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img,
                             "people": None if s.get("crowd") else len(s.get("who") or [])})
@@ -1968,7 +1981,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             enc_dist.append({"name": emb, "prompt": p_})
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_,
-                              "width": W, "height": H, "fps": FPS, "seed": seed, "frames": n, "line": s["id"],
+                              "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img,
                               "people": None if s.get("crowd") else len(s.get("who") or [])})
     for j in talk + two + quiet:            # a clip from another key or other words is drawn again
@@ -2125,7 +2138,7 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                     continue
                 log(f"{n}: {fa}: taken once more (queued on the loaded model)")
                 extra = json.loads(more.read_text())
-                extra.append(dict(j, name=f"{n}_t2", seed=RETAKE))
+                extra.append(dict(j, name=f"{n}_t2", seed=RETAKE + shot_seed(n)))
                 tmp = more.with_suffix(".tmp")
                 tmp.write_text(json.dumps(extra, indent=1))
                 os.replace(tmp, more)
