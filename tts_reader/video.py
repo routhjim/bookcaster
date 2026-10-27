@@ -1013,13 +1013,15 @@ def changes_nothing(dress: str, look: str) -> bool:
     return bool(words) and words <= set(re.findall(r"[a-z]{4,}", str(look).lower()))
 
 
-def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str) -> dict | None:
+def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narrator: str = "") -> dict | None:
     """{name: [{"from": paragraph, "id", "dress"}, ...]} (in story order), from one language-model
     pass over the whole chapter; {} when nobody changes, None when the server gave no usable answer
     (10-25: Acts 2's answer filtered down to {} read as "no answer", and the stale fire outfits stayed)."""
     if not chars:
         return {}
-    people = "\n".join(f"- {n}: {str(d).strip()}" for n, d in chars.items())
+    # the narrator is "I" in the text, never named where they wake or dress (10-27: Watson got no night clothes)
+    people = "\n".join(f"- {n}: {str(d).strip()}" + (" (the narrator: the \"I\" of the chapter is this person)"
+                                                     if narrator and n == narrator else "") for n, d in chars.items())
     numbered = "\n".join(f"[{i}] {p}" for i, p in enumerate(paras))
     try:
         reply = _chat(llm_url, model, WARDROBE_PROMPT.format(people=people, paras=numbered), max_tokens=4000)
@@ -1053,25 +1055,26 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str) -> di
     return out
 
 
-def wardrobe_inputs_key(plan: dict, text: str) -> str:
+def wardrobe_inputs_key(plan: dict, text: str, narrator: str = "") -> str:
     """What a chapter's wardrobe is planned from: its rules, the cast's looks and the chapter (10-27 audit: the key was
     the prompt alone, so a look change or a fixed cast never re-planned it)."""
     import hashlib
     chars, _ = looks(plan)
-    return hashlib.sha1(json.dumps([WARDROBE_PROMPT, sorted(chars.items()), hashlib.sha1(text.encode()).hexdigest()],
+    return hashlib.sha1(json.dumps([WARDROBE_PROMPT, sorted(chars.items()), hashlib.sha1(text.encode()).hexdigest(),
+                                    narrator],
                                    sort_keys=True).encode()).hexdigest()[:8]
 
 
-def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print) -> bool:
+def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print, narrator: str = "") -> bool:
     """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
     worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
     words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes."""
-    k = wardrobe_inputs_key(plan, text)
+    k = wardrobe_inputs_key(plan, text, narrator)
     if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
         return False
     old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
     chars, _ = looks(plan)
-    new = plan_wardrobe(paragraphs(text), chars, llm_url, model)
+    new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator)
     if new is None:
         log("  wardrobe: the language model gave no usable answer; the old outfits stay")
         return False

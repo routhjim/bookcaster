@@ -33,5 +33,13 @@ p = SF._key_prompt(cx.book, "x", "talk-001595", {"id": "talk-001595_s0", "who": 
                                                  "place": "Baker Street Sitting Room"})
 seg = p[p.index("Helen Stoner, seen from behind"):][:160]
 check("the listener seen from behind has her hair and clothes", "dark hair" in seg and "black mourning dress" in seg, seg)
+seen = {}
+_chat0 = video._chat
+video._chat = lambda url, model, q, max_tokens=0: (seen.setdefault("q", q), "{}")[1]
+video.plan_wardrobe(["I woke.", "I dressed."], {"Dr. Watson": "a man", "Sherlock Holmes": "a man"}, "u", "m", narrator="Dr. Watson")
+video._chat = _chat0
+check("the wardrobe is told the narrator is the 'I' of the chapter (10-27: Watson got no night clothes)",
+      '- Dr. Watson: a man (the narrator: the "I" of the chapter is this person)' in seen["q"].splitlines(), seen.get("q", "")[:300])
+check("a narrator change re-plans the wardrobe", video.wardrobe_inputs_key(p1, "c", "Watson") != video.wardrobe_inputs_key(p1, "c", ""))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
