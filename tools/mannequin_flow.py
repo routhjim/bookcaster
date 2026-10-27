@@ -30,9 +30,31 @@ W, H = 1152, 640
 LAYERS = "bg=set+creature+prop,people=figure,creature=creature"     # creature alone: its region in the key (10-23)
 
 
+_REG: list = [None]     # the registry of the book last opened here (paths/_reg): _cast_name's looks
+
+
+def _reg(book: Path):
+    """The book's registry (tools/registry.py, cached until look.json changes): the one owner of who and where."""
+    sys.path.insert(0, str(HERE))
+    import registry as RG
+    R = RG.at(book) or RG.Book(book)
+    _REG[0] = R
+    return R
+
+
 def paths(book: Path, stem: str):
     vd = book / "work" / "video" / stem
+    try:
+        _reg(book)
+    except (OSError, ValueError):
+        pass
     return vd, vd / "flow3d" / "stage", vd / "mannequin"
+
+
+def style_of(book: Path, stem: str | None = None) -> str:
+    """The book's one art style (registry.style: art_style.txt > the chapter's style.txt > the default; 10-27: the
+    keys read art_style.txt only, '' for the Speckled Band, while its sheets and LoRAs were pen-and-ink)."""
+    return _reg(book).style(stem)
 
 
 def direct(book: Path, stem: str, ids: list, log=print) -> None:
@@ -103,8 +125,7 @@ def cover(book: Path, stem: str, t0: float, t1: float, log=print) -> list:
         + ", ".join(f"{a_:.0f}-{b_:.0f}s" for a_, b_ in holes))
     animate.igpu("strata", log)
     starts = video.paragraph_times(video.paragraphs(text), tl)
-    style_p = book / "art_style.txt"
-    kf_new = animate.plan_keyframes(new, pics, tl, total, plan, style_p.read_text().strip() if style_p.exists() else "",
+    kf_new = animate.plan_keyframes(new, pics, tl, total, plan, style_of(book, stem),
                                     BC.LLM_URL, BC.LLM_MODEL, log, starts)
     for fr in kf_new["frames"]:             # a stretch of its own: every one a new picture
         fr["mode"] = "key"
@@ -343,19 +364,48 @@ def _fight(md: Path, e: dict) -> bool:
     return e.get("route") != "talk" and bool(_creatures(md, e["id"]))
 
 
-def _cast_name(v, cast: list, crs: list):
-    """The director's left/right as a cast name (10-23: it wrote "the young man" there too, all three tries, and the
-    four key fight moments fell back to the staged route): a name, or a creature / person description."""
+MALE = re.compile(r"\b(man|boy|youth|lad|gentleman)\b", re.I)
+FEMALE = re.compile(r"\b(woman|girl|lady)\b", re.I)
+
+
+def _cast_name(v, cast: list, crs: list, R=None):
+    """The director's left/right (or a speaker, a listener) as a cast name, or None (never a guess). Any spelling of a
+    cast member's name (the registry: Dr./Doctor, a unique surname, a voice label), or the full name inside a longer
+    phrase; else a DESCRIPTION that fits exactly one cast member's look (10-23: it wrote "the young man" there too, all
+    three tries): the creature kind their look names ("the dragon"), or a man / a woman. 10-27: substring matching and
+    story words (knight, princess, smith, king) gave "a woman" to the first person of the cast, whoever it was."""
     v = str(v or "").strip()
     if not v or v.lower() in ("none", "null", "empty"):
         return None
-    for w in cast:
-        if w.lower() in v.lower() or v.lower() in w.lower():
-            return w
-    if re.search(r"\b(dragon|beast|creature|wyrm|monster)\b", v, re.I):
-        return next((w for w in cast if w in crs), None)
-    if re.search(r"\b(man|woman|knight|princess|girl|boy|smith|king|person|youth)\b", v, re.I):
-        return next((w for w in cast if w not in crs), None)
+    R = R or _REG[0]
+    cast = list(cast or [])
+    if v in cast:
+        return v
+    if R is not None and (k := R.key_in(v, cast)) is not None:
+        return k
+    sys.path.insert(0, str(HERE))
+    import registry as RG
+    vw = {x.lower() for x in RG._words(v)}       # "Holmes", "Miss Stoner": the one cast member with those words
+    for k in ([w for w in cast if RG.person_key(w) == RG.person_key(v)],
+              [w for w in cast if vw and vw <= {x.lower() for x in RG._words(w)}],
+              [w for w in cast if re.search(rf"(?<![\w-]){re.escape(w)}(?![\w-])", v, re.I)]):
+        if len(k) == 1:
+            return k[0]
+        if k:
+            return None
+    if R is None:
+        return None
+    from tts_reader import video
+    lk = {w: R.look(w) for w in cast}
+    kinds = video.creature_kinds(lk)
+    named = [w for w, kd in kinds.items() if re.search(rf"\b{kd}s?\b", v, re.I)]
+    if named:
+        return named[0] if len(named) == 1 else None
+    head = {w: " ".join(re.findall(r"[a-z]+", (d or "").lower())[:6]) for w, d in lk.items() if w not in kinds}
+    for rx in (MALE, FEMALE):
+        if rx.search(v):
+            fit = [w for w, h in head.items() if rx.search(h)]
+            return fit[0] if len(fit) == 1 else None
     return None
 
 
@@ -431,7 +481,7 @@ def fight_direct(book: Path, stem: str, es: list, log=print) -> dict:
             except ValueError:
                 a = {}
             crs_ = _creatures(md, e["id"])
-            a["left"], a["right"] = _cast_name(a.get("left"), cast, crs_), _cast_name(a.get("right"), cast, crs_)
+            a["left"], a["right"] = _cast_name(a.get("left"), cast, crs_, cx.R), _cast_name(a.get("right"), cast, crs_, cx.R)
             faults = _action_faults(a, cast)
             if not faults:
                 break
@@ -459,10 +509,8 @@ DOWN = re.compile(r"\b(lies|lying|lie|sprawled|collapsed|knocked (down|flat)|pro
 def _fight_prompt(book: Path, stem: str, mid: str, lay: dict) -> str:
     """The opening key's words: the layout, both looks (wardrobe in force), the place, period and style."""
     vd, _, _ = paths(book, stem)
-    plan = json.loads((vd / "plan.json").read_text())
-    looks = {w: _appearance(d) for w, d in ((plan.get("look") or {}).get("characters") or {}).items()}
-    style_p = book / "art_style.txt"
-    style = style_p.read_text().strip() if style_p.exists() else ""
+    RG = _reg(book)
+    style = style_of(book, stem)
     L, Rt = lay["left"], lay["right"]
     dress = _dress(book, stem, mid, [L, Rt])
 
@@ -470,7 +518,7 @@ def _fight_prompt(book: Path, stem: str, mid: str, lay: dict) -> str:
     crs = _creatures(md, mid)
 
     def one(w, side, other):
-        lk = looks.get(w, "")
+        lk = _look(book, w)
         if w in dress:
             lk = re.split(r",?\s*\bwearing\b", lk)[0] + ", wearing " + dress[w]
         # (10-23: "seen in profile, not facing the viewer" was ignored and no checker can tell the difference; the good
@@ -480,7 +528,7 @@ def _fight_prompt(book: Path, stem: str, mid: str, lay: dict) -> str:
                 DOWN.search(lay.get("layout") or "") else f"facing {other}") if other else ""
         return (f"{_lora(book, w)[1] or ''} {w}, {'on the ' + side + ', ' if other else ''}whole body visible"
                 f"{', ' + turn if turn else ''}: {lk}").strip()
-    place = re.sub(r"\s*\((inside|outside)\)$", "", _place_of(book, stem, mid) or "")
+    place = RG.place(_place_of(book, stem, mid) or "") or ""
     who_ = f"{one(L, 'left', Rt)}. {one(Rt, 'right', L)}. Both bodies whole and clearly apart." if Rt else f"{one(L, '', None)}."
     return (f"{str(lay.get('framing') or 'wide').capitalize()} shot{' in ' + place if place else ''}. {lay['layout']} "
             f"{who_} {period_line(book)} {style} "
@@ -697,21 +745,33 @@ def _in_shot(md: Path, mid: str, fi: int = 0) -> list:
 
 def _person_key(n: str) -> str:
     """One key per person, whatever the spelling ('Dr. Watson' = 'Doctor Watson' = folder doctor_watson)."""
-    import re
-    return re.sub(r"[^a-z]", "", re.sub(r"\bdr\b\.?", "doctor", re.sub(r"_", " ", str(n or "").lower())))
+    sys.path.insert(0, str(HERE))
+    import registry as RG
+    return RG.person_key(n)
 
 
 def _lora(book: Path, who: str):
-    import re
-    cl = book / "work" / "video" / "charlora"
-    d = cl / re.sub(r"[^a-z0-9]+", "_", who.lower()).strip("_")
-    if not d.exists() and cl.exists():  # 10-27: "Dr. Watson" in the shots, his LoRA under doctor_watson (one person)
-        d = next((x for x in cl.iterdir() if x.is_dir() and _person_key(x.name) == _person_key(who)), d)
-    bj = d / "build.json"
-    if not bj.exists():
-        return None, None
-    b = json.loads(bj.read_text())
-    return b.get("lora"), b.get("trigger")
+    """(LoRA path, trigger) of the person under any spelling (registry.lora), or (None, None)."""
+    lo, trig, _ = _reg(book).lora(who)
+    return lo, trig
+
+
+_SAID: set = set()
+
+
+def _say_once(msg: str, log=print) -> None:
+    if msg not in _SAID:
+        _SAID.add(msg)
+        log(msg)
+
+
+def _look(book: Path, who: str, log=print) -> str:
+    """The person's one look (registry.look), said LOUDLY once when there is none (10-27: looks.get(w, '') drew
+    every other spelling of a person from no words at all)."""
+    lk = _reg(book).look(who)
+    if not lk and who:
+        _say_once(f"!!! no look for {who!r} in look.json: drawn from the shot's words alone", log)
+    return lk
 
 
 def period_line(book: Path, what: str = "every object, tool and garment") -> str:
@@ -719,6 +779,9 @@ def period_line(book: Path, what: str = "every object, tool and garment") -> str
     1000 AD" was hardcoded from the knight book, so Acts (Roman Judea, around 30 AD) was drawn as medieval)."""
     f = Path(book) / "period.txt"
     per = f.read_text().strip().rstrip(".") if f.exists() else ""
+    if not per:                                # (10-27: a missing period was silent: modern objects in every key)
+        _say_once(f"!!! no period for {Path(book).name} ({f} missing): prompts carry no time period "
+                  f"(`bookcaster period` sets it)")
     return f"Set in {per}: {what} as it was then, nothing from a later time." if per else ""
 
 
@@ -738,10 +801,7 @@ def _prompt(book: Path, stem: str, mid: str, who: list, setting_line: bool = Fal
     book's art style. Never a description of the render (there is none to describe)."""
     vd, _, _ = paths(book, stem)
     f = _frame(book, stem, mid)
-    plan = json.loads((vd / "plan.json").read_text())
-    looks = (plan.get("look") or {}).get("characters") or {}
-    style_p = book / "art_style.txt"
-    style = style_p.read_text().strip() if style_p.exists() else ""
+    style = style_of(book, stem)
     base = f.get("prompt") or (f"Medium close-up of {who[0]} speaking." if who else "")
     import re
     dress = _dress(book, stem, mid, who)
@@ -755,11 +815,11 @@ def _prompt(book: Path, stem: str, mid: str, who: list, setting_line: bool = Fal
     for w in who:
         if any(str(b_).lower().startswith(w.lower() + ":") and down.search(str(b_)) for b_ in f.get("beats") or []):
             view[w] = ", ".join(x for x in (view.get(w), "lying collapsed and motionless on the ground") if x)
-    looks = {w: _appearance(d) for w, d in looks.items()}
+    looks = {w: _appearance(_look(book, w)) for w in who}
     people = " ".join(f"{_lora(book, w)[1] or ''} {w}{', ' + view[w] if view.get(w) else ''}: "
                       f"{re.split(r',?\s*\bwearing\b', looks.get(w, ''))[0] + ', wearing ' + dress[w] if w in dress else looks.get(w, '')}.".strip()
                       for w in who).replace("..", ".")
-    place = re.sub(r"\s*\((inside|outside)\)$", "", _place_of(book, stem, mid) or f.get("where") or "")
+    place = _reg(book).place(_place_of(book, stem, mid) or f.get("where") or "") or ""
     # the SETTING always: a talk moment's words were only "Medium close-up of Hulda speaking." and 7 of 8 such keys
     # came out as white-background character sheets in every seed (10-23 overnight)
     setting = "" if not setting_line else (f" The scene takes place in {place}, which fills the whole picture behind them to its edges: a "
@@ -804,7 +864,8 @@ def _dress(book: Path, stem: str, mid: str, who: list) -> dict:
     starts = video.paragraph_times(video.paragraphs((book / "chapters" / f"{stem}.txt").read_text()),
                                    json.loads(tl.read_text()))
     para = video.para_at(starts, float(e["t"]))
-    return {w: d for w in who if (row := video.outfit(plan, w, para)) and (d := video.worn_only(row["dress"]))}
+    R = _reg(book)                              # a wardrobe row under any spelling of the person (10-27)
+    return {w: d for w in who if (row := video.outfit(plan, w, para, R)) and (d := video.worn_only(row["dress"]))}
 
 
 def _bg_init(md: Path, mid: str, hero: Path, strength_bg: float) -> dict | None:
@@ -1233,6 +1294,9 @@ def motion_prompts(book: Path, stem: str, es: list, log=print) -> dict:
         looks = {w: _brief(cx.look(w, e["t"]) or "") for w in people}
         if e["route"] == "talk":
             who = e["speaker"]
+            # the speaker under any spelling (10-27: a shot's "Dr. Watson" speaking as "Watson" had no look: "a person")
+            who = next((w for w in people if cx.R.same(w, who)), who)
+            looks.setdefault(who, _brief(cx.look(who, e["t"]) or ""))
             g = R.gender_of(looks.get(who, ""))
             pron = "her" if g == "woman" else "his" if g == "man" else "their"
             emo = f", sounding {e['emotion']}," if e.get("emotion") else ","
@@ -1625,24 +1689,31 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     vd = book / "work" / "video"
     hd = vd / "heroes"
     hd.mkdir(parents=True, exist_ok=True)
-    out = hd / (re.sub(r"[^a-z0-9]+", "_", where.lower()).strip("_") + ".png")
-    look = json.loads((vd / "look.json").read_text()) if (vd / "look.json").exists() else {}
-    raw = (look.get("places") or {}).get(re.sub(r"\s*\((inside|outside)\)$", "", where), "") or ""
+    R = _reg(book)
+    # one hero per place and side, under the registry's one name of the place (10-27: "The Beautiful Gate" and
+    # "Beautiful Gate" were two heroes); the caller's own spelling stays its key in heroes_for
+    sw = re.search(r"\s*\((inside|outside)\)\s*$", where, re.I)
+    name = (R.place(where) or where) + (f" ({sw.group(1).lower()})" if sw else "")
+    out = hd / (re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") + ".png")
+    raw = R.place_look(where)                   # the place's one description, any spelling (10-27: by base name only)
+    if not raw:
+        _say_once(f"!!! no description for the place {where!r} in look.json: its hero is drawn from its name", log)
     desc = re.sub(r"^\s*(inside|outside)\s*:\s*", "", raw, flags=re.I)
-    style_p = book / "art_style.txt"
-    style = style_p.read_text().strip() if style_p.exists() else ""
+    style = style_of(book)
     # the side the place's own words give first (10-23: "Outside Hulda's Forge" matched "forge" and was drawn as
-    # the inside of a forge, twice)
+    # the inside of a forge, twice); else its description's words vote (world.classify_kind; 10-27: not a guess from
+    # one book's room words "forge|hall|shed")
+    import world as WO
     named = re.search(r"\((inside|outside)\)|^\s*(inside|outside)\b", where, re.I) or \
         re.match(r"\s*(inside|outside)\s*:", raw, re.I)
     sd_ = (next(g for g in named.groups() if g) if named else "").lower()
-    side = "the inside of" if sd_ == "inside" or (not sd_ and re.search(r"forge|hall|shed|room|chamber", where, re.I)) \
-        else "a view of"
+    if not sd_ and desc:
+        sd_ = "inside" if WO.classify_kind(desc, [])[0] == "interior" else ""
+    side = "the inside of" if sd_ == "inside" else "a view of"
     # the set builder's recipe (world.set_picture_prompt): the style's TECHNIQUE only, its architecture words out
     # (10-23: "Gothic ... cathedral-like stone" made the Burnt Mountain's "cave entrance" a carved church portal with
     # candles behind every shot of the dragon fight, and a "no doorway, no carving" sentence drew them anyway)
-    import world as WO
-    pic = WO.set_picture_prompt(f"Wide shot of {side} {where}: {desc}", style, "interior" if side.startswith("the inside")
+    pic = WO.set_picture_prompt(f"Wide shot of {side} {name}: {desc}", style, "interior" if side.startswith("the inside")
                                 else "exterior")
     prompt = (f"{pic} {period_line(book, 'every building and object')} "
               f"No people. A full-frame picture with no border, no page and no text.")

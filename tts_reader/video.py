@@ -30,6 +30,26 @@ from .score import _chat, audio_seconds, paragraph_times, paragraphs
 
 FPS = 24
 W, H = 1920, 1080
+
+
+def _rg():
+    """tools/registry.py: the one owner of who and where (people, looks, places, style)."""
+    import sys as _s
+    t = str(Path(__file__).resolve().parents[1] / "tools")
+    if t not in _s.path:
+        _s.path.insert(0, t)
+    import registry
+    return registry
+
+
+def registry_at(path):
+    """The registry of the book holding *path* (a refs dir, a chapter dir ...), or None outside a book."""
+    try:
+        return _rg().at(path) if path else None
+    except (OSError, ValueError):
+        return None
+
+
 def period_of(path) -> str:
     """The book's time period (<book>/period.txt, `bookcaster period`; the 3D plan writes it from the text when
     missing). Any path inside the book works (the book dir, work/video, a chapter dir). '' = not set."""
@@ -441,29 +461,24 @@ def apply_scene(f: dict, sc: dict, chars: dict, places: dict | None = None) -> l
 
 
 # Words an image model takes the wrong way in a character's reference
-# portrait (seen: a black veil + greying hair drew a nun; "yellowed skin"
-# drew a yellow man).
+# portrait ("yellowed skin" drew a yellow man).
+# 10-27: the veil/hood/wimple strip is gone: it was one book's band-aid (a veiled Helen drawn as a nun) applied to
+# every book, and it fought the wardrobe, which is now the one owner of what is worn when (a veil, a hood).
 LITERAL_FIXES = [
     (r"\byellow(?:ed|ish)?(\s+(?:and\s+\w+\s+)?(?:skin|complexion|face))", r"sallow\1"),
     (r"\b(?:green|grey|gray)(?:ish)?(\s+(?:skin|complexion))", r"pale\1"),
-    (r",?\s*(?:with\s+|and\s+)?(?:a\s+)?(?:heavy\s+|thick\s+|long\s+)?(?:black\s+)?"
-     r"(?:veil|hood|wimple|cowl)[^,;.]*", ""),
 ]
 
 
 # Words in a scene that the image model reads in the modern sense: a "trap"
-# (a pony cart) came out as a motor car.
+# (a pony cart) came out as a motor car. The era comes from the book's period line, never from here (10-27: "19th
+# century" was written into every book's carriages, and the scene veils were stripped, as above).
 SCENE_FIXES = [
     (r"\b(?<!horse-drawn )(trap|dog-cart|gig|brougham|landau|hansom(?: cab)?|carriage)\b",
-     r"horse-drawn \1 (pulled by a horse, 19th century)"),
-    # "Helen raises her veil" drew her veiled like a nun again
-    (r"\b(?:raises|lifts|lowers|throws back|pushes back|draws back|removes)\s+(?:her|his|the)\s+"
-     r"(?:\w+\s+)?veil,?\s*(?:revealing|to reveal|showing)?\s*", "shows "),
+     r"horse-drawn \1 (pulled by a horse)"),
     # a close-up of a wrist or hand drew it with no arm, or a second hand
     (r"\b(?:extreme\s+)?close-?up\s+(?:on|of)\s+([A-Z][\w-]*(?:\s+[A-Z][\w-]*)?)'s\s+"
      r"(?:\w+\s+)?(hands?|wrists?|arms?|fingers)\b", r"Medium shot of \1, showing \1's \2"),
-    (r"\b(?:heavily\s+|thickly\s+)?veiled\b(?:\s+in\s+black)?", "dressed in black"),
-    (r",?\s*(?:with\s+|and\s+|in\s+)?(?:a\s+|her\s+|the\s+)?(?:\w+\s+)?(?:veil|wimple|cowl)\b", ""),
 ]
 
 
@@ -587,12 +602,20 @@ def canon(name: str) -> str:
     return " ".join(TITLES.get(w, w) for w in words)
 
 
-def registry_entry(reg: dict, kind: str, name: str) -> str | None:
-    """The stored look for *name* under any spelling; the first stored wins."""
+def registry_entry(reg: dict, kind: str, name: str, R=None) -> str | None:
+    """The stored look for *name* under any spelling; the first stored wins. With the book's registry *R* a person
+    is matched as the registry matches them (a unique surname, a voice label: 10-27) and a place by its place key
+    (without "(inside)"/"(outside)" or "The")."""
+    if R is not None and kind == "places":        # the same place (and side): registry.place_slot
+        k, known = _rg().place_slot(reg.get(kind, {}), name)
+        return k if known else None
     c = canon(name)
     for k, v in reg.get(kind, {}).items():
         if canon(k) == c:
             return k
+    if R is not None and kind == "characters":
+        p = R.person(name)
+        return next((k for k in reg.get(kind, {}) if p and R.person(k) == p), None)
     return None
 
 
@@ -608,10 +631,11 @@ def refresh_looks(plan: dict, registry: Path, llm_url: str, model: str, style: s
         log("  character looks rewritten (age, beard, hair spelled out)")
     if reg is None:
         return False
+    R = registry_at(registry.parent)
     mine = plan.setdefault("look", {}).setdefault("characters", {})
     changed = False
     for name in mine:
-        key = registry_entry(reg, "characters", name)
+        key = registry_entry(reg, "characters", name, R)
         if key is not None and mine[name] != reg["characters"][key]:
             mine[name] = reg["characters"][key]
             changed = True
@@ -626,16 +650,21 @@ def refresh_looks(plan: dict, registry: Path, llm_url: str, model: str, style: s
 
 def keep_looks(plan: dict, registry: Path) -> None:
     """A character or place keeps the look it was first given in this book:
-    a later chapter's plan reuses it (so its reference picture is reused too)."""
+    a later chapter's plan reuses it (so its reference picture is reused too).
+    10-27: matched as the registry matches (tools/registry.py); a new place is stored under its one name (no
+    "(inside)"/"(outside)"), never as another spelling of a place already described."""
     reg = json.loads(registry.read_text()) if registry.exists() else {
         "version": LOOK_VERSION, "characters": {}, "places": {}}
+    R = registry_at(registry.parent)
     for kind in ("characters", "places", "props"):       # props: keyframes' objects (the safe, the band)
         reg.setdefault(kind, {})
         mine = plan["look"].setdefault(kind, {})
         for name in list(mine):
-            key = registry_entry(reg, kind, name)
+            key = registry_entry(reg, kind, name, R)
             if key is not None:
                 mine[name] = reg[kind][key]
+            elif kind == "places" and R is not None:
+                reg[kind][_rg().place_slot(reg[kind], name, mine[name])[0]] = mine[name]
             else:
                 reg[kind][name] = mine[name]
     registry.write_text(json.dumps(reg, indent=1, ensure_ascii=False))
@@ -683,13 +712,20 @@ PERSON = re.compile(r"\b(man|woman|girl|boy|lady|gentleman|child|he|she|his|her|
                     r"wears|hair|eyes|face)\b", re.I)
 
 
-def looks(plan: dict) -> tuple[dict, dict]:
-    """(characters, places) from a plan; older plans had one flat dict."""
+def looks(plan: dict, R=None) -> tuple[dict, dict]:
+    """(characters, places) from a plan; older plans had one flat dict. With the book's registry *R* the plan
+    gives only the NAMES (the chapter's cast and places) and every look and place description is the registry's
+    (10-27: plan copies disagreed with look.json - the climax drew a second, bearded Roylott); the characters
+    then answer any spelling of a person (registry.Looks)."""
     look = plan.get("look", {}) or {}
     if "characters" in look or "places" in look:
-        return dict(look.get("characters") or {}), dict(look.get("places") or {})
-    chars = {k: v for k, v in look.items() if PERSON.search(str(v))}
-    return chars, {k: v for k, v in look.items() if k not in chars}
+        chars, places = dict(look.get("characters") or {}), dict(look.get("places") or {})
+    else:
+        chars = {k: v for k, v in look.items() if PERSON.search(str(v))}
+        places = {k: v for k, v in look.items() if k not in chars}
+    if R is None:
+        return chars, places
+    return R.looks(list(chars), chars), {n: R.place_look(n) or d for n, d in places.items()}
 
 
 def mentions(prompt: str, look: dict) -> list[str]:
@@ -874,9 +910,25 @@ def place_desc(plan: dict, name: str, desc: str) -> str:
                                 _W.prop_names({"props": {p: "" for p in props}}))
 
 
-def ref_prompts(plan: dict, style: str) -> dict[str, tuple[str, list[int]]]:
-    """name -> (prompt, [w, h]) for every reference the plan's scenes use."""
-    chars, places = looks(plan)
+def sheet_prompt(desc: str, style: str) -> str:
+    """A person's reference sheet words (its file is named by their hash: ref_path)."""
+    # A full-length figure alone left the face ~20 px tall once shrunk
+    # to a reference, so every close-up invented a new face.
+    return (f"Character sheet of one person, two views side by side on a plain "
+            f"light background: on the left a large head-and-shoulders portrait "
+            f"facing the viewer, the face filling the frame; on the right the same "
+            f"person full length, standing. {str(desc).rstrip('.')}. Even light. "
+            f"{style}. No text, no lettering, no signature.")
+
+
+def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, list[int]]]:
+    """name -> (prompt, [w, h]) for every reference the plan's scenes use. With the book's registry *R* every
+    look, place description and (when *style* is None) the style are the registry's (10-27: a sheet, its LoRA's
+    captions and the keys from one look and one style); the names stay the plan's, so a sheet's file name changes
+    only when its words do."""
+    chars, places = looks(plan, R)
+    if style is None:
+        style = R.style() if R is not None else DEFAULT_STYLE
     # the 3D flow builds a model + LoRA for the whole cast, so it lists them all (10-22 knight_forged_v3: the King
     # was in no still picture -> no sheet -> his LoRA failed with no reference face)
     used = set(plan.get("sheet_cast") or [])
@@ -885,16 +937,13 @@ def ref_prompts(plan: dict, style: str) -> dict[str, tuple[str, list[int]]]:
             used.update(p["who"] + ([p["where"]] if p.get("where") else []))
         else:
             used.update(mentions(p["prompt"], {**chars, **places}))
+    if R is not None:                    # a sheet_cast / who spelling of the same person or place counts
+        used |= {n for n in chars if any(R.same(n, u) for u in used)}
+        used |= {n for n in places if any(_rg().place_key(n) == _rg().place_key(u) for u in used)}
     out = {}
     for name, desc in chars.items():
         if name in used:
-            # A full-length figure alone left the face ~20 px tall once shrunk
-            # to a reference, so every close-up invented a new face.
-            out[name] = (f"Character sheet of one person, two views side by side on a plain "
-                         f"light background: on the left a large head-and-shoulders portrait "
-                         f"facing the viewer, the face filling the frame; on the right the same "
-                         f"person full length, standing. {str(desc).rstrip('.')}. Even light. "
-                         f"{style}. No text, no lettering, no signature.", [1280, 896])
+            out[name] = (sheet_prompt(desc, style), [1280, 896])
     for name, desc in places.items():
         if name in used:
             out[name] = (f"Establishing view of {name}, no people. {place_side(plan, name, desc)}"
@@ -1019,6 +1068,21 @@ def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print) 
     for n, rows in new.items():
         for r in rows:
             r["dress"] = worn_only(old.get((n, r["id"].lower()), r["dress"])) or r["dress"]
+    # an outfit set by hand (bookcaster set_outfit: "_pinned_outfits") stays, word for word, even if the re-plan
+    # dropped it (10-27)
+    olds = {(n, r["id"].lower()): r for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
+    for n, oid in plan.get("_pinned_outfits") or []:
+        r = olds.get((n, str(oid).lower()))
+        if r is None:
+            continue
+        nk = wardrobe_key({"wardrobe": new}, n) or n
+        rows = new.setdefault(nk, [])
+        hit = next((x for x in rows if x["id"].lower() == r["id"].lower()), None)
+        if hit is not None:
+            hit["dress"] = r["dress"]
+        else:
+            rows.append(dict(r))
+            rows.sort(key=lambda x: x["from"])
     plan["wardrobe"], plan["wardrobe_k"] = new, k
     for name, rows in plan["wardrobe"].items():
         log(f"  wardrobe: {name}: " + " -> ".join(f"{r['id']} (from paragraph {r['from']})" for r in rows))
@@ -1032,11 +1096,25 @@ def scene_dress(plan: dict, p: dict) -> dict:
     return {n: r["dress"] for n in p.get("who") or [] if (r := outfit(plan, n, p.get("start")))}
 
 
-def outfit(plan: dict, name: str, para: int | None) -> dict | None:
+def wardrobe_key(plan: dict, name: str, R=None) -> str | None:
+    """The plan's wardrobe key for *name* under any spelling ("Dr. Watson" = "Doctor Watson"; with the registry *R*
+    also a unique surname or voice label), or None (10-27: rows were matched by the exact name only)."""
+    w = plan.get("wardrobe") or {}
+    if name in w:
+        return name
+    if R is not None:
+        return R.key_in(name, list(w))
+    pk = _rg().person_key(name)
+    hits = [k for k in w if _rg().person_key(k) == pk]
+    return hits[0] if len(hits) == 1 else None
+
+
+def outfit(plan: dict, name: str, para: int | None, R=None) -> dict | None:
     """The wardrobe entry in force for *name* at paragraph *para*: None = their usual look."""
     if para is None:
         return None
-    rows = [r for r in (plan.get("wardrobe") or {}).get(name, []) if r["from"] <= para]
+    k = wardrobe_key(plan, name, R)
+    rows = [r for r in (plan.get("wardrobe") or {}).get(k, []) if r["from"] <= para] if k else []
     return rows[-1] if rows else None
 
 
@@ -1059,21 +1137,27 @@ def outfit_prompt(name: str, desc: str, row: dict, style: str) -> str:
             f"{style}. No text, no lettering, no signature.")
 
 
-def outfit_ref(refs_dir: Path, plan: dict, style: str, name: str, row: dict) -> Path:
-    chars, _ = looks(plan)
+def outfit_ref(refs_dir: Path, plan: dict, style: str, name: str, row: dict, R=None) -> Path:
+    """The outfit sheet's file: named by the wardrobe's own spelling of the person, drawn from the registry's look
+    (*R*, else the book's registry found from *refs_dir*)."""
+    R = R if R is not None else registry_at(refs_dir)
+    chars, _ = looks(plan, R)
+    name = wardrobe_key(plan, name, R) or name
     return ref_path(refs_dir, f"{name} {row['id']}", outfit_prompt(name, chars.get(name, ""), row, style))
 
 
 def outfit_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
     """One reference sheet per wardrobe change, drawn from the person's own sheet (image 1), so the
     face stays theirs. Listed after reference_jobs: a drawing batch runs in order."""
-    chars, _ = looks(plan)
-    known = ref_prompts(plan, style)
+    R = registry_at(refs_dir)
+    chars, _ = looks(plan, R)
+    known = ref_prompts(plan, style, R)
     jobs = []
     for name, rows in (plan.get("wardrobe") or {}).items():
         if name not in chars:
             continue
-        base = [str(ref_path(refs_dir, name, known[name][0]))] if name in known else []
+        kn = name if name in known else next((k for k in known if R is not None and R.same(k, name)), None)
+        base = [str(ref_path(refs_dir, kn, known[kn][0]))] if kn else []
         for row in rows:
             prompt = outfit_prompt(name, chars[name], row, style)
             jobs.append({"id": f"ref_{slug(name)}_{slug(row['id'])}", "size": [1280, 896], "seed": 7,
@@ -1088,14 +1172,15 @@ def reference_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
     stay the same. Kept per BOOK (refs_dir), reused across chapters."""
     return [{"id": f"ref_{slug(n)}", "size": size, "seed": 7, "prompt": prompt,
              "path": str(ref_path(refs_dir, n, prompt))}
-            for n, (prompt, size) in ref_prompts(plan, style).items()]
+            for n, (prompt, size) in ref_prompts(plan, style, registry_at(refs_dir)).items()]
 
 
 def scene_jobs(pics: list[dict], plan: dict, img_dir: Path, refs_dir: Path,
                max_refs: int = 3, style: str = "") -> list[dict]:
     """Each scene with the references of who and where it shows: characters
     first (up to *max_refs*), then one place if there's room."""
-    chars, places = looks(plan)
+    R = registry_at(refs_dir)
+    chars, places = looks(plan, R)
     jobs = []
     for p in pics:
         if "who" in p:          # the plan names them (and the prompt numbers the images)
@@ -1103,14 +1188,15 @@ def scene_jobs(pics: list[dict], plan: dict, img_dir: Path, refs_dir: Path,
         else:
             who = mentions(p["prompt"], chars)[:max_refs]
             where = mentions(p["prompt"], places)[:max(0, max_refs - len(who))][:1]
-        prompts = ref_prompts(plan, style)
+        prompts = ref_prompts(plan, style, R)
         refs = []
         for n in who + where:
-            row = outfit(plan, n, p.get("start")) if n in chars else None
+            row = outfit(plan, n, p.get("start"), R) if n in chars else None
+            kn = n if n in prompts else next((k for k in prompts if R is not None and R.same(k, n)), None)
             if row:
-                refs.append(str(outfit_ref(refs_dir, plan, style, n, row)))
-            elif n in prompts:
-                refs.append(str(ref_path(refs_dir, n, prompts[n][0])))
+                refs.append(str(outfit_ref(refs_dir, plan, style, n, row, R)))
+            elif kn:
+                refs.append(str(ref_path(refs_dir, kn, prompts[kn][0])))
         refs += p.get("extra_refs", [])          # e.g. a talking portrait's scene still
         jobs.append({"id": p["id"], "prompt": p["full_prompt"], "seed": p["seed"],
                      "path": str(img_dir / f"{p['id']}.png"), "refs": refs})
