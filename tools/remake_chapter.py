@@ -177,7 +177,7 @@ def ref_sheet(refs: Path, name: str) -> Path | None:
     R = REG[0]
     if R is not None and R.person(name, narrator=False):
         p_ = R.person(name, narrator=False)
-        pr = video.sheet_prompt(R.look(p_), R.style())
+        pr = video.sheet_prompt(R.look(p_), R.ref_style())
         for a in R.aliases(p_):
             if (x := video.ref_path(refs, a, pr)).exists():
                 return x

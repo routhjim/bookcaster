@@ -928,7 +928,7 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     only when its words do."""
     chars, places = looks(plan, R)
     if style is None:
-        style = R.style() if R is not None else DEFAULT_STYLE
+        style = R.ref_style() if R is not None else DEFAULT_STYLE   # sheets: the reference style
     # the 3D flow builds a model + LoRA for the whole cast, so it lists them all (10-22 knight_forged_v3: the King
     # was in no still picture -> no sheet -> his LoRA failed with no reference face)
     used = set(plan.get("sheet_cast") or [])

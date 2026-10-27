@@ -297,6 +297,23 @@ class Book:
                 return f.read_text().strip()
         return DEFAULT_STYLE
 
+    def ref_style(self, stem: str | None = None) -> str:
+        """The REFERENCE style: what the character sheets are drawn in and their LoRAs captioned with - the chapter's
+        own style.txt, else the default; never `bookcaster art` (10-27 user: back to last night's realistic keys
+        without retraining the LoRAs - a LoRA carries who someone is, the picture's style is the key's)."""
+        cands = [self.vd / stem / "style.txt"] if stem else []
+        cands += sorted(self.vd.glob("[0-9][0-9]_*/style.txt"))
+        for f in cands:
+            if f.exists() and f.read_text().strip():
+                return f.read_text().strip()
+        return DEFAULT_STYLE
+
+    def picture_style(self) -> str:
+        """The PICTURE style of the shots flow's keys and place pictures: `bookcaster art` (art_style.txt), else none -
+        the image model's own photographic look (the Speckled Band 10-26 keys the user chose 10-27)."""
+        a = self.book / "art_style.txt"
+        return a.read_text().strip() if a.exists() else ""
+
 
 def place_slot(places: dict, name, desc: str = ""):
     """Where a place goes in a {name: description} store -> (key, already described?). The same place (place_key)

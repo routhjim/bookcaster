@@ -482,6 +482,12 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
         for w, sd_, pz, x in rows:
             sides.setdefault(w, sd_)
     rows.sort(key=lambda r: r[1])       # left to right, stable
+    if sides is not None:               # the order DRAWN is the truth for the rest of the scene: no two people share a
+        prev = None                     # side value, so no later shot can break a tie the other way (10-27 user: Helen
+        for w, sd_, pz, x in rows:      # left, Holmes right, then Holmes left in the next two-shot - both had "right")
+            if prev is not None and sides[w] <= prev:
+                sides[w] = prev + 0.01
+            prev = sides[w]
     lay = [l for _, l in group_layout(len(rows))]
     parts, placed = [], []
     for (w, sd_, pz, x), side in zip(rows, lay):
@@ -1331,7 +1337,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     vd, _, _ = MF.paths(book, stem)
     R_ = RG.Book(book)                  # the looks and the style have one owner each (10-27 audit: the plan's copies
     looks = {w: no_pose(MF._appearance(R_.look(w))) for w in s["who"]}      # of the looks, art_style.txt only)
-    style = _key_style(R_.style(stem))
+    style = _key_style(R_.picture_style())     # the picture's style (10-27: realistic unless `bookcaster art`)
     dress = MF._dress(book, stem, mid, s["who"])
     people = []
     for w in s["who"]:

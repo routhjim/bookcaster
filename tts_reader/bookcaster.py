@@ -981,7 +981,7 @@ def swap_looks(book: Path, a: str, b: str, log=print) -> None:
     olds = {n: sorted(p_ for sp in names[n] for p_ in refs.glob(f"{video.slug(sp)}-*.png")) for n in (ka, kb)}
     want = {ka: set(), kb: set()}                      # each chapter plan names a sheet by its own prompt
     for pj in vd.glob("[0-9][0-9]_*/plan.json"):
-        pr = video.ref_prompts(json.loads(pj.read_text()), R.style(pj.parent.name), R)
+        pr = video.ref_prompts(json.loads(pj.read_text()), R.ref_style(pj.parent.name), R)
         ks = {n: R.key_in(n, list(pr)) for n in (ka, kb)}
         if all(ks.values()):                           # (a plan naming one of them wasn't swapped)
             for n in (ka, kb):

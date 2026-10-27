@@ -1699,7 +1699,7 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     if not raw:
         _say_once(f"!!! no description for the place {where!r} in look.json: its hero is drawn from its name", log)
     desc = re.sub(r"^\s*(inside|outside)\s*:\s*", "", raw, flags=re.I)
-    style = style_of(book)
+    style = R.picture_style()                  # the same picture style as the keys drawn on it (10-27)
     # the side the place's own words give first (10-23: "Outside Hulda's Forge" matched "forge" and was drawn as
     # the inside of a forge, twice); else its description's words vote (world.classify_kind; 10-27: not a guess from
     # one book's room words "forge|hall|shed")
