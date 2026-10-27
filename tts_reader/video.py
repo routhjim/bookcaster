@@ -1150,9 +1150,10 @@ def outfit_prompt(name: str, desc: str, row: dict, style: str) -> str:
     return (f"Character sheet of one person, two views side by side on a plain light background: on the "
             f"left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on the "
             f"right the same person full length, standing. The same person as in image 1: exactly the same "
-            f"face, hair, age and build ({_short(desc)}), but now wearing {row['dress']}. Only the face and "
-            f"body come from image 1: everything worn or held is as written here, not as in image 1 (copied, "
-            f"the knight's melted shield stayed a whole shield, 10-18). Even light. "
+            f"face, hair, age and build ({_short(desc)}), but now wearing {row['dress']}, in BOTH views (the portrait "
+            f"shows these clothes too). Only the face and body come from image 1: everything worn or held is as "
+            f"written here, not as in image 1; a hat or other headwear only if written here (10-27: the base "
+            f"look's top hat on a dressing gown, its tweed jacket over a nightshirt). Even light. "
             f"{style}. No text, no lettering, no signature.")
 
 

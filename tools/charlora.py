@@ -249,13 +249,17 @@ def cand_sheets(c: Char, cands: list) -> None:
 
 
 def cand_book(c: Char, cands: list) -> None:
-    """The book's own pictures that show the character: drawn keyframes, portraits, scene pictures."""
+    """The book's own pictures that show the character ALONE and were drawn from their CURRENT look (after their
+    current sheet): drawn keyframes, portraits, scene pictures (10-27: older drawings taught the old faces back)."""
     seen = set()
+    sh = c.sheet(None)
+    since = Path(sh).stat().st_mtime if sh and Path(sh).exists() else float("inf")
+    alone = lambda who: len(who or []) == 1 and c.R.same(who[0], c.name)
     for ch in c.chapters:
         anim = ch / "anim"
         plan = c.plans[ch.name]
         for p in plan.get("pictures", []):
-            if any(c.R.same(w, c.name) for w in p.get("who") or []) and (ch / "img" / f"{p['id']}.png").exists():
+            if alone(p.get("who")) and (ch / "img" / f"{p['id']}.png").exists():
                 seen.add(ch / "img" / f"{p['id']}.png")
         kf = anim / "keyframes.json"
         if kf.exists():
@@ -263,22 +267,22 @@ def cand_book(c: Char, cands: list) -> None:
                 if (anim / "keyframe_checks.json").exists() else {}
             for f in json.loads(kf.read_text()).get("frames", []):
                 k = anim / "keyframes" / f"{f['shot']}.png"
-                if any(c.R.same(w, c.name) for w in f.get("who") or []) and k.exists() and \
-                        (not passed or f["shot"] in passed):
+                if alone(f.get("who")) and k.exists() and (not passed or f["shot"] in passed):
                     seen.add(k)
         # portraits: talk-<speaker>-<pic>-<hash>.png; the listener is not in the name, so keep a portrait
         # when the character speaks or is in that scene picture's people
         pic_who = {p["id"]: p.get("who") or [] for p in plan.get("pictures", [])}
         for k in sorted((anim / "portraits").glob("talk-*.png")) if (anim / "portraits").exists() else []:
             m = re.match(r"talk-(.+)-(p\d+)-[0-9a-f]+$", k.stem)
-            if m and (c.R.same(m.group(1), c.name) or any(c.R.same(w, c.name) for w in pic_who.get(m.group(2), []))):
+            if m and c.R.same(m.group(1), c.name):          # their own portrait only
                 seen.add(k)
-    for k in sorted(seen):
+    for k in sorted(x for x in seen if x.stat().st_mtime > since):     # drawn from the current look only
         cid = "book_" + hashlib.sha1(str(k).encode()).hexdigest()[:10]
         cands.append({"id": cid, "path": str(k), "src": "book", "outfit": "?", "framing": "", "setting": "",
                       "whole": False})
 
 
+PROPS = ("sword", "hammer", "shield", "spear", "axe", "bow_", "staff", "dagger", "lance")   # props in pose names
 POSE_SKIP = ("lying", "sleeping", "falling", "rolling", "crawling", "carried", "hanging", "embrace", "climbing",
              "leaping")
 LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the right", "soft overcast daylight",
@@ -401,7 +405,9 @@ def repair_head(c: Char, make_scorer, n: int = 4) -> Path | None:
 
 def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
     import poses as P
-    lib = [p for p in P.list_poses() if not any(s in p["name"] for s in POSE_SKIP)]
+    own = f"{c.desc} {' '.join(str(r.get('dress', '')) for r in c.outfits.values())}".lower()
+    lib = [p for p in P.list_poses() if not any(s in p["name"] for s in POSE_SKIP)
+           and not any(x in p["name"] and x not in own for x in PROPS)]    # no prop the person doesn't have
     places = list((c.look.get("places") or {}).items())
     jobs = []
     for k in range(n):
@@ -1223,7 +1229,10 @@ def cmd_ab(a) -> int:
 
 STEPS = 400                 # 10-21 A/B: 800 overfit (training backgrounds leak); 400 + pick_checkpoint (every 100)
 LEGACY_STEPS = (800,)       # LoRAs built at these step counts stay valid (not retrained for the recipe change)
-TOOL_VERSION = "charlora-1"          # bump when the dataset/training recipe changes: every LoRA rebuilds
+TOOL_VERSION = "charlora-2"          # bump when the dataset/training recipe changes: every LoRA rebuilds
+# charlora-2 (10-27): the book's own pictures only when drawn from the CURRENT look and showing the person alone
+# (17 of Watson's 39 training pictures were older drawings - the clean-shaven 10-15 look - and crops of crowds put a
+# Holmes-like face in Roylott's set); no pose with a prop the person doesn't have (a sword for Roylott); likeness >= 0.4
 CHARLORA_PY = os.environ.get("CHARLORA_PY", str(HOME / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"))
 # the charlora-igpu torch is gfx1151-only: on an XTX the same steps run in the Qwen-Image venv (gfx1100, same
 # diffusers/peft; 10-20: transformer 14 GB bf16 + LoRA + checkpointing fits 24 GB)
@@ -1411,7 +1420,7 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
             (c.out / "attempt.json").write_text(json.dumps({"hash": key, "started": time.strftime("%F %T")}))
             mot = _rig_motions(c, env)
             cmd = [card_py(card), "-I", str(HERE / "charlora.py"), "dataset", book, name, "--n-pose", str(n_pose),
-                   "--n-mesh", str(n_mesh), "--min-like", "0.3", "--strength-lo", "0.8", "--strength-hi", "0.9"]
+                   "--n-mesh", str(n_mesh), "--min-like", "0.4", "--strength-lo", "0.8", "--strength-hi", "0.9"]
             if len(c.outfits) > 1:
                 cmd += ["--outfit", "*"]
             if mot:
