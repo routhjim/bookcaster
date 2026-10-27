@@ -1192,10 +1192,22 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
     if not files:
         _set_status(book, state="failed", step="nothing picked (bookcaster pick)")
         return 1
+    if music and not http_ok(f"{ACE_URL}/health"):   # 10-27: the music job brings up what it needs
+        subprocess.run(["bash", str(STACK), "up", "--music"], capture_output=True)
+        for _ in range(60):
+            if http_ok(f"{ACE_URL}/health"):
+                break
+            time.sleep(5)
     if music and not http_ok(f"{ACE_URL}/health"):
+        if music_only:                  # asked for the music alone: no music is a failure, not voices "as the mix"
+            _set_status(book, state="failed", step="the music server didn't come up (tools/fish_stack.sh up --music)")
+            return 1
         music = False
         with open(log, "a") as fh:
             fh.write("music server not up: recording without music\n")
+    if music:                           # the score is planned by the language model (10-27: down, so this morning's
+        from . import animate           # --music-only "mixed" the voices alone and reported done)
+        animate.igpu("strata", _logger(book))
     _set_status(book, state="running", step="reading the cast", chapters=len(files),
                 done=0, outputs=[], started=time.strftime("%Y-%m-%d %H:%M"), music=music)
     vm = voice_map(book)
@@ -1292,6 +1304,9 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
             if tts("score", f, "--audio", r, "--work-dir", sc, "-o", final,
                    "--llm-url", LLM_URL, "--llm-model", LLM_MODEL, "--ace-url", ACE_URL,
                    *style, log=log).returncode or not final.exists():
+                if music_only:                   # the old mix stays; the job fails loudly
+                    _set_status(book, state="failed", step=f"music mix failed for {f.stem} (see work/job.log)")
+                    return 1
                 shutil.copyfile(r, final)        # the voices without music beat nothing
                 with open(log, "a") as fh:
                     fh.write(f"music mix failed for {f.stem}; saved it without music\n")
