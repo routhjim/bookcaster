@@ -1267,9 +1267,10 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
             m = re.search(r"\((inside|outside)\)$|^(outside|inside)\b", w, re.I)
             sd_ = (next(g for g in m.groups() if g).lower() if m else
                    {"interior": "inside", "exterior": "outside"}.get(kind, "outside"))
-            places[base] = f"{sd_.capitalize()}: {room}"
+            slot, _ = RG.place_slot(places, w, f"{sd_.capitalize()}: {room}")   # its one entry (10-27 audit)
+            places[slot] = f"{sd_.capitalize()}: {room}"
             look.setdefault("_described", {})[base] = rk
-            log(f"place described (scene sheet): {base}: {places[base]}")
+            log(f"place described (scene sheet): {slot}: {places[slot]}")
     if done:
         lp.write_text(json.dumps(look, indent=1))
     todo = {}
