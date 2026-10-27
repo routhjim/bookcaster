@@ -1435,7 +1435,11 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     """The mannequin flow's talk words (motion_prompts): short, "lips and jaw moving clearly", no style paragraph and
     no "everyone else ... mouth closed" (10-24: R.talk_prompt's long prompt with that sentence froze the lips again in
     most of the chapter's talk clips, as it had on 10-22; a talk shot has one person, so it closed the speaker's mouth)."""
-    who = e["speaker"]
+    s = s or {}
+    # 10-27 user: "it's almost as if Holmes and her are switched, his lips move when she talks": the timeline's label
+    # ("Stoner") was not the cast name ("Helen Stoner"), so her prompt had no look, the wrong side and "Helen Stoner
+    # listens with a closed mouth" - the model moved Holmes's lips. The speaker is the shot's own name for them.
+    who = MF._cast_name(e["speaker"], s.get("who") or [], []) or e["speaker"]
     look = MF._brief(cx.look(who, e["t"]) or "")
     emo = f", sounding {e['emotion']}," if e.get("emotion") else ","
     place = re.sub(r"\s*\((inside|outside)\)$", "", here)
@@ -1446,10 +1450,10 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
                 f"No text anywhere in the picture.")
     g = R.gender_of(look)
     pron = "her" if g == "woman" else "his" if g == "man" else "their"
-    s = s or {}
     lst = ""
-    if s.get("listener") and not s.get("ots"):    # a two-shot: the other face is in the picture
-        lst = f" {s['listener']} listens with a closed mouth."
+    other = next((w for w in s.get("who") or [] if w != who), None)
+    if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
+        lst = f" {other} listens with a closed mouth."
     pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")

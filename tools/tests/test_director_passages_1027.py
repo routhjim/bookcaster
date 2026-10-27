@@ -88,5 +88,14 @@ check("the breakdown: starts out of order are faulted",
                                                       {"start": 60, "place": "C"}], 600.0)))
 check("the passage turn names its scene; the peek ahead is context only",
       "{scene}" in S.PASSAGE_ASK and "none of it is in this passage's shots" in S.PASSAGE_ASK and "now_at" not in S.SHOT_RULES)
+from types import SimpleNamespace as _NS
+_R = _NS(gender_of=lambda look: "woman" if "woman" in look else "man")
+_cx = _NS(look=lambda w, t: {"Helen Stoner": "a woman of about 30, pale, wearing a black mourning dress",
+                             "Sherlock Holmes": "a man of about 40, wearing a dark frock coat"}.get(w, ""))
+_tp = S._talk_prompt(_R, _cx, {"speaker": "Stoner", "t": 300.0}, "Baker Street Sitting Room (inside)",
+                     {"who": ["Sherlock Holmes", "Helen Stoner"], "listener": "Holmes"})
+check("talk prompt: the timeline's 'Stoner' speaks as Helen Stoner, on her side, with her look, Holmes listening "
+      "(10-27: his lips moved when she talked)", "Helen Stoner on the right, a woman of about 30" in _tp.split(" speaks")[0]
+      and "Sherlock Holmes listens with a closed mouth" in _tp and "Helen Stoner listens" not in _tp and " her voice" in _tp, _tp)
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
