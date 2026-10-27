@@ -690,9 +690,18 @@ def _in_shot(md: Path, mid: str, fi: int = 0) -> list:
     return [out[i] for i in range(len(figs))] + [(w, box(cm)) for w in cr]
 
 
+def _person_key(n: str) -> str:
+    """One key per person, whatever the spelling ('Dr. Watson' = 'Doctor Watson' = folder doctor_watson)."""
+    import re
+    return re.sub(r"[^a-z]", "", re.sub(r"\bdr\b\.?", "doctor", re.sub(r"_", " ", str(n or "").lower())))
+
+
 def _lora(book: Path, who: str):
     import re
-    d = book / "work" / "video" / "charlora" / re.sub(r"[^a-z0-9]+", "_", who.lower()).strip("_")
+    cl = book / "work" / "video" / "charlora"
+    d = cl / re.sub(r"[^a-z0-9]+", "_", who.lower()).strip("_")
+    if not d.exists() and cl.exists():  # 10-27: "Dr. Watson" in the shots, his LoRA under doctor_watson (one person)
+        d = next((x for x in cl.iterdir() if x.is_dir() and _person_key(x.name) == _person_key(who)), d)
     bj = d / "build.json"
     if not bj.exists():
         return None, None
