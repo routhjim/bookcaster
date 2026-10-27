@@ -117,8 +117,12 @@ def speaker_key(speaker: str, chars: dict, labels=()) -> str | None:
         s = label.lower().strip()
         return [k for k in chars if s == k.lower() or s in {n.lower() for n in video._names(k)}]
 
-    if not speaker.strip() or speaker.lower() in ("narrator", "driver"):
+    # 10-27: no story's bit parts here ("driver" was the Speckled Band's): a label with no look is None anyway
+    if not speaker.strip() or speaker.lower() == "narrator":
         return None
+    R = getattr(chars, "R", None)            # a registry.Looks: the registry resolves the label (voice labels jointly)
+    if R is not None and (k := R.key_in(speaker, list(chars))) is not None:
+        return k
     found = hits(speaker)
     if len(found) > 1:
         claimed = {h[0] for lb in labels if lb != speaker and len(h := hits(lb)) == 1}

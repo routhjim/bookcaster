@@ -95,30 +95,38 @@ class Char:
             root = HOME / "audiobooks" / book
         self.vdir = root / "work" / "video" if (root / "work" / "video").exists() else root
         self.look = json.loads((self.vdir / "look.json").read_text())
-        chars = self.look.get("characters", {})
-        if name not in chars:
-            sys.exit(f"{name} not in look.json characters: {list(chars)}")
-        self.name, self.desc = name, chars[name].strip().rstrip(".")
-        self.slug = V.slug(name)
+        import registry as RG
+        # 10-27: one owner for who (tools/registry.py): any spelling is the person, their look is look.json's
+        # first-stored one ("Dr. Watson" = "Doctor Watson"), and every plan/wardrobe/index lookup goes by person
+        self.R = R = RG.Book(self.vdir.parent.parent)
+        if R.person(name, narrator=False) is None:
+            sys.exit(f"{name} not in look.json characters: {R.people()}")
+        self.name = R.person(name, narrator=False)
+        self.desc = R.look(self.name).strip().rstrip(".")
+        self.slug = V.slug(self.name)
         self.trigger = f"chr_{self.slug}"
         self.out = self.vdir / "charlora" / self.slug
         self.refs_dir = self.vdir / "refs"
         self.chapters = sorted(p for p in self.vdir.iterdir() if (p / "plan.json").exists())
         self.plans = {c.name: json.loads((c / "plan.json").read_text()) for c in self.chapters}
-        sty = [c / "style.txt" for c in self.chapters if (c / "style.txt").exists()]
-        self.style = (sty[0].read_text().strip().rstrip(".") + ".") if sty else ""
-        self.draw_style = sty[0].read_text().strip() if sty else ""   # as video.py drew the sheets: their names hash it
+        # the book's one style (registry: art_style.txt > a chapter's style.txt > the default), as the sheets are drawn
+        # and the keys are prompted: their names hash it (10-27: the first chapter's style.txt only, '' without one)
+        self.draw_style = R.style()
+        self.style = self.draw_style.strip().rstrip(".") + "."
         self.period_s = V.period_line(str(self.refs_dir)).strip() + " " if V.period_of(str(self.refs_dir)) else ""  # not in input_hash
         # outfits: None = the usual look; then each wardrobe row (by id) across the chapters
         self.outfits = {None: {"id": None, "dress": None}}
+        self.outfit_as = {}                                  # outfit id -> the wardrobe's spelling of the person
         for plan in self.plans.values():
-            for r in (plan.get("wardrobe") or {}).get(name, []):
+            wk = V.wardrobe_key(plan, self.name, R)
+            for r in (plan.get("wardrobe") or {}).get(wk, []) if wk else []:
                 # 10-25 Acts 2: a plan's wardrobe saved before the clothes-only filter kept "tongues of fire" = Peter's
                 # usual tunic and belt; no sheet is drawn for such a row, so the LoRA failed "no reference sheet"
                 # (only those: dropping other rows changes a LoRA's hash = a retrain, e.g. Acts 1's ascended Jesus)
                 dress = V.worn_only(str(r.get("dress") or ""))
                 if not (dress and V.changes_nothing(dress, self.desc)):
                     self.outfits.setdefault(r["id"], r)
+                    self.outfit_as.setdefault(r["id"], wk)
         self.face = V._short(self.desc)                      # age, face, hair
         self.subject = self.desc.split(",")[0].strip()       # "a woman of about 70": what to look for
         m = re.search(r"\b(?:of|aged)\s+(?:about\s+|around\s+)?(\d{1,3})\b", self.desc)
@@ -131,7 +139,8 @@ class Char:
         # the staging engine's asset index (flow3d): kind (human | creature) and, per outfit, the sheet
         # and the rigged model it built; "" = the usual look
         ix = self.vdir / "stage" / "characters" / "index.json"
-        ent = (json.loads(ix.read_text()).get("characters", {}).get(name, {}) if ix.exists() else {})
+        ixc = json.loads(ix.read_text()).get("characters", {}) if ix.exists() else {}
+        ent = ixc.get(R.key_in(self.name, list(ixc)) or self.name, {})
         self.kind = ent.get("kind") or ("human" if self.age is not None or re.search(
             r"\b(man|woman|boy|girl|youth|child|person|lady|king|queen)\b", d) else "creature")
         self.assets = {(k or None): v for k, v in (ent.get("outfits") or {}).items()}
@@ -172,16 +181,24 @@ class Char:
         a = (self.assets.get(oid) or {}).get("sheet")
         if a and Path(a).exists() and self.kind != "human":
             return Path(a)
-        V = self.V                                           # a plan that casts them (10-25: the Disciple is only in Acts 2)
-        plan = next((pl for pl in self.plans.values() if self.name in V.looks(pl)[0]),
-                    next(iter(self.plans.values())))
-        try:
-            if oid is None:
-                p = V.ref_path(self.refs_dir, self.name, V.ref_prompts(plan, self.draw_style)[self.name][0])
-            else:
-                p = V.outfit_ref(self.refs_dir, plan, self.draw_style, self.name, self.outfits[oid])
-        except Exception:                                    # noqa: BLE001 - fall back to the newest sheet
-            p = None
+        V, R = self.V, self.R                                # a plan that casts them (10-25: the Disciple is only in Acts 2)
+        # ... under ANY spelling, its sheet named by the plan's own (10-27: look.json's first spelling "Doctor Watson",
+        # the plan's "Dr. Watson": no plan matched, KeyError -> no sheet -> Watson's LoRA build failed)
+        p = None
+        cast_in = [pl for pl in self.plans.values() if R.key_in(self.name, list(V.looks(pl)[0]))]
+        for pl in cast_in or list(self.plans.values())[:1]:
+            try:
+                if oid is None:
+                    pr = V.ref_prompts(pl, self.draw_style, R)
+                    k = R.key_in(self.name, list(pr))
+                    p = V.ref_path(self.refs_dir, k, pr[k][0]) if k else None
+                elif V.wardrobe_key(pl, self.name, R):
+                    p = V.outfit_ref(self.refs_dir, pl, self.draw_style, self.outfit_as.get(oid) or self.name,
+                                     self.outfits[oid], R)
+            except Exception:                                # noqa: BLE001 - fall back to the newest sheet
+                p = None
+            if p is not None:
+                break
         if p and p.exists():
             return p
         if self.kind == "human":                             # 10-25 Acts 2: the Disciple's LoRA trained on his
@@ -238,7 +255,7 @@ def cand_book(c: Char, cands: list) -> None:
         anim = ch / "anim"
         plan = c.plans[ch.name]
         for p in plan.get("pictures", []):
-            if c.name in (p.get("who") or []) and (ch / "img" / f"{p['id']}.png").exists():
+            if any(c.R.same(w, c.name) for w in p.get("who") or []) and (ch / "img" / f"{p['id']}.png").exists():
                 seen.add(ch / "img" / f"{p['id']}.png")
         kf = anim / "keyframes.json"
         if kf.exists():
@@ -246,14 +263,15 @@ def cand_book(c: Char, cands: list) -> None:
                 if (anim / "keyframe_checks.json").exists() else {}
             for f in json.loads(kf.read_text()).get("frames", []):
                 k = anim / "keyframes" / f"{f['shot']}.png"
-                if c.name in (f.get("who") or []) and k.exists() and (not passed or f["shot"] in passed):
+                if any(c.R.same(w, c.name) for w in f.get("who") or []) and k.exists() and \
+                        (not passed or f["shot"] in passed):
                     seen.add(k)
         # portraits: talk-<speaker>-<pic>-<hash>.png; the listener is not in the name, so keep a portrait
         # when the character speaks or is in that scene picture's people
         pic_who = {p["id"]: p.get("who") or [] for p in plan.get("pictures", [])}
         for k in sorted((anim / "portraits").glob("talk-*.png")) if (anim / "portraits").exists() else []:
             m = re.match(r"talk-(.+)-(p\d+)-[0-9a-f]+$", k.stem)
-            if m and (m.group(1) == c.slug or c.name in pic_who.get(m.group(2), [])):
+            if m and (c.R.same(m.group(1), c.name) or any(c.R.same(w, c.name) for w in pic_who.get(m.group(2), []))):
                 seen.add(k)
     for k in sorted(seen):
         cid = "book_" + hashlib.sha1(str(k).encode()).hexdigest()[:10]
@@ -1260,12 +1278,12 @@ def shape_hash(c: "Char", steps: int | None) -> str:
 def stamp_shape(book) -> list:
     """Record the shape hash in every CURRENT build.json (before a paint-only model change). -> names stamped."""
     out = []
-    lj = Path(book, "work", "video", "look.json")
-    names = list((json.loads(lj.read_text()).get("characters") or {})) if lj.exists() else []
+    import registry as RG
+    R = RG.Book(book)
     for bj in Path(book, "work", "video", "charlora").glob("*/build.json"):
         try:
             d = json.loads(bj.read_text())
-            name = next((n for n in names if re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_") == bj.parent.name), None)
+            name = R.person(bj.parent.name, narrator=False)          # the folder, any spelling (10-27)
             if not name:
                 continue
             c = Char(str(book), name)
@@ -1352,7 +1370,9 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
     probe = Char(book, next(iter(json.loads((Path(book).expanduser() if Path(book).expanduser().exists()
                                              else HOME / "audiobooks" / book).joinpath(
         "work", "video", "look.json").read_text())["characters"])))
-    names = characters or list(probe.look.get("characters", {}))
+    # one build per PERSON (10-27: look.json's "Dr. Watson" beside "Doctor Watson" was a second build of one man)
+    names = list(dict.fromkeys(probe.R.person(n, n, narrator=False) for n in characters)) if characters \
+        else probe.R.people()
     out = {}
     for name in names:
         try:

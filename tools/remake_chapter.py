@@ -151,11 +151,38 @@ def slug(name: str) -> str:
 
 
 CANON_KEY: dict = {}     # canon(name) -> the first-stored look.json key (set by Ctx): one sheet per person
+REG: list = [None]       # the book's registry (set by Ctx; tools/registry.py)
+
+
+def pslug(name: str) -> str:
+    """The PERSON's slug (registry.slug: their first-stored spelling) for what belongs to the person - the LoRA
+    folder and trigger, the staging models (10-27: "Dr. Watson" looked for charlora/dr_watson, his LoRA is under
+    doctor_watson)."""
+    return REG[0].slug(name) if REG[0] is not None and REG[0].person(name, narrator=False) else slug(name)
+
+
+def _ix(idx: dict, who: str) -> dict:
+    """The staging index's entry for *who* under any spelling."""
+    if who in idx:
+        return idx[who]
+    k = REG[0].key_in(who, list(idx)) if REG[0] is not None else None
+    return idx.get(k) if k else next((v for k_, v in idx.items() if k_.lower() == str(who).lower()), {})
 
 
 def ref_sheet(refs: Path, name: str) -> Path | None:
-    from tts_reader.video import canon
-    name = CANON_KEY.get(canon(name), name)
+    """A person's or place's reference sheet. A person's is the one their CURRENT registry look and the book's style
+    draw (the name charlora and the sheet jobs use, under any spelling); else the newest under the first-stored
+    spelling (10-27: a surname or voice label found no sheet; the newest could be an old look's)."""
+    from tts_reader import video
+    R = REG[0]
+    if R is not None and R.person(name, narrator=False):
+        p_ = R.person(name, narrator=False)
+        pr = video.sheet_prompt(R.look(p_), R.style())
+        for a in R.aliases(p_):
+            if (x := video.ref_path(refs, a, pr)).exists():
+                return x
+        name = p_
+    name = CANON_KEY.get(video.canon(name), name)
     c = sorted(refs.glob(f"{slug(name)}-*.png"), key=lambda p: p.stat().st_mtime)
     return c[-1] if c else None
 
@@ -220,14 +247,20 @@ class Ctx:
         self.frames = {f["shot"]: f for f in kf.get("frames", [])}
         self.plan = json.loads((self.V / "plan.json").read_text())
         lk = json.loads((self.W / "video" / "look.json").read_text())
-        # one look per person under any spelling, the first stored wins (video.keep_looks' rule): "Dr. Grimesby
-        # Roylott" was a second, bearded entry beside "Doctor Grimesby Roylott" and redrew him bearded (10-20)
+        # one look per person under any spelling, the first stored wins: "Dr. Grimesby Roylott" was a second, bearded
+        # entry beside "Doctor Grimesby Roylott" and redrew him bearded (10-20). 10-27: the registry owns it
+        # (tools/registry.py): self.chars answers ANY spelling (a surname, a voice label, Dr./Doctor) with that one
+        # look, the plan's own copies are never read for a look
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import registry as RG
+        self.R = REG[0] = RG.Book(book)
         raw = lk.get("characters", {})
         self.canon_key = {}
         for k in raw:
-            self.canon_key.setdefault(video.canon(k), k)
+            self.canon_key.setdefault(video.canon(k), self.R.person(k) or k)
         CANON_KEY.update(self.canon_key)
-        self.chars = {k: raw[self.canon_key[video.canon(k)]] for k in raw}
+        pc = list(((self.plan.get("look") or {}).get("characters") or {}))
+        self.chars = self.R.looks(list(dict.fromkeys(list(raw) + pc)), (self.plan.get("look") or {}).get("characters"))
         self.refs = self.W / "video" / "refs"
         self.style = (self.V / "style.txt").read_text().strip() if (self.V / "style.txt").exists() else video.DEFAULT_STYLE
         self.period = video.period_of(book)
@@ -253,7 +286,7 @@ class Ctx:
     def dress(self, who: str, t: float) -> str | None:
         if not self.starts:
             return None
-        row = self.video.outfit(self.plan, who, self.video.para_at(self.starts, t))
+        row = self.video.outfit(self.plan, who, self.video.para_at(self.starts, t), self.R)
         return row["dress"] if row else None
 
     def look(self, who: str, t: float) -> str:
@@ -1614,7 +1647,7 @@ def model_dir(cx: "Ctx", e: dict, who: str) -> Path | None:
 
 def back_ref(cx: "Ctx", e: dict, who: str) -> str | None:
     d = model_dir(cx, e, who)
-    for p in ((d / "apose_back.png") if d else None, cx.W / "video" / "stage" / "characters" / slug(who) / "apose_back.png"):
+    for p in ((d / "apose_back.png") if d else None, cx.W / "video" / "stage" / "characters" / pslug(who) / "apose_back.png"):
         if p and p.exists():
             return str(p)
     return None
@@ -1708,7 +1741,7 @@ def regional_pass(cx: "Ctx", ents: list, card: str = "05") -> None:
             back = w == beh
             sh = outfit_sheet(cx, e, w)
             lr = char_lora(cx, w)
-            trig = f"chr_{slug(w)}, " if lr else ""
+            trig = f"chr_{pslug(w)}, " if lr else ""
             look = cx.look(w, e["t"]).rstrip(".")
             if back:
                 hair = ", ".join(re.findall(r"[^,;]*\bhair\b[^,;]*", look)) or "their hair"
@@ -1867,9 +1900,9 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
             if yaw is not None and abs(yaw) > FACE_MAX_YAW:
                 continue
             sh_ = ref_sheet(cx.refs, w) if FACE_REF and (yaw is None or abs(yaw) <= FACE_REF_MAX_YAW) else None
-            hf_ = cx.W / "video" / "charlora" / slug(w) / "refs" / "head_fixed.png"   # a repaired head (the Knight's
+            hf_ = cx.W / "video" / "charlora" / pslug(w) / "refs" / "head_fixed.png"   # a repaired head (the Knight's
             hs_ = (str(hf_) if hf_.exists() else headshot(cx, w, str(sh_))) if sh_ else None  # sheet had stubble)
-            prompt = (f"{'chr_' + slug(w) + ' ' if lr else ''}A close-up of the face of {w}, {angle_words(yaw)}: "
+            prompt = (f"{'chr_' + pslug(w) + ' ' if lr else ''}A close-up of the face of {w}, {angle_words(yaw)}: "
                       f"{face_words(cx, w)}. "
                       + ("This person's face is the face in image 1, at this picture's head angle. " if hs_ else "") +
                       f"{short_look(cx.look(w, e['t']).rstrip('.'))}. Keep the head exactly as turned in this picture, "
@@ -1939,7 +1972,7 @@ DRAW_MIN_BATCH = 8     # while renders are still coming: draw in batches (a 1-sh
 
 def char_lora(cx: "Ctx", who: str) -> str | None:
     """The character LoRA to draw `who` with: lora/USE names the chosen file, else the highest step."""
-    d = cx.W / "video" / "charlora" / slug(who) / "lora"
+    d = cx.W / "video" / "charlora" / pslug(who) / "lora"
     if not (d.parent / "build.json").exists():   # a build stopped part-way leaves early checkpoints (10-22: Hulda)
         return None
     if (d / "USE").exists() and (d / (d / "USE").read_text().strip()).exists():
@@ -2070,7 +2103,7 @@ def outfit_sheet(cx: "Ctx", e: dict, who: str) -> str | None:
         m = m if isinstance(m, str) else (m or {}).get("blend")
         if m:
             idx = json.loads((cx.W / "video" / "stage" / "characters" / "index.json").read_text())["characters"]
-            for o in (idx.get(who) or {}).get("outfits", {}).values():
+            for o in (_ix(idx, who) or {}).get("outfits", {}).values():
                 if Path(o.get("dir", "")) == Path(m).parent and o.get("sheet") and Path(o["sheet"]).exists():
                     return o["sheet"]
     except (OSError, ValueError, KeyError):
@@ -2094,10 +2127,10 @@ def creature_head(cx: "Ctx", who: str) -> str | None:
     sheet's 3/4 head, else creature_head.png - the painter details a deliberately simple procedural body from it."""
     try:
         idx = json.loads((cx.W / "video" / "stage" / "characters" / "index.json").read_text())["characters"]
-        c = idx.get(who) or next((v for k, v in idx.items() if k.lower() == who.lower()), {})
-        d = Path(next(iter(c.get("outfits", {}).values()), {}).get("dir") or (cx.W / "video" / "stage" / "characters" / slug(who)))
+        c = _ix(idx, who) or {}
+        d = Path(next(iter(c.get("outfits", {}).values()), {}).get("dir") or (cx.W / "video" / "stage" / "characters" / pslug(who)))
     except (OSError, ValueError, KeyError):
-        d = cx.W / "video" / "stage" / "characters" / slug(who)
+        d = cx.W / "video" / "stage" / "characters" / pslug(who)
     cs = d / "creature_sheet.json"
     heads = json.loads(cs.read_text()).get("heads", {}) if cs.exists() else {}
     for p in (d / "head_ref.png", heads.get("q34"), heads.get("side"), d / "creature_head.png"):
@@ -2165,7 +2198,7 @@ def draw_prompt(cx: Ctx, e: dict, idx: dict | None = None, scene_only: bool = Fa
             f": {look}" + (f", {kw}" if kw else "") + (f", {hw}" if hw else "")
 
     def trig(w):     # the character LoRA's trigger before the person's first mention (charlora: chr_<slug>)
-        return f"chr_{slug(w)} " if TRIGGERS and char_lora(cx, w) and not is_creature(cx.chars.get(w, "")) else ""
+        return f"chr_{pslug(w)} " if TRIGGERS and char_lora(cx, w) and not is_creature(cx.chars.get(w, "")) else ""
     if scene_only:       # the global pass: who stands where + gender/age only (the looks + refs go per person)
         def tag(w):          # noqa: F811
             hw, kw = held_words(cx, e, w), key_words(cx, w)

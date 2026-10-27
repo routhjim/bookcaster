@@ -699,84 +699,138 @@ def _sample_clips(sw: Path, pick: list[dict], kf: dict, plan: dict, style: str, 
     return f"{len(ok)}/{len(shots)} clip(s) in {(time.time() - t) / 60:.1f} min, in {sw / 'anim'}"
 
 
+def _registry(book: Path):
+    """The book's registry (tools/registry.py): the one owner of who and where (10-27)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import registry
+    return registry.Book(book)
+
+
 def show_looks(book: Path) -> str:
-    from . import video
     reg = book / "work" / "video" / "look.json"
     if not reg.exists():
         return "no looks yet: they're written with the first picture plan (bookcaster storyboard)"
-    chars = json.loads(reg.read_text()).get("characters", {})
-    seen, out = set(), []
-    for k, v in chars.items():
-        if video.canon(k) not in seen:
-            seen.add(video.canon(k))
-            out.append(f"{k}: {v}")
-    for plan_f in sorted((book / "work" / "video").glob("*/plan.json")):
-        for name, rows in (json.loads(plan_f.read_text()).get("wardrobe") or {}).items():
+    R = _registry(book)
+    out = [f"{n}: {R.look(n)}" for n in R.people()]          # one line per person, the registry's look
+    for plan_f in sorted((book / "work" / "video").glob("[0-9][0-9]_*/plan.json")):
+        plan = json.loads(plan_f.read_text())
+        pins = {(R.person(n) or n, i.lower()) for n, i in plan.get("_pinned_outfits") or []}
+        for name, rows in (plan.get("wardrobe") or {}).items():
             for r in rows:
-                out.append(f"{name} ({r['id']}), {plan_f.parent.name} from paragraph {r['from']}: {r['dress']}")
+                pin = " (set by hand)" if (R.person(name) or name, r["id"].lower()) in pins else ""
+                out.append(f"{name} ({r['id']}), {plan_f.parent.name} from paragraph {r['from']}: {r['dress']}{pin}")
     return "\n".join(out)
 
 
 def set_outfit(book: Path, name: str, oid: str, dress: str) -> str | None:
     """Change one wardrobe outfit ("Edric (star-iron armor) = ...") in every chapter that has it: its
-    sheet and the pictures and keyframes with it are redrawn at the next job. None if there's none."""
+    sheet and the pictures and keyframes with it are redrawn at the next job. None if there's none.
+    The outfit is PINNED (plan "_pinned_outfits": [[wardrobe name, id], ...]): a look change or a wardrobe re-plan
+    keeps it (10-27: set_look dropped every outfit, hand-set ones too)."""
     from . import video
+    R = _registry(book)
     hit = None
-    for plan_f in sorted((book / "work" / "video").glob("*/plan.json")):
+    for plan_f in sorted((book / "work" / "video").glob("[0-9][0-9]_*/plan.json")):
         plan = json.loads(plan_f.read_text())
-        for n, rows in (plan.get("wardrobe") or {}).items():
-            if video.canon(n) != video.canon(name) and name.lower() not in n.lower():
-                continue
-            for r in rows:
-                if r["id"].lower() == oid.lower() or oid.lower() in r["id"].lower():
-                    r["dress"] = video.literal_safe(dress).rstrip(".")
-                    hit = f"{n} ({r['id']})"
-        if hit:
+        w = plan.get("wardrobe") or {}
+        mine = video.wardrobe_key(plan, name, R)
+        if mine is None:                         # (a part of the name: "Maren" for "Princess Maren")
+            sub = [n for n in w if name.lower() in n.lower()]
+            mine = sub[0] if len(sub) == 1 else None
+        changed = False
+        for r in w.get(mine, []) if mine else []:
+            if r["id"].lower() == oid.lower() or oid.lower() in r["id"].lower():
+                r["dress"] = video.literal_safe(dress).rstrip(".")
+                hit, changed = f"{mine} ({r['id']})", True
+                pins = plan.setdefault("_pinned_outfits", [])
+                if [mine, r["id"]] not in pins:
+                    pins.append([mine, r["id"]])
+        if changed:
             plan_f.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
     return hit
 
 
+def _clothes(desc: str) -> str:
+    """What a look says they wear (from "wearing" / "dressed" on), for telling a clothes change from a face one."""
+    m = re.search(r"\b(?:wearing|dressed|clad)\b(.*)$", str(desc or ""), re.I | re.S)
+    return re.sub(r"\W+", " ", m.group(1)).strip().lower() if m else ""
+
+
 def set_look(book: Path, name: str, desc: str, pinned: bool = False) -> str:
-    """Give a character a new look, under every spelling of the name. Their
-    reference sheet is redrawn and scenes with them are redrawn at the next
-    storyboard / video job (the scene prompts include the look)."""
+    """Give a character a new look. It is written under the registry's one spelling of them and their other
+    spellings are REMOVED from look.json (and from a chapter plan's looks where nothing in that plan uses them), so
+    the data converges on one key per person (10-27: "Doctor Watson" and "Dr. Watson", two Roylotts with different
+    looks). Their reference sheet is redrawn and scenes with them are redrawn at the next storyboard / video job (the
+    scene prompts include the look). -> the name it is stored under."""
     from . import video
     reg_path = book / "work" / "video" / "look.json"
     if not reg_path.exists():
         sys.exit("no looks yet: run bookcaster storyboard first")
     reg = json.loads(reg_path.read_text())
-    chars = reg.get("characters", {})
-    hits = [k for k in chars if video.canon(k) == video.canon(name)] or \
-           [k for k in chars if name.lower() in k.lower()]
-    if len({video.canon(k) for k in hits}) > 1:
-        sys.exit(f"which character? " + ", ".join(sorted({k for k in chars})))
-    if not hits:
+    chars = reg.setdefault("characters", {})
+    R = _registry(book)
+    key = R.person(name, narrator=True)
+    if key is None:
+        sub = [k for k in R.people() if name.lower() in k.lower()]
+        if len(sub) > 1:
+            sys.exit(f"which character? " + ", ".join(sorted(sub)))
         # someone the storyboard's few pictures didn't need yet (John, a crowd, ...): the full picture
         # plan keeps looks already in the registry, so setting one now fixes how they'll be drawn
-        hits = [name.strip()]
+        key = sub[0] if sub else name.strip()
+    alias = [k for k in R.aliases(key) if k != key]
     desc = video.literal_safe(desc)
-    for k in hits:
-        chars[k] = desc
-        if pinned:                               # set by hand (`bookcaster look`): the plan's look audit never
-            reg.setdefault("_pinned", {})[k] = desc   # overrides it (10-22: it took the Knight's armor off)
+    old = R.look(key) if R.person(key) else ""
+    chars[key] = desc
+    pins = reg.get("_pinned") or {}
+    for k in alias:
+        chars.pop(k, None)
+        if k in pins:                            # a pin under another spelling moves to theirs (a new pin replaces it)
+            v = pins.pop(k)
+            if not pinned:
+                pins.setdefault(key, v)
+    if pinned:                                   # set by hand (`bookcaster look`): the plan's look audit never
+        reg.setdefault("_pinned", {})[key] = desc   # overrides it (10-22: it took the Knight's armor off)
     reg_path.write_text(json.dumps(reg, indent=1, ensure_ascii=False))
-    # their outfits were written from the old look: planned again from the new one at the next video job
-    # (10-25: the Disciple's new brown + ochre look kept the old white + blue in Acts 2's wardrobe, every key)
+    same = {key, *alias}
+    import registry as _RG
+    is_them = lambda n: n in same or _RG.person_key(n) in {_RG.person_key(x) for x in same}
+    # their outfits were written from the old look: planned again from the new one at the next video job (10-25:
+    # the Disciple's new brown + ochre look kept the old white + blue in Acts 2's wardrobe, every key) - but only when
+    # the CLOTHES changed (10-27: a face-only or no-op change dropped every outfit, even hand-set ones), and never an
+    # outfit set by hand (set_outfit's "_pinned_outfits")
+    redress = _clothes(old) != _clothes(desc)
     for pp in sorted(reg_path.parent.glob("[0-9][0-9]_*/plan.json")):
         plan = json.loads(pp.read_text())
         pc = (plan.get("look") or {}).get("characters") or {}
-        mine = [n for n in pc if any(video.canon(n) == video.canon(k) for k in hits)]
+        mine = [n for n in pc if is_them(n)]
         w = plan.get("wardrobe") or {}
-        worn = [n for n in w if any(video.canon(n) == video.canon(k) for k in hits)]
+        worn = [n for n in w if is_them(n)]
         if not mine and not worn:
             continue
+        before = json.dumps(plan, sort_keys=True)
+        used = {x for pic in plan.get("pictures") or [] for x in pic.get("who") or []} | set(w) | \
+            set(plan.get("sheet_cast") or []) | {x for sc in plan.get("scenes") or [] for x in sc.get("present") or []}
+        keep = [n for n in mine if n in used] or mine[:1]
         for n in mine:                  # the chapter's own copy of the looks draws its keys (10-25: still white + blue)
-            pc[n] = desc
-        if worn:
-            plan["wardrobe"] = {n: r for n, r in w.items() if n not in worn}
-            plan.pop("wardrobe_k", None)
-        pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
-    return hits[0]
+            if n in keep:
+                pc[n] = desc
+            else:
+                pc.pop(n)
+        if worn and redress:
+            pins_ = {(n, i.lower()) for n, i in plan.get("_pinned_outfits") or []}
+            for n in worn:
+                rows = [r for r in w[n] if (n, r["id"].lower()) in pins_]
+                if rows:
+                    w[n] = rows
+                else:
+                    w.pop(n)
+            plan["wardrobe"] = w
+            plan.pop("wardrobe_k", None)     # planned again (an EMPTY wardrobe with no key reads as current: "")
+            if not w:
+                plan["wardrobe_k"] = ""
+        if json.dumps(plan, sort_keys=True) != before:
+            pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
+    return key
 
 
 def swap_looks(book: Path, a: str, b: str, log=print) -> None:
@@ -789,24 +843,17 @@ def swap_looks(book: Path, a: str, b: str, log=print) -> None:
     from . import video
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     vd = book / "work" / "video"
-    reg = json.loads((vd / "look.json").read_text())
-    ch = reg.get("characters", {})
-    ka = next((k for k in ch if video.canon(k) == video.canon(a)), None)
-    kb = next((k for k in ch if video.canon(k) == video.canon(b)), None)
-    if not ka or not kb:
+    R = _registry(book)
+    ka, kb = R.person(a), R.person(b)
+    if not ka or not kb or ka == kb:
         sys.exit(f"no look for {a if not ka else b} (bookcaster look shows them)")
-    la, lb = ch[ka], ch[kb]
-    set_look(book, ka, lb, pinned=True)
-    set_look(book, kb, la, pinned=True)
-    for pj in vd.glob("[0-9][0-9]_*/plan.json"):  # the chapter plans carry the looks too
-        P = json.loads(pj.read_text())
-        pc = (P.get("look") or {}).get("characters") or {}
-        if ka in pc and kb in pc:
-            pc[ka], pc[kb] = pc[kb], pc[ka]
-            pj.write_text(json.dumps(P, indent=1, ensure_ascii=False))
-    slug = lambda n: re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_")
+    la, lb = R.look(ka), R.look(kb)
+    names = {ka: R.aliases(ka), kb: R.aliases(kb)}         # every spelling of each (their sheets are named by them)
+    set_look(book, ka, lb, pinned=True)          # (the chapter plans' copies too: 10-27, a second swap of the plan
+    set_look(book, kb, la, pinned=True)          # copies here swapped them straight back)
+    R = _registry(book)
     cl = vd / "charlora"
-    da, db, tmp = cl / slug(ka), cl / slug(kb), cl / f".swap_{slug(ka)}"
+    da, db, tmp = cl / R.slug(ka), cl / R.slug(kb), cl / f".swap_{R.slug(ka)}"
     if da.exists() and db.exists():
         da.rename(tmp)
         db.rename(da)
@@ -818,14 +865,14 @@ def swap_looks(book: Path, a: str, b: str, log=print) -> None:
     # the base reference sheets: each drawing goes to the name its look now belongs to (named by prompt hash)
     # (10-25: the first version read chapter 2's old plan, which lists neither, and deleted both sheets unrenamed)
     refs = vd / "refs"
-    olds = {n: sorted(refs.glob(f"{video.slug(n)}-*.png")) for n in (ka, kb)}
+    olds = {n: sorted(p_ for sp in names[n] for p_ in refs.glob(f"{video.slug(sp)}-*.png")) for n in (ka, kb)}
     want = {ka: set(), kb: set()}                      # each chapter plan names a sheet by its own prompt
     for pj in vd.glob("[0-9][0-9]_*/plan.json"):
-        st = pj.parent / "style.txt"
-        pr = video.ref_prompts(json.loads(pj.read_text()), st.read_text().strip() if st.exists() else video.DEFAULT_STYLE)
-        if ka in pr and kb in pr:                      # (a plan naming one of them wasn't swapped)
+        pr = video.ref_prompts(json.loads(pj.read_text()), R.style(pj.parent.name), R)
+        ks = {n: R.key_in(n, list(pr)) for n in (ka, kb)}
+        if all(ks.values()):                           # (a plan naming one of them wasn't swapped)
             for n in (ka, kb):
-                want[n].add(video.ref_path(refs, n, pr[n][0]))
+                want[n].add(video.ref_path(refs, ks[n], pr[ks[n]][0]))
     keep = {ka: olds[kb][:1], kb: olds[ka][:1]}         # the drawing of the look each one now has
     for n in (ka, kb):
         for dst in want[n]:
@@ -845,7 +892,7 @@ def swap_looks(book: Path, a: str, b: str, log=print) -> None:
     log(f"sheets: {sorted(p_.name for p_ in want[ka] | want[kb] if p_.exists())}")
     import charlora as L
     for n in (ka, kb):
-        bj = cl / slug(n) / "build.json"
+        bj = cl / R.slug(n) / "build.json"
         if bj.exists():
             d = json.loads(bj.read_text())
             c = L.Char(str(book), n)
@@ -954,7 +1001,15 @@ def redraw_pictures(book: Path, f: Path, which: list[str]) -> list[str]:
 
 
 def narrator_character(book: Path) -> str | None:
-    """The cast member who is the book's first-person narrator (Watson)."""
+    """The cast member who is the book's first-person narrator: the registry's narrator (its cast name, e.g.
+    "Doctor Watson"; 10-27: this returned the voice label "Watson" while the registry said "Doctor Watson"), else
+    the voice cast's label when the looks don't know them yet."""
+    try:
+        R = _registry(book)
+        if R.narrator():
+            return R.narrator()
+    except (OSError, ValueError):
+        pass
     try:
         chars = json.loads((book / "book.cast.json").read_text())["characters"]
     except (OSError, ValueError, KeyError):
