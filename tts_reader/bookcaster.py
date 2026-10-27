@@ -1704,6 +1704,45 @@ def covers_chapter(book: Path, stem: str, mp4: Path) -> bool:
     return mix.exists() and audio_seconds(mp4) >= audio_seconds(mix) - max(3.0, 0.02 * audio_seconds(mix))
 
 
+def whole_timeline(book: Path, stem: str, log=print) -> int:
+    """A chapter's timeline with every line's WHOLE text, restored from the chapter where an older recording cut it
+    (10-27: timelines recorded before the engine wrote whole lines kept 160 characters of each - the Speckled Band's
+    held 4,952 of 9,812 words, so the director saw "I find many tra" for a 63 s paragraph and looped its desk shots,
+    and never heard of the mantel clock). Each line is found in order in the chapter as it was spoken
+    (prepare_for_speech), and runs to the next line's start; a line is replaced only when the chapter's text starts
+    with it. Rewritten in place (atomically); -> the number of lines restored."""
+    from .textprep import prepare_for_speech
+    tp, cp = book / "work" / f"{stem}.timeline.json", book / "chapters" / f"{stem}.txt"
+    if not tp.exists() or not cp.exists():
+        return 0
+    tl = json.loads(tp.read_text())
+    prep = re.sub(r"\s+", " ", prepare_for_speech(cp.read_text(encoding="utf-8")))
+    norm = lambda z: re.sub(r"\s+", " ", re.sub(r"^<[^>]+>\s*", "", str(z or ""))).strip()
+    pos, cur = [], 0
+    for x in tl:
+        k = norm(x.get("text"))[:40]
+        i = prep.find(k, cur) if k else -1
+        pos.append(i if 0 <= i <= cur + 4000 else None)
+        if pos[-1] is not None:
+            cur = i + len(k)
+    fixed = 0
+    for j, x in enumerate(tl):
+        if pos[j] is None:
+            continue
+        nxt = next((q for q in pos[j + 1:] if q is not None), len(prep))
+        full = prep[pos[j]:nxt].strip().strip("\u201c\u201d\"' ").strip()
+        old = norm(x.get("text"))
+        if len(full) > len(old) + 3 and full.startswith(old[:-3].rstrip()):
+            x["text"] = full
+            fixed += 1
+    if fixed:
+        tmp = tp.with_suffix(".tmp")
+        tmp.write_text(json.dumps(tl, indent=1, ensure_ascii=False))
+        os.replace(tmp, tp)
+        log(f"timeline: {fixed} cut line(s) restored to their whole text from the chapter")
+    return fixed
+
+
 def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> None:
     """What the shot flow reads, made first when a chapter has none yet (10-24 user: one bookcaster run from a
     recorded chapter to its video): the chapter plan (pictures, looks, wardrobe, moments, sheets: flow3d plan),
@@ -1711,6 +1750,7 @@ def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> No
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     import flow3d
     vd = book / "work" / "video" / stem
+    whole_timeline(book, stem, log)          # every line whole before anything reads it (10-27)
     if not (vd / "plan.json").exists() or not (vd / "anim" / "manifest.json").exists():
         status(step=f"shots: planning {stem} (looks, moments, sheets)")
         flow3d.plan(book, stem, log=log)
