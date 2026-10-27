@@ -16,22 +16,30 @@ def check(name, ok, got=None):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  got {got}"))
     ok or fails.append(name)
 
-# --- poses carried: the director's up/down/up is overruled until the healing shot changes it
+# --- poses: the director's own (structured, as the narration says) is the one owner; carried only into a gap, and
+# never across a scene (10-27: Watson "sitting" in bed carried into the sitting room, where he stood)
 def sh(i, p0, p1, who=("Peter", "Lame Man"), kind="quiet"):
-    return {"id": f"m{i}_s0", "who": list(who), "kind": kind, "pose": {"Peter": "standing", "Lame Man": p0},
-            "pose_end": {"Peter": "standing", "Lame Man": p1}}
-es = [{"id": f"m{i}"} for i in range(7)]
-out = {"m0": [sh(0, "sitting", "sitting")], "m1": [sh(1, "standing", "standing")],      # director slip: up
-       "m2": [sh(2, "lying on the steps", "lying on the steps")],                          # slip: down
+    d = {"id": f"m{i}_s0", "who": list(who), "kind": kind, "pose": {"Peter": "standing"}, "pose_end": {"Peter": "standing"}}
+    if p0:
+        d["pose"]["Lame Man"], d["pose_end"]["Lame Man"] = p0, p1
+    return d
+es = [{"id": f"m{i}", "t": float(i * 10)} for i in range(7)]
+out = {"m0": [sh(0, "sitting", "sitting")], "m1": [sh(1, None, None)],                   # no pose given: carried
+       "m2": [sh(2, "sitting on the steps", "sitting on the steps")],
        "m3": [{"id": "m3_s0", "who": ["Lame Man"], "kind": "talk"}],
        "m4": [sh(4, "sitting", "standing", kind="action")],                              # Peter pulls him up: healed
-       "m5": [sh(5, "sitting", "sitting")],                                              # slip after the healing
+       "m5": [sh(5, None, None)],                                                        # carried: standing
        "m6": [sh(6, "standing", "standing")]}
 SF.carry_poses(es, out)
 held = [out[f"m{i}"][0].get("pose_held", {}).get("Lame Man") for i in (0, 1, 2, 4, 5, 6)]
-check("lame man held: sit, sit, sit, sit (healed in that shot), then stand, stand", held == ["sit", "sit", "sit", "sit", "stand", "stand"], held)
+check("lame man held: the director's pose, a gap carried: sit, sit, sit, sit (healed in that shot), stand, stand",
+      held == ["sit", "sit", "sit", "sit", "stand", "stand"], held)
 check("the healing shot's pose_after is standing", out["m4"][0]["pose_after"]["Lame Man"] == "stand")
 check("talk shots are left alone", "pose_held" not in out["m3"][0])
+w = {"a": [{"id": "a_s0", "who": ["Dr. Watson"], "kind": "quiet", "pose": {"Dr. Watson": "sitting"}, "pose_end": {"Dr. Watson": "sitting"}}],
+     "b": [{"id": "b_s0", "who": ["Dr. Watson"], "kind": "quiet"}]}
+SF.carry_poses([{"id": "a", "t": 70.0}, {"id": "b", "t": 135.0}], w, cuts=(130.0,))
+check("a pose is not carried across a scene (Watson's bed into the sitting room)", w["b"][0]["pose_held"] == {}, w["b"][0])
 check("pose words: 'seated on a mat' = sit, 'lying' = lie, 'on his feet' = stand",
       (SF.pose_cat("seated on a mat"), SF.pose_cat("lying on the steps"), SF.pose_cat("back on his feet")) == ("sit", "lie", "stand"))
 fa = SF._faults({"shots": [{"dur": 3, "who": ["Peter"], "picture": "p", "action": "a man looks"}]}, ["Peter"], 3)
