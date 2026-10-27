@@ -2743,10 +2743,16 @@ def _gen_args(cx: Ctx, args: list) -> list:
     return out + ["--pp", *[a for a in pp if a not in out]] + _split_arg(cx, out)
 
 
+LTX_MEM_FLOOR_GB = 15
+LTX_NO_ROOM_RC = 75
+# the floor checked once both card locks are held (10-27: checked before the blocking flock, so a run that waited for
+# the cards loaded LTX on whatever memory the holder had left when it let go)
+LTX_MEM_GATE = ('m=$(awk \'/MemAvailable/ {printf "%d", $2/1048576}\' /proc/meminfo); '
+                f'if [ "$m" -lt {LTX_MEM_FLOOR_GB} ]; then echo "MemAvailable $m GiB < {LTX_MEM_FLOOR_GB}: not loading LTX"; '
+                f'exit {LTX_NO_ROOM_RC}; fi; exec "$@"')
+
+
 def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
-    mem = int(open("/proc/meminfo").read().split("MemAvailable:")[1].split()[0]) // 1048576
-    if mem < 15:
-        raise SystemExit(f"MemAvailable {mem} GiB < 15: not loading LTX")
     L = cx.OUT / "ltx"
     hip = ",".join(subprocess.run([str(HOME / "bin" / "hip-index"), c], capture_output=True, text=True).stdout.strip()
                    for c in ("05", "65"))
@@ -2760,9 +2766,12 @@ def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
         runner = L / ("ltx_split_next.py" if PP and args and args[0] == "gen" else "ltx_split.py")
         if not runner.exists():
             shutil.copy(RUNNER_DIR / runner.name, runner)
-        r = subprocess.run([*gate, "timeout", str(HOLD_TIMEOUT), str(LTX_PY),
+        r = subprocess.run([*gate, "bash", "-c", LTX_MEM_GATE, "ltx-gate", "timeout", str(HOLD_TIMEOUT), str(LTX_PY),
                             str(runner), *_gen_args(cx, args), "--emb", str(L / "emb")],
                            stdout=fh, stderr=subprocess.STDOUT, env=env, cwd=str(L))
+    if r.returncode == LTX_NO_ROOM_RC:
+        raise SystemExit(lf.read_text().strip().splitlines()[-1] if lf.exists() and lf.read_text().strip()
+                         else f"MemAvailable < {LTX_MEM_FLOOR_GB} GiB: not loading LTX")
     log_entry(cx.OUT, {"phase": "ltx", "step": name, "rc": r.returncode, "sec": round(time.time() - t), "log": str(lf)})
     kernel_check(cx.OUT, f"-{HOLD_TIMEOUT // 60 + 6}min")
     return r.returncode

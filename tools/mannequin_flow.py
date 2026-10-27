@@ -1608,8 +1608,12 @@ def mux(book: Path, stem: str, vid: Path, t0: float, dur: float, mix: Path, out:
         fl.append(f"[{k + 2}:a]adelay={ms}|{ms},volume=1.6[s{k}]")
         labels.append(f"[s{k}]")
     graph = ";".join(fl + [f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:duration=first,alimiter=limit=0.89:level=0[a]"])   # clangs on loud lines clipped (10-22)
+    # written beside and swapped in whole (10-27: -y rewrote the cut in place, and work/final/<stem>.mp4 is a hard link
+    # to it: the chapter's finished video changed - or broke - under every re-run)
+    tmp = Path(out).with_name(f".{Path(out).stem}.{os.getpid()}{Path(out).suffix}")
     subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", graph, "-map", "0:v", "-map", "[a]",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(out)], check=True)
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", str(tmp)], check=True)
+    os.replace(tmp, out)
     log(f"assembled {n} clips, {len(spots)} sound effect(s) -> {out}")
     return out
 

@@ -832,9 +832,11 @@ def pending(book) -> list:
 
 # ------------------------------------------------------------------------------------------------- stages
 
-def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "any", only=None) -> dict:
+def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "any", only=None,
+           gpu_on=None, gpu_off=None) -> dict:
     """Characters (+ creature sheets), props, sets: each tool's own resumable entry point; GPU steps take their card
-    lock per call and yield to a waiting LTX gaprun (the tools' own rule)."""
+    lock per call and yield to a waiting LTX gaprun (the tools' own rule). gpu_on() / gpu_off(): called around the GPU
+    steps (bookcaster pauses the voice and music servers only for those; 10-27: they were down the whole 35 min)."""
     JOB_LOG[0] = log
     disk_check(book, log)
     book = Path(book)
@@ -845,6 +847,8 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
     rc = {}
     plan_lint(book, stems, log)                  # the plan's words, before any GPU (10-21)
     rc["characters.plan"] = run([POSE_PY, "-I", HERE / "characters.py", "plan", book], lg)
+    if not plan_only and gpu_on:
+        gpu_on()
     if not plan_only:
         rc["characters.build"] = run([POSE_PY, "-I", HERE / "characters.py", "build", book, "--card", card,
                                       *(["--only", *only] if only else [])], lg)
@@ -880,6 +884,8 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
     if not plan_only and todo:
         lth.join()
         rc["loras"] = 1 if lora_res.get("left") else 0
+    if not plan_only and gpu_off:
+        gpu_off()
     ap = register(book)
     bad = {k: v for k, v in rc.items() if v}
     _log(f"assets: {len(ap['items'])} item(s), {len(pending(book))} pending review" +
