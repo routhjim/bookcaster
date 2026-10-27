@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory() as d:
     td = Path(d); o = td / "out"; o.mkdir()
     more, done = td / "quiet_more.json", td / "quiet_more.done"
     more.write_text("[]")
-    MF.fight_clip_ok = lambda p: ["deformed body at 0.7 s"] if p.name.startswith("Q2") else []
+    MF.fight_clip_ok = lambda p, n=None: ["deformed body at 0.7 s"] if p.name.startswith("Q2") else []
     SF.subprocess.run = lambda *a, **k: None
     stop = threading.Event()
     th = threading.Thread(target=SF._judge_as_they_land, args=(o, [{"name": "Q1_s0", "seed": SF.QUIET_SEED},
@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory() as d:
     SF.shot_dir = lambda b, s: td
     lo = td / "ltx" / "out"; lo.mkdir(parents=True)
     (lo / "Q2_s0.mp4").write_text("take1"); (lo / "Q2_s0_t2.mp4").write_text("take2"); (lo / "Q3_s0.mp4").write_text("x")
-    MF.fight_clip_ok = lambda p: [] if p.name == "Q2_s0_t2.mp4" else ["deformed body at 0.7 s"]
+    MF.fight_clip_ok = lambda p, n=None: [] if p.name == "Q2_s0_t2.mp4" else ["deformed body at 0.7 s"]
     again = SF.judge_takes(td, "s", [{"id": "Q2_s0", "kind": "quiet"}, {"id": "Q3_s0", "kind": "quiet"},
                                      {"id": "T_s0", "kind": "talk"}], print)
     check("quiet: the cleaner retake is kept under the shot's name", (lo / "Q2_s0.mp4").read_text() == "take2")

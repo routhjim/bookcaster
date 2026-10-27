@@ -487,8 +487,10 @@ def _fight_prompt(book: Path, stem: str, mid: str, lay: dict) -> str:
             f"No text.").replace("..", ".").replace("  ", " ")
 
 
-def fight_clip_ok(mp4: Path) -> list:
-    """The fight clip's faults from frames across it (the vision judge): a melted/swollen/merged body, fire from hands."""
+def fight_clip_ok(mp4: Path, people: int | None = None) -> list:
+    """The clip's faults from frames across it (the vision judge): a melted/swollen/merged body, and with `people`
+    more people than the shot has (10-27: a second Watson grew in the bed; the "fire from hands" question was the
+    forge's alone and is gone, user: "these checks seem to be too context specific")."""
     import characters as CH
     items = []
     try:                                    # a short clip (a ~2.5 s quiet shot) is sampled at 30% and 75% of it, not
@@ -500,18 +502,21 @@ def fight_clip_ok(mp4: Path) -> list:
         png = mp4.with_name(f"{mp4.stem}_chk{int(t * 10)}.png")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(t), "-i", str(mp4), "-frames:v", "1", str(png)])
         if png.exists():
-            items.append({"id": f"{t}", "image": str(png), "ask": {
-                "whole": "Answer yes or no: is every person and creature in this picture whole and natural, with a "
-                         "normal head and body (nothing melted, swollen, merged or deformed)?",
-                "hands": "Answer yes or no: is fire or light coming out of a person's hands?"}})
+            ask = {"whole": "Answer yes or no: is every person and creature in this picture whole and natural, with a "
+                            "normal head and body, each person with two arms and two hands (no extra limbs or hands; "
+                            "nothing melted, swollen, merged or deformed)?"}
+            if people:
+                ask["count"] = "How many people are in this picture? Answer with a number."
+            items.append({"id": f"{t}", "image": str(png), "ask": ask})
     ans = CH.vl_ask(items) if items else {}
     bad = []
     for it in items:
         a_ = ans.get(it["id"]) or {}
         if not CH._yes(a_.get("whole")):
             bad.append(f"deformed body at {it['id']} s")
-        if CH._yes(a_.get("hands")):
-            bad.append(f"fire from hands at {it['id']} s")
+        m_ = re.search(r"\d+", str(a_.get("count") or ""))
+        if people and m_ and int(m_.group()) > people:
+            bad.append(f"{m_.group()} people, not {people}, at {it['id']} s")
     return bad
 
 
@@ -782,6 +787,8 @@ def _dress(book: Path, stem: str, mid: str, who: list) -> dict:
     if not plan.get("wardrobe"):
         return {}
     e = next((x for x in json.loads((vd / "flow3d" / "plan.json").read_text())["entries"] if x["id"] == mid), None)
+    if e is None and re.fullmatch(r"[a-z]+-\d{6}", mid):    # a director's own moment: its time is in its id (tenths)
+        e = {"t": int(mid.rsplit("-", 1)[1]) / 10}
     tl = book / "work" / f"{stem}.timeline.json"
     if e is None or not tl.exists():
         return {}
