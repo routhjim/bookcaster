@@ -282,12 +282,15 @@ def _pose_hold(cx, s: dict) -> str:
     return "".join(out)
 
 
-def carry_poses(es: list, out: dict) -> None:
-    """Each shot's "held" pose per person: the pose the shot before ended with (a person's first shot: the director's
-    opening pose); it changes only where the director has a shot's own action change it (pose != pose_end). A
-    director's opening pose that contradicts the carried one (up / down / up) is overruled."""
-    cur = {}
+def carry_poses(es: list, out: dict, cuts: tuple = ()) -> None:
+    """Each shot's "held" pose per person: the director's opening pose for them, or (none given) the pose the shot
+    before ended with; "pose_after" = the shot's pose_end."""
+    cur, starts = {}, sorted(cuts)
     for e in es:
+        if starts and float(e.get("t", -1)) >= starts[0] - 1e-6:   # a new scene: nothing carried across it
+            while starts and float(e.get("t", -1)) >= starts[0] - 1e-6:
+                starts.pop(0)
+            cur = {}
         for s in out.get(e["id"]) or []:
             if s.get("kind") == "talk":
                 continue
@@ -295,11 +298,14 @@ def carry_poses(es: list, out: dict) -> None:
             p1 = {w: pose_cat(v) for w, v in (s.get("pose_end") or {}).items()}
             held = {}
             for w in s.get("who") or []:
-                c0 = cur.get(w) or p0.get(w) or ""
+                # one owner: the director's own opening pose (given per person, as the narration says) wins; the
+                # carried one only fills a gap (10-27: Watson "sitting" in bed was carried into the sitting room,
+                # where the picture had him standing - the key prompt and its check said "sitting")
+                c0 = p0.get(w) or cur.get(w) or ""
                 if not c0:
                     continue
                 held[w] = c0
-                cur[w] = p1[w] if (p0.get(w) and p1.get(w) and p1[w] != p0[w]) else c0
+                cur[w] = p1.get(w) or c0
             s["pose_held"] = held
             s["pose_after"] = {w: cur[w] for w in held}
 
@@ -998,7 +1004,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     for mid, sh in new_sheets.items():   # the place's "as it is now" comes from the director's own state now
         sh.pop("now", None)
-    carry_poses(new_es, by)
+    carry_poses(new_es, by, tuple(x["start"] for x in scenes[1:]))
     return new_es, by, new_sheets
 
 
