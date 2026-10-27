@@ -1685,8 +1685,12 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     vd = book / "work" / "video"
     hd = vd / "heroes"
     hd.mkdir(parents=True, exist_ok=True)
-    out = hd / (re.sub(r"[^a-z0-9]+", "_", where.lower()).strip("_") + ".png")
     R = _reg(book)
+    # one hero per place and side, under the registry's one name of the place (10-27: "The Beautiful Gate" and
+    # "Beautiful Gate" were two heroes); the caller's own spelling stays its key in heroes_for
+    sw = re.search(r"\s*\((inside|outside)\)\s*$", where, re.I)
+    name = (R.place(where) or where) + (f" ({sw.group(1).lower()})" if sw else "")
+    out = hd / (re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") + ".png")
     raw = R.place_look(where)                   # the place's one description, any spelling (10-27: by base name only)
     if not raw:
         _say_once(f"!!! no description for the place {where!r} in look.json: its hero is drawn from its name", log)
@@ -1705,7 +1709,7 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     # the set builder's recipe (world.set_picture_prompt): the style's TECHNIQUE only, its architecture words out
     # (10-23: "Gothic ... cathedral-like stone" made the Burnt Mountain's "cave entrance" a carved church portal with
     # candles behind every shot of the dragon fight, and a "no doorway, no carving" sentence drew them anyway)
-    pic = WO.set_picture_prompt(f"Wide shot of {side} {where}: {desc}", style, "interior" if side.startswith("the inside")
+    pic = WO.set_picture_prompt(f"Wide shot of {side} {name}: {desc}", style, "interior" if side.startswith("the inside")
                                 else "exterior")
     prompt = (f"{pic} {period_line(book, 'every building and object')} "
               f"No people. A full-frame picture with no border, no page and no text.")
