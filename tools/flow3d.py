@@ -179,13 +179,18 @@ def inventory(book) -> dict:
     return out
 
 
+def person_key(n: str) -> str:
+    """One key per person, whatever the spelling ('Dr. Watson' = 'Doctor Watson')."""
+    return re.sub(r"[^a-z]", "", re.sub(r"\bdr\b\.?", "doctor", str(n or "").lower()))
+
+
 def cast_names(book) -> list:
     """look.json's characters, one per person ('Dr. Watson' = 'Doctor Watson': the first-stored key wins)."""
     lj = vdir(book) / "look.json"
     names = list((json.loads(lj.read_text()).get("characters") or {}).keys()) if lj.exists() else []
     seen, out = set(), []
     for n in names:
-        k = re.sub(r"[^a-z]", "", re.sub(r"\bdr\b\.?", "doctor", n.lower()))
+        k = person_key(n)
         if k not in seen:
             seen.add(k)
             out.append(n)
@@ -735,7 +740,9 @@ def lora_todo(book, only=None) -> dict:
     vd = vdir(book)
     out = {}
     for n in cast_names(book):
-        if only is not None and n not in only:   # one chapter's cast (10-25: Acts 2 would retrain Acts 1's Jesus)
+        # one chapter's cast (10-25: Acts 2 would retrain Acts 1's Jesus), matched PER PERSON (10-27: look.json keeps
+        # "Doctor Watson" first, the chapter says "Dr. Watson": Watson never got a LoRA and was drawn from words alone)
+        if only is not None and person_key(n) not in {person_key(o) for o in only}:
             continue
         d = vd / "charlora" / re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_") / "lora"
         if not any(d.glob("*.safetensors")) if d.exists() else True:
