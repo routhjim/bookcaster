@@ -1227,10 +1227,12 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
     pp = vd / "plan.json"
     plan = json.loads(pp.read_text())
     text = (book / "chapters" / f"{stem}.txt").read_text()
-    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text):
+    R_ = RG.Book(book)                  # the narrator in the plan's own spelling of them (the "I" of the text)
+    nar = R_.key_in(R_.narrator(), video.looks(plan)[0]) if R_.narrator() else ""
+    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or ""):
         return                          # current for these rules, looks and chapter: no language model needed
     animate.igpu("strata", log)
-    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log):
+    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or ""):
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 
