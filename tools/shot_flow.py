@@ -742,8 +742,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     pics_before, pics_scene, screen, last_pose, last_at = [], [], {}, {}, {}
     pair = None
     animate_up = False
-    known = list({RG.place_key(w): w for w in RGB.places() + real}.values())   # each place once, by its one name
-    scenes = breakdown(book, stem, tl, chars, known, nar, log)
+    scenes = scene_list(book, stem, log)     # the chapter's scenes (shared, cached: the wardrobe reads them too)
     animate_up = subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0
     for sc_ in scenes:                  # the breakdown's places have their sheets (the book's looks) where known
         for w in [sc_["place"]] + [c["place"] for c in sc_["cutaways"]]:
@@ -1051,6 +1050,36 @@ day and the light, at most 60 words"}}]}}
 The first scene starts at 0.0; each later one after the one before; scenes in story order."""
 
 
+def scene_list(book: Path, stem: str, log=print) -> list:
+    """The chapter's scene breakdown from the same inputs wherever it is asked for (the director, the wardrobe), so
+    it is made once and shared from its cache: the whole chapter's cast, places and timeline, whatever the span."""
+    sys.path.insert(0, str(HERE.parent))
+    R_ = RG.Book(book)
+    plan = json.loads((MF.paths(book, stem)[0] / "plan.json").read_text())
+    chars = list(dict.fromkeys(p_ for p_ in (R_.person(x) for x in ((plan.get("look") or {}).get("characters") or {}))
+                               if p_)) or R_.people()
+    tl = load_timeline(book, stem, chars)
+    real = [e["where"] for e in MF.entries(book, stem, 0, 1e9) if e.get("where") and not NO_PLACE.search(e["where"])]
+    known = list({RG.place_key(w): w for w in R_.places() + real}.values())   # each place once, by its one name
+    return breakdown(book, stem, tl, chars, known, R_.narrator() or "", log)
+
+
+def scene_notes(book: Path, stem: str, log=print) -> str:
+    """How each scene opens, by the chapter paragraph it opens in: "[from paragraph 3] Watson in a nightshirt ..."."""
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader.score import paragraphs
+    paras = [re.sub(r"\s+", " ", p) for p in paragraphs((book / "chapters" / f"{stem}.txt").read_text())]
+    tl = load_timeline(book, stem)
+    out = []
+    for sc in scene_list(book, stem, log):
+        x = min(tl, key=lambda y: abs(float(y["t"]) - float(sc["start"])))
+        k = re.sub(r"\s+", " ", str(x.get("text") or ""))[:40]
+        i = next((j for j, p in enumerate(paras) if k and k in p), None)
+        if i is not None and sc.get("opens"):
+            out.append(f"[from paragraph {i}] at {sc['place']}: {sc['opens']}")
+    return "\n".join(out)
+
+
 def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: str, log=print) -> list:
     """The chapter's scenes [{"start", "end", "place", "who", "what", "cutaways", "opens"}], by the director over the
     whole chapter at once (cached in shots/scenes/breakdown.json by its question)."""
@@ -1229,10 +1258,11 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
     text = (book / "chapters" / f"{stem}.txt").read_text()
     R_ = RG.Book(book)                  # the narrator in the plan's own spelling of them (the "I" of the text)
     nar = R_.key_in(R_.narrator(), video.looks(plan)[0]) if R_.narrator() else ""
-    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or ""):
-        return                          # current for these rules, looks and chapter: no language model needed
+    notes = scene_notes(book, stem, log)          # the breakdown (cached; it brings up the language model if not)
+    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or "", notes):
+        return                          # current for these rules, looks, chapter and scene notes: nothing to ask
     animate.igpu("strata", log)
-    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or ""):
+    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or "", notes=notes):
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 

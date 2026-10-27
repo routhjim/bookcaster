@@ -41,5 +41,13 @@ video._chat = _chat0
 check("the wardrobe is told the narrator is the 'I' of the chapter (10-27: Watson got no night clothes)",
       '- Dr. Watson: a man (the narrator: the "I" of the chapter is this person)' in seen["q"].splitlines(), seen.get("q", "")[:300])
 check("a narrator change re-plans the wardrobe", video.wardrobe_inputs_key(p1, "c", "Watson") != video.wardrobe_inputs_key(p1, "c", ""))
+seen.clear()
+video._chat = lambda url, model, q, max_tokens=0: (seen.setdefault("q", q), "{}")[1]
+video.plan_wardrobe(["I woke."], {"Dr. Watson": "a man"}, "u", "m", narrator="Dr. Watson",
+                    notes="[from paragraph 0] at the bedroom: Watson in a nightshirt blinks up from the sheets")
+video._chat = _chat0
+check("the wardrobe reads the director's scene-opening notes as evidence (10-27: 'Watson in a nightshirt')",
+      "Watson in a nightshirt" in seen["q"] and seen["q"].index("director's notes") < seen["q"].index("People:"))
+check("new scene notes re-plan the wardrobe", video.wardrobe_inputs_key(p1, "c", "", "a") != video.wardrobe_inputs_key(p1, "c", "", "b"))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
