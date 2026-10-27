@@ -1220,12 +1220,11 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
     vd, _, _ = MF.paths(book, stem)
     pp = vd / "plan.json"
     plan = json.loads(pp.read_text())
-    import hashlib
-    k = hashlib.sha1(video.WARDROBE_PROMPT.encode()).hexdigest()[:8]
-    if plan.get("wardrobe_k") == k or (not plan.get("wardrobe") and "wardrobe_k" in plan):
-        return                          # current (or nobody changes): no language model needed
+    text = (book / "chapters" / f"{stem}.txt").read_text()
+    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text):
+        return                          # current for these rules, looks and chapter: no language model needed
     animate.igpu("strata", log)
-    if video.ensure_wardrobe(plan, (book / "chapters" / f"{stem}.txt").read_text(), BC.LLM_URL, BC.LLM_MODEL, log):
+    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log):
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 
@@ -1344,7 +1343,10 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         side = f" {lay[s['who'].index(w)][1]}" if len(s["who"]) > 1 else ""
         legs = ", " + FOUR_LEGS if "four-legged" in lk and not MF.DOWN.search(s["picture"]) else ""
         if w == s.get("ots"):           # over the shoulder: the back of the head, out of focus
-            people.append(f"{w}, seen from behind{side}: {re.split(r',', lk)[0]}")
+            hair = next((x.strip() for x in re.split(r",|;", lk) if re.search(r"\bhair\b", x, re.I)), "")
+            cl = garments(uncarried(dress.get(w) or clothes_of(lk)))
+            people.append(f"{w}, seen from behind{side}: {re.split(r',', lk)[0]}"   # (10-27: the back of a stranger
+                          f"{', ' + hair if hair else ''}{', wearing ' + cl if cl else ''}")   # in green, not Helen)
             continue
         pz = POSE_WORDS.get((s.get("pose_held") or {}).get(w, ""), "")
         people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}{', ' + pz if pz else ''}"
