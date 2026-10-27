@@ -774,8 +774,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         nxt = scenes[si + 1] if si + 1 < len(scenes) else None
         scene_txt = (f"THE SCENE: scene {si + 1} of the chapter ({sc_['start']:.0f}-{sc_['end']:.0f} s of it), at "
                      f"{home}, with {', '.join(sc_['who']) or 'nobody'}: {sc_.get('what', '')}"
-                     + (" It may cut to: " + "; ".join(f"{c['place']} ({c.get('why', 'told')})" for c in sc_["cutaways"])
-                        + "." if sc_["cutaways"] else "")
+                     + "{CUTS}"
                      + (f"\nThe scene after it (not this one): at {nxt['place']}: {nxt.get('what', '')}" if nxt else ""))
         lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
         quotes = [(max(0.0, x0 - pa), min(sec, x1 - pa), _who_full(spk, chars)) for x0, x1, spk, k, _ in lines_
@@ -792,8 +791,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         after = " ".join(z for x0, x1, spk, k, z in sents if x0 >= pb - 0.05)[:250] or "(the chapter's end)"
         ms = [e for e in es if float(e["t"]) < pb - 0.05 and float(e["t"]) + span[e["id"]] > pa + 0.05]
         wheres = list(dict.fromkeys(e.get("where") for e in ms if e.get("where") and not NO_PLACE.search(e["where"])))
-        others = [c["place"] for c in sc_["cutaways"] if c["place"] != home] if scenes else \
+        # a cutaway only while its teller is telling it, in this passage (prevention, not a check: no other passage is
+        # offered the place at all)
+        tellers = {w for _, _, w in quotes}
+        open_ = [c for c in sc_["cutaways"] if c["from"] - 2 < pb and c["to"] + 2 > pa and
+                 (not c["teller"] or c["teller"] in tellers or (c["teller"] == nar and len(quotes) < len(lines_)))]
+        others = list(dict.fromkeys(c["place"] for c in open_ if c["place"] != home)) if scenes else \
             [w for w in wheres or real if w != home]
+        scene_txt = scene_txt.replace("{CUTS}", (" In this passage it may cut to: " + "; ".join(
+            f"{c['place']} (as {c['teller'] or 'the narration'} tells of it)" for c in open_) + ".") if open_ else
+            " In this passage it stays there.")
         cast = list(dict.fromkeys(people_here + sc_["who"] + [w for e in ms for w in _cast(book, stem, e)[0]] +
                                   [w for _, _, w in quotes if w] +
                                   [w for e in ms for w in (sheets.get(e["id"]) or {}).get("present", [])]))
@@ -1167,7 +1174,8 @@ THE CHAPTER, each line [seconds from its start] who: the words:
 {text}
 
 Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the people there, also the silent ones"],
-"what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "why": "told by ... / a memory"}}],
+"what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "teller": "the one who tells of it",
+"from": <the second the telling starts>, "to": <the second it ends>}}],
 "opens": "how things stand as it opens, for a painter: each one's clothes, what each holds, postures, the time of
 day and the light, at most 60 words"}}]}}
 The first scene starts at 0.0; each later one after the one before; scenes in story order."""
@@ -1220,6 +1228,12 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
         a["who"] = [w for w in (MF._cast_name(x, chars, []) for x in a.get("who") or []) if w]
         a["cutaways"] = [c for c in a.get("cutaways") or [] if isinstance(c, dict) and c.get("place")
                          and c["place"] != a["place"]]
+        for c in a["cutaways"]:         # a telling: who tells it, and when (10-27: offered for the whole scene, the
+            c["teller"] = MF._cast_name(c.get("teller"), chars, []) or ""   # director cut to Stoke Moran while Watson dressed)
+            try:
+                c["from"], c["to"] = float(c.get("from") or a["start"]), float(c.get("to") or a["end"])
+            except (TypeError, ValueError):
+                c["from"], c["to"] = a["start"], a["end"]
     for i, a in enumerate(sc, 1):
         log(f"scene {i} {a['start']:.0f}-{a['end']:.0f} s at {a['place']} ({', '.join(a['who'])}): {a.get('what', '')}"
             + (f" | cutaways {[c['place'] for c in a['cutaways']]}" if a["cutaways"] else ""))
