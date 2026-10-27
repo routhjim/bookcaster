@@ -97,5 +97,15 @@ _tp = S._talk_prompt(_R, _cx, {"speaker": "Stoner", "t": 300.0}, "Baker Street S
 check("talk prompt: the timeline's 'Stoner' speaks as Helen Stoner, on her side, with her look, Holmes listening "
       "(10-27: his lips moved when she talked)", "Helen Stoner on the right, a woman of about 30" in _tp.split(" speaks")[0]
       and "Sherlock Holmes listens with a closed mouth" in _tp and "Helen Stoner listens" not in _tp and " her voice" in _tp, _tp)
+pic = ("Sherlock Holmes stands at the wooden writing desk on the right, facing left; Dr. Watson stands in the center "
+       "near the armchair, facing right; Helen Stoner stands on the left near the window, facing right")
+check("who follows the picture's left-to-right (10-27: Helen opened Holmes's drawer)",
+      S.picture_order(["Sherlock Holmes", "Dr. Watson", "Helen Stoner"], pic) == ["Helen Stoner", "Dr. Watson", "Sherlock Holmes"],
+      S.picture_order(["Sherlock Holmes", "Dr. Watson", "Helen Stoner"], pic))
+check("a picture that places nobody keeps who as given",
+      S.picture_order(["Sherlock Holmes", "Helen Stoner"], "Holmes and Helen by the fire.") == ["Sherlock Holmes", "Helen Stoner"])
+check("'Watson sits on the left while Holmes stands on the right' keeps that order",
+      S.picture_order(["Sherlock Holmes", "Dr. Watson"], "Dr. Watson sits at the desk on the left, while Sherlock Holmes "
+                      "stands on the right") == ["Dr. Watson", "Sherlock Holmes"])
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

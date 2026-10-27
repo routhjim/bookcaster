@@ -487,6 +487,28 @@ def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effo
             ((r.get("usage") or {}).get("prompt_tokens_details") or {}).get("cached_tokens", 0))
 
 
+SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
+
+
+def picture_order(who: list, picture: str) -> list:
+    """`who` in the left-to-right order the picture puts them (10-27: "Holmes stands at the desk on the right ... Helen
+    on the left" with who [Holmes, Watson, Helen]: the looks are drawn in boxes by who's order, so Helen stood at the
+    desk and opened the drawer Holmes's action named). Unchanged unless the picture places at least two of them."""
+    pos = {}
+    for w in who:
+        names = [w] + [x for x in w.split() if len(x) > 2 and x[0].isupper() and x.lower() not in ("the", "sir", "dr.")]
+        for clause in re.split(r"[;,]|\bwhile\b|\band\b(?=\s+[A-Z])", picture or ""):
+            if any(re.search(rf"\b{re.escape(n)}\b", clause) for n in names):
+                m = re.search(r"\b(?:on|at|to) the (left|right|centre|center|middle)\b|\bin the (centre|center|middle)\b",
+                              clause, re.I)
+                if m:
+                    pos[w] = SIDE[(m.group(1) or m.group(2)).lower()]
+                    break
+    if len(pos) < 2:
+        return list(who)
+    return sorted(who, key=lambda w: (pos.get(w, 1), who.index(w)))
+
+
 def _repeats(a: dict, before: list, scene: list) -> list:
     """Shots that bring back a picture of an EARLIER scene, word for word or nearly (10-27: Watson's preamble looped
     desk -> bed -> desk -> bed, copying its own earlier answers). Pictures of the scene going on now may repeat: a
@@ -793,6 +815,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                                                   if w))
                     if s.get("action"):
                         s["action"] = unname(str(s["action"]), cast, dress)
+                    if s.get("kind") != "talk":
+                        s["who"] = picture_order(s["who"], str(s.get("picture") or ""))
                 faults = _shot_faults(a, cast, sec, quotes) + _repeats(a, pics_before, pics_scene) + [
                     f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
                                                                                    if others else "")
