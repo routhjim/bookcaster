@@ -135,6 +135,21 @@ TONGUE = re.compile(r"\btongues?\b", re.I)
 PASSING = {"fire": re.compile(r"\b(fire|flames?|flame-like|blaz\w*|burning|embers?)\b", re.I),
            "smoke": re.compile(r"\bsmok\w*\b", re.I), "wind": re.compile(r"\b(wind|gusts?|gale)\b", re.I),
            "lightning": re.compile(r"\blightning\b", re.I)}
+# a fire that belongs to the place (a forge, a hearth) stays lit; any other passing effect in a scene sheet's states is
+# drawn only in the moments whose narration has it (10-26 Acts 2 v3: "Divided Tongues" was a state from the first
+# moment on, so flames sat on every head through the sermon and the baptisms)
+HELD_EFFECT = re.compile(r"\b(hearth|forge|fireplace|brazier|torch\w*|lamps?|lanterns?|candles?|ovens?|kilns?|stoves?|"
+                         r"grates?|chimney|campfire|bonfire|pyre)\b", re.I)
+
+
+def passing_shown(state: str, said: str) -> bool:
+    """Whether a scene state shows in a moment with this narration: a passing effect (PASSING) only where it is said."""
+    if HELD_EFFECT.search(state):
+        return True
+    for g, rx in PASSING.items():
+        if rx.search(state) or (g == "fire" and TONGUE.search(state)):
+            return bool(rx.search(said) or (g == "fire" and re.search(r"\btongues?\s+(as\s+)?of\b", said, re.I)))
+    return True
 # body positions, carried shot to shot (10-26 Acts 3: the lame man was drawn up, down and up again before he was
 # healed; the keys and clips are told each person's held pose and the key judge checks the not-standing ones)
 POSE_CAT = (("lie", re.compile(r"\b(ly\w*|lie\w*|lain|prone|sprawl\w*|flat on)\b", re.I)),
@@ -555,7 +570,8 @@ Everyone else in this scene is not in those moments.
 "states": every visible thing that CHANGES in the scene, one entry each time it changes, in order: the work piece (a
 dark bar with a crack across its face -> glowing orange, the crack closing -> a breastplate taking shape on the anvil
 -> ...), things made so far and where they lie, a door opened, a fire lit. Something being made lies on the anvil or
-in the hands, never worn."""
+in the hands, never worn. Never a passing effect (flames over people, a wind, smoke, lightning): those come and go
+with the narration, not the scene."""
 
 
 # 10-24: the scene room hung "a dark blue sword above the door" (the sword the story makes) despite the rule
@@ -658,9 +674,10 @@ def scene_sheets(book: Path, stem: str, es: list, log=print) -> dict:
             for x in a.get("states") or []:
                 if x["from"] == e["id"]:
                     cur[x["thing"]] = x["look"]
+            said = " ".join(z for _, z in timed(tl, float(e["t"]), span[e["id"]]))
             out[e["id"]] = {"scene": sid, "room": a.get("room", ""), "fixtures": a.get("fixtures") or [],
                             "present": a.get("present") or [], "crowd": a.get("crowd") or "",
-                            "now": "; ".join(f"{t}: {v}" for t, v in cur.items()),
+                            "now": "; ".join(f"{t}: {v}" for t, v in cur.items() if passing_shown(f"{t} {v}", said)),
                             "elsewhere": (a.get("elsewhere") or {}).get(e["id"], "")}
     return out
 
