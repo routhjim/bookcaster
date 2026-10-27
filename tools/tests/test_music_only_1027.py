@@ -22,5 +22,9 @@ with tempfile.TemporaryDirectory() as d:
     rc = BC.run_job(Path(d), level="music", music_only=True)
 check("music-only with no music server: tried to bring it up", any("--music" in c for c in calls if isinstance(c, list)), calls)
 check("... and fails loudly instead of saving the voices as the mix", rc == 1 and status.get("state") == "failed", (rc, status))
+import inspect
+src = inspect.getsource(BC.main) if hasattr(BC, "main") else ""
+check("make --music-only does not need the voice server", 'not getattr(a, "music_only", False) and not http_ok(FISH_URL' in
+      Path(BC.__file__).read_text())
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

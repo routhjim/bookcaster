@@ -1909,7 +1909,8 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         if not chapter_files(d):
             sys.exit("pick chapters first: bookcaster pick <book> ...")
-        if not http_ok(FISH_URL.rsplit("/v1/", 1)[0] + "/health"):
+        # (10-27: --music-only keeps the recorded voices; it never needs the voice server)
+        if not getattr(a, "music_only", False) and not http_ok(FISH_URL.rsplit("/v1/", 1)[0] + "/health"):
             sys.exit("the voice server isn't up: tools/fish_stack.sh up all")
         level = a.level or ("pictures" if a.video else "audio" if a.no_music else "music")
         if a.no_music and at_least(level, "music"):
