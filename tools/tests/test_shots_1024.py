@@ -110,7 +110,7 @@ o = td / "out"
 o.mkdir()
 more, done = td / "m.json", td / "m.done"
 more.write_text("[]")
-MF.fight_clip_ok = lambda p: ["deformed body at 1.5 s"] if p.name.startswith("B") else []
+MF.fight_clip_ok = lambda p, n=None: ["deformed body at 1.5 s"] if p.name.startswith("B") else []
 SF.subprocess.run = lambda *a, **k: None
 stop = threading.Event()
 th = threading.Thread(target=SF._judge_as_they_land, args=(o, [{"name": "A_s0", "seed": 42},
@@ -127,7 +127,7 @@ SF.shot_dir = lambda b, s: td
 (td / "ltx" / "out").mkdir(parents=True)
 for f in ("B_s0.mp4", "B_s0_t2.mp4"):
     (td / "ltx" / "out" / f).write_text((o / f).read_text())
-MF.fight_clip_ok = lambda p: ["deformed body at 1.5 s"] if p.name == "B_s0.mp4" else []
+MF.fight_clip_ok = lambda p, n=None: ["deformed body at 1.5 s"] if p.name == "B_s0.mp4" else []
 again = SF.judge_takes(book, "s", [{"id": "B_s0", "kind": "action"}], print)
 check(not again and (td / "ltx" / "out" / "B_s0.mp4").read_text() == "y", "takes: the cleaner retake is kept")
 check(SF.TAKES == (42,), "takes: one take per action shot")

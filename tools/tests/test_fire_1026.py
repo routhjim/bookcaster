@@ -42,6 +42,6 @@ check("figurative: speaking in tongues -> talking eagerly",
       S.figurative("the men are speaking in tongues") == "the men are talking eagerly")
 fa = S._faults(ans("action-000100"), ["Peter", "Disciple", "Early Believer"], 5.0)
 check("'tongue' in a shot is a fault for the director", any("tongue" in x for x in fa), fa)
-check("the rule text tells the director the times", "[seconds from the stretch's start]" in S.SHOT_RULES and
-      "WHEN:" in S.SHOT_RULES and "tongues of fire" in S.SHOT_RULES)
+check("the rule text tells the director the times", "[seconds from the passage's start]" in S.PASSAGE_ASK and
+      "WHEN:" in S.SHOT_RULES and any("tongues of fire" in r for _, r in S.RULE_EXTRA))
 print(json.dumps({"fails": fails}))

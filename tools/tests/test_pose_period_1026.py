@@ -43,7 +43,7 @@ cx = SimpleNamespace(look=lambda w, t: {"Lame Man": "a man of about 40, thin, we
                                         "Peter": "a man of about 40, grey-brown beard"}[w])
 s5 = dict(out["m2"][0], picture="Peter stands; the lame man sits.")
 q, _ = SF._key_questions(cx, s5)
-check("key judge asks the lame man's pose", any(k.startswith("pose") and "sitting on the ground" in v for k, v in q.items()), q)
+check("key judge asks the lame man's pose", any(k.startswith("pose") and "is a man sitting (not standing)" in v for k, v in q.items()), q)
 check("key judge does not ask a standing pose", sum(k.startswith("pose") for k in q) == 1, q)
 with tempfile.TemporaryDirectory() as d:
     k = Path(d) / "k.png"
@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory() as d:
     check("a seed with the lame man sitting passes", SF._clean(good, k, 0))
     check("a seed with him standing fails (redrawn)", not SF._clean(dict(good, pose1="no"), k, 0))
 hold = SF._pose_hold(cx, out["m2"][0])
-check("clip prompt: 'A man stays sitting on the ground throughout.'", hold == " A man stays sitting on the ground throughout.", hold)
+check("clip prompt: 'A man stays sitting throughout.'", hold == " A man stays sitting throughout.", hold)
 check("clip prompt: nothing held in the shot that heals him", SF._pose_hold(cx, out["m4"][0]) == "")
 
 # --- posture out of the looks; the outfit checked in the key

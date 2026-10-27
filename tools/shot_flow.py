@@ -52,64 +52,127 @@ KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
 GUIDER = json.loads(os.environ.get("SHOTS_GUIDER", "{\"modality_scale\": 1.0}"))   # the audio-video pass off (we keep our own sound): 105 -> 64 s a 3 s clip with 2 in flight, same picture by eye (10-23)
 JUDGE_BATCH = 60                    # pictures per vision-judge call (each call has a 15 min limit)
+# 10-27 user: "try out thinking on medium" (every director ask had thinking off). Measured on the Speckled Band: on
+# the shots, 5-6x the time for richer pictures but the same scene mistakes -> off; on for the one scene breakdown
+DIRECT_EFFORT = os.environ.get("BOOKCASTER_DIRECT_EFFORT", "")
+BREAKDOWN_EFFORT = os.environ.get("BOOKCASTER_BREAKDOWN_EFFORT", "medium")
 DIRECT_WORKERS = 3                  # director requests in flight (Strata serves them in its slots)
 
-SHOT_RULES = """You direct a video made from a book. Split this stretch of the story into SHOTS for a video model.
-Each shot starts from ONE painted picture of its opening and the video model animates it from your ACTION words alone,
-so every shot must be simple, physical and unambiguous.
-
-The stretch lasts {sec:.1f} seconds.
-The narration over it, [seconds from the stretch's start] before each sentence: {text}
-The director's beats for it: {beats}
-Who is here: {people}
-The place: {place}
-The room (fixed, always there; keep each thing where it stands): {room}
-Things as they are when this stretch starts: {now}
-The stretch before: {prev}
+# 10-27 user ("the whole point of the director is to break up the story into individual shots... it needs more context
+# right?"): the director was asked one 5 s moment at a time with only the sentences STARTING in it - 10 of the Speckled
+# Band's first 19 moments had none and got a stale camera note instead ("Watson blinks up at Holmes": he lay down
+# again; "Roylott walks across the lawn of Stoke Moran" while Holmes sat in Baker Street), the 67 s opening asked for 14
+# shots at once and came back empty three times (one frozen title card). Now it gets a whole PASSAGE (the narration
+# between two spoken lines, <= PASSAGE_MAX s), every sentence timed and tagged with who says it, the story just before
+# and after, where the people really are, and the last shot before it; it splits the passage into shots itself.
+# 10-27 user ("couldn't the director just run over the entire passage ... all at once"): the director is ONE running
+# conversation through the chapter - these rules once, then a turn per passage with the answer kept - so it sees its own
+# earlier shots in full (not an 80-word state) and Strata reads only the new turn (the prefix is cached). One giant ask
+# was the frozen-title-card failure; a turn per passage keeps retries and the cache per passage.
+SHOT_RULES = """You direct a film of a book. You get the story one PASSAGE at a time, in order, narration and spoken lines
+together, every line timed. YOU break each passage into the film's SHOTS: where each cut falls, what each shot shows,
+who is in it. Each shot starts from ONE painted picture of its opening and a video model animates it from your ACTION
+words alone, so every shot must be simple, physical and unambiguous. Your shots for the earlier passages are above;
+carry the film on from them. Every passage belongs to one SCENE of the chapter's scene list: its shots are at
+that scene's place, or at a place the scene may cut to.
 
 Rules:
-- {nmin} to {nmax} shots, each {smin:.0f} to {smax:.0f} seconds long; the lengths add up to {sec:.1f}.
-- Each shot shows ONE physical action (one move, one blow, one exchange) or a quiet held moment. The narration's events
-  happen in its order, each played through to its result in some shot (it says "drove the sword in": a shot where the
-  blade goes in).
-- Show the characters TOGETHER. When two are here, most shots have both in the picture, one on each side, a few steps
-  apart, each turned toward the other. When three or more are here, the stretch opens with a WIDE shot of all of them
-  (up to {maxp}), where each stands and which way each faces; then shots of the two or three who act or speak, and
-  close reactions. A wide shot holds up to {maxp}; a medium or close shot at most {closemax}. A shot of one alone only
-  for a close reaction or a detail.
-- WHEN: a shot that starts at second X shows only what the narration has said by its end. Nothing of an event (fire,
-  light, wind, a sound, an arrival) is in any shot before the second its sentence starts.
-- A passing effect (fire, flames, smoke, wind, lightning) is in the shots of the sentence that describes it and the
-  shots after it in THIS stretch only; it is not in the shots before it, and not carried in from the stretch before.
-- Figurative words are drawn as what a viewer would literally see, never the figure of speech: "tongues of fire" are
-  small flames resting above the heads; people "speaking in tongues" or in other languages talk normally and eagerly.
-  Never draw a tongue (or any body part) an idiom names, and no wide-open mouths or working jaws for speech.
-- "crowd": true when the scene's crowd ({crowd}) is in the picture, in the background, small and still; else false. A fight is covered as intent (wide: both fighters, the attacker
-  coils, the other sees the opening), action (both in the picture: the one blow or move and the one it reaches),
-  reaction (close: the one hit, or a witness).
-- "who": the names in the picture, left to right, only from: {names}.
-- "framing": "wide", "medium" or "close".
-- "picture": one sentence for the OPENING picture only: where each one is and which way each faces, what each holds,
-  each body's posture (a fighter in a READY stance, weapon raised toward the opponent; someone knocked down but alive is
-  on the ground propped on an elbow, eyes open; someone dead lies flat, eyes closed; a four-legged creature on its four
-  legs). Every body part or object the action will use is in the picture (a tail that sweeps, the blade that is struck).
-  Nothing in mid-action. Something being MADE is shown being worked on (on the anvil, in the tongs, in the hands),
-  never already worn: "he made the breastplate" is him hammering a breastplate on the anvil, not wearing one.
-- When the narration says someone MADE, forged, folded or built something, the shots show the WORK itself (heating
-  it, folding it, hammering it on the anvil), never the finished thing being admired: "Last of all, he made the sword.
-  He folded the star-iron over itself" is him folding and hammering a glowing blade.
-- "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source
-  ("sparks fly from the hammer striking the blade", "a stream of fire from the dragon's mouth"). A change over time is
-  written as visible steps ("the blade's edge glows faint blue, brighter with each blow"). Say what the hands hold.
-  Call each one by a plain description (a young man in a leather apron, a huge black dragon), never by name. No magic
-  words (magic, enchanted, spell) and no camera directions. At most 50 words.
-- "pose": each person's body position in the OPENING picture, one word each: standing, sitting, lying, kneeling or
-  crouching; "pose_end": the same at the shot's END. A pose carries over from the end of the shot before and changes
+- Cover the whole passage in order with about the number of shots it asks for. Give each shot its "start" (seconds
+  from the passage's start): the first starts at 0.0, each later one after the one before, the last before the
+  passage's end. A shot starting at second X shows what the narration is telling at second X.
+- Every SPOKEN line is covered by "talk" shots of the one who says it: their lips are synced to the voice. Nobody
+  speaks in any other shot. A talk shot starts when its line starts and lasts at most 8 seconds: a longer line cuts
+  to a close reaction of the listener and back to the speaker. Give "speaker", "listener" (the one spoken to, or "")
+  and "framing": "two" (both in the picture, waist up, facing each other: the first line of an exchange),
+  "over-the-shoulder" (a reply in a running exchange) or "close". A talk shot is always where the speaker really is,
+  never in a place someone describes. No picture or action words.
+- Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
+  where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
+  shot shows ONE physical action (one move, one gesture, one exchange) or a quiet held moment, played through to its
+  result. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+- THE NARRATION FIRST: whatever the passage says about where someone is or how they are (sitting, lying, holding,
+  wearing; "he had been leaning back in his chair" too) is how the picture shows them, whatever earlier shots had.
+- CONTINUITY: the first shot of a passage continues from the last shot before: the same people in the same places,
+  clothes and postures, unless the passage changes them. Nobody lies down, sits or stands up again unless the passage
+  says so.
+- Show the characters TOGETHER. When two are here, most shots have both in the picture, one on each side, each turned
+  toward the other. When three or more are here, open with a WIDE shot of them (up to {maxp}), where each stands and
+  which way each faces; then the two or three who act or speak, and close reactions. A wide shot holds up to {maxp}; a
+  medium or close shot at most {closemax}. One person alone only for a close reaction or a detail.
+- WHEN: nothing of an event (an arrival, a light, a sound, a change) is in any shot before the second its sentence
+  starts.
+- "place": where the shot is, one of the passage's places. "framing": "wide", "medium" or "close".
+- "people": everyone in the OPENING picture, left to right, only from the passage's names, each with "name", "side"
+  ("left", "centre" or "right"), "pose" (standing, sitting, lying, kneeling or crouching: as the passage says, someone
+  leaning back in a chair is sitting), "at" (where on the set: "in the armchair by the fire", "at the writing desk",
+  "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
+- "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
+  action will use. Never a person's position or posture here (they are in "people"), nothing in mid-action, never
+  writing, a title or a caption: the video model can't draw letters.
+- "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
+  change over time is written as visible steps. Say what the hands hold. Call each one by a plain description (a tall
+  man in a dark frock coat), never by name. No magic words (magic, enchanted, spell), no camera directions, no
+  written words or titles. At most 50 words.
+- "pose_end": each person's pose at the shot's END, one word each. A pose carries over from the end of the shot before and changes
   only in a shot whose action changes it (he is pulled to his feet: "pose" sitting, "pose_end" standing). Someone the
   narration says cannot stand or walk stays sitting or lying in every shot until the narration changes that.
-- "kind": "action" when a body or object moves with force (a strike, a fall, a lunge, fire, a hammer blow), else
-  "quiet" (breathing, looking, a few steps).
-{fix}Reply with JSON only: {{"shots": [{{"dur": 3.0, "who": ["..."], "framing": "...", "picture": "...", "action": "...", "pose": {{"<name>": "sitting"}}, "pose_end": {{"<name>": "sitting"}}, "kind": "...", "crowd": false}}]}}"""
+- "kind": "talk" (above), "action" when a body or object moves with force (a strike, a fall, a lunge, a hammer blow),
+  else "quiet" (breathing, looking, a gesture, a few steps).
+- "state_end": how things stand at the END of the passage: each person's clothes (what they wear now), what each
+  holds, each one's posture and where they are, and any visible change to the place (a lamp lit, a door open, a letter
+  on the table). Plain words, at most 80.
+Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": ""}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}, "crowd": false}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
+PASSAGE_ASK = """{scene}
+The story just before: {before}
+THE PASSAGE ({sec:.1f} seconds). Each line: [seconds from the passage's start] who: the words. Spoken lines say
+"SAYS ALOUD" with their start and end.
+{text}
+Right after it (only so you know where the story goes: none of it is in this passage's shots): {after}
+
+{narrator}Where the people are now: {home}. Its fixed things (keep each where it stands): {room}
+{told}Who may appear: {people}
+As things stand when this passage starts (carry them on; change only what the passage changes): {now}
+The last shot before this passage: {prev}
+About {nmin} to {nmax} shots. Places: {places}. Names: {names}.
+{extra}{fix}"""
+# the rules for what only some passages have, given only when the passage has it (10-27: forge, dragon and
+# tongues-of-fire rules were a third of every Speckled Band prompt)
+RULE_TOLD = ("Other places in this passage: {others}. When its words tell of another time or place (someone recounting "
+             "what happened, a memory), the non-talk shots may show those events there, with only the people the words "
+             "describe, while the talk shots stay with the teller where the people are now. When the people of the story "
+             "really go there, they are there.\n")
+RULE_EXTRA = [
+    (re.compile(r"\b(fire|flames?|blaz\w*|smok\w*|wind|gusts?|gale|lightning|tongues?\s+(?:as\s+)?of)\b", re.I),
+     "- A passing effect (fire, flames, smoke, wind, lightning) is in the shots of the sentence that describes it and the\n"
+     "  shots after it in THIS passage only; never before it, and not carried in from before.\n"),
+    (re.compile(r"\btongues?\b|\bas if\b|\blike a\b", re.I),
+     "- Figurative words are drawn as what a viewer would literally see, never the figure of speech: \"tongues of fire\"\n"
+     "  are small flames resting above the heads; people \"speaking in tongues\" or in other languages talk normally and\n"
+     "  eagerly. Never draw a tongue (or any body part) an idiom names, and no wide-open mouths or working jaws.\n"),
+    (re.compile(r"\b(fight\w*|fought|strik\w*|struck|blows?|sword\w*|attack\w*|hit|lunge\w*|slash\w*|stab\w*|claws?|"
+                r"jaws|spear\w*|axe|arrow\w*|wound\w*|dead|kill\w*|slain|fell)\b", re.I),
+     "- A fight is covered as intent (wide: both fighters, the attacker coils, the other sees the opening), action (both\n"
+     "  in the picture: the one blow or move and the one it reaches), reaction (close: the one hit, or a witness). A\n"
+     "  fighter's picture has a READY stance, weapon raised toward the opponent; someone knocked down but alive is on the\n"
+     "  ground propped on an elbow, eyes open; someone dead lies flat, eyes closed; a four-legged creature on its four legs.\n"),
+    (re.compile(r"\b(forg\w*|hammer\w*|anvil|smith\w*|(?:made|built|folded)\s+(?:a|an|the|it|him|her|them)\b)", re.I),
+     "- When the narration says someone MADE, forged, folded or built something, the shots show the WORK itself (heating\n"
+     "  it, folding it, hammering it), never the finished thing being admired or worn: something being made is shown\n"
+     "  being worked on (on the anvil, in the tongs, in the hands).\n"),
+]
+RULE_CROWD = ("- \"crowd\": true when the scene's crowd ({crowd}) is in the picture, in the background, small and still; "
+              "else false.\n")
+WRITTEN = re.compile(r"\b(title card|titles?|typography|lettering|letters? reading|text reading|reads? ['\"]|written words?|"
+                     r"inscription|caption)\b", re.I)          # 10-27: the title card came out "Foeckled Band"
+# 10-27: "camera pushes in" got past the rules
+CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(?:s|ing)? back to)\b", re.I)
+# a planner place that is no place ("Title Card": the Speckled Band's first minute was 17 shots of a dark background)
+NO_PLACE = re.compile(r"\b(title|card|credits?|caption|intro\w*)\b", re.I)
+SPEAKS = re.compile(r"\b(speak\w*|spoke|talk\w*|says?|said|lips|mouth\w*|tell\w*|explain\w*|recount\w*)\b", re.I)
+HISTORY_CHARS = 60000               # the director's conversation (~15k tokens) before it goes on from the last two passages
+SHOT_SHORT = 1.5                    # a shot shorter than this is folded into the one before (10-27: 0.9 and 1.0 s shots)
+PASSAGE_MAX = 30.0                  # seconds of narration per director request (6-15 shots; 10-27: 67 s came back empty)
+
 
 TALK_PICTURE = ("{who}, seen from the chest up and filling much of the picture, turned three-quarters toward someone just "
                 "beside the viewer, mid-word")
@@ -157,8 +220,21 @@ POSE_CAT = (("lie", re.compile(r"\b(ly\w*|lie\w*|lain|prone|sprawl\w*|flat on)\b
             ("crouch", re.compile(r"\b(crouch\w*|squat\w*|hunch\w*)\b", re.I)),
             ("sit", re.compile(r"\b(sit\w*|sat|seated)\b", re.I)),
             ("stand", re.compile(r"\b(stand\w*|stood|upright|walk\w*|on (his|her|their) feet)\b", re.I)))
-POSE_WORDS = {"lie": "lying on the ground", "kneel": "kneeling", "crouch": "crouching low",
-              "sit": "sitting on the ground", "stand": "standing"}
+# plain postures: the shot's picture says where (in a chair, on a bed, on the ground). 10-27: "sitting on the ground"
+# (from Acts' lame man) put Watson on the floor of Baker Street and failed every seed with him in his chair
+POSE_WORDS = {"lie": "lying down", "kneel": "kneeling", "crouch": "crouching low", "sit": "sitting", "stand": "standing"}
+# what a look CARRIES ("..., with a revolver", "carrying a hunting crop"): not clothes; in a picture only when the shot
+# calls for it (10-27: Watson's revolver in every Baker Street key, and 28 outfit fails for not showing it)
+CARRIED = re.compile(r"(?:,\s*|\s+and\s+|\s+)\b(?:carrying|holding|with an?|armed with)\b[^,;]*", re.I)
+
+
+def uncarried(look: str, picture: str = "") -> str:
+    """The look without what it carries, unless the shot's picture names that thing."""
+    def keep(m):
+        thing = re.sub(r"^\W*(carrying|holding|with an?|armed with)\s+", "", m.group(0).strip(" ,"), flags=re.I)
+        head = (thing.split() or [""])[-1]
+        return m.group(0) if head and re.search(rf"\b{re.escape(head)}", picture or "", re.I) else ""
+    return re.sub(r"\s*,\s*$", "", CARRIED.sub(keep, look or "")).strip()
 
 
 def no_pose(look: str) -> str:
@@ -176,9 +252,15 @@ def video_dress(cx, who: str, t: float) -> str:
 
 
 def clothes_of(look: str) -> str:
-    """The clothing words of a look: what follows "wearing", posture left out."""
-    m = re.search(r"\bwearing\b\s+(.*)", no_pose(look))
+    """The clothing words of a look: what follows "wearing", posture and carried things left out."""
+    m = re.search(r"\bwearing\b\s+(.*)", no_pose(uncarried(look)))
     return m.group(1).strip().rstrip(".") if m else ""
+
+
+def garments(clothes: str) -> str:
+    """The first two garments of a clothes description, whole ("a tweed jacket, white shirt with tie")."""
+    parts = [x.strip() for x in re.split(r",|;|\band\b", clothes) if x.strip()]
+    return ", ".join(parts[:2])
 
 
 def pose_cat(text) -> str:
@@ -392,142 +474,532 @@ def _faults(a: dict, cast: list, sec: float) -> list:
     return out
 
 
-def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = None) -> dict:
-    """{mid: [shot]} for every moment: talk = one shot of the speaker; the rest from the director (cached by input in
-    shots/<mid>/shots.json; asked again with the faults, twice)."""
+def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effort: str = "") -> tuple:
+    """One turn of a conversation: (reply, prompt tokens the server had cached). `effort` ("low", "medium", ...) lets
+    the model think first; the thinking stays out of the reply (and so out of the conversation)."""
+    from urllib.request import Request, urlopen
+    body = {"model": model, "messages": messages, "temperature": 0.3, "max_tokens": max_tokens}
+    if effort:
+        body["reasoning_effort"] = effort
+    else:
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    req = Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urlopen(req, timeout=1800) as resp:
+        r = json.loads(resp.read())
+    return (re.sub(r"(?s)^.*</think>", "", r["choices"][0]["message"]["content"] or ""),
+            ((r.get("usage") or {}).get("prompt_tokens_details") or {}).get("cached_tokens", 0))
+
+
+SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
+POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
+
+
+def shot_seed(sid: str) -> int:
+    """A shot's own seed offset, from its time (10-27 user: Watson's preamble may repeat its desk shots, but the same
+    words and seed drew the same pixels: a repeated setup is a fresh take of it)."""
+    m = re.search(r"-(\d{4,})", sid or "")
+    return 1000 * (int(m.group(1)) % 997) if m else 0
+
+
+def compose(s: dict, cast: list, crs: list, sides: dict | None = None) -> dict:
+    """A shot's "who", "pose" and "picture" from the director's "people" (name, side, pose, at, facing, holds) and
+    "setting" (10-27 user: "the goal is to prevent the errors more than detect and fix them": who stands where and in
+    what posture was written twice - the who list's order and the picture's free words - and they disagreed: Helen
+    drawn at the desk opened Holmes's drawer, Holmes "stood" while leaning back in his chair). Now it is said once."""
+    ppl = [x for x in s.get("people") or [] if isinstance(x, dict)]
+    if not ppl and not s.get("setting"):
+        return s                        # an old-style answer: as it is
+    rows = []
+    for x in ppl:
+        w = MF._cast_name(x.get("name"), cast, crs)
+        if w and w not in [r[0] for r in rows]:
+            rows.append((w, SIDE.get(str(x.get("side") or "").lower(), 1), pose_cat(x.get("pose")) or "stand", x))
+    if sides is not None:               # a scene keeps each one's side (10-27: Holmes right, then left, then right: the
+        if len(rows) > 1:               # 180-degree rule). The first shot that places two sets them; later ones keep them
+            known = [r for r in rows if r[0] in sides]
+            rows = [(w, sides[w] if w in sides and len(known) >= 1 else sd_, pz, x) for w, sd_, pz, x in rows]
+            for w, sd_, pz, x in rows:
+                sides.setdefault(w, sd_)
+    rows.sort(key=lambda r: r[1])       # left to right, stable
+    many = len(rows) > 1
+    parts = []
+    for w, sd_, pz, x in rows:
+        where = str(x.get("at") or "").strip().rstrip(".")
+        side = f" on the {['left', 'centre', 'right'][sd_]}" if many else ""
+        face = str(x.get("facing") or "").strip().rstrip(".")
+        hold = str(x.get("holds") or "").strip().rstrip(".")
+        parts.append(f"{w} {POSE_VERB[pz]}{' ' + where if where else ''}{side}"
+                     f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
+                     f"{', holding ' + re.sub(r'^holding\s+', '', hold) if hold and hold.lower() not in ('nothing', 'none') else ''}")
+    setting = str(s.get("setting") or "").strip().rstrip(".")
+    s = dict(s, who=[r[0] for r in rows], pose={r[0]: POSE_WORDS[r[2]].split()[0] for r in rows},
+             picture=("; ".join(parts) + (". " if parts and setting else "") + setting).strip() + ".")
+    return s
+
+
+def picture_order(who: list, picture: str) -> list:
+    """`who` in the left-to-right order the picture puts them (10-27: "Holmes stands at the desk on the right ... Helen
+    on the left" with who [Holmes, Watson, Helen]: the looks are drawn in boxes by who's order, so Helen stood at the
+    desk and opened the drawer Holmes's action named). Unchanged unless the picture places at least two of them."""
+    pos = {}
+    for w in who:
+        names = [w] + [x for x in w.split() if len(x) > 2 and x[0].isupper() and x.lower() not in ("the", "sir", "dr.")]
+        for clause in re.split(r"[;,]|\bwhile\b|\band\b(?=\s+[A-Z])", picture or ""):
+            if any(re.search(rf"\b{re.escape(n)}\b", clause) for n in names):
+                m = re.search(r"\b(?:on|at|to) the (left|right|centre|center|middle)\b|\bin the (centre|center|middle)\b",
+                              clause, re.I)
+                if m:
+                    pos[w] = SIDE[(m.group(1) or m.group(2)).lower()]
+                    break
+    if len(pos) < 2:
+        return list(who)
+    return sorted(who, key=lambda w: (pos.get(w, 1), who.index(w)))
+
+
+def _repeats(a: dict, before: list, scene: list) -> list:
+    """Shots that bring back a picture of an EARLIER scene, word for word or nearly (10-27: Watson's preamble looped
+    desk -> bed -> desk -> bed, copying its own earlier answers). Pictures of the scene going on now may repeat: a
+    steady listener, the master shot cut back to between close-ups (10-27 user: someone listening for 30 s stays as
+    they are). `before`: the pictures of the scenes before this one; `scene`: this scene's so far."""
+    import difflib
+    out, scene = [], [e for e in scene if e]
+    for i, s in enumerate(a.get("shots") or [], 1):
+        pic = str(s.get("picture") or "")
+        if s.get("kind") == "talk" or not pic:
+            continue
+        sim = lambda e: difflib.SequenceMatcher(None, pic.lower(), e.lower()).ratio() > 0.9
+        if any(sim(e) for e in before if e) and not any(sim(e) for e in scene):
+            out.append(f"shot {i} brings back a picture of an earlier scene: show what THIS passage tells")
+        scene.append(pic)
+    return out
+
+
+def sentences(tl: list) -> list:
+    """Every sentence of the chapter: (start, end, speaker, kind, words), each sentence's times estimated from its word
+    position in its timeline entry (an entry is a paragraph or a spoken line; the pace is steady)."""
+    out = []
+    for i, x in enumerate(tl):
+        t, nxt = float(x["t"]), float(tl[i + 1]["t"]) if i + 1 < len(tl) else float(x["t"]) + 0.4 * len(x["text"].split())
+        sents = [z for z in re.split(r"(?<=[.!?;])\s+", x["text"].strip()) if z]
+        n = sum(len(z.split()) for z in sents) or 1
+        done = 0
+        for z in sents:
+            ts = t + (nxt - t) * done / n
+            done += len(z.split())
+            out.append((ts, t + (nxt - t) * done / n, x.get("speaker") or "narrator", x.get("kind") or "narration", z))
+    return out
+
+
+def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = ()) -> list:
+    """[(start, end)] covering [t0, t1): cut at timeline entries (a paragraph or a spoken line) once a passage has
+    reached 60% of `mx`, and inside an entry at a sentence when one entry alone runs past `mx`; always cut at the
+    `forced` times (the scenes' starts: no passage spans two scenes)."""
+    forced = sorted(f for f in forced if t0 + 0.5 < f < t1 - 0.5)
+    if forced:
+        out, a = [], t0
+        for f in forced + [t1]:
+            out += passages(tl, a, f, mx)
+            a = f
+        return out
+    cuts = sorted({float(x["t"]) for x in tl if t0 < float(x["t"]) < t1})
+    marks = sorted(set(cuts) | {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1})
+    out, a = [], t0
+    while t1 - a > 0.05:
+        if t1 - a <= mx:
+            out.append((a, t1))
+            break
+        ok = [c for c in cuts if a + 0.6 * mx <= c <= a + mx] or [c for c in marks if a + 0.6 * mx <= c <= a + mx] or \
+             [c for c in marks if a + 2.0 <= c <= a + mx]
+        b = max(ok) if ok else a + mx
+        out.append((a, b))
+        a = b
+    return out
+
+
+def load_timeline(book: Path, stem: str, chars: list) -> list:
+    """The chapter's timeline with every speaker as their CAST name ("Stoner" -> "Helen Stoner", "Watson" ->
+    "Dr. Watson"; 10-27: Helen's talk prompts said "Stoner speaks ... Helen Stoner listens with a closed mouth" and
+    the model moved Holmes's lips). Read through here, nothing after it sees a second name for anyone."""
+    tl = json.loads((book / "work" / f"{stem}.timeline.json").read_text())
+    for x in tl:
+        if x.get("speaker") and x["speaker"] != "narrator":
+            x["speaker"] = _who_full(x["speaker"], chars) or x["speaker"]
+    return tl
+
+
+def _who_full(spk: str, names: list) -> str:
+    """A timeline speaker ("Holmes", "Stoner") as a cast name ("Sherlock Holmes", "Helen Stoner")."""
+    if not spk or spk == "narrator":
+        return ""
+    return next((w for w in names if w == spk), None) or next(
+        (w for w in names if re.search(rf"\b{re.escape(spk)}\b", w, re.I)), spk)
+
+
+def _shot_faults(a: dict, cast: list, sec: float, lines: list) -> list:
+    """The director's passage answer against the rules: starts in order, lengths, talk shots on their own speaker's
+    line, and the one-shot checks (_faults) on the rest."""
+    shots = a.get("shots") if isinstance(a.get("shots"), list) else []
+    if not shots:
+        return ["no shots"]
+    out = []
+    try:
+        st = [float(s.get("start")) for s in shots]
+    except (TypeError, ValueError):
+        return ["every shot needs a number \"start\""]
+    if abs(st[0]) > 0.3 or any(b <= a_ for a_, b in zip(st, st[1:])) or st[-1] >= sec:
+        out.append(f"the starts must begin at 0.0 and rise, each before {sec:.1f}")
+    ends = st[1:] + [sec]
+    rest = []
+    for i, (s, a_, b) in enumerate(zip(shots, st, ends), 1):
+        d = b - a_
+        if s.get("kind") == "talk":
+            who = MF._cast_name(s.get("speaker"), cast, [])
+            mine = [(x0, x1) for x0, x1, w in lines if w == who]
+            if not who:
+                out.append(f"shot {i} is a talk shot without a \"speaker\" from {', '.join(cast)}")
+            elif not any(min(b, x1) - max(a_, x0) >= 0.6 * min(d, x1 - x0) for x0, x1 in mine):
+                out.append(f"shot {i} is a talk shot of {who} at {a_:.1f}-{b:.1f} s, but {who} is not speaking then")
+            elif d > 8.5:
+                out.append(f"shot {i} is a talk shot of {d:.1f} s: at most 8 (cut to the listener and back)")
+        else:
+            if d > SHOT_MAX + 0.6 or (d < SHOT_MIN - 0.6 and b < sec):
+                out.append(f"shot {i} lasts {d:.1f} s: other shots are {SHOT_MIN:.0f} to {SHOT_MAX:.0f} s")
+            rest.append(dict(s, dur=d))
+    if rest:
+        out += [f for f in _faults({"shots": rest}, cast, sum(r["dur"] for r in rest)) if not f.startswith("the lengths")
+                and not (f.endswith(f"who must be names from {', '.join(cast)}") and
+                         not rest[int(f.split()[1].rstrip(':')) - 1].get("who"))]  # a thing alone: nobody in it
+        for i, s in enumerate(shots, 1):
+            if s.get("kind") != "talk" and WRITTEN.search(str(s.get("picture", ""))):
+                out.append(f"shot {i}'s picture has writing ({WRITTEN.search(s['picture']).group(0)}): the video model "
+                           "can't write; show the people or a place instead")
+            if s.get("kind") != "talk" and CAMERA.search(str(s.get("action", ""))):
+                out.append(f"shot {i}'s action moves the camera ('{CAMERA.search(s['action']).group(0)}'): only the "
+                           "people and things move")
+            have = {pose_cat(v) for v in (s.get("pose") or {}).values()} - {""}
+            said = {c for c, rx in POSE_CAT if rx.search(str(s.get("picture", "")))} & {"sit", "stand", "lie"}
+            if s.get("kind") != "talk" and have and said - have:   # 10-27: "Holmes stands by the desk", pose sitting
+                out.append(f"shot {i}'s picture has someone {POSE_WORDS[sorted(said - have)[0]].split()[0]} but its "
+                           f"\"pose\" has nobody so: the picture shows each one in their pose")
+    return out
+
+
+def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = None, keep_llm: bool = False) -> tuple:
+    """The director makes the film's shots itself, a PASSAGE at a time (10-27 user: "the whole point of the director
+    is to break up the story into individual shots"): narration and spoken lines together, every sentence timed with
+    who says it, the story before and after, where the people are, how things stand (carried passage to passage) and
+    the last shot before. Its shots become the moments: -> (moments, {mid: [shot]}, {mid: sheet}). The planner's
+    moments give the spoken lines' voice audio and where each place's sheet is; passages are cached by their question
+    in shots/passages/."""
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate
     from tts_reader import bookcaster as BC
     from tts_reader.score import _chat
     _, cx = _ctx(book, stem)
     sd = shot_dir(book, stem)
-    tlp = book / "work" / f"{stem}.timeline.json"
-    tl = json.loads(tlp.read_text()) if tlp.exists() else []
+    (sd / "passages").mkdir(parents=True, exist_ok=True)
+    sheets = sheets or {}
     span = _spans(es)
-    out, todo, here, prev_text = {}, [], "", "(the start of the chapter)"
-    sides, pair, last_who = {}, None, ""         # the exchange in progress: who stands where
-    # the people the scene's own moments show, per run of one place: a talk shot's listener comes from these first
-    # (10-25 Acts: the sheet's "present" kept Jesus in the Upper Room after the ascension and Peter talked to him)
-    seen, run_of, w_ = [], {}, None
+    t_a, t_b = float(es[0]["t"]), float(es[-1]["t"]) + span[es[-1]["id"]]
+    plan = json.loads((MF.paths(book, stem)[0] / "plan.json").read_text())
+    chars = sorted((plan.get("look") or {}).get("characters") or {}) or sorted({w for e in es for w in _cast(book, stem, e)[0]})
+    tl = load_timeline(book, stem, chars)
+    sents = sentences(tl)
+    nar = BC.narrator_character(book)
+    nar = _who_full(nar, chars) if nar else ""
+    talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
+    # each place's sheet (room, fixtures, crowd): from a planner moment there that isn't shown "elsewhere"
+    place_sheet = {}
     for e in es:
-        if (e.get("where") or w_) != w_:
-            seen = []
-        w_ = e.get("where") or w_
-        seen.append(_cast(book, stem, e)[0])
-        run_of[e["id"]] = seen
-    for e in es:
-        if (e.get("where") or here) != here:
-            sides, pair, last_who = {}, None, ""
-        here = e.get("where") or here
-        sec = span[e["id"]]
-        said = " ".join(x["text"] for x in tl if float(e["t"]) - 0.5 <= x["t"] < float(e["t"]) + sec - 0.5)
-        if e["route"] == "talk":
-            who = e.get("speaker") or ""
-            cast_t, crs_ = _cast(book, stem, e)
-            shown = list(dict.fromkeys(w for c in run_of.get(e["id"], []) for w in c))
-            cast_t = list(dict.fromkeys(cast_t + shown + ([] if shown else
-                                                          ((sheets or {}).get(e["id"]) or {}).get("present", []))))
-            others = [w for w in cast_t if w and w != who]
-            listener = last_who if last_who in others else (others[0] if others else "")
-            sh = {"id": f"{e['id']}_s0", "dur": sec, "who": [who] if who else [], "framing": "medium",
-                  "picture": (TALK_CREATURE if who in crs_ else TALK_PICTURE).format(who=who or "the speaker"),
-                  "action": "", "kind": "talk", "place": here}
-            if who and listener and who not in crs_ and listener not in crs_:
-                if who not in sides and listener not in sides:
-                    sides.update({who: "left", listener: "right"})
-                sides.setdefault(who, "right" if sides.get(listener) == "left" else "left")
-                sides.setdefault(listener, "right" if sides[who] == "left" else "left")
-                if sides[listener] == sides[who]:       # a third one joins: the listener faces the speaker
-                    sides[listener] = "right" if sides[who] == "left" else "left"
-                lr = sorted((who, listener), key=lambda w: sides[w] != "left")
-                if pair != {who, listener}:
-                    sh.update(who=lr, listener=listener, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who))
-                else:
-                    other = "right" if sides[who] == "left" else "left"
-                    sh.update(who=lr, listener=listener, ots=listener, picture=TALK_OTS.format(
-                        who=who, side=sides[who], other=other, listener=listener))
-                pair = {who, listener}
-            last_who = who or last_who
-            out[e["id"]] = [sh]
-            prev_text = said or prev_text
-            continue
-        cast, crs = _cast(book, stem, e)
-        sh_ = (sheets or {}).get(e["id"]) or {}
-        at = sh_.get("elsewhere") or here     # 10-24: Hulda's forging, narrated in the King's Hall, drawn in the hall
-        if sh_.get("elsewhere"):
-            sh_ = {}                            # another place: not this room, its people or its crowd
-        cast = list(dict.fromkeys(cast + sh_.get("present", [])))      # the silent ones in the room too
-        f = MF._frame(book, stem, e["id"])
-        looks = {w: MF._brief(MF._appearance(cx.look(w, e["t"]) or "")) for w in cast}
-        tim = timed(tl, float(e["t"]), sec)
-        q0 = SHOT_RULES.format(sec=sec, text=(" ".join(f"[{t:.1f}] {z}" for t, z in tim) or said or
-                                              f.get("prompt") or "")[:1100],
-                               beats=" / ".join(f.get("beats") or []) or "(none)",
-                               people="; ".join(f"{w} ({looks.get(w, '')})" for w in cast) or "nobody", place=at,
-                               room=sh_.get("room") or "(as the narration says)", now=sh_.get("now") or "(nothing noted)",
-                               maxp=MAX_PEOPLE, closemax=CLOSE_MAX, crowd=sh_.get("crowd") or "none here",
-                               prev=prev_text[:400], names=", ".join(cast) or "(nobody: the place alone)", nmin=max(1, math.ceil(sec / SHOT_MAX)),
-                               nmax=max(1, math.floor(sec / SHOT_MIN)), smin=SHOT_MIN, smax=SHOT_MAX, fix="{fix}")
-        prev_text = said or prev_text
-        cp = sd / e["id"] / "shots.json"
-        k = MF._h(q0)
-        got = json.loads(cp.read_text()) if cp.exists() else {}
-        # a cached answer a newer check faults is asked again - once: one asked with the checks ("checked") stays
-        # (10-24: 570 and 1468 kept their faults, were asked again every run, and redrew their keys and clips)
-        if got.get("k") == k and (got.get("checked") or not (
-                _worn(got, " ".join(MF._dress(book, stem, e["id"], cast).values())) or _making(got, said))):
-            out[e["id"]] = json.loads(cp.read_text())["shots"]
-            continue                    # (a cached answer a newer check faults is asked again)
-        todo.append((e, q0, k, cast, crs, sec, at, said, tim, sh_.get("room") or ""))
-    if todo:
-        animate.igpu("strata", log)
+        sh = sheets.get(e["id"]) or {}
+        if e.get("where") and not sh.get("elsewhere") and not NO_PLACE.search(e["where"]):
+            place_sheet.setdefault(e["where"], sh)
+    real = list(dict.fromkeys(e["where"] for e in es if e.get("where") and not NO_PLACE.search(e["where"])))
+    lp = book / "work" / "video" / "look.json"     # no sheets yet (they come after): the book's own place looks
+    for w, d in ((json.loads(lp.read_text()).get("places") or {}) if lp.exists() else {}).items():
+        for w2 in [w] + [x for x in real if re.sub(r"\s*\((inside|outside)\)$", "", x) == w]:
+            if isinstance(d, str) and d:
+                place_sheet.setdefault(w2, {"room": d})
+    # every spoken line's span, by speaker (the voices of the others are silenced in a talk shot's audio)
+    spans = {}
+    for x, y in zip(tl, tl[1:] + [{"t": float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())}]):
+        if x.get("kind") == "quote" and x.get("speaker") not in (None, "", "narrator"):
+            spans.setdefault(_who_full(x["speaker"], chars), []).append((float(x["t"]), float(y["t"]), x))
+    voices = book / "work" / f"{stem}.mp3"
+    (sd / "audio").mkdir(parents=True, exist_ok=True)
 
-        def ask(t):
-            e, q0, k, cast, crs, sec, here, said, tim, room = t
+    def look_of(w, dress):              # "the man in the tweed shooting jacket" for a name in an action (10-27: "the
+        lk = MF._appearance(cx.look(w, t_a) or "")          # man of about 35" / "of about 40" told two men apart badly)
+        noun = (re.search(r"\b(man|woman|boy|girl|creature|dragon|horse|dog)\b", lk, re.I) or [None, "figure"])[1]
+        cl = garments(uncarried(dress.get(w) or clothes_of(lk))).split(",")[0].strip()
+        cl = re.sub(r"^(a|an|the)\s+", "", cl, flags=re.I)
+        return f"the {noun.lower()} in the {cl[0].lower() + cl[1:]}" if cl else f"the {noun.lower()}"
+
+    def unname(txt, cast, dress):       # the video model reads looks, not names: swap them in
+        for w in sorted(cast, key=len, reverse=True):
+            parts = [w] + [x for x in w.split() if len(x) > 2 and x[0].isupper() and x.lower() not in ("the", "sir", "dr.")]
+            txt = re.sub(r"\b(" + "|".join(map(re.escape, parts)) + r")\b", look_of(w, dress), txt)
+        return txt
+
+    def talk_moment(mid, who, t, d):    # a talk moment for the line `who` speaks at t (its own cut of the voices)
+        mine = [(a_, b_, x) for a_, b_, x in spans.get(who, []) if b_ > t and a_ < t + d]
+        src = next((e for e in talks if e.get("speaker") == who), None) or (talks[0] if talks else {})
+        wav = sd / "audio" / f"{mid}_speech.wav"
+        keep = "+".join(f"between(t,{max(0.0, a_ - t):.3f},{b_ - t:.3f})" for a_, b_, _ in mine) or "0"
+        if not wav.exists():
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-t", f"{d:.3f}", "-i", str(voices),
+                            "-ac", "1", "-ar", "16000", "-af", f"volume=0:enable='not({keep})'", str(wav)], check=True)
+        x = mine[0][2] if mine else {}
+        return dict(src, id=mid, kind="talk", route="talk", t=t, dur=d, speaker=who, line=x.get("text", ""),
+                    emotion=x.get("emotion") or src.get("emotion"), creature=bool(src.get("creature")) and
+                    src.get("speaker") == who, speech_s=d, frames=_frames(d), chunks=[[0, _frames(d)]], wav=str(wav))
+
+    def at(t):                          # the planner moment at time t
+        return next((e for e in reversed(es) if float(e["t"]) <= t + 1e-6), es[0])
+    # the chapter's opening place, unless the planner opened on no place (a title card): then the director picks
+    home = "" if es[0].get("where") and NO_PLACE.search(es[0]["where"]) else (real[0] if real else "")
+    where_of = {}                       # where each one was last shown: a talk shot is there
+    state, prev_shot, people_here = "(the start of the chapter)" if t_a < 1 else "", None, []
+    new_es, by, new_sheets = [], {}, {}
+    system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
+    pics_before, pics_scene, screen = [], [], {}
+    sides, pair = {}, None
+    animate_up = False
+    known = list(dict.fromkeys(real + [w for w in ((json.loads(lp.read_text()).get("places") or {}) if lp.exists() else {})]))
+    scenes = breakdown(book, stem, tl, chars, known, nar, log)
+    animate_up = subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0
+    for sc_ in scenes:                  # the breakdown's places have their sheets (the book's looks) where known
+        for w in [sc_["place"]] + [c["place"] for c in sc_["cutaways"]]:
+            base = re.sub(r"\s*\((inside|outside)\)$", "", w)
+            if w not in place_sheet and base in place_sheet:
+                place_sheet[w] = place_sheet[base]
+    cur = None
+    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes)):
+        sec = pb - pa
+        si = max([i for i, x in enumerate(scenes) if x["start"] <= pa + 0.5] or [0])
+        sc_ = scenes[si] if scenes else {"place": home, "who": [], "what": "", "cutaways": [], "opens": "",
+                                         "start": t_a, "end": t_b}
+        if si != cur:                   # a new scene: its place; the conversation starts again (no old shots to copy)
+            cur, home = si, sc_["place"] or home
+            sides, pair, people_here, where_of, talk_, screen = {}, None, [], {}, [], {}
+            pics_before, pics_scene = pics_before + pics_scene, []
+            if sc_.get("opens"):
+                state = (f"{state} Now, as this scene opens: {sc_['opens']}" if state and not state.startswith("(")
+                         else sc_["opens"])[-700:]
+        nxt = scenes[si + 1] if si + 1 < len(scenes) else None
+        scene_txt = (f"THE SCENE: scene {si + 1} of the chapter ({sc_['start']:.0f}-{sc_['end']:.0f} s of it), at "
+                     f"{home}, with {', '.join(sc_['who']) or 'nobody'}. The whole scene, for context (show only what "
+                     f"THIS passage tells, never what comes later in it): {sc_.get('what', '')}"
+                     + "{CUTS}"
+                     + (f"\nThe scene after it (not this one): at {nxt['place']}: {nxt.get('what', '')}" if nxt else ""))
+        lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
+        quotes = [(max(0.0, x0 - pa), min(sec, x1 - pa), _who_full(spk, chars)) for x0, x1, spk, k, _ in lines_
+                  if k == "quote" and spk != "narrator"]
+        txt = []
+        for x0, x1, spk, k, z in lines_:
+            who = _who_full(spk, chars) or ("narrator" + (f" ({nar}, telling it as 'I')" if nar else ""))
+            cont = " (continuing)" if x0 < pa - 0.3 else ""
+            if k == "quote" and spk != "narrator":
+                txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] {who} SAYS ALOUD{cont}: {z}")
+            else:
+                txt.append(f"[{max(0.0, x0 - pa):.1f}] {who}{cont}: {z}")
+        before = " ".join(z for x0, x1, spk, k, z in sents if x1 <= pa + 0.05)[-500:] or "(the chapter's start)"
+        after = " ".join(z for x0, x1, spk, k, z in sents if x0 >= pb - 0.05)[:250] or "(the chapter's end)"
+        ms = [e for e in es if float(e["t"]) < pb - 0.05 and float(e["t"]) + span[e["id"]] > pa + 0.05]
+        wheres = list(dict.fromkeys(e.get("where") for e in ms if e.get("where") and not NO_PLACE.search(e["where"])))
+        # a cutaway only while its teller is telling it, in this passage (prevention, not a check: no other passage is
+        # offered the place at all)
+        tellers = {w for _, _, w in quotes}
+        open_ = [c for c in sc_["cutaways"] if c["from"] - 2 < pb and c["to"] + 2 > pa and
+                 (not c["teller"] or c["teller"] in tellers or (c["teller"] == nar and len(quotes) < len(lines_)))]
+        others = list(dict.fromkeys(c["place"] for c in open_ if c["place"] != home)) if scenes else \
+            [w for w in wheres or real if w != home]
+        scene_txt = scene_txt.replace("{CUTS}", (" In this passage it may cut to: " + "; ".join(
+            f"{c['place']} (as {c['teller'] or 'the narration'} tells of it)" for c in open_) + ".") if open_ else
+            " In this passage it stays there.")
+        cast = list(dict.fromkeys(people_here + sc_["who"] + [w for e in ms for w in _cast(book, stem, e)[0]] +
+                                  [w for _, _, w in quotes if w] +
+                                  [w for e in ms for w in (sheets.get(e["id"]) or {}).get("present", [])]))
+        cast = [w for w in cast if w in chars] or cast
+        crs = [w for e in ms for w in _cast(book, stem, e)[1]]
+        mid_t = round(pa * 10)
+        dress = MF._dress(book, stem, f"action-{mid_t:06d}", cast)
+        looks = {w: MF._brief(MF._appearance(cx.look(w, pa) or "")) for w in cast}
+        people = "; ".join(f"{w} ({looks.get(w, '')}{'; wears ' + dress[w] if dress.get(w) else ''})" for w in cast)
+        hs = place_sheet.get(home) or {}
+        narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote")
+        extra = "".join(r for rx, r in RULE_EXTRA[:3] if rx.search(" ".join(z for *_, z in lines_))) + \
+            "".join(r for rx, r in RULE_EXTRA[3:] if rx.search(narr))     # 10-27: Helen's "made" was no forge
+        crowd = " / ".join(dict.fromkeys(c for c in [(place_sheet.get(w) or {}).get("crowd") for w in [home] + others] if c))
+        if crowd:
+            extra += RULE_CROWD.format(crowd=crowd)
+        told = RULE_TOLD.format(others="; ".join(f"{w} (its fixed things: {(place_sheet.get(w) or {}).get('room') or 'as the narration says'})"
+                                                  for w in others)) if others else ""
+        pv = ("(none: the chapter starts here)" if prev_shot is None else
+              f"at {prev_shot.get('place')}: {prev_shot.get('picture') or ', '.join(prev_shot.get('who') or [])}"
+              + (f" Postures at its end: {json.dumps(prev_shot.get('pose_end'))}" if prev_shot.get("pose_end") else ""))
+        q0 = PASSAGE_ASK.format(scene=scene_txt, before=before, sec=sec, text="\n".join(txt) or "(silence)", after=after,
+                               narrator=(f"The narrator is {nar}, telling the story as 'I'. When the narration is {nar} "
+                                         f"musing, explaining or judging rather than telling what happens, show {nar} "
+                                         f"where the story has them NOW, doing what they are doing there (listening, "
+                                         f"watching, getting dressed); only before the story itself begins, {nar} "
+                                         f"writing at a desk among old notes. Never an empty background.\n"
+                                         if nar else ""),     # 10-27: a mid-story musing cut back to the desk
+                               home=home or "(as the narration says)", room=hs.get("room") or "(as the narration says)",
+                               told=told, people=people or "nobody", now=state or hs.get("now") or "(nothing noted)",
+                               prev=pv, nmin=max(1, math.ceil(sec / SHOT_MAX)), nmax=max(1, math.floor(sec / SHOT_MIN)),
+                               extra=extra,
+                               places="; ".join([home] + others) if home else "; ".join(others) or "(as the narration says)",
+                               names=", ".join(cast) or "(nobody: the place alone)", fix="{fix}")
+        cp = sd / "passages" / f"p{mid_t:06d}.json"
+        k = MF._h(system + q0 + DIRECT_EFFORT)
+        got = json.loads(cp.read_text()) if cp.exists() else {}
+        if got.get("k") == k:
+            a = got["a"]
+            hit = True
+        else:
+            hit = False
+            if not animate_up:
+                animate.igpu("strata", log)
+                animate_up = True
             a, faults = {}, []
+            if sum(len(m_["content"]) for m_ in talk_) > HISTORY_CHARS:
+                talk_[:] = talk_[-4:]   # too long (decode slows with context): go on from the last two passages
+            turn = [{"role": "user", "content": q0.replace("{fix}", "")}]
             for _ in range(3):
-                fix = ("Your last answer broke the rules: " + "; ".join(faults) + ". Write it again.\n") if faults else ""
-                reply = _chat(BC.LLM_URL, BC.LLM_MODEL, q0.replace("{fix}", fix), max_tokens=2500)
+                reply, cached = _converse(BC.LLM_URL, BC.LLM_MODEL, [{"role": "system", "content": system}] + talk_ +
+                                          turn, max_tokens=5000 + 12000 * bool(DIRECT_EFFORT), effort=DIRECT_EFFORT)
+                log(f"  passage {pa:.1f} s: {cached} of the prompt's tokens cached")
+                turn += [{"role": "assistant", "content": reply or ""}]
                 m = re.search(r"\{.*\}", reply or "", re.S)
                 try:
                     a = json.loads(m.group(0)) if m else {}
                 except ValueError:
                     a = {}
+                a["shots"] = [compose(s, cast, crs, dict(screen)) if isinstance(s, dict) and s.get("kind") != "talk" else s
+                              for s in a.get("shots") or []] if isinstance(a.get("shots"), list) else []
                 for s in a.get("shots") or []:
                     s["who"] = list(dict.fromkeys(w for w in (MF._cast_name(x, cast, crs) for x in (s.get("who") or []))
                                                   if w))
-                faults = _faults(a, cast, sec) + _worn(a, " ".join(MF._dress(book, stem, e["id"], cast).values())) + \
-                    _making(a, said) + _passing(a, tim, room)
+                    if s.get("action"):
+                        s["action"] = unname(str(s["action"]), cast, dress)
+
+                faults = _shot_faults(a, cast, sec, quotes) + _repeats(a, pics_before, pics_scene) + [
+                    f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
+                                                                                   if others else "")
+                    for i, x in enumerate(a.get("shots") or [], 1) if x.get("kind") != "talk" and scenes and
+                    not any(str(x.get("place") or "").strip().lower() in (w.lower(), re.sub(r"\s*\((inside|outside)\)$",
+                            "", w).lower()) for w in [home] + others)]
+                # (10-27: the worn-armor, making and passing-effect checks were band-aids for the moment-at-a-time
+                # director; with the scenes and the carried state they never fired true - the lit fireplace of Baker
+                # Street failed "shows fire" - and are gone from here)
                 if not faults:
                     break
-            shots = [s for s in (a.get("shots") or []) if s.get("picture") and s.get("action")]
-            if not shots:
-                log(f"!!! {e['id']}: no usable shots ({faults}): one quiet shot of the moment")
-                shots = [{"dur": sec, "who": cast[:1], "framing": "wide", "kind": "quiet",
-                          "picture": MF._frame(book, stem, e["id"]).get("prompt") or "", "action": "Small movements."}]
-            elif faults:
-                log(f"!!! {e['id']}: shots still break the rules: {faults}")
-            tot = sum(float(s.get("dur") or 0) for s in shots) or 1.0
-            for i, s in enumerate(shots):   # the lengths scaled to the moment's time exactly
-                s.update(id=f"{e['id']}_s{i}", dur=float(s.get("dur") or 0) * sec / tot, place=here,
-                         framing=s.get("framing") or "medium",
-                         kind=s.get("kind") if s.get("kind") in ("action", "quiet") else "action")
-            (sd / e["id"]).mkdir(parents=True, exist_ok=True)
-            # a stand-in is not cached (the next run asks again)
-            (sd / e["id"] / "shots.json").write_text(json.dumps({"k": k if a.get("shots") else "", "shots": shots,
-                                                                 "checked": True}, indent=1))
-            for s in shots:
-                log(f"{s['id']} ({s['dur']:.1f} s, {s['kind']}, {s['framing']}, {', '.join(s['who'])}): "
-                    f"{s['picture']} || {s['action']}")
-            return e["id"], shots
-        try:
-            with ThreadPoolExecutor(DIRECT_WORKERS) as ex:
-                for mid, shots in ex.map(ask, todo):
-                    out[mid] = shots
-        finally:
-            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
-    carry_poses(es, out)
-    return out
+                turn.append({"role": "user", "content": "Your last answer broke the rules: " + "; ".join(faults) +
+                             ". Write it again, the whole passage."})
+            if faults:
+                log(f"!!! passage {pa:.1f}-{pb:.1f} s: the director's shots still break the rules: {faults}")
+            if a.get("shots"):
+                cp.write_text(json.dumps({"k": k if not faults else "", "a": a, "reply": reply}, indent=1))
+        for x in a.get("shots") or []:   # the scene's screen sides, from the answer kept
+            if x.get("kind") != "talk":
+                compose(x, cast, crs, screen) if x.get("people") else None
+        if a.get("shots"):               # the conversation goes on with this passage and its answer (the bad tries dropped)
+            talk_ += [{"role": "user", "content": q0.replace("{fix}", "")},
+                      {"role": "assistant", "content": (got.get("reply") if hit else reply) or json.dumps(a)}]
+        shots = a.get("shots") or []
+        if not shots:                   # nothing usable: one quiet shot per 5 s of the people here
+            log(f"!!! passage {pa:.1f}-{pb:.1f} s: no usable shots: quiet shots of the people here")
+            n = max(1, math.ceil(sec / SHOT_MAX))
+            shots = [{"start": i * sec / n, "kind": "quiet", "place": home, "who": cast[:2], "framing": "medium",
+                      "picture": f"{' and '.join(cast[:2]) or 'The place'} at {home}.", "action": "Small movements."}
+                     for i in range(n)]
+        st = [float(s.get("start") or 0) for s in shots]
+        st[0] = 0.0
+        for i in range(1, len(st)):     # starts in order, and at least 1 s apart
+            st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
+        keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
+        shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
+        cuts_ = []                      # a non-talk shot of someone speaking their line becomes their talk shot
+        for s, x, b in zip(shots, st, st[1:] + [sec]):
+            if s.get("kind") != "talk" and SPEAKS.search(str(s.get("action", ""))):
+                hit = next((w for w in s.get("who") or [] for a_, b_, _ in spans.get(w, [])
+                            if min(pa + b, b_) - max(pa + x, a_) >= 0.6 * (b - x)), None)
+                if hit:
+                    others_ = [w for w in s.get("who") or [] if w != hit]
+                    s = {"kind": "talk", "speaker": hit, "listener": others_[0] if others_ else "", "framing": "two"}
+            n_ = max(1, math.ceil((b - x) / 8.0)) if s.get("kind") == "talk" else 1
+            for j in range(n_):         # a long talk shot: cut into pieces of at most 8 s
+                cuts_.append((dict(s, framing=s.get("framing") if j == 0 else "over-the-shoulder"),
+                              x + (b - x) * j / n_, x + (b - x) * (j + 1) / n_))
+        for s, x, b in cuts_:
+            t, d = pa + x, b - x
+            if d < 0.4:
+                continue
+            place = next((w for w in [home] + others if w and str(s.get("place") or "").lower() in (w.lower(), "")), None) \
+                or next((w for w in [home] + others if w and w.lower() in str(s.get("place") or "").lower()), home)
+            if s.get("kind") == "talk":
+                who = MF._cast_name(s.get("speaker"), cast, crs)
+                if who and any(min(t + d, b_) - max(t, a_) > 0.3 for a_, b_, _ in spans.get(who, [])):
+                    mid = f"talk-{round(t * 10):06d}"
+                    e = talk_moment(mid, who, t, d)
+                    tp = where_of.get(who) or home or place    # 10-27: talk shots on the title card / back in the bedroom
+                    lis = MF._cast_name(s.get("listener"), cast, crs)
+                    lis = lis if lis and lis != who else None
+                    sh = {"id": f"{mid}_s0", "dur": d, "who": [who], "framing": "medium", "kind": "talk", "place": tp,
+                          "action": "", "picture": (TALK_CREATURE if who in crs else TALK_PICTURE).format(who=who)}
+                    if lis and who not in crs and lis not in crs:
+                        if who not in sides and lis not in sides:
+                            sides.update({who: "left", lis: "right"})
+                        sides.setdefault(who, "right" if sides.get(lis) == "left" else "left")
+                        sides.setdefault(lis, "right" if sides[who] == "left" else "left")
+                        if sides[lis] == sides[who]:
+                            sides[lis] = "right" if sides[who] == "left" else "left"
+                        lr = sorted((who, lis), key=lambda w: sides[w] != "left")
+                        fr = str(s.get("framing") or "").lower()
+                        if pair != {who, lis} or fr.startswith("two"):
+                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who))
+                        elif not fr.startswith("close"):
+                            other = "right" if sides[who] == "left" else "left"
+                            sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
+                                who=who, side=sides[who], other=other, listener=lis))
+                        pair = {who, lis}
+                    new_es.append(e)
+                    by[mid] = [sh]
+                    new_sheets[mid] = dict(place_sheet.get(tp) or {}, elsewhere="")
+                    continue
+                s = dict(s, kind="quiet", who=[w for w in [who, MF._cast_name(s.get("listener"), cast, crs)] if w] or cast[:1],
+                         picture=s.get("picture") or f"{who or 'The speaker'} speaking at {home}.",
+                         action=s.get("action") or "Small movements while listening.")
+            mid = f"action-{round(t * 10):06d}"
+            new_es.append({"id": mid, "kind": "action", "t": t, "dur": d, "route": "shot", "where": place,
+                           "who": s.get("who") or []})
+            sh = {k_: v for k_, v in s.items() if k_ not in ("start", "speaker", "listener")}
+            sh.update(id=f"{mid}_s0", dur=d, place=place, framing=s.get("framing") if s.get("framing") in
+                      ("wide", "medium", "close") else "medium",
+                      kind=s.get("kind") if s.get("kind") in ("action", "quiet") else "quiet")
+            by[mid] = [sh]
+            new_sheets[mid] = dict(place_sheet.get(place) or sheets.get(at(t)["id"]) or {}, elsewhere="")
+            prev_shot = sh
+            if place and (place == home or not home):
+                where_of.update({w: place for w in sh.get("who") or []})
+        pics_scene += [by[m_["id"]][0].get("picture", "") for m_ in new_es if float(m_["t"]) >= pa - 1e-6
+                       and by[m_["id"]][0].get("kind") != "talk"]
+        people_here = list(dict.fromkeys(people_here + [w for m_ in new_es if by.get(m_["id"]) and
+                                                         by[m_["id"]][0].get("place") == home
+                                                         and float(m_["t"]) >= pa for w in by[m_["id"]][0]["who"]]))
+        state = str(a.get("state_end") or state)[:600]
+        for m_ in new_es:
+            if float(m_["t"]) >= pa - 1e-6:
+                s_ = by[m_["id"]][0]
+                log(f"{s_['id']} ({s_['dur']:.1f} s, {s_['kind']}, {s_.get('framing')}, {', '.join(s_['who'])}, "
+                    f"{s_.get('place')}): {s_.get('picture', '')} || {s_.get('action', '')}")
+    if animate_up and not keep_llm:     # (the set sheets come next and ask it too: no reload)
+        subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+    for mid, sh in new_sheets.items():   # the place's "as it is now" comes from the director's own state now
+        sh.pop("now", None)
+    carry_poses(new_es, by)
+    return new_es, by, new_sheets
 
 
 PLACE_ASK = """Describe the place "{where}" as a painter would see it {side}, empty: no people and no animals. One sentence
@@ -679,6 +1151,197 @@ def scene_sheets(book: Path, stem: str, es: list, log=print) -> dict:
                             "present": a.get("present") or [], "crowd": a.get("crowd") or "",
                             "now": "; ".join(f"{t}: {v}" for t, v in cur.items() if passing_shown(f"{t} {v}", said)),
                             "elsewhere": (a.get("elsewhere") or {}).get(e["id"], "")}
+    return out
+
+
+SET_ASK = """You design the SET of one place in a film made from a book: what a painter needs so that every picture of it
+looks the same.
+
+The place: {place}
+{period}The people of the book: {people}
+What happens there (the director's shots, in order):
+{shots}
+The story's words there: {said}
+
+Reply with JSON only:
+{{"room": "two sentences: the FIXED things of this place and where each stands (the hearth with its chimney hood at
+the back wall, the bellows on its left, ...). Never a person or creature, nothing the story's people carry, make or
+bring; no weather or sky; for a place indoors, nothing seen outside it.",
+ "fixtures": ["2 to 5 short names of things BUILT INTO this place a viewer must see in every wide picture of it"],
+ "crowd": "the UNNAMED people always there (about twenty courtiers in dark robes along both walls), or \"\" when none"}}"""
+
+
+# 10-27 user: "what's the right way to prevent [going back to a shot from a previous scene] in the first place?": a
+# SCENE BREAKDOWN first, over the whole chapter (like a screenplay's scene headings), then every passage is directed
+# inside its scene. The director's conversation starts again at each scene (an old scene's shots can't be copied in);
+# what carries across (clothes, props, how things stand) carries in the breakdown and the passage-to-passage state.
+BREAKDOWN_ASK = """You are a film's director, breaking a chapter of a book into its SCENES before you plan any shots,
+like the scene headings of a screenplay. A new scene starts when the people of the story go somewhere else, or when
+time jumps. Someone TELLING of another place or time (a story, a memory) stays in the scene where they tell it: list
+the places the telling may cut to as "cutaways". {narrator}
+
+The places already known (use these names when it is one of them; else name a new place plainly, with "(inside)" or
+"(outside)"): {places}
+The people of the book: {people}
+
+THE CHAPTER, each line [seconds from its start] who: the words:
+{text}
+
+Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the people there, also the silent ones"],
+"what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "teller": "the one who tells of it",
+"from": <the second the telling starts>, "to": <the second it ends>}}],
+"opens": "how things stand as it opens, for a painter: each one's clothes, what each holds, postures, the time of
+day and the light, at most 60 words"}}]}}
+The first scene starts at 0.0; each later one after the one before; scenes in story order."""
+
+
+def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: str, log=print) -> list:
+    """The chapter's scenes [{"start", "end", "place", "who", "what", "cutaways", "opens"}], by the director over the
+    whole chapter at once (cached in shots/scenes/breakdown.json by its question)."""
+    from tts_reader import animate
+    from tts_reader import bookcaster as BC
+    end = float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())
+    text = "\n".join(f"[{float(x['t']):.0f}] {_who_full(x.get('speaker') or 'narrator', chars) or 'narrator'}: "
+                     f"{x['text']}" for x in tl)
+    q = BREAKDOWN_ASK.format(narrator=(f"The narrator, {nar}, tells the story as 'I'; a stretch where {nar} looks "
+                                       f"back before the story begins is a scene of its own." if nar else ""),
+                             places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
+    cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    k = MF._h(q + BREAKDOWN_EFFORT)
+    got = json.loads(cp.read_text()) if cp.exists() else {}
+    if got.get("k") == k:
+        sc = got["scenes"]
+    else:
+        animate.igpu("strata", log)
+        sc, turn = [], [{"role": "user", "content": q}]
+        for _ in range(3):
+            reply, _c = _converse(BC.LLM_URL, BC.LLM_MODEL, turn, max_tokens=8000 + 16000 * bool(BREAKDOWN_EFFORT),
+                                  effort=BREAKDOWN_EFFORT)
+            m = re.search(r"\{.*\}", reply or "", re.S)
+            try:
+                sc = (json.loads(m.group(0)) if m else {}).get("scenes") or []
+            except ValueError:
+                sc = []
+            faults = _breakdown_faults(sc, end)
+            if not faults:
+                break
+            turn += [{"role": "assistant", "content": reply or ""},
+                     {"role": "user", "content": "Your scene list broke the rules: " + "; ".join(faults) +
+                      ". Write it again, the whole list."}]
+        if faults:
+            log(f"!!! the scene breakdown still breaks the rules: {faults}")
+        if sc:
+            cp.write_text(json.dumps({"k": k if not faults else "", "scenes": sc}, indent=1))
+    sc = [x for x in sc if isinstance(x, dict) and x.get("place")]
+    sc.sort(key=lambda x: float(x.get("start") or 0))
+    starts = sorted(float(x["t"]) for x in tl)
+    for x in sc[1:]:                    # a scene starts where a paragraph or a spoken line starts (10-27: a scene cut
+        x["start"] = min(starts, key=lambda t: abs(t - float(x.get("start") or 0)))  # at 130.0 split Watson's line)
+    sc = [x for i, x in enumerate(sc) if i == 0 or x["start"] > sc[i - 1]["start"]]
+    if sc:
+        sc[0]["start"] = 0.0
+    for a, b in zip(sc, sc[1:] + [{"start": end}]):
+        a["start"], a["end"] = float(a.get("start") or 0), float(b["start"])
+        a["who"] = [w for w in (MF._cast_name(x, chars, []) for x in a.get("who") or []) if w]
+        a["cutaways"] = [c for c in a.get("cutaways") or [] if isinstance(c, dict) and c.get("place")
+                         and c["place"] != a["place"]]
+        for c in a["cutaways"]:         # a telling: who tells it, and when (10-27: offered for the whole scene, the
+            c["teller"] = MF._cast_name(c.get("teller"), chars, []) or ""   # director cut to Stoke Moran while Watson dressed)
+            try:
+                c["from"], c["to"] = float(c.get("from") or a["start"]), float(c.get("to") or a["end"])
+            except (TypeError, ValueError):
+                c["from"], c["to"] = a["start"], a["end"]
+    for i, a in enumerate(sc, 1):
+        log(f"scene {i} {a['start']:.0f}-{a['end']:.0f} s at {a['place']} ({', '.join(a['who'])}): {a.get('what', '')}"
+            + (f" | cutaways {[c['place'] for c in a['cutaways']]}" if a["cutaways"] else ""))
+    return sc
+
+
+def _breakdown_faults(sc: list, end: float) -> list:
+    if not sc:
+        return ["no scenes"]
+    out = []
+    try:
+        st = [float(x.get("start")) for x in sc]
+    except (TypeError, ValueError, AttributeError):
+        return ["every scene needs a number \"start\""]
+    if st[0] > 1.0 or any(b <= a for a, b in zip(st, st[1:])) or st[-1] >= end:
+        out.append(f"the starts must begin at 0.0 and rise, each before {end:.0f}")
+    out += [f"scene {i} has no place" for i, x in enumerate(sc, 1) if not str(x.get("place") or "").strip()]
+    out += [f"scene {i}'s place is no place ({x['place']}): name where the people are" for i, x in enumerate(sc, 1)
+            if NO_PLACE.search(str(x.get("place") or ""))]
+    return out
+
+
+def place_sheets(book: Path, stem: str, es: list, by: dict, log=print) -> dict:
+    """{mid: {"scene", "room", "fixtures", "crowd"}}: one set sheet per place the DIRECTOR's shots use, made after it
+    (10-27 user: should the scenes be an output of the director? Yes: the planner's places and the scene step's
+    who's-here / how-things-stand made the title card, the talk back in the bedroom and ch2's lasting flames; the
+    director now says where every shot is and carries how things stand itself). Cached by input in shots/scenes/."""
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import animate
+    from tts_reader import bookcaster as BC
+    from tts_reader.score import _chat
+    vd, _, _ = MF.paths(book, stem)
+    plan = json.loads((vd / "plan.json").read_text())
+    chars = sorted(((plan.get("look") or {}).get("characters") or {}))
+    tl = load_timeline(book, stem, chars)
+    pf = book / "period.txt"
+    period = f"The time and place of the story: {pf.read_text().strip()}\n" if pf.exists() else ""
+    at = {}
+    for e in es:
+        sh = (by.get(e["id"]) or [{}])[0]
+        if sh.get("place"):
+            at.setdefault(sh["place"], []).append((e, sh))
+    sd = shot_dir(book, stem) / "scenes"
+    sd.mkdir(parents=True, exist_ok=True)
+    got_all, todo = {}, []
+    for w, xs in at.items():
+        shots = "\n".join(f"- {sh.get('picture') or ', '.join(sh.get('who') or [])}" for _, sh in xs
+                          if sh.get("kind") != "talk")[:3000] or "(people talking)"
+        said = " ".join(z for e, _ in xs for _, z in timed(tl, float(e["t"]), float(e["dur"])))[:2500]
+        q = SET_ASK.format(place=w, period=period, people=", ".join(chars), shots=shots, said=said)
+        sid = "set_" + re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")
+        cp, k = sd / f"{sid}.json", MF._h(q)
+        got = json.loads(cp.read_text()) if cp.exists() else {}
+        if got.get("k") == k:
+            got_all[w] = (sid, got["sheet"])
+        else:
+            todo.append((w, sid, q, k, cp))
+    if todo:
+        animate.igpu("strata", log)
+
+        def ask(t):
+            w, sid, q, k, cp = t
+            a = {}
+            for _ in range(2):
+                m = re.search(r"\{.*\}", _chat(BC.LLM_URL, BC.LLM_MODEL, q, max_tokens=1500) or "", re.S)
+                try:
+                    a = json.loads(m.group(0)) if m else {}
+                except ValueError:
+                    a = {}
+                if a.get("room"):
+                    break
+            a = {"room": str(a.get("room") or "").strip(), "fixtures": [str(x) for x in (a.get("fixtures") or [])][:5],
+                 "crowd": str(a.get("crowd") or "").strip()}
+            if a["room"]:
+                cp.write_text(json.dumps({"k": k, "sheet": a}, indent=1))
+            log(f"set {sid}: {a['room']} | fixtures {a['fixtures']} | crowd {a['crowd'] or '-'}")
+            return w, sid, a
+        try:
+            with ThreadPoolExecutor(DIRECT_WORKERS) as ex:
+                for w, sid, a in ex.map(ask, todo):
+                    got_all[w] = (sid, a)
+        finally:
+            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+    out = {}
+    for w, xs in at.items():
+        sid, a = got_all.get(w, ("", {}))
+        for e, _ in xs:
+            out[e["id"]] = {"scene": sid, "room": _unpropped(a.get("room", "")),
+                            "fixtures": [f for f in a.get("fixtures") or [] if not STORY_THING.search(f)],
+                            "crowd": a.get("crowd") or "", "elsewhere": ""}
     return out
 
 
@@ -842,6 +1505,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         lk = looks.get(w, "")
         if w in dress:
             lk = re.split(r",?\s*\bwearing\b", lk)[0] + ", wearing " + dress[w]
+        lk = uncarried(lk, s.get("picture", ""))
         lay = group_layout(len(s["who"]))
         side = f" {lay[s['who'].index(w)][1]}" if len(s["who"]) > 1 else ""
         legs = ", " + FOUR_LEGS if "four-legged" in lk and not MF.DOWN.search(s["picture"]) else ""
@@ -871,7 +1535,11 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     """The mannequin flow's talk words (motion_prompts): short, "lips and jaw moving clearly", no style paragraph and
     no "everyone else ... mouth closed" (10-24: R.talk_prompt's long prompt with that sentence froze the lips again in
     most of the chapter's talk clips, as it had on 10-22; a talk shot has one person, so it closed the speaker's mouth)."""
-    who = e["speaker"]
+    s = s or {}
+    # 10-27 user: "it's almost as if Holmes and her are switched, his lips move when she talks": the timeline's label
+    # ("Stoner") was not the cast name ("Helen Stoner"), so her prompt had no look, the wrong side and "Helen Stoner
+    # listens with a closed mouth" - the model moved Holmes's lips. The speaker is the shot's own name for them.
+    who = MF._cast_name(e["speaker"], s.get("who") or [], []) or e["speaker"]
     look = MF._brief(cx.look(who, e["t"]) or "")
     emo = f", sounding {e['emotion']}," if e.get("emotion") else ","
     place = re.sub(r"\s*\((inside|outside)\)$", "", here)
@@ -882,10 +1550,10 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
                 f"No text anywhere in the picture.")
     g = R.gender_of(look)
     pron = "her" if g == "woman" else "his" if g == "man" else "their"
-    s = s or {}
     lst = ""
-    if s.get("listener") and not s.get("ots"):    # a two-shot: the other face is in the picture
-        lst = f" {s['listener']} listens with a closed mouth."
+    other = next((w for w in s.get("who") or [] if w != who), None)
+    if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
+        lst = f" {other} listens with a closed mouth."
     pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
@@ -949,7 +1617,10 @@ def keys(book: Path, stem: str, shots: list, seeds=KEY_SEEDS, log=print) -> None
 def _key_questions(cx, s: dict) -> tuple:
     """The vision questions for a shot's opening picture, and how many people it should hold."""
     # (10-24: no "does it show the words" question - it only chose between near-identical clean seeds)
-    q = {"text": "Answer yes or no: does this picture contain any written text, letters, a page, a panel or a border?"}
+    # 10-27: "...letters, a page, a panel..." said yes to the papers, books and frames of Holmes's study (250 of 276
+    # Speckled Band keys failed it): only writing laid OVER the picture
+    q = {"text": "Answer yes or no: is there a caption, title, lettering or a border laid over this picture, like text "
+                 "added on top of a painting (books, papers and framed pictures in the scene don't count)?"}
     hum = 0
     for i, w in enumerate(s["who"]):
         lk = cx.look(w, 0) or ""
@@ -962,7 +1633,7 @@ def _key_questions(cx, s: dict) -> tuple:
         m_ = re.search(r"-(\d{4,})", s.get("id") or "")     # the shot's time (ids carry it in tenths of a second)
         cl = clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0) or lk)
         if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
-            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {' '.join(cl.split()[:14])}?"
+            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {garments(cl)}?"   # (10-27: cut at 14 words)
         pz = (s.get("pose_held") or {}).get(w, "")
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
@@ -1079,7 +1750,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                                                  str(HERE / "qwen_image.py"), "--serve"], stdin=subprocess.PIPE,
                                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                                 bufsize=1, env=dict(os.environ, HIP_VISIBLE_DEVICES=hip))
-                    job = dict(t["job"], id=f"{t['s']['id']}_key_{seed}", seed=seed, path=str(k))
+                    job = dict(t["job"], id=f"{t['s']['id']}_key_{seed}", seed=seed + shot_seed(t["s"]["id"]), path=str(k))
                     proc.stdin.write(json.dumps(job) + "\n")
                     proc.stdin.flush()
                     while True:
@@ -1299,9 +1970,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 two.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": act,
-                            "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())),
+                            "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
-                            "guider": GUIDER, "aguider": GUIDER, "images": img})
+                            "guider": GUIDER, "aguider": GUIDER, "images": img,
+                            "people": None if s.get("crowd") else len(s.get("who") or [])})
         else:
             p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + _pose_hold(cx, s) + \
                 STILL_CROWD * bool(s.get("crowd"))
@@ -1309,8 +1981,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             enc_dist.append({"name": emb, "prompt": p_})
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_,
-                              "width": W, "height": H, "fps": FPS, "seed": seed, "frames": n, "line": s["id"],
-                              "route": "i2v", "images": img})
+                              "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
+                              "route": "i2v", "images": img,
+                              "people": None if s.get("crowd") else len(s.get("who") or [])})
     for j in talk + two + quiet:            # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
@@ -1459,13 +2132,13 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                 j = left.pop(n)
                 if (out_ / f"{n}.judged").exists() or f"{n}_t2" in names:
                     continue
-                fa = MF.fight_clip_ok(out_ / f"{n}.mp4")
+                fa = MF.fight_clip_ok(out_ / f"{n}.mp4", j.get("people"))
                 if not fa:
                     (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
                     continue
                 log(f"{n}: {fa}: taken once more (queued on the loaded model)")
                 extra = json.loads(more.read_text())
-                extra.append(dict(j, name=f"{n}_t2", seed=RETAKE))
+                extra.append(dict(j, name=f"{n}_t2", seed=RETAKE + shot_seed(n)))
                 tmp = more.with_suffix(".tmp")
                 tmp.write_text(json.dumps(extra, indent=1))
                 os.replace(tmp, more)
@@ -1490,7 +2163,8 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         a, b = out_ / f"{s['id']}.mp4", out_ / f"{s['id']}_t2.mp4"
         if not a.exists() or (out_ / f"{s['id']}.judged").exists():
             continue
-        fa = MF.fight_clip_ok(a)
+        n_ = None if s.get("crowd") else len(s.get("who") or [])
+        fa = MF.fight_clip_ok(a, n_)
         if not b.exists():
             if fa:
                 log(f"{s['id']}: {fa}: taken once more")
@@ -1498,7 +2172,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
             else:
                 (out_ / f"{s['id']}.judged").write_text(json.dumps({"take1": fa}))
             continue
-        fb = MF.fight_clip_ok(b)
+        fb = MF.fight_clip_ok(b, n_)
         if len(fb) < len(fa):               # swap: the better take under the shot's own name
             tmp = a.with_suffix(".swap.mp4")
             os.replace(a, tmp)
@@ -1596,14 +2270,17 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     if until != "keys" and fz.exists():
         by = json.loads(fz.read_text())
         by.pop("_sig", None)
+        es = by.pop("_es", None) or es
         shots = [s for e in es for s in by.get(e["id"], [])]
         log(f"resuming the stopped render on its saved plan ({len(shots)} shots; delete {fz} to plan again)")
         return _render(book, stem, es, by, shots, mix, op, fz, log)
     if MF.cover(book, stem, t0, t1, log):  # narrated stretches without a moment get theirs
         es = MF.entries(book, stem, t0, t1)
     wardrobe(book, stem, log)
-    sheets = scene_sheets(book, stem, es, log)
-    by = direct(book, stem, es, log, sheets)
+    es, by, _ = direct(book, stem, es, log, keep_llm=True)    # the director's shots are the moments from here on
+    sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
+    from tts_reader import animate
+    subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     shots = [s for e in es for s in by.get(e["id"], [])]
     for s in shots:
         s.update({k: v for k, v in (sheets.get(s["id"].rsplit("_s", 1)[0]) or {}).items()
@@ -1622,7 +2299,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     log(f"key sheet: {ks}")
     if until == "keys":
         return ks
-    fz.write_text(json.dumps({"_sig": sig, **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
+    fz.write_text(json.dumps({"_sig": sig, "_es": es, **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
                                                                         s_["id"].rsplit("_s", 1)[0]] for s_ in shots}}))
     return _render(book, stem, es, by, shots, mix, op, fz, log)
 
