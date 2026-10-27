@@ -52,8 +52,10 @@ KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
 GUIDER = json.loads(os.environ.get("SHOTS_GUIDER", "{\"modality_scale\": 1.0}"))   # the audio-video pass off (we keep our own sound): 105 -> 64 s a 3 s clip with 2 in flight, same picture by eye (10-23)
 JUDGE_BATCH = 60                    # pictures per vision-judge call (each call has a 15 min limit)
-# 10-27 user: "try out thinking on medium" (every director ask had thinking off)
-DIRECT_EFFORT = os.environ.get("BOOKCASTER_DIRECT_EFFORT", "medium")
+# 10-27 user: "try out thinking on medium" (every director ask had thinking off). Measured on the Speckled Band: on
+# the shots, 5-6x the time for richer pictures but the same scene mistakes -> off; on for the one scene breakdown
+DIRECT_EFFORT = os.environ.get("BOOKCASTER_DIRECT_EFFORT", "")
+BREAKDOWN_EFFORT = os.environ.get("BOOKCASTER_BREAKDOWN_EFFORT", "medium")
 DIRECT_WORKERS = 3                  # director requests in flight (Strata serves them in its slots)
 
 # 10-27 user ("the whole point of the director is to break up the story into individual shots... it needs more context
@@ -1116,7 +1118,7 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
                              places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
-    k = MF._h(q + DIRECT_EFFORT)
+    k = MF._h(q + BREAKDOWN_EFFORT)
     got = json.loads(cp.read_text()) if cp.exists() else {}
     if got.get("k") == k:
         sc = got["scenes"]
@@ -1124,8 +1126,8 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
         animate.igpu("strata", log)
         sc, turn = [], [{"role": "user", "content": q}]
         for _ in range(3):
-            reply, _c = _converse(BC.LLM_URL, BC.LLM_MODEL, turn, max_tokens=8000 + 12000 * bool(DIRECT_EFFORT),
-                                  effort=DIRECT_EFFORT)
+            reply, _c = _converse(BC.LLM_URL, BC.LLM_MODEL, turn, max_tokens=8000 + 16000 * bool(BREAKDOWN_EFFORT),
+                                  effort=BREAKDOWN_EFFORT)
             m = re.search(r"\{.*\}", reply or "", re.S)
             try:
                 sc = (json.loads(m.group(0)) if m else {}).get("scenes") or []
