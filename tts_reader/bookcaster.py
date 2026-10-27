@@ -1053,12 +1053,13 @@ def video_for(book: Path, f: Path, log, level: str = "pictures") -> Path:
     return out
 
 
-def to_jellyfin(book: Path, f: Path, log=print, tag: str = "") -> bool:
+def to_jellyfin(book: Path, f: Path, log=print, tag: str = "", mp4: Path | None = None) -> bool:
     """Copy a chapter's finished video to the Jellyfin server, if one is set up
     (~/.config/bookcaster/jellyfin). A failed copy never fails the job. *tag* names a new version beside the
-    one already there ("v2": "02 Chapter 2 v2.mp4"; 10-25 user: don't clobber the old one)."""
+    one already there ("v2": "02 Chapter 2 v2.mp4"; 10-25 user: don't clobber the old one). *mp4*: another video
+    of the chapter instead of its finished one (a --from/--to cut, sent as-is)."""
     from . import jellyfin
-    mp4 = book / "work" / "final" / f"{f.stem}.mp4"
+    mp4 = mp4 or book / "work" / "final" / f"{f.stem}.mp4"
     if not mp4.exists() or jellyfin.config() is None:
         return False
     meta = json.loads((book / "meta.json").read_text()) if (book / "meta.json").exists() else {}
@@ -1705,6 +1706,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--video", default=None, help="first make this finished whole-chapter video the chapter's video")
     s.add_argument("--chapter", default=None, help="only this chapter (default: every picked chapter)")
     s.add_argument("--tag", default="", help="send as a new version beside the old one: --tag v2")
+    s.add_argument("--part", default=None, help="send this cut of a chapter (a --from/--to video in out/) as-is, "
+                   "beside the chapter: \"09 The Speckled Band (0-10 min).mp4\"")
     sub.add_parser("library", help="books on this machine")
     sub.add_parser("services", help="voice / music / LLM server status")
     s = sub.add_parser("_job")
@@ -1901,6 +1904,25 @@ def main(argv: list[str] | None = None) -> int:
         if jellyfin.config() is None:
             sys.exit(f"no Jellyfin server set up ({jellyfin.CONFIG})")
         books = [book_dir(a.book)] if a.book else [p.parent for p in sorted(HOME.glob("*/book.txt"))]
+        if a.part:
+            if not a.book:
+                sys.exit("--part needs the book")
+            v = Path(a.part).expanduser().resolve()
+            if not v.exists():
+                sys.exit(f"{v} is missing")
+            files = chapter_files(books[0])
+            if a.chapter:
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+                import flow3d
+                files = [f for f in files if f.stem == flow3d.chapter_stem(books[0], a.chapter)]
+            if len(files) != 1:
+                sys.exit("--part: say which chapter it is cut from (--chapter N)")
+            if not a.tag:                       # "_0-600_shots.mp4" -> "(0-10 min)"
+                m = re.search(r"_(\d+)-(\d+)_shots\.mp4$", v.name)
+                a.tag = (f"({int(m.group(1)) // 60}-{int(m.group(2)) // 60} min)" if m else "(part)")
+            if to_jellyfin(books[0], files[0], tag=a.tag, mp4=v):
+                jellyfin.rescan()
+            return 0
         if a.video:
             if not a.book:
                 sys.exit("--video needs the book")
