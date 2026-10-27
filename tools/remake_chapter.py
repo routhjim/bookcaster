@@ -301,8 +301,12 @@ class Ctx:
         q = min(self.timeline, key=lambda e: abs(e.get("t", e.get("t0", 0)) - m["t"]))
         sp = q.get("speaker") or ""
         from tts_reader import animate
-        key = animate.speaker_key(sp, self.chars) or sp
-        return key, q
+        return self.cast_key(animate.speaker_key(sp, self.chars) or sp), q
+
+    def cast_key(self, name: str) -> str:
+        """*name* in the chapter's own spelling of that person (its frames' who): the timeline's "Watson" is "Dr.
+        Watson" there, not look.json's "Doctor Watson" (10-27); unchanged when the chapter doesn't cast them."""
+        return self.R.key_in(name, list(((self.plan.get("look") or {}).get("characters") or {}))) or name
 
 
 # --------------------------------------------------------------------------------------------- plan
@@ -393,7 +397,7 @@ def dialogue_spans(cx: "Ctx") -> list[dict]:
     out = []
     for a, b in zip(tl, tl[1:] + [{"t": total}]):
         if a.get("kind") == "quote" and a.get("speaker") not in (None, "", "narrator"):
-            out.append({"speaker": animate.speaker_key(a["speaker"], cx.chars) or a["speaker"], "t0": a["t"],
+            out.append({"speaker": cx.cast_key(animate.speaker_key(a["speaker"], cx.chars) or a["speaker"]), "t0": a["t"],
                         "t1": b["t"], "text": a.get("text", ""), "emotion": a.get("emotion")})
     return out
 
