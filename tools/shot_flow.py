@@ -1059,7 +1059,9 @@ def scene_list(book: Path, stem: str, log=print) -> list:
     chars = list(dict.fromkeys(p_ for p_ in (R_.person(x) for x in ((plan.get("look") or {}).get("characters") or {}))
                                if p_)) or R_.people()
     tl = load_timeline(book, stem, chars)
-    real = [e["where"] for e in MF.entries(book, stem, 0, 1e9) if e.get("where") and not NO_PLACE.search(e["where"])]
+    fp = MF.paths(book, stem)[0] / "flow3d" / "plan.json"       # the planner's places, when it has planned
+    real = [e["where"] for e in (MF.entries(book, stem, 0, 1e9) if fp.exists() else [])
+            if e.get("where") and not NO_PLACE.search(e["where"])]
     known = list({RG.place_key(w): w for w in R_.places() + real}.values())   # each place once, by its one name
     return breakdown(book, stem, tl, chars, known, R_.narrator() or "", log)
 
