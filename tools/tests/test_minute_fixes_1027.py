@@ -84,5 +84,19 @@ f = S._shot_faults({"shots": [sh]}, ["Sherlock Holmes"], 3.0, [])
 check("10-28: 'Sitting Room' in a picture is not someone sitting", not any("someone sitting" in x for x in f), f)
 f = S._shot_faults({"shots": [dict(sh, picture="Sherlock Holmes sits by the desk.")]}, ["Sherlock Holmes"], 3.0, [])
 check("10-28: a real 'sits' against a standing pose is still sent back", any("someone sitting" in x for x in f), f)
+f = S._shot_faults({"shots": [dict(sh, picture="SHERLOCK HOLMES STANDS BY THE DESK. THE SITTING ROOM'S WINDOW.")]},
+                   ["Sherlock Holmes"], 3.0, [], ["Baker Street Sitting Room (inside)"])
+check("10-28: case doesn't matter (upper-case title and posture words)", not any("someone" in x for x in f), f)
+for room in ("Huddle Room", "Bedroom", "Sitting Room", "Lying-in Ward"):
+    pl = f"The Manor {room} (inside)"
+    sh2 = dict(sh, place=pl, picture=f"Sherlock Holmes stands by the desk. The Manor {room} in morning light; "
+               f"through the door, the Old Sitting Room.")
+    f = S._shot_faults({"shots": [sh2]}, ["Sherlock Holmes"], 3.0, [], [pl, "The Old Sitting Room"])
+    check(f"10-28: no posture read from any place's title ({room!r})", not any("someone" in x for x in f), f)
+for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), ("stand", "standing upright")):
+    k3 = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": ["Doctor Watson"], "kind": "talk",
+                       "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": pz},
+                       "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
+    check(f"10-28: a {pz} close-up says '{w}' outright", f"alone, {w}:" in k3, k3[:120])
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

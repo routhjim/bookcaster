@@ -633,16 +633,24 @@ def _who_full(spk: str, names: list) -> str:
         (w for w in names if re.search(rf"\b{re.escape(spk)}\b", w, re.I)), spk)
 
 
-def _no_place_words(text, place=None) -> str:
-    """A picture's words without its place's name or a room named for what is done there ("sitting room", "living
-    room", "drawing room", "waiting room", "dining room") - so a posture check reads the people only."""
+def _no_place_words(text, places=()) -> str:
+    """A picture's words without any place's name - a title can imply a posture or a piece of furniture ("Sitting
+    Room", "Bedroom", "Huddle Room"), and a posture check must read the people only (10-28 user: handle whatever a
+    setting's title implies, not one room). Longest names first, with and without "(inside)"/"(outside)"."""
     t = str(text or "")
-    for w in filter(None, [place, re.sub(r"\s*\((inside|outside)\)$", "", str(place or ""))]):
-        t = re.sub(re.escape(w), " ", t, flags=re.I)
-    return re.sub(r"\b(sitting|living|drawing|waiting|dining|standing)[- ]rooms?\b", " ", t, flags=re.I)
+    names = set()
+    for p in places or ():
+        if not p:
+            continue
+        base = re.sub(r"\s*\((inside|outside)\)$", "", str(p)).strip()
+        ws = base.split()
+        names |= {str(p), base} | {" ".join(ws[i:]) for i in range(1, len(ws))}   # its short forms: "the sitting room"
+    for w in sorted(names, key=len, reverse=True):
+        t = re.sub(r"(?<!\w)" + re.escape(w) + r"(?!\w)", " ", t, flags=re.I)
+    return t
 
 
-def _shot_faults(a: dict, cast: list, sec: float, lines: list) -> list:
+def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> list:
     """The director's passage answer against the rules: starts in order, lengths, talk shots on their own speaker's
     line, and the one-shot checks (_faults) on the rest."""
     shots = a.get("shots") if isinstance(a.get("shots"), list) else []
@@ -684,7 +692,8 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list) -> list:
                 out.append(f"shot {i}'s action moves the camera ('{CAMERA.search(s['action']).group(0)}'): only the "
                            "people and things move")
             have = {pose_cat(v) for v in (s.get("pose") or {}).values()} - {""}
-            said = {c for c, rx in POSE_CAT if rx.search(_no_place_words(s.get("picture", ""), s.get("place")))} & \
+            said = {c for c, rx in POSE_CAT if rx.search(_no_place_words(s.get("picture", ""),
+                                                                         [*places, s.get("place")]))} & \
                 {"sit", "stand", "lie"}     # (10-28: "Baker Street Sitting Room" read as someone sitting, 3 asks)
             if s.get("kind") != "talk" and have and said - have:   # 10-27: "Holmes stands by the desk", pose sitting
                 out.append(f"shot {i}'s picture has someone {POSE_WORDS[sorted(said - have)[0]].split()[0]} but its "
@@ -878,7 +887,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     if x.get("action"):
                         x["action"] = unname(str(x["action"]), cast, dress)
             a["shots"] = [x for x in a["shots"] if isinstance(x, dict)]
-            faults = _shot_faults(a, cast, sec, quotes) + _repeats(a, pics_before, pics_scene) + [
+            faults = _shot_faults(a, cast, sec, quotes, RGB.places() + [home] + others) + _repeats(a, pics_before, pics_scene) + [
                 f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
                                                                                if others else "")
                 for i, x in enumerate(a["shots"], 1) if x.get("kind") != "talk" and scenes and
@@ -1470,12 +1479,16 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         # 10-28 A/B (4 wordings x 6 seeds, chair judged): the posture in the subject took chairs from 3/6 to 1/6
         # (the chair check rejects the rest); leaving the room's name out too gave 0/6 - not a clear difference on 6
         # seeds, and the user keeps the real background: the posture only
+        # every held posture stated in the subject (10-28 user: a place's title implies one - "Sitting Room" sat
+        # Holmes down, "Bedroom" would lay someone down - so the director's pose is said outright, whatever the room)
+        word = {"stand": "standing upright", "sit": "seated", "lie": "lying down", "kneel": "kneeling",
+                "crouch": "crouching low"}.get(next(iter(held)) if len(held) == 1 else "")
+        if word:
+            pic = re.sub(r"^(a close-up of .+? alone)(:)", rf"\1, {word}\2", pic, count=1)
         if held == {"stand"}:
-            pic = re.sub(r"^(a close-up of .+? alone)(:)", r"\1, standing upright\2", pic, count=1)
             setting += (" Standing upright, seen from the chest up; behind the shoulders only the bare wall, curtains "
                         "and window, at standing height.")
-        elif held and held <= {"sit"}:
-            pic = re.sub(r"^(a close-up of .+? alone)(:)", r"\1, seated\2", pic, count=1)
+        elif held == {"sit"}:
             setting += " Seated: the top of a chair back behind the shoulders."
     else:
         setting = SETTING.format(place=place) if place else ""
@@ -1511,10 +1524,13 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     pron = "her" if g == "woman" else "his" if g == "man" else "their"
     lst = ""
     other = next((w for w in s.get("who") or [] if w != who), None)
+    held = s.get("pose_held") or {}              # 10-28 user: the place's title can imply a posture ("Sitting Room");
+    def posed(w):                                 # the held one is said outright
+        return f", {POSE_WORDS[held[w]]}" if held.get(w) in POSE_WORDS else ""
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
-        lst = f" {other} listens with a closed mouth."
+        lst = f" {other}{posed(other) + ',' if posed(other) else ''} listens with a closed mouth."
     pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
-    return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
+    return (f"Static camera, the framing does not change. {who}{pos}{posed(who)}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
 
 
