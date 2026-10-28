@@ -34,6 +34,13 @@ c.with_suffix(".json").unlink()
 check("a stitched line's lead-in is its first piece's", S.talk_pre(c) == 12)
 (d / "talk-1_s0_c0.json").unlink()
 check("an old clip has no lead-in", S.talk_pre(c) == 0)
+check("a two-shot's speaker zone is their layout box", S._speaker_box({"who": ["Helen Stoner", "Sherlock Holmes"]},
+      "Sherlock Holmes") == S.group_layout(2)[1][0])
+check("four people: the speaker's own box, not a half", S._speaker_box({"who": list("ABCD")}, "B") ==
+      S.group_layout(4)[1][0] and S._speaker_box({"who": ["A"]}, "A") is None)
+(d / "out").mkdir(exist_ok=True)
+(d / "out" / "talk-3_s0_c0.json").write_text(json.dumps({"speaker_box": [0.02, 0.1, 0.5, 1.0]}))
+check("a joined line's zone comes from its first piece", S._job_speaker_box(d, "talk-3_s0") == [0.02, 0.1, 0.5, 1.0])
 src = (HERE.parent / "shot_flow.py").read_text()
 check("the assembly drops the lead-in plus the sync shift", "st_ = talk_pre(c) + sync_shift(c)" in src)
 check("talk audio starts TALK_PRE frames of silence early", "adelay={TALK_PRE / 24 * 1000:.0f}" in src and

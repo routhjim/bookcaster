@@ -1848,6 +1848,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
                              "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
+                             "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
                              "images": [dict(img[0], strength=0.8)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
@@ -2177,6 +2178,26 @@ def sync_shift(clip: Path) -> int:
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
 
 
+def _speaker_box(s: dict, speaker) -> list | None:
+    """The speaker's zone of the picture [x0, y0, x1, y1] (0-1) when others share the shot: the layout box the key
+    drew them in (group_layout, left to right in "who" order) - for any number of people (10-28 user: crop to the
+    speaker's own zone, not a half, once talk shots hold more than two). None for a close-up."""
+    who = s.get("who") or []
+    if len(who) < 2 or speaker not in who:
+        return None
+    return group_layout(len(who))[who.index(speaker)][0]
+
+
+def _job_speaker_box(L: Path, name: str) -> list | None:
+    """A talk clip's speaker zone from its job (one piece, or a joined line's first piece)."""
+    for j in (L / "out" / f"{name}.json", L / "out" / f"{name}_c0.json"):
+        try:
+            return json.loads(j.read_text()).get("speaker_box")
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = False) -> None:
     """SyncNet on each talk clip against its own voice (on the iGPU), kept beside the clip as <name>.sync.json and
     measured again only when the clip changes; the assembly shifts by it (sync_shift)."""
@@ -2198,10 +2219,19 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
                 continue
         except (OSError, ValueError):
             pass
-        subprocess.run([str(SYNCNET_PY), "run_pipeline.py", "--videofile", str(c), "--reference", n, "--data_dir",
+        v = c
+        bx = _job_speaker_box(L, n)
+        if bx:                  # 10-28 user: SyncNet sees the speaker's own zone only (never a listener's face)
+            work.mkdir(parents=True, exist_ok=True)
+            v = work / f"zone_{n}.mp4"
+            x0, y0, x1, y1 = bx
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(c), "-vf",
+                            f"crop=trunc(iw*{x1 - x0:.4f}/2)*2:trunc(ih*{y1 - y0:.4f}/2)*2:iw*{x0:.4f}:ih*{y0:.4f}",
+                            "-c:v", "libopenh264", "-b:v", "6M", "-c:a", "copy", str(v)], capture_output=True)
+        subprocess.run([str(SYNCNET_PY), "run_pipeline.py", "--videofile", str(v), "--reference", n, "--data_dir",
                         str(work), "--min_track", "25", "--min_face_size", "60", "--overwrite"], cwd=SYNCNET, env=env,
                        capture_output=True)
-        r = subprocess.run([str(SYNCNET_PY), "run_syncnet.py", "--videofile", str(c), "--reference", n, "--data_dir",
+        r = subprocess.run([str(SYNCNET_PY), "run_syncnet.py", "--videofile", str(v), "--reference", n, "--data_dir",
                             str(work)], cwd=SYNCNET, env=env, capture_output=True, text=True)
         out = r.stdout + r.stderr
         offs = [int(x) for x in re.findall(r"AV offset:\s*(-?\d+)", out)]
