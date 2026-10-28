@@ -1027,7 +1027,10 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narra
     try:
         # the director's notes on how each scene opens are evidence of clothes (10-27: its breakdown had "Watson in a
         # nightshirt" for the waking scene while the wardrobe, reading "I", gave him none)
-        nt = (f"The film director's notes on how each scene opens (evidence of what people wear there):\n{notes}\n\n"
+        # 10-28: a re-asked breakdown put Holmes "in a dressing-gown" the text never gives him (Watson: "fully
+        # dressed"), and the wardrobe took it as evidence - the notes are hints, the chapter's words decide
+        nt = (f"The film director's notes on how each scene opens (hints only; the chapter's own words decide - an "
+              f"outfit the chapter does not describe or clearly imply is not an entry):\n{notes}\n\n"
               if notes else "")
         reply = _chat(llm_url, model, WARDROBE_PROMPT.format(notes=nt, people=people, paras=numbered), max_tokens=4000)
     except Exception:

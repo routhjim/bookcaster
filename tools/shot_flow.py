@@ -1220,8 +1220,8 @@ THE CHAPTER, each line [seconds from its start] who: the words:
 Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the people there, also the silent ones"],
 "what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "teller": "the one who tells of it",
 "from": <the second the telling starts>, "to": <the second it ends>}}],
-"opens": "how things stand as it opens, for a painter: each one's clothes, what each holds, postures, the time of
-day and the light, at most 60 words",
+"opens": "how things stand as it opens, for a painter: what each one holds, postures, the time of day and the
+light; their clothes ONLY as the text says them (nothing about clothes the text does not tell), at most 60 words",
 "blocking": "how YOU stage the scene for the camera, kept for all of it: everyone present, left to right as the camera
 sees them, where each one is and their posture (e.g. 'Helen Stoner seated on the left by the fire, Sherlock Holmes
 standing in the centre, Doctor Watson seated on the right'); who talks with whom most; and the lines one of them says
