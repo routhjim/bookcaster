@@ -173,8 +173,10 @@ PASSAGE_MAX = 30.0                  # seconds of narration per director request 
 
 # 10-27 user: "Watson effectively disappears for certain shots... you'd need to zoom in on Holmes more": a one-person
 # talk shot is a true CLOSE-UP, so the other one is simply out of frame - and a large face is more mouth to sync
-TALK_PICTURE = ("a close-up of {who}: head and shoulders filling the frame, nobody else in the picture, turned three-quarters "
-                "toward someone just beside the viewer, mid-word")
+TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame, no one else and no shoulder or head in "
+                "the foreground, face turned three-quarters with the eyes just off the camera, mid-word")
+# (10-28: "turned three-quarters toward someone just beside the viewer" drew that someone - a blurred shoulder in the
+# foreground, an over-the-shoulder two-shot - and 10 close-ups failed the one-person count in all 5 seeds)
 # an exchange (10-24 user: "having only one person in talking shots in the exact same position that the other one was
 # in isn't convincing"; "I don't like that there's only ever one person in each shot"): its first line a two-shot, the
 # replies over the listener's shoulder, each one on the side the two-shot gave them
@@ -1320,8 +1322,9 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
         w, room = s.get("place") or "", s.get("room") or ""
         base = R_.place(w) or re.sub(r"\s*\((inside|outside)\)$", "", w)
         mine = (look.get("_described") or {}).get(base)
-        if not w or not room or base in done or (R_.place_look(w) and mine is None):
-            continue
+        if not w or not room or base in done or R_.place_look(w):
+            continue            # 10-28: described once, kept (rewritten from each run's set sheet, it changed the
+                                # director's passage prompts and his cached answers were asked again)
         done.add(base)
         for k_, v_ in GLOSS.items():        # (the bellows drawn as a lute in the place picture, 10-24)
             room = re.sub(k_, v_, room, count=1, flags=re.I)
@@ -1347,7 +1350,7 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
         # a description this step wrote with older rules is written again (10-24: "a dark blue sword hanging above
         # the door" of Outside Hulda's Forge put the story's sword in every shot there)
         mine = (look.get("_described") or {}).get(base)
-        if not w or base in done or (R_.place_look(w) and mine in (None, ask_k)) or \
+        if not w or base in done or (R_.place_look(w) and (mine in (None, ask_k) or str(mine).startswith("room:"))) or \
                 (not R_.place_look(w) and (vd / "heroes" / f"{slug}.empty").exists()):
             continue
         mid = s["id"].rsplit("_s", 1)[0]
@@ -2122,7 +2125,43 @@ def _plan_sig(book: Path, stem: str) -> str:
     return MF._h(json.dumps([{w: R_.look(w) for w in cast}, [R_.lora(w) for w in cast],
                              stamp(book / "work" / f"{stem}.timeline.json"), stamp(book / "work" / "final" / f"{stem}.mp3"),
                              (book / "pace.txt").read_text().strip() if (book / "pace.txt").exists() else "",
-                             MF._h(Path(__file__).read_text())], sort_keys=True))
+                             _plan_code()], sort_keys=True))
+
+
+PLAN_ROOTS = ("run", "wardrobe", "direct", "place_sheets", "describe_places", "keys_judged", "sheet")
+RENDER_SIDE = {"_render"}       # the render owns its own staleness (key, prompt, seed, frames, voice cut per clip)
+
+
+def _plan_code() -> str:
+    """The code a saved plan came from: what the planning steps reach in this file (functions and the prompts,
+    rules and numbers they read), never the render's (10-28: a fix to the talk stitch changed the file's hash,
+    the night's plan was dropped, the director asked again and 3 hours of clips were rendered a second time)."""
+    import inspect
+    g = globals()
+    out = [inspect.getsource(g[n]) if callable(g[n]) else f"{n}={g[n]!r}" for n in _plan_reach()]
+    return MF._h("\n".join(sorted(out)))
+
+
+def _plan_reach() -> set:
+    """The names of this file the planning steps reach (functions followed through their code, constants kept)."""
+    import types as _t
+    g, seen, todo, keep = globals(), set(), list(PLAN_ROOTS), set()
+    while todo:
+        n = todo.pop()
+        if n in seen or n in RENDER_SIDE or n not in g:
+            continue
+        seen.add(n)
+        v = g[n]
+        if isinstance(v, _t.FunctionType) and v.__module__ == __name__:
+            keep.add(n)
+            codes = [v.__code__]
+            while codes:
+                c = codes.pop()
+                todo += list(c.co_names)
+                codes += [k for k in c.co_consts if isinstance(k, _t.CodeType)]
+        elif isinstance(v, (str, int, float, tuple, list, dict, set, frozenset)):
+            keep.add(n)
+    return keep
 
 def _render(book, stem, es, by, shots, mix, op, fz, log) -> Path:
     """LTX (pipelined) -> takes judged -> the takes sheet -> assembled; the saved plan goes with the finished cut."""
