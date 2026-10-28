@@ -1622,7 +1622,7 @@ def unit_name(book: Path) -> str:
 
 @_runner
 def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_only: bool = False,
-                      guide: str | None = None, flow: str = "mannequin") -> int:
+                      guide: str | None = None, flow: str = "mannequin", render: str | None = None) -> int:
     """The mannequin flow (tools/mannequin_flow.py) over one chapter's stretch, as the book's job: needs the 3D plan
     + stage (the moments' shots and motion); draws the hero images and keys, runs LTX, assembles out/*_mannequin.mp4."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -1650,8 +1650,9 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
         mix = book / "work" / "final" / f"{stem}.mp3"
         if flow == "shots":
             shots_ready(book, stem, log, lambda **k: _set_status(book, **k))
-        out = MF.run(book, stem, t0, t1, None, mix, log, until="keys" if keys_only else None, guide=guide)
-        if not keys_only and (span is None or covers_chapter(book, stem, out)):  # a whole chapter is the chapter's video
+        kw = {"render": tuple(float(x) for x in render.split(":"))} if render and flow == "shots" else {}
+        out = MF.run(book, stem, t0, t1, None, mix, log, until="keys" if keys_only else None, guide=guide, **kw)
+        if not keys_only and not render and (span is None or covers_chapter(book, stem, out)):  # a whole chapter is the chapter's video
             chapter_video(book, stem, out, log, send=span is None)   # a CLI span run is never sent on its own
         _set_status(book, state="done", step=f"{flow} flow finished: {out}", outputs=[str(out)],
                     finished=time.strftime("%Y-%m-%d %H:%M"))
@@ -1702,6 +1703,26 @@ def covers_chapter(book: Path, stem: str, mp4: Path) -> bool:
     mix = book / "work" / "final" / f"{stem}.mp3"
     # (10-25: the Acts cut ends 1.3 s before its mix, the narration's closing silence; 1 s missed it)
     return mix.exists() and audio_seconds(mp4) >= audio_seconds(mix) - max(3.0, 0.02 * audio_seconds(mix))
+
+
+def stale_sheets(book: Path) -> list:
+    """Character and outfit sheets in work/video/refs that no chapter's current looks or wardrobe point to (10-27:
+    the 10-15 'two Watsons' sheets and last night's revolver look still sat there - a trap for any lookup by name
+    pattern). Pointed-to = the sheet paths the chapter plans' own reference and outfit jobs would draw."""
+    from . import video
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import registry as RG
+    vd = book / "work" / "video"
+    refs = vd / "refs"
+    if not refs.exists():
+        return []
+    R, keep = RG.Book(book), set()
+    for pj in vd.glob("[0-9][0-9]_*/plan.json"):
+        plan = json.loads(pj.read_text())
+        st = R.ref_style(pj.parent.name)
+        for j in video.reference_jobs(plan, st, refs) + video.outfit_jobs(plan, st, refs):
+            keep.add(Path(j["path"]).name)
+    return sorted(f for f in refs.glob("*.png") if f.name not in keep)
 
 
 def whole_timeline(book: Path, stem: str, log=print) -> int:
@@ -1958,7 +1979,7 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
               video_only: bool = False, storyboard: bool = False, sfx: bool = False,
               sfx_only: bool = False, flow3d: str | None = None, chapter: str | None = None,
               auto_approve: bool = False, jellyfin: bool = False, keys_only: bool = False,
-              span: str | None = None, guide: str | None = None) -> None:
+              span: str | None = None, guide: str | None = None, render: str | None = None) -> None:
     from . import boxlease
     unit = unit_name(book)
     if _unit_active(unit):
@@ -1995,6 +2016,7 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
         cmd += ["--flow3d", flow3d] + (["--chapter", str(chapter)] if chapter else []) + \
             (["--auto-approve"] if auto_approve else []) + (["--jellyfin"] if jellyfin else []) + \
             (["--keys-only"] if keys_only else []) + (["--span", span] if span else []) + \
+            (["--render", render] if render else []) + \
             (["--guide", guide] if guide else [])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
@@ -2156,6 +2178,8 @@ def main(argv: list[str] | None = None) -> int:
                         "picture per shot (LoRAs + the place, no 3D) -> LTX two-stage for action (two takes), pipelined")
     s.add_argument("--from", dest="t_from", help="mannequin: the stretch's start (seconds or m:ss; default 0)")
     s.add_argument("--to", dest="t_to", help="mannequin: the stretch's end (seconds or m:ss; default the chapter's end)")
+    s.add_argument("--render", default=None, help="shots: direct the whole --from/--to stretch but draw, render and "
+                   "assemble only this window, e.g. 1:06-2:06 (10-27 user: a minute per learning cycle)")
     s.add_argument("--chapter", help="3d: the chapter number (default: every recorded chapter)")
     s.add_argument("--auto-approve", action="store_true", help="3d: the automated QA gates instead of the review")
     s.add_argument("--jellyfin", action="store_true", help="3d: send the finished video to Jellyfin")
@@ -2206,6 +2230,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--replan", action="store_true", help="plan the sampled scenes afresh under the current rules")
     s.add_argument("--clips", action="store_true", help="also animate the sample (action engine)")
     s.add_argument("--chapter", type=int, default=1)
+    s = sub.add_parser("sheets", help="list the character and outfit sheets no current look or outfit points to")
+    s.add_argument("book")
+    s.add_argument("--prune", action="store_true", help="move them to work/video/refs/old/ (kept, never deleted)")
     s = sub.add_parser("look", help="show or change how characters look in the pictures")
     s.add_argument("book")
     s.add_argument("--do", action="append", default=[], metavar="NAME = DESCRIPTION",
@@ -2243,6 +2270,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("_job")
     s.add_argument("book")
     s.add_argument("--span", default=None)
+    s.add_argument("--render", default=None)
     s.add_argument("--level", choices=LEVELS, default="music")
     s.add_argument("--music-only", action="store_true")
     s.add_argument("--video-only", action="store_true")
@@ -2351,8 +2379,13 @@ def main(argv: list[str] | None = None) -> int:
             m_, _, s_ = v.rpartition(":")
             return float(m_ or 0) * 60 + float(s_)
         span = f"{secs(a.t_from, 0.0)}:{secs(a.t_to, 1e9)}"
+        render = None
+        if getattr(a, "render", None):
+            r0, _, r1 = a.render.partition("-")
+            render = f"{secs(r0, 0.0)}:{secs(r1, 1e9)}"
         set_book_flow(d, a.flow)
-        start_job(d, flow3d=a.flow, chapter=a.chapter or "1", span=span, keys_only=a.keys_only, guide=a.guide)
+        start_job(d, flow3d=a.flow, chapter=a.chapter or "1", span=span, keys_only=a.keys_only, guide=a.guide,
+                  render=render)
         print(f"making the {a.flow}-flow {'keyframes (stops before the video; review sheet in out/)' if a.keys_only else 'video'} "
               f"of {d.name} ({a.t_from or '0'}-{a.t_to or 'end'}) in the background — `bookcaster status {d.name}`")
     elif a.cmd == "video" and a.flow == "3d":
@@ -2496,7 +2529,7 @@ def main(argv: list[str] | None = None) -> int:
         def job():
             if a.flow3d in ("mannequin", "shots"):
                 return run_mannequin_job(Path(a.book), a.chapter, a.span, keys_only=a.keys_only, guide=a.guide,
-                                         flow=a.flow3d)
+                                         flow=a.flow3d, render=getattr(a, "render", None))
             if a.flow3d:
                 return run_flow3d_job(Path(a.book), a.flow3d, a.chapter, auto=a.auto_approve, jellyfin=a.jellyfin,
                                       keys_only=a.keys_only)
@@ -2533,6 +2566,18 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         with foreground(d, "keyframes"):
             print(keyframes_sample(d, a.sample, a.chapter, a.replan, a.clips))
+    elif a.cmd == "sheets":
+        d = book_dir(a.book)
+        old = stale_sheets(d)
+        print(f"{len(old)} sheet(s) no current look or outfit points to" + (":" if old else ""))
+        for f in old:
+            print(f"  {f.name}")
+        if a.prune and old:
+            dst = d / "work" / "video" / "refs" / "old"
+            dst.mkdir(parents=True, exist_ok=True)
+            for f in old:
+                f.rename(dst / f.name)
+            print(f"moved to {dst}")
     elif a.cmd == "look":
         d = book_dir(a.book)
         if a.swap:
