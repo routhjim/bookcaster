@@ -49,6 +49,7 @@ TALK_PIECE = 97                     # talk lines in 3-4 s pieces (73-97 frames),
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
 # every seam and an mp4 round trip per piece (sharpness 1.4-5x and drift from the key growing piece after piece)
 TALK_CHAIN_OVERLAP = 1
+TALK_PRE = 12                       # frames of silence before a line (0.5 s): the mouth is live at the first word
 KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
 GUIDER = json.loads(os.environ.get("SHOTS_GUIDER", "{\"modality_scale\": 1.0}"))   # the audio-video pass off (we keep our own sound): 105 -> 64 s a 3 s clip with 2 in flight, same picture by eye (10-23)
@@ -1787,12 +1788,19 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         n = _frames(min(s["dur"], SHOT_MAX + 0.5))
         if s["kind"] == "talk":
             e = dict(byid[mid])
-            n_all = max(st + nn for st, nn in e["chunks"])
-            e["chunks"] = R.talk_chunks(n_all, R.audio_env(Path(e["wav"]), n_all + TALK_PIECE), TALK_PIECE,
+            # 10-28 user: "Holmes lips do not move at all in the Farintosh line" - a line spoken from the clip's
+            # first frame got lips ~0.4 s late (closed for 10 frames, then moving into the silence after). Each talk
+            # clip now starts TALK_PRE frames of silence early, the mouth live when the words come; the assembly
+            # drops them (talk_pre)
+            lead = L / "audio" / f"{mid}_lead.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", e["wav"], "-af",
+                            f"adelay={TALK_PRE / 24 * 1000:.0f}:all=1", str(lead)], check=True)
+            n_all = max(st + nn for st, nn in e["chunks"]) + TALK_PRE
+            e["chunks"] = R.talk_chunks(n_all, R.audio_env(lead, n_all + TALK_PIECE), TALK_PIECE,
                                         TALK_CHAIN_OVERLAP)
             pad = L / "audio" / f"{mid}_pad.wav"
             n_all = max(st + nn for st, nn in e["chunks"])
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", e["wav"], "-ac", "2", "-ar", "48000", "-af",
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lead), "-ac", "2", "-ar", "48000", "-af",
                             f"apad=whole_dur={n_all / 24:.4f}", str(pad)], check=True)
             p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
             emb = f"t_{mid}_{MF._h(p_)}"
@@ -1804,7 +1812,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
                              "audio_src": e["wav"],
-                             "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn],
+                             "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
                              "images": [dict(img[0], strength=0.8)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
                     pst, pn = e["chunks"][k - 1]    # the frame of the piece before where their overlap begins
@@ -2088,6 +2096,17 @@ SYNC_MAX_SHIFT = 12             # 0.3-0.5 s, a confident shift was 1-2 frames - 
 SYNC_VSHIFT = 15                # run_syncnet.py's search range (+-15 frames at 25 fps)
 
 
+def talk_pre(clip: Path) -> int:
+    """The silent lead-in frames a talk clip was rendered with (its job's "pre"; a stitched line's first piece's);
+    0 for clips from before the lead-in."""
+    for j in (clip.with_suffix(".json"), clip.with_name(clip.stem + "_c0.json")):
+        try:
+            return int(json.loads(j.read_text()).get("pre") or 0)
+        except (OSError, ValueError):
+            continue
+    return 0
+
+
 def sync_shift(clip: Path) -> int:
     """The frames (24 fps) to show a talk clip earlier (+) or later (-) so its lips meet its voice: SyncNet's
     measured offset when it is confident, else 0."""
@@ -2206,11 +2225,13 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
             sg = L / f"seg_{s['id']}.mp4"
             if c.exists():
                 src, vf = ["-i", str(c)], "tpad=stop_mode=clone:stop_duration=120"
-                sh = sync_shift(c) if s.get("kind") == "talk" else 0
-                if sh > 0:              # 10-28 user ("version 3 is definitely an improvement"): the lips ran late
-                    src = ["-ss", f"{sh / FPS:.4f}", "-i", str(c)]                   # -> shown sh frames earlier
-                elif sh < 0:            # the lips ran early -> the first frame held -sh frames
-                    vf = f"tpad=start_mode=clone:start_duration={-sh / FPS:.4f}," + vf
+                # a talk clip: its silent lead-in dropped (talk_pre), and SyncNet's shift (10-28 user: "version 3
+                # is definitely an improvement") trims a little more (lips late) or less (lips early) of it
+                st_ = talk_pre(c) + sync_shift(c) if s.get("kind") == "talk" else 0
+                if st_ > 0:
+                    src = ["-ss", f"{st_ / FPS:.4f}", "-i", str(c)]
+                elif st_ < 0:           # (a clip from before the lead-in, lips early: its first frame held)
+                    vf = f"tpad=start_mode=clone:start_duration={-st_ / FPS:.4f}," + vf
             else:
                 log(f"!!! {s['id']}: no clip: " + ("its key held" if key.exists() else "black"))
                 src = ["-loop", "1", "-i", str(key)] if key.exists() else \
