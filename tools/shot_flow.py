@@ -43,7 +43,13 @@ RETAKE = 1042
 QUIET_SEED = 7                      # a quiet shot's first take (its retake: RETAKE)
 PP_POOL = True                      # activations between the cards through reused pinned buffers (runner --pp-pool)
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
-TALK_PIECE = 97                     # talk lines in 3-4 s pieces (73-97 frames), chained (10-24 user; was <= 5 s)
+# 10-28 talk A/B (the 15 s window, SyncNet + the user's eye): 8 s pieces + 20 steps + STG off = 44% less GPU time
+# and lip sync 4.9 -> 9.0 on a 6.5 s close-up ("the close up is much better"); the long piece pushed the camera in on a
+# two-shot until its last frame was lightly pinned (TALK_LOCK 0.3: framing held, the cheapest of the three tried)
+TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-24: 97; 10-28 A/B: 193)
+TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no measured lip-sync loss)
+TALK_GUIDER = {"stg_scale": 0.0}    # STG off for talk: one of the four guidance passes (as LTX's own HQ preset)
+TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned to its first: the framing holds
 # 10-26 user ("Peter's sermon just gets further and further out ... the last frame from one 3s clip should be the
 # starting frame for the next"): each piece starts ON the previous piece's last frame (lossless, from the render, not
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
@@ -1922,6 +1928,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                              "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
+                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": TALK_LOCK,
                              "images": [dict(img[0], strength=0.8)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
                     pst, pn = e["chunks"][k - 1]    # the frame of the piece before where their overlap begins
@@ -1957,7 +1964,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             old = json.loads(rj.read_text())
             stale = stale or old.get("prompt") != j["prompt"] or old.get("seed") != j["seed"] or \
                 old.get("frames") != j["frames"] or old.get("chain_from") != j.get("chain_from") or \
-                old.get("audio_src") != j.get("audio_src")         # 10-27: a new voice cut is a new clip
+                old.get("audio_src") != j.get("audio_src") or \
+                any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end"))
+            # (10-27: a new voice cut is a new clip; 10-28: so are other render settings)
         if stale:
             c.unlink()
             if not re.search(r"_t\d+$", j["name"]):    # (10-27 audit: an old _t2 or .judged outlived a new take)
