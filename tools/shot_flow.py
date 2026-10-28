@@ -438,7 +438,9 @@ def _faults(a: dict, cast: list, sec: float) -> list:
             out.append(f"shot {i}'s action is over 50 words")
         beats = _beats(act)
         dur = float(s.get("dur") or 0)
-        if dur and beats > max(1, round(dur / 2.0)):     # (10-27: turn, walk, unlock, take out - 4 beats in 3 s)
+        if dur and beats > max(1, round(dur / 1.25)):    # (10-27: turn, walk, unlock, take out - 4 beats in 3 s;
+                                                         # 10-28: two small gestures in 2 s are fine, the director
+                                                         # couldn't split those and the passage was asked 3 times)
             out.append(f"shot {i} has {beats} actions in {dur:.1f} s: about one per 2 s; split it into shots")
     tot = sum(float(s.get("dur") or 0) for s in shots)
     if abs(tot - sec) > max(1.0, 0.15 * sec):
@@ -1443,8 +1445,9 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         cont, setting = "", (f" Behind the face, softly out of focus, a glimpse of {place}." if place else "")
         held = set((s.get("pose_held") or {}).values())     # 10-28 user: "Holmes is sitting then standing" - with
         if held == {"stand"}:                               # the posture word gone, an armchair drawn behind the
-            setting += " Standing: no chair back, cushion or headboard behind the shoulders."   # shoulders sat him
-        elif held and held <= {"sit"}:
+            setting += (" Standing upright, seen from the chest up; behind the shoulders only the bare wall, curtains "
+                        "and window, at standing height.")  # shoulders sat him (10-28: "no chair back" drew one in all
+        elif held and held <= {"sit"}:                      # 5 seeds - a named thing is drawn; say what IS there)
             setting += " Seated: the top of a chair back behind the shoulders."
     else:
         setting = SETTING.format(place=place) if place else ""
