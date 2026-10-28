@@ -196,8 +196,9 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # SyncNet read ~1 at 1152x640 and at 1408x768 alike (resolution: +17% cost, no gain). Staged as film does it: both
 # angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
-            "in the picture, an arm's length apart; {who} turned three-quarters toward the viewer, face and mouth in "
-            "full view, mid-word; {listener} in profile, head turned to look at {who}, listening")
+            "in the picture, an arm's length apart; {who} angled toward {listener} and turned three-quarters to the "
+            "viewer, face and mouth in full view, mid-word; {listener} in profile, head turned to look at {who}, "
+            "listening")       # (10-28: "toward the viewer" alone turned Holmes away from Watson)
 # (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
 # an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
 TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
