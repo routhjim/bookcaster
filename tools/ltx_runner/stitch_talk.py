@@ -3,12 +3,14 @@ and print a seam score (mean abs diff across the seam vs the clip's typical fram
 import json, subprocess, sys
 from collections import defaultdict
 import av, numpy as np, torch
-sys.argv, (jobs_f, out) = sys.argv[:1], sys.argv[1:3]
+args = sys.argv[1:]
+sys.argv, (jobs_f, out) = sys.argv[:1], args[:2]
+only = set(args[2].split(",")) if len(args) > 2 and args[2] else None    # 10-28: one line as its pieces land
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 from ltx_split import save_mp4
 lines = defaultdict(list)
 for j in json.load(open(jobs_f)):
-    if len(j["chunk"]) == 4 and j["chunk"][1] > 1:
+    if len(j["chunk"]) == 4 and j["chunk"][1] > 1 and (only is None or j["line"] in only):
         lines[j["line"]].append(j)
 for line, cs in lines.items():
     cs.sort(key=lambda j: j["chunk"][0])

@@ -39,16 +39,18 @@ S.MF._dress = lambda *a, **k: {}
 kp = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": ["Doctor Watson"], "kind": "talk",
                    "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": "stand"},
                    "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
-check("a one-person talk key: no posture, the room only soft behind the face (10-27: medium shots by an empty bed)",
-      ", standing" not in kp and "fills the whole picture" not in kp and "softly out of focus" in kp, kp)
+check("a one-person talk key: the room only soft behind the face, no ', standing' clause (10-27: medium shots)",
+      "Watson, standing" not in kp and "fills the whole picture" not in kp and "softly out of focus" in kp, kp)
 check("a one-person talk key gets no wide room reference", S.closeup({"kind": "talk", "who": ["A"]})
       and not S.closeup({"kind": "talk", "who": ["A", "B"]}) and "hero = None if closeup(s)" in Path(S.__file__).read_text())
-check("10-28: a standing close-up says so through what IS behind him (naming a chair, even 'no chair', drew one)",
-      "Standing upright" in kp and "chair" not in kp.split("Standing upright", 1)[1].split(".", 2)[0] and "Seated" not in kp, kp)
+check("10-28 A/B: a standing close-up has the posture in its subject and no room name (0 of 6 seeds with a chair)",
+      "alone, standing upright:" in kp and "Baker Street Bedroom" not in kp and "a papered wall and a window" in kp
+      and "chair" not in kp, kp)
 kp2 = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": ["Doctor Watson"], "kind": "talk",
                     "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": "sit"},
                     "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
-check("10-28: a seated close-up shows the chair back", "top of a chair back" in kp2 and "Standing" not in kp2, kp2)
+check("10-28: a seated close-up shows the chair back", "top of a chair back" in kp2 and "alone, seated:" in kp2
+      and "standing" not in kp2, kp2)
 q2, _ = S._key_questions(cx, {"id": "talk-000964_s0", "who": ["Doctor Watson"], "kind": "talk", "picture": "",
                               "framing": "close", "pose_held": {"Doctor Watson": "stand"}})
 check("10-28: a standing close-up is checked for a chair behind him (answer must be no)",
@@ -71,5 +73,9 @@ f = S._faults({"shots": [{"who": [], "picture": "p", "dur": 2.5, "action": "He t
 check("10-28: three verbs in one sentence in 2.5 s are sent back", any("3 actions in 2.5 s" in x for x in f), f)
 f = S._faults({"shots": [{"who": [], "picture": "p", "dur": 2.0, "action": "He opens the case-book and flips through the pages."}]}, [], 2.0)
 check("10-28: two small gestures in 2 s are fine", not any("actions in" in x for x in f), f)
+u = S.uncarried("wearing His usual dark frock coat, waistcoat, and trousers, topped with a black top-hat")
+check("10-28: no dangling 'topped' and no 'His usual' in a look", "topped" not in u and "usual" not in u.lower()
+      and u.endswith("trousers"), u)
+check("10-28: 'topped with fur' (no article) stays", "topped with fur" in S.uncarried("wearing a coat topped with fur"))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
