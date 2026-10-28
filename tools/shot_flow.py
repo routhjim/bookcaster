@@ -91,8 +91,11 @@ Rules:
 - Every SPOKEN line is covered by "talk" shots of the one who says it: their lips are synced to the voice. Nobody
   speaks in any other shot. A talk shot starts when its line starts and lasts at most 8 seconds: a longer line cuts
   to a close reaction of the listener and back to the speaker. Give "speaker", "listener" (the one spoken to, or "")
-  and "framing": "two" (both in the picture, waist up, facing each other: the first line of an exchange),
-  "over-the-shoulder" (a reply in a running exchange) or "close". A talk shot is always where the speaker really is,
+  and "framing": "two" (both in the picture, waist up: the first line of an exchange - only two who stand next to each
+  other in the scene's BLOCKING), "group" (everyone in the scene in the picture, in the blocking's order: a line to
+  someone other than the one they have been talking with, or an exchange of three or more), "over-the-shoulder" (a
+  reply in a running exchange) or "close". Keep the BLOCKING: nobody appears in a place someone else stood in, and
+  everyone stays on their side. A talk shot is always where the speaker really is,
   never in a place someone describes. No picture or action words.
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
   where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
@@ -196,6 +199,9 @@ TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up
             "full view, mid-word; {listener} turned toward {who}, listening")
 # (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
 # an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
+TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
+              "three-quarters toward the viewer, face and mouth in full view, mid-word; {listener} turned toward {who}, "
+              "listening; {others} looking at {who}")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -873,6 +879,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                      f"{home}, with {', '.join(sc_['who']) or 'nobody'}. The whole scene, for context (show only what "
                      f"THIS passage tells, never what comes later in it): {sc_.get('what', '')}"
                      + "{CUTS}"
+                     + (f"\nTHE BLOCKING of this scene (yours, from the scene breakdown; every shot keeps it - the same "
+                        f"people in the same places and order, unless a shot shows someone move): {sc_['blocking']}"
+                        if sc_.get("blocking") else "")
                      + (f"\nThe scene after it (not this one): at {nxt['place']}: {nxt.get('what', '')}" if nxt else ""))
         lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
         quotes = [(max(0.0, x0 - pa), min(sec, x1 - pa), _who_full(spk, chars)) for x0, x1, spk, k, _ in lines_
@@ -1054,6 +1063,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             pz = last_pose.get(w, "")
             return f"{w} {POSE_VERB[pz]}{' ' + last_at[w] if last_at.get(w) else ''}" if pz else ""
 
+        sc_who = [w for w in (cast_of(v, cast) for v in sc_.get("who") or []) if w]   # everyone in the scene
         for x0, x, b in cuts_:
             t, d = pa + x, b - x
             if d < 0.4:
@@ -1092,7 +1102,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         side = "left" if lr[0] == who else "right"
                         # (10-27 user: the seated/lying variant without "waist up, close to the viewer" broke the lip
                         # sync - one two-shot template again, the one that worked)
-                        if pair != {who, lis} or fr.startswith("two"):
+                        group = [w for w in (sc_who or []) if w in cast and w not in crs]
+                        if fr.startswith("group") and len(group) >= 3 and who in group:
+                            for w in group:     # (10-28 user: Holmes's aside to Watson as a three-shot, Watson never
+                                screen.setdefault(w, max(screen.values(), default=-1) + 1)   # in Helen's place)
+                            gr = sorted(group, key=lambda w: screen[w])
+                            lab = {w: lb for w, (_, lb) in zip(gr, group_layout(len(gr)))}
+                            sh.update(who=gr, listener=lis, picture=TALK_GROUP.format(
+                                people=", ".join(f"{w} {lab[w]}" for w in gr), who=who, listener=lis,
+                                others=" and ".join(w for w in gr if w not in (who, lis)) or "the others"))
+                        elif pair != {who, lis} or fr.startswith("two"):
                             sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
                                                                                    listener=lis))
                         else:
@@ -1201,7 +1220,13 @@ Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the 
 "what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "teller": "the one who tells of it",
 "from": <the second the telling starts>, "to": <the second it ends>}}],
 "opens": "how things stand as it opens, for a painter: each one's clothes, what each holds, postures, the time of
-day and the light, at most 60 words"}}]}}
+day and the light, at most 60 words",
+"blocking": "how YOU stage the scene for the camera, kept for all of it: everyone present, left to right as the camera
+sees them, where each one is and their posture (e.g. 'Helen Stoner seated on the left by the fire, Sherlock Holmes
+standing in the centre, Doctor Watson seated on the right'); who talks with whom most; and the lines one of them says
+to someone else, which you will shoot with everyone in the picture. At most 70 words"}}]}}
+Block each scene like a stage director: count everyone present (also the silent ones), give them their places, and
+keep those places - nobody changes side or stands in someone else's place unless the story moves them.
 The first scene starts at 0.0; each later one after the one before; scenes in story order."""
 
 
@@ -1612,8 +1637,12 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     # (10-28: "Sherlock Holmes, standing, ..." here made LTX pull a close-up back to the waist to show the posture -
     # SyncNet 9.0 -> 1.0; the key carries the posture and TALK_LOCK holds the framing, so the talk words name none)
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
-        lst = f" {other} listens with a closed mouth."
-    pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
+        rest = [w for w in s.get("who") or [] if w != who]
+        lst = (f" {other} listens with a closed mouth." if len(rest) == 1 else
+               f" {', '.join(rest[:-1])} and {rest[-1]} listen with closed mouths.")    # (a group: 10-28)
+    n_ = len(s.get("who") or [])
+    pos = (f" on the {'left' if s['who'][0] == who else 'right'}" if n_ == 2 else
+           f" {group_layout(n_)[s['who'].index(who)][1]}" if n_ > 2 and who in s["who"] else "")
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
 
