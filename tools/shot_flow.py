@@ -633,6 +633,15 @@ def _who_full(spk: str, names: list) -> str:
         (w for w in names if re.search(rf"\b{re.escape(spk)}\b", w, re.I)), spk)
 
 
+def _no_place_words(text, place=None) -> str:
+    """A picture's words without its place's name or a room named for what is done there ("sitting room", "living
+    room", "drawing room", "waiting room", "dining room") - so a posture check reads the people only."""
+    t = str(text or "")
+    for w in filter(None, [place, re.sub(r"\s*\((inside|outside)\)$", "", str(place or ""))]):
+        t = re.sub(re.escape(w), " ", t, flags=re.I)
+    return re.sub(r"\b(sitting|living|drawing|waiting|dining|standing)[- ]rooms?\b", " ", t, flags=re.I)
+
+
 def _shot_faults(a: dict, cast: list, sec: float, lines: list) -> list:
     """The director's passage answer against the rules: starts in order, lengths, talk shots on their own speaker's
     line, and the one-shot checks (_faults) on the rest."""
@@ -675,7 +684,8 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list) -> list:
                 out.append(f"shot {i}'s action moves the camera ('{CAMERA.search(s['action']).group(0)}'): only the "
                            "people and things move")
             have = {pose_cat(v) for v in (s.get("pose") or {}).values()} - {""}
-            said = {c for c, rx in POSE_CAT if rx.search(str(s.get("picture", "")))} & {"sit", "stand", "lie"}
+            said = {c for c, rx in POSE_CAT if rx.search(_no_place_words(s.get("picture", ""), s.get("place")))} & \
+                {"sit", "stand", "lie"}     # (10-28: "Baker Street Sitting Room" read as someone sitting, 3 asks)
             if s.get("kind") != "talk" and have and said - have:   # 10-27: "Holmes stands by the desk", pose sitting
                 out.append(f"shot {i}'s picture has someone {POSE_WORDS[sorted(said - have)[0]].split()[0]} but its "
                            f"\"pose\" has nobody so: the picture shows each one in their pose")
@@ -1821,7 +1831,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                              "seed": (int((sd / mid / s["id"] / "talk_seed").read_text())
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
-                             "audio_src": e["wav"],
+                             "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
                              "images": [dict(img[0], strength=0.8)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
@@ -1865,7 +1875,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 for x in (L / "out" / f"{j['name']}_t2.mp4", L / "out" / f"{j['name']}.judged"):
                     x.unlink(missing_ok=True)
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
-                  ("quiet_jobs", quiet)):
+                  ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
         (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
     from types import SimpleNamespace
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
@@ -1894,33 +1904,42 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         R.encode_chunked(cxl, L / "enc_dev.json", "enc_dev", ["--dev"])
     if enc_dist:
         R.encode_chunked(cxl, L / "enc_dist.json", "enc_dist", [])
-    if two:
-        # the take judge runs on the iGPU while the XTXs render (10-24 user: batch the re-do work, interleave the
-        # checks): each first take is judged as it lands, a faulted one's retake joins the loaded runner's queue
+    if two or talk:
+        # 10-28 user: action and talk in ONE hold (the same dev DiT, loaded once). On the iGPU meanwhile: each action
+        # take judged as it lands (10-24: a faulted one's retake joins the loaded runner's queue), and each talk shot
+        # measured by SyncNet and body-checked as it lands (a faulted one-piece talk shot retaken the same way)
         more, done = L / "two_more.json", L / "two_more.done"
         more.write_text("[]")
         done.unlink(missing_ok=True)
         stop = threading.Event()
-        th = threading.Thread(target=_judge_as_they_land, args=(L / "out", two, more, done, stop, log), daemon=True)
-        th.start()
+        ths = []
+        if two:
+            ths.append(threading.Thread(target=_judge_as_they_land, daemon=True,
+                                        args=(L / "out", two, more, L / "two_more.adone", stop, log)))
+        if talk:
+            ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
+                                        args=(book, R, L, talk, stop, log, True)))
+        for th in ths:
+            th.start()
+
+        def closer():                   # no more retakes once every checker is through its first takes
+            for th in ths:
+                th.join()
+            done.write_text("done")
+        tc = threading.Thread(target=closer, daemon=True)
+        tc.start()
+        kind = "two_talk" if two and talk else "two" if two else "talk"
         try:
-            gen("two", two, ["--ti2v", "--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
-                F._pp_split(sd, "ti2v", 24))
+            gen(kind, two + talk, ["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk) +
+                ["--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
+                F._pp_split(sd, "a2vid" if talk else "ti2v", 25 if talk else 24))
         finally:
             stop.set()
-            th.join(60)
-    if talk:
-        # 10-28 user: SyncNet on the iGPU as the XTXs' talk clips land (a line joined when its last piece does)
-        stop = threading.Event()
-        th = threading.Thread(target=_sync_as_they_land, args=(book, R, L, talk, stop, log), daemon=True)
-        th.start()
-        try:
-            gen("talk", talk, ["--a2vid", "--fa-amd", "--blaslt"], F._pp_split(sd, "a2vid", 25))
-        finally:
-            stop.set()
-            th.join(600)
-        _stitch_talk(book, R, L, talk, log)             # what the thread didn't get to (cached: seconds)
-        _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
+            for th in ths:
+                th.join(600)
+        if talk:
+            _stitch_talk(book, R, L, talk, log)             # what the thread didn't get to (cached: seconds)
+            _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
@@ -2183,9 +2202,11 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
     shutil.rmtree(work, ignore_errors=True)
 
 
-def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print) -> None:
+def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, check: bool = False) -> None:
     """While the talk clips render on the XTXs: each finished shot (a one-piece clip, or a line whose pieces are all
-    there, joined first) is measured by SyncNet on the iGPU at once, so nothing waits for it after the render."""
+    there, joined first) is measured by SyncNet on the iGPU at once, so nothing waits for it after the render; and
+    body-checked like action and quiet clips (10-28 user: talk clips had no clip check) - a fault is a counted defect
+    (a job problem) to remove at its cause, not a retake (lean: fewer defects, not more catching)."""
     shots = {}
     for j in talk:
         shots.setdefault(j["name"].rsplit("_c", 1)[0] if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1
@@ -2202,6 +2223,13 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print) -> N
                 if len(shots[n]) > 1:
                     _stitch_talk(book, R, L, talk, log, only={n}, quiet=True)
                 _sync_offsets(book, L, [n], log, quiet=True)
+                c = L / "out" / f"{n}.mp4"
+                if not check or not c.exists():
+                    continue
+                fa = MF.fight_clip_ok(c, shots[n][0].get("people"))
+                (L / "out" / f"{n}.judged").write_text(json.dumps({"take1": fa}))
+                if fa:                  # lean (10-28 user): counted as a defect to fix upstream, not re-rendered
+                    _problem(book, log, f"{n}: talk clip defect {fa}")
     except Exception as e:                  # noqa: BLE001  (the render goes on; the pass after it catches up)
         log(f"lip sync as clips land stopped: {e!r}")
 

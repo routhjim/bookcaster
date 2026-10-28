@@ -1034,11 +1034,16 @@ def cmd_gen(args, jobs):
                                       audio_vae_path=AVAE, duration_head_path=DUR)
         dlora = LoraPathStrengthAndSDOps(DLORA, args.dlora_strength, LTXV_LORA_COMFY_RENAMING_MAP)
 
-    def make_pipe(dev):
-        if ti2v:
+    # 10-28 user: action (--ti2v) and talk (--a2vid) in ONE hold - the same dev DiT loaded once, both pipelines built
+    # over it; each job takes the route its fields say (a talk job has "audio")
+    mixed = a2v and ti2v
+
+    def make_pipe(dev, kind=None):
+        kind = kind or ("a2vid" if a2v else "ti2v" if ti2v else None)
+        if kind == "ti2v":
             return TI2VidTwoStagesPipeline(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
                                            loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
-        if a2v:
+        if kind == "a2vid":
             return A2VidPipelineTwoStage(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
                                          loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
         if ic:
@@ -1181,13 +1186,18 @@ def cmd_gen(args, jobs):
             p.video_decoder = RemoteDecoder(p.video_decoder, pp, lambda: lstate)
         return p
 
-    lanes = [(prepare(pipe, D0), D0)]
+    def lane_pipes(dev, first=None):
+        if not mixed:
+            return prepare(first or make_pipe(dev)[0], dev)
+        return {"a2vid": prepare(first or make_pipe(dev, "a2vid")[0], dev), "ti2v": prepare(make_pipe(dev, "ti2v")[0], dev)}
+
+    lanes = [(lane_pipes(D0, pipe), D0)]
     if args.lanes >= 2 and pp:
         for _ in range(args.lanes - 1):   # every lane drives cuda:0; process B serves cuda:1 (FIFO over lanes)
-            lanes.append((prepare(make_pipe(D0)[0], D0), D0))
+            lanes.append((lane_pipes(D0), D0))
     elif args.lanes == 2:
-        lanes.append((prepare(make_pipe(D1)[0], D1), D1))
-    if args.debug:
+        lanes.append((lane_pipes(D1), D1))
+    if args.debug and not mixed:
         for i, (lp, _d) in enumerate(lanes):
             install_debug(lp, x0 if i == 0 else torch.nn.Module(), Path(args.out) / "dbg", name_fn=lambda: lstate.name)
     out_dir = Path(args.out)
@@ -1208,6 +1218,12 @@ def cmd_gen(args, jobs):
     t_all = time.time()
 
     def run_job(p, dev, j):
+        if isinstance(p, dict):             # mixed hold: the job's route
+            kind = "a2vid" if j.get("audio") else "ti2v"
+            p = p[kind]
+        else:
+            kind = "a2vid" if a2v else "ti2v" if ti2v else None
+        j_a2v, j_ti2v = kind == "a2vid", kind == "ti2v"
         mp4 = out_dir / f"{j['name']}.mp4"
         lstate.name = j.get("emb", j["name"])
         lstate.dcalls = 0
@@ -1232,14 +1248,14 @@ def cmd_gen(args, jobs):
         kw = dict(prompt=j["prompt"], seed=j.get("seed", 42), height=j["height"], width=j["width"],
                   frame_rate=j.get("fps", 24), images=imgs, num_frames=j.get("frames"))
         ctl = j.get("control")
-        if a2v:
+        if j_a2v:
             lstate.job_has_control = True  # = "LoRA allowed": distilled LoRA on in stage 2 only
             from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT
             kw.update(negative_prompt=DEFAULT_NEGATIVE_PROMPT + j.get("neg_extra", ""), num_inference_steps=j.get("steps", a2v_params.num_inference_steps),
                       video_guider_params=dataclasses.replace(a2v_params.video_guider_params, **j.get("guider", {})), audio_path=stereo_audio(j["audio"], out_dir),
                       audio_start_time=j.get("audio_start", 0.0))
             kw["num_frames"] = j.get("frames")
-        elif ti2v:
+        elif j_ti2v:
             lstate.job_has_control = True  # = "LoRA allowed": distilled LoRA on in stage 2 only
             from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT
             kw.update(negative_prompt=DEFAULT_NEGATIVE_PROMPT + j.get("neg_extra", ""),
@@ -1282,7 +1298,7 @@ def cmd_gen(args, jobs):
                                   "shape": list(frames.shape)}
             (out_dir / f"{j['name']}.json").write_text(json.dumps({**j, **timings[j["name"]]}, indent=1))
         tm = tm_snapshot()
-        rec = {"job": j["name"], "route": "a2vid" if a2v else "ti2v" if ti2v else ("ic" if ic else "distilled"), "pp": bool(pp),
+        rec = {"job": j["name"], "route": kind or ("ic" if ic else "distilled"), "pp": bool(pp),
                "lanes": args.lanes, "split": split, "w": j["width"], "h": j["height"], "frames": int(frames.shape[0]),
                "dit_calls": lstate.dcalls, "wall_s": round(t_gen, 2), **tm}
         if pp:  # card A's non-DiT busy = the job's time on card A minus its DiT front and copies
