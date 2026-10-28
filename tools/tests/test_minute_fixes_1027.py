@@ -17,7 +17,7 @@ f = S._faults({"shots": [{"who": [], "picture": "p", "dur": 3.0, "action": "He t
 check("four beats in 3 s are sent back (about one per 2 s)", any("actions in 3.0 s" in x for x in f), f)
 f = S._faults({"shots": [{"who": [], "picture": "p", "dur": 3.0, "action": "He unlocks the drawer and takes out the book."}]}, [], 3.0)
 check("one beat in 3 s is fine", not any("actions in" in x for x in f), f)
-check("a one-person talk picture is a close-up", "close-up" in S.TALK_PICTURE and "nobody else" in S.TALK_PICTURE)
+check("a one-person talk picture is a close-up", "close-up" in S.TALK_PICTURE and "no one else" in S.TALK_PICTURE)
 check("one two-shot template (the seated variant broke the lip sync, 10-27)", not hasattr(S, "TALK_TWO_HELD")
       and "close to the viewer" in S.TALK_TWO)
 cx = fakebook.book({"Doctor Watson": "a man of about 35, wearing a tweed jacket"}, loras="all")
