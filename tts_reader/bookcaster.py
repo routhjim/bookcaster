@@ -2382,7 +2382,12 @@ def main(argv: list[str] | None = None) -> int:
         render = None
         if getattr(a, "render", None):
             r0, _, r1 = a.render.partition("-")
-            render = f"{secs(r0, 0.0)}:{secs(r1, 1e9)}"
+            w0, w1 = secs(r0, 0.0), secs(r1, 1e9)
+            f0, f1 = secs(a.t_from, 0.0), secs(a.t_to, 1e9)
+            if not r1 or not (f0 <= w0 < w1 <= f1):      # 10-28: "288.4:303.4" read as 288 min, 0 shots, a crash
+                sys.exit(f"--render {a.render!r}: give START-END inside the --from/--to stretch "
+                         f"({f0:g}-{f1:g} s), e.g. 1:06-2:06 or 288.4-303.4")
+            render = f"{w0}:{w1}"
         set_book_flow(d, a.flow)
         start_job(d, flow3d=a.flow, chapter=a.chapter or "1", span=span, keys_only=a.keys_only, guide=a.guide,
                   render=render)
