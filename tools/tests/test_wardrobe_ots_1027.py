@@ -49,5 +49,19 @@ video._chat = _chat0
 check("the wardrobe reads the director's scene-opening notes as evidence (10-27: 'Watson in a nightshirt')",
       "Watson in a nightshirt" in seen["q"] and seen["q"].index("director's notes") < seen["q"].index("People:"))
 check("new scene notes re-plan the wardrobe", video.wardrobe_inputs_key(p1, "c", "", "a") != video.wardrobe_inputs_key(p1, "c", "", "b"))
+# 10-28: a re-asked breakdown (new scene notes) does not re-plan the wardrobe; one keyed with notes is kept, re-keyed
+from tts_reader import video as V2
+pl = {"look": {"characters": {"Peter": "a man, wearing a coat"}}, "wardrobe": {"Peter": [{"from": 0, "id": "coat", "dress": "a coat"}]}}
+pl["wardrobe_k"] = V2.wardrobe_inputs_key(pl, "chapter one", "", "notes A")
+asked = []
+V2.plan_wardrobe = lambda *a, **k: asked.append(1) or {}
+got = V2.ensure_wardrobe(pl, "chapter one", "", "", log=lambda *a: None, notes="notes A")
+check("10-28: a wardrobe keyed with the notes is kept and re-keyed, not planned again",
+      got and not asked and pl["wardrobe_k"] == V2.wardrobe_inputs_key(pl, "chapter one") and "Peter" in pl["wardrobe"])
+got = V2.ensure_wardrobe(pl, "chapter one", "", "", log=lambda *a: None, notes="notes B (a re-asked breakdown)")
+check("10-28: new scene notes alone don't re-plan it", not got and not asked)
+V2.ensure_wardrobe(pl, "chapter one CHANGED", "", "", log=lambda *a: None, notes="notes B")
+check("10-28: a changed chapter does", asked == [1])
+
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

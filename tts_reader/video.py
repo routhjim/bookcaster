@@ -1077,10 +1077,17 @@ def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print, 
                     notes: str = "") -> bool:
     """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
     worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
-    words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes."""
-    k = wardrobe_inputs_key(plan, text, narrator, notes)
+    words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes.
+    10-28: keyed on the rules, looks, chapter and narrator - NOT the director's scene notes (they are read when it plans):
+    every re-asked breakdown re-planned the whole wardrobe, a new outfit set each time, and all LoRAs retrained twice in
+    a day. A wardrobe keyed with the notes (before 10-28) is kept and re-keyed, not planned again."""
+    k = wardrobe_inputs_key(plan, text, narrator)
     if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
         return False
+    if plan.get("wardrobe") and notes and plan.get("wardrobe_k") == wardrobe_inputs_key(plan, text, narrator, notes):
+        plan["wardrobe_k"] = k
+        log("  wardrobe: kept (re-keyed without the scene notes)")
+        return True
     old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
     chars, _ = looks(plan)
     new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator, notes)
