@@ -26,14 +26,23 @@ import safetensors  # noqa: E402
 import torch  # noqa: E402
 
 M = Path.home() / "models" / "ltx-2.5"
-DIT = str(M / "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors")
-TE = str(M / "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors")
-VAE = str(M / "vae/ltx-2.5-video-vae-conv-bf16.safetensors")
-AVAE = str(M / "vae/ltx-2.5-audio-vae-bf16.safetensors")
-UPS = str(M / "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors")
-DUR = str(M / "model_patches/ltx-2.5-duration-head-bf16.safetensors")
-DIT_DEV = str(M / "diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors")
-DLORA = str(M / "loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors")
+MF_ = Path.home() / "models-fast" / "ltx-2.5"   # 10-28: the internal NVMe copies first (see ltx_split_next.py)
+
+
+def _w(rel, fast_rel=None):
+    f = MF_ / (fast_rel or rel)
+    return str(f if f.exists() else M / rel)
+
+
+DIT = _w("diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors")
+TE = _w("text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors")
+VAE = _w("vae/ltx-2.5-video-vae-conv-bf16.safetensors")
+AVAE = _w("vae/ltx-2.5-audio-vae-bf16.safetensors")
+UPS = _w("latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors")
+DUR = _w("model_patches/ltx-2.5-duration-head-bf16.safetensors")
+DIT_DEV = _w("diffusion_models/ltx-2.5-22b-dev-transformer-bf16.safetensors",
+             "diffusion_models/ltx-2.5-22b-dev-transformer-fp8cast.safetensors")
+DLORA = _w("loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors")
 D0, D1 = torch.device("cuda:0"), torch.device("cuda:1")
 T0 = time.time()
 
