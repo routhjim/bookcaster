@@ -20,4 +20,7 @@ check("each job takes its route from its fields (talk has audio)",
       'kind = "a2vid" if j.get("audio") else "ti2v"' in rn and "if j_a2v:" in rn and "elif j_ti2v:" in rn)
 check("talk faults are counted defects, not retakes", "talk clip defect" in sf and '_t2", seed=RETAKE' in sf
       and sf.count('_t2", seed=RETAKE') == 1)
+check("10-28: quiet clips on the dev DiT + distilled LoRA (no distilled model, no distilled encode)",
+      '"--base", "dev", "--dlora-strength", str(QUIET_DLORA)' in sf and 'emb = f"qd_' in sf and
+      'enc_dist.append' not in sf and '"base": "dev"' in sf)
 print({"fails": fails}); sys.exit(1 if fails else 0)
