@@ -55,6 +55,7 @@ TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
 # every seam and an mp4 round trip per piece (sharpness 1.4-5x and drift from the key growing piece after piece)
 TALK_CHAIN_OVERLAP = 1
+QUIET_DLORA = 1.0                   # quiet: the distilled LoRA stands in for the whole distilled model
 TALK_PRE = 12                       # frames of silence before a line (0.5 s): the mouth is live at the first word
 KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
@@ -1983,10 +1984,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         else:
             p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + _pose_hold(cx, s) + \
                 STILL_CROWD * bool(s.get("crowd"))
-            emb = f"q_{s['id']}_{MF._h(p_)}"
-            enc_dist.append({"name": emb, "prompt": p_})
+            emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
+            enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
-                quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_,
+                quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img,
                               "people": None if s.get("crowd") else len(s.get("who") or [])})
@@ -2000,7 +2001,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             stale = stale or old.get("prompt") != j["prompt"] or old.get("seed") != j["seed"] or \
                 old.get("frames") != j["frames"] or old.get("chain_from") != j.get("chain_from") or \
                 old.get("audio_src") != j.get("audio_src") or \
-                any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end"))
+                any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end", "base"))
             # (10-27: a new voice cut is a new clip; 10-28: so are other render settings)
         if stale:
             c.unlink()
@@ -2083,7 +2084,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         th = threading.Thread(target=_judge_as_they_land, args=(L / "out", quiet, more, done, stop, log), daemon=True)
         th.start()
         try:
-            gen("quiet", quiet, ["--fa-amd", "--blaslt", *(["--decode-b"] if DECODE_B else []),
+            # 10-28 user: "drop the distilled model altogether" - quiet clips on the dev DiT (the internal-NVMe fp8
+            # copy every other route loads) with the distilled LoRA always on, at full strength: the same 8 steps and
+            # one pass (~0.64 s/frame), no second 42 GB model, no second Gemma encode
+            gen("quiet", quiet, ["--fa-amd", "--blaslt", "--base", "dev", "--dlora-strength", str(QUIET_DLORA),
+                                 *(["--decode-b"] if DECODE_B else []),
                                  "--more", more.name, "--more-done", done.name], F._pp_split(sd, "distilled", 17))
         finally:
             stop.set()
