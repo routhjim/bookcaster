@@ -192,8 +192,10 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # SyncNet read ~1 at 1152x640 and at 1408x768 alike (resolution: +17% cost, no gain). Staged as film does it: both
 # angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
-            "in the picture, an arm's length apart, angled toward each other but turned three-quarters toward the "
-            "viewer, {who}'s face and mouth in full view, {who} mid-word")
+            "in the picture, an arm's length apart; {who} turned three-quarters toward the viewer, face and mouth in "
+            "full view, mid-word; {listener} turned toward {who}, listening")
+# (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
+# an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -1091,7 +1093,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         # (10-27 user: the seated/lying variant without "waist up, close to the viewer" broke the lip
                         # sync - one two-shot template again, the one that worked)
                         if pair != {who, lis} or fr.startswith("two"):
-                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who))
+                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
+                                                                                   listener=lis))
                         else:
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
@@ -1606,13 +1609,12 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     pron = "her" if g == "woman" else "his" if g == "man" else "their"
     lst = ""
     other = next((w for w in s.get("who") or [] if w != who), None)
-    held = s.get("pose_held") or {}              # 10-28 user: the place's title can imply a posture ("Sitting Room");
-    def posed(w):                                 # the held one is said outright
-        return f", {POSE_WORDS[held[w]]}" if held.get(w) in POSE_WORDS else ""
+    # (10-28: "Sherlock Holmes, standing, ..." here made LTX pull a close-up back to the waist to show the posture -
+    # SyncNet 9.0 -> 1.0; the key carries the posture and TALK_LOCK holds the framing, so the talk words name none)
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
-        lst = f" {other}{posed(other) + ',' if posed(other) else ''} listens with a closed mouth."
+        lst = f" {other} listens with a closed mouth."
     pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
-    return (f"Static camera, the framing does not change. {who}{pos}{posed(who)}, {look}{at}, speaks{emo} lips and jaw moving "
+    return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
 
 
