@@ -181,11 +181,6 @@ TALK_PICTURE = ("a close-up of {who}: head and shoulders filling the frame, nobo
 # 10-25 Acts: "a few steps apart" drew them head to toe, faces ~30 px - no lips to sync ("lip sync is off")
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
             "in the picture, an arm's length apart, facing each other, {who} mid-word")
-# a two-shot where someone sits or lies somewhere (in bed, in an armchair): only what lip sync needs - their sides and
-# both faces large - and the scene's postures place them (10-27 user: Watson talked from a chair, not his bed: the
-# "arm's length apart, facing each other" geometry had no room for a man sitting up in bed)
-TALK_TWO_HELD = ("{left} on the left and {right} on the right, both faces large and clear in the picture, turned toward each "
-                 "other, {who} mid-word")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -987,10 +982,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         screen.setdefault(lis, 2 if screen[who] <= 1 else 0)
                         lr = sorted((who, lis), key=lambda w: (screen[w], w != who))
                         side = "left" if lr[0] == who else "right"
-                        seated = any(last_pose.get(w) in ("sit", "lie", "kneel", "crouch") for w in lr)
+                        # (10-27 user: the seated/lying variant without "waist up, close to the viewer" broke the lip
+                        # sync - one two-shot template again, the one that worked)
                         if pair != {who, lis} or fr.startswith("two"):
-                            sh.update(who=lr, listener=lis, picture=(TALK_TWO_HELD if seated else TALK_TWO).format(
-                                left=lr[0], right=lr[1], who=who))
+                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who))
                         else:
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
