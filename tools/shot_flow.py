@@ -1900,8 +1900,16 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             stop.set()
             th.join(60)
     if talk:
-        gen("talk", talk, ["--a2vid", "--fa-amd", "--blaslt"], F._pp_split(sd, "a2vid", 25))
-        _stitch_talk(book, R, L, talk, log)
+        # 10-28 user: SyncNet on the iGPU as the XTXs' talk clips land (a line joined when its last piece does)
+        stop = threading.Event()
+        th = threading.Thread(target=_sync_as_they_land, args=(book, R, L, talk, stop, log), daemon=True)
+        th.start()
+        try:
+            gen("talk", talk, ["--a2vid", "--fa-amd", "--blaslt"], F._pp_split(sd, "a2vid", 25))
+        finally:
+            stop.set()
+            th.join(600)
+        _stitch_talk(book, R, L, talk, log)             # what the thread didn't get to (cached: seconds)
         _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
@@ -2124,7 +2132,7 @@ def sync_shift(clip: Path) -> int:
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
 
 
-def _sync_offsets(book: Path, L: Path, names: list, log=print) -> None:
+def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = False) -> None:
     """SyncNet on each talk clip against its own voice (on the iGPU), kept beside the clip as <name>.sync.json and
     measured again only when the clip changes; the assembly shifts by it (sync_shift)."""
     if not (SYNCNET / "data" / "syncnet_v2.model").exists() or not SYNCNET_PY.exists():
@@ -2158,27 +2166,66 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print) -> None:
                                  "conf": confs[i] if i is not None else None}))
         done += 1
         shifted += bool(sync_shift(c))
-    if done:
+    if done and not quiet:
         log(f"lip sync: {done} talk clip(s) measured, {shifted} shifted")
+    elif done:
+        log(f"lip sync: {names[0]} measured" + (", shifted" if shifted else ""))
     shutil.rmtree(work, ignore_errors=True)
 
 
-def _stitch_talk(book: Path, R, L: Path, talk: list, log=print) -> None:
+def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print) -> None:
+    """While the talk clips render on the XTXs: each finished shot (a one-piece clip, or a line whose pieces are all
+    there, joined first) is measured by SyncNet on the iGPU at once, so nothing waits for it after the render."""
+    shots = {}
+    for j in talk:
+        shots.setdefault(j["name"].rsplit("_c", 1)[0] if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1
+                         else j["name"], []).append(j)
+    left = dict(shots)
+    try:
+        while left and not stop.is_set():
+            ready = [n for n, js in left.items() if all((L / "out" / f"{j['name']}.mp4").exists() for j in js)]
+            if not ready:
+                time.sleep(10)
+                continue
+            for n in ready:
+                left.pop(n)
+                if len(shots[n]) > 1:
+                    _stitch_talk(book, R, L, talk, log, only={n}, quiet=True)
+                _sync_offsets(book, L, [n], log, quiet=True)
+    except Exception as e:                  # noqa: BLE001  (the render goes on; the pass after it catches up)
+        log(f"lip sync as clips land stopped: {e!r}")
+
+
+def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None = None, quiet: bool = False) -> None:
     """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
-    line was stitched all night, and yesterday's joins of other words were assembled). The joins are derived: dropped
-    first, made again from tonight's pieces, and a line that didn't come out is a problem, not a silent gap."""
-    names = sorted({j["name"].rsplit("_c", 1)[0] for j in talk if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1})
-    if not names:
-        return
+    line was stitched all night, and yesterday's joins of other words were assembled). A join older than any of its
+    pieces is dropped and made again; one made from tonight's pieces stays (lines are joined as their pieces land,
+    _sync_as_they_land); a line that didn't come out is a problem, not a silent gap. `only`: these shots."""
+    pieces = {}
+    for j in talk:
+        if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1:
+            pieces.setdefault(j["name"].rsplit("_c", 1)[0], []).append(j)
+    names = sorted(n for n in pieces if only is None or n in only)
+    todo = []
     for n in names:
-        (L / "out" / f"{n}.mp4").unlink(missing_ok=True)
-    r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out"],
+        c = L / "out" / f"{n}.mp4"
+        pm = [L / "out" / f"{j['name']}.mp4" for j in pieces[n]]
+        newest = max((p_.stat().st_mtime for p_ in pm if p_.exists()), default=float("inf"))
+        if c.exists() and c.stat().st_mtime >= newest and all(p_.exists() for p_ in pm):
+            continue
+        c.unlink(missing_ok=True)
+        todo.append(n)
+    if not todo:
+        return
+    lines = ",".join(sorted({pieces[n][0]["line"] for n in todo}))
+    r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out", lines],
                        cwd=str(L), capture_output=True, text=True)
+    names = todo
     bad = [n for n in names if not (L / "out" / f"{n}.mp4").exists()]
     if r.returncode or bad:
         _problem(book, log, f"talk stitch: {len(bad)} of {len(names)} lines not joined ({', '.join(bad[:4])})"
                  f"{': ' + r.stderr.strip().splitlines()[-1] if r.stderr.strip() else ''}")
-    else:
+    elif not quiet:
         log(f"talk stitch: {len(names)} lines joined")
 
 

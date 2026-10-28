@@ -12,7 +12,7 @@ def check(name, ok, got=None):
     ok or fails.append(name)
 
 L = Path(tempfile.mkdtemp(prefix="stitch_")); (L / "out").mkdir()
-talk = [{"name": "talk-1_s0_c0", "chunk": [0, 2, 0, 97]}, {"name": "talk-1_s0_c1", "chunk": [1, 2, 90, 50]},
+talk = [{"name": "talk-1_s0_c0", "chunk": [0, 2, 0, 97], "line": "talk-1"}, {"name": "talk-1_s0_c1", "chunk": [1, 2, 90, 50], "line": "talk-1"},
         {"name": "talk-2_s0", "chunk": [0, 1, 0, 60]}]
 (L / "out" / "talk-1_s0.mp4").write_text("yesterday's join")
 probs, ran = [], []
