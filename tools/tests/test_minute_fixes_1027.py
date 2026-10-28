@@ -100,7 +100,7 @@ for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), (
     check(f"10-28: a {pz} close-up says '{w}' outright", f"alone, {w}:" in k3, k3[:120])
 t2 = S.TALK_TWO.format(left="Helen Stoner", right="Sherlock Holmes", who="Sherlock Holmes", listener="Helen Stoner")
 check("10-28: a two-shot cheats the speaker out to the viewer; the listener looks at the speaker",
-      "Sherlock Holmes turned three-quarters toward the viewer" in t2 and "Helen Stoner turned toward Sherlock Holmes"
+      "Sherlock Holmes turned three-quarters toward the viewer" in t2 and "Helen Stoner in profile, head turned to look at Sherlock Holmes"
       in t2 and "facing each other" not in t2 and "close to the viewer" in t2, t2)
 src_ = Path(S.__file__).read_text()
 tp = src_[src_.index("def _talk_prompt"):src_.index("def _key_questions")]

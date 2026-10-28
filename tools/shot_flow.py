@@ -197,12 +197,12 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
             "in the picture, an arm's length apart; {who} turned three-quarters toward the viewer, face and mouth in "
-            "full view, mid-word; {listener} turned toward {who}, listening")
+            "full view, mid-word; {listener} in profile, head turned to look at {who}, listening")
 # (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
 # an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
 TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
-              "three-quarters toward the viewer, face and mouth in full view, mid-word; {listener} turned toward {who}, "
-              "listening; {others} looking at {who}")
+              "three-quarters toward the viewer, face and mouth in full view, mid-word; {listener} in profile, head turned to {who}, "
+              "listening; {others} in profile, looking at {who}")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -583,6 +583,28 @@ def sentences(tl: list) -> list:
 TAG_WORDS = 8                       # a narration entry this short between two lines of one speaker is a speech tag
 
 
+SEAT_WORD = re.compile(r"\b(chairs?|armchairs?|sofas?|settees?|couch\w*|beds?|bench\w*|stools?|seats?)\b", re.I)
+SIDE_WORDS = (("far left", 0.0), ("centre-left", 1.5), ("center-left", 1.5), ("left", 1.0), ("far right", 4.0),
+              ("centre-right", 2.5), ("center-right", 2.5), ("right", 3.0), ("centre", 2.0), ("center", 2.0),
+              ("middle", 2.0))
+
+
+def _blocking_sides(text, names) -> dict:
+    """{name: position left->right} from a scene's blocking ("Helen Stoner seated centre-left ...; Sherlock Holmes
+    standing centre-right ...; Doctor Watson seated on the right") - each one's own clause, its first side word."""
+    out = {}
+    for part in re.split(r"[;.]|,\s+(?=[A-Z])", str(text or "")):
+        for n in names or ():
+            toks = [n] + [w for w in str(n).split() if len(w) > 3 and w not in ("Doctor", "Miss", "Mister")]
+            if n in out or not any(re.search(rf"\b{re.escape(t)}\b", part) for t in toks):
+                continue
+            low = part.lower()
+            hit = next((v for w, v in SIDE_WORDS if re.search(rf"\b{w}\b", low)), None)
+            if hit is not None:
+                out[n] = hit
+    return out
+
+
 def _turn_cuts(tl: list) -> dict:
     """The timeline's entry starts sorted by what a cut there would do: "inside" = inside one speaker's turn (their
     next line after a short tag like "said he", or that tag itself); "change" = where the speaker changes or a
@@ -871,6 +893,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         if si != cur:                   # a new scene: its place; the conversation starts again (no old shots to copy)
             cur, home = si, sc_["place"] or home
             pair, people_here, where_of, talk_, screen, last_pose, last_at = None, [], {}, [], {}, {}, {}
+            # 10-28: the scene's side map starts from the director's own blocking (it put Watson right of Holmes;
+            # the two-shot code, with no map yet, put him on the left - in Helen's place)
+            screen.update(_blocking_sides(sc_.get("blocking"), RGB.people()))
             pics_before, pics_scene = pics_before + pics_scene, []
             if sc_.get("opens"):
                 state = (f"{state} Now, as this scene opens: {sc_['opens']}" if state and not state.startswith("(")
@@ -1585,7 +1610,10 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
     if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
         people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
-        cont, setting = "", (f" Behind the face, softly out of focus, a glimpse of {place}." if place else "")
+        bits = [z for z in re.split(r"(?<=[.;])\s+", room) if z and not SEAT_WORD.search(z)][:2]   # (10-28: the
+        cont, setting = "", ((f" Behind the face, softly out of focus, a glimpse of {place}"   # window showed fields:
+                              + (f": {' '.join(bits).rstrip('.')}" if bits else "") + ".")   # the set's own room now,
+                             if place else "")                                            # seats left out)
         held = set((s.get("pose_held") or {}).values())     # 10-28 user: "Holmes is sitting then standing"
         # 10-28 A/B (4 wordings x 6 seeds, chair judged): the posture in the subject took chairs from 3/6 to 1/6
         # (the chair check rejects the rest); leaving the room's name out too gave 0/6 - not a clear difference on 6
