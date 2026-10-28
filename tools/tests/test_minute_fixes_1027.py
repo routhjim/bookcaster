@@ -98,5 +98,8 @@ for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), (
                        "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": pz},
                        "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
     check(f"10-28: a {pz} close-up says '{w}' outright", f"alone, {w}:" in k3, k3[:120])
+check("10-28: a two-shot cheats out - the speaker's face toward the viewer, not 'facing each other' in profile",
+      "turned three-quarters toward the viewer" in S.TALK_TWO and "facing each other" not in S.TALK_TWO
+      and "close to the viewer" in S.TALK_TWO)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

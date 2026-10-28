@@ -188,8 +188,12 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # in isn't convincing"; "I don't like that there's only ever one person in each shot"): its first line a two-shot, the
 # replies over the listener's shoulder, each one on the side the two-shot gave them
 # 10-25 Acts: "a few steps apart" drew them head to toe, faces ~30 px - no lips to sync ("lip sync is off")
+# 10-28: "facing each other" put the speaker in profile, turned away - a crop of Holmes's zone showed his ear, and
+# SyncNet read ~1 at 1152x640 and at 1408x768 alike (resolution: +17% cost, no gain). Staged as film does it: both
+# angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
-            "in the picture, an arm's length apart, facing each other, {who} mid-word")
+            "in the picture, an arm's length apart, angled toward each other but turned three-quarters toward the "
+            "viewer, {who}'s face and mouth in full view, {who} mid-word")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
