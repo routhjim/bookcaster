@@ -86,8 +86,17 @@ if g:
     s = g[0]
     check("in the scene's left-to-right order (the side map), the speaker cheated out, the listener toward him",
           s["who"].index("Helen Stoner") < s["who"].index("Sherlock Holmes") and "Sherlock Holmes turned three-quarters"
-          in s["picture"] and "Julia Stoner turned toward Sherlock Holmes" in s["picture"], (s["who"], s["picture"]))
+          in s["picture"] and "Julia Stoner in profile, head turned to Sherlock Holmes" in s["picture"], (s["who"], s["picture"]))
     check("its speaker zone is his own layout box", S._speaker_box(s, "Sherlock Holmes") ==
           S.group_layout(3)[s["who"].index("Sherlock Holmes")][0])
+bl = ("Helen Stoner seated centre-left by the fire; Sherlock Holmes standing centre-right, facing her; Doctor Watson "
+      "seated on the right, slightly behind Holmes.")
+sd_ = S._blocking_sides(bl, ["Helen Stoner", "Sherlock Holmes", "Doctor Watson"])
+check("the blocking's sides seed the scene's side map: Helen < Holmes < Watson",
+      sd_["Helen Stoner"] < sd_["Sherlock Holmes"] < sd_["Doctor Watson"], sd_)
+scr = dict(sd_)
+lr = sorted(("Sherlock Holmes", "Doctor Watson"), key=lambda w: (scr[w], w != "Sherlock Holmes"))
+check("so Holmes's aside to Watson puts Watson on the RIGHT of Holmes, not in Helen's place", lr == ["Sherlock Holmes",
+      "Doctor Watson"], lr)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
