@@ -171,6 +171,14 @@ for j in jobs.get("talk", []):
     if len(fr) > 2 and float(np.median(np.abs(np.diff(fr, axis=0)).mean(axis=(1, 2)))) < 0.15:
         still.append((n, len(fr)))
 check("no talk clip is a still picture", not still, still)
+talk_names = sorted({j["name"].rsplit("_c", 1)[0] for j in jobs.get("talk", [])})
+unmeasured = [n for n in talk_names if not (L / "out" / f"{n}.sync.json").exists()]
+check("every talk clip's lip sync was measured (SyncNet)", not unmeasured, unmeasured)
+for n in talk_names:
+    f = L / "out" / f"{n}.sync.json"
+    if f.exists():
+        m = json.loads(f.read_text())
+        print(f"    sync {n}: offset {m.get('offset')} (25 fps), confidence {m.get('conf')}, shift {S.sync_shift(L / 'out' / f'{n}.mp4')}")
 
 outs = sorted(book.glob("out/*_shots.mp4"), key=lambda p: p.stat().st_mtime)
 out = outs[-1] if outs and outs[-1].stat().st_mtime >= start1 else None

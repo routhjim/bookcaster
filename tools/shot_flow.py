@@ -930,6 +930,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         st[0] = 0.0
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
             st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
+        shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast))
         keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
@@ -944,13 +945,19 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                               "to": x0.get("speaker")}, end, b)
                     b = end
             n_ = max(1, math.ceil((b - x) / 8.0)) if x0.get("kind") == "talk" else 1
+            edges = [x + (b - x) * j / n_ for j in range(n_ + 1)]
+            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; now at the voice's pauses)
+                env = _envelope(voices)
+                for j in range(1, n_):
+                    edges[j] = _pause_near(env, pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
+                                           pa + edges[j + 1] - SHOT_SHORT, reach=1.0) - pa
             for j in range(n_):         # a long line: the speaker, the listener's reaction, the speaker (SHOT_RULES)
                 piece = x0
                 if j % 2 and x0.get("listener"):
                     piece = {"kind": "reaction", "of": x0.get("listener"), "to": x0.get("speaker")}
                 elif j:
                     piece = dict(x0, framing="over-the-shoulder")
-                cuts_.append((piece, x + (b - x) * j / n_, x + (b - x) * (j + 1) / n_))
+                cuts_.append((piece, edges[j], edges[j + 1]))
             if after:
                 cuts_.append(after)
 
@@ -1886,6 +1893,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     if talk:
         gen("talk", talk, ["--a2vid", "--fa-amd", "--blaslt"], F._pp_split(sd, "a2vid", 25))
         _stitch_talk(book, R, L, talk, log)
+        _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
@@ -2001,6 +2009,63 @@ def _verbish(w: str) -> bool:
     return len(w) > 2 and w.endswith("s") and not w.endswith(("ss", "ous", "'s")) and w not in NOT_VERB
 
 
+_ENV = {}
+
+
+def _envelope(wav: Path):
+    """The voice track's loudness, 100 values a second (cached per file)."""
+    import numpy as np
+    k = (str(wav), wav.stat().st_mtime_ns if wav.exists() else 0)
+    if k not in _ENV:
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(wav), "-ac", "1", "-ar", "4000", "-f", "f32le", "-"],
+                             capture_output=True).stdout if wav.exists() else b""
+        x = np.frombuffer(raw, np.float32)
+        x = x[:len(x) // 40 * 40].reshape(-1, 40)
+        _ENV.clear()
+        _ENV[k] = np.sqrt((x ** 2).mean(1)) if len(x) else np.zeros(0)
+    return _ENV[k]
+
+
+def _pause_near(env, t: float, lo: float, hi: float, reach: float = 0.6) -> float:
+    """The middle of the quietest 120 ms within `reach` of t (inside [lo, hi]) when it is a real pause - under a
+    third of the voice's typical loudness around it; else t (no pause there: the cut stays put)."""
+    import numpy as np
+    a, b = int(max(lo, t - reach) * 100), int(min(hi, t + reach) * 100)
+    if b - a < 12 or b > len(env):
+        return t
+    w = np.convolve(env[a:b], np.ones(12) / 12, mode="valid")
+    ctx = env[max(0, int((t - 3) * 100)):int((t + 3) * 100)]
+    i = int(np.argmin(w))
+    return (a + i + 6) / 100 if w[i] < 0.33 * float(np.median(ctx)) else t
+
+
+def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices: Path, who_of) -> tuple:
+    """10-28 user: a line was chopped into four ~2 s close-ups of the same speaker, cut mid-phrase ("opal |
+    tee-ar-uh"), and "Watson" got a sliver before the cut. The talk shots' cuts follow the voice now: back-to-back
+    shots of one speaker in one framing are one shot (its clip is chained pieces, seamless), and a cut still inside
+    someone's line moves to the nearest real pause."""
+    def fr(x):
+        return "close" if str(x.get("framing") or "").lower().startswith("close") else str(x.get("framing") or "")
+    keep = [0]
+    for i in range(1, len(shots)):
+        p, x = shots[keep[-1]], shots[i]
+        if p.get("kind") == x.get("kind") == "talk" and who_of(p.get("speaker")) == who_of(x.get("speaker")) and \
+                fr(p) == fr(x):
+            continue
+        keep.append(i)
+    shots, st = [shots[i] for i in keep], [st[i] for i in keep]
+    lines = [(a_, b_) for v in spans.values() for a_, b_, _ in v]
+    if len(st) > 1 and lines:
+        env = _envelope(voices)
+        for i in range(1, len(st)):
+            t = pa + st[i]
+            if any(a_ + 0.2 < t < b_ - 0.2 for a_, b_ in lines):        # inside a spoken line
+                lo = pa + st[i - 1] + SHOT_SHORT
+                hi = pa + (st[i + 1] if i + 1 < len(st) else sec) - SHOT_SHORT
+                st[i] = _pause_near(env, t, lo, hi) - pa
+    return shots, st
+
+
 def _what_changed(old, system: str, q: str) -> str:
     """Why a cached passage missed (10-28: 43 passages were asked again and nothing said why): the first words that
     differ between what it was asked then and now."""
@@ -2013,6 +2078,66 @@ def _what_changed(old, system: str, q: str) -> str:
             op = next(o for o in sm.get_opcodes() if o[0] != "equal")
             return (f"{part} changed: {a_[max(0, op[1] - 40):op[2] + 40]!r} -> {b_[max(0, op[3] - 40):op[4] + 40]!r}")[:400]
     return "the effort or the model changed"
+
+
+SYNCNET = Path.home() / "src" / "syncnet_python"     # joonson/syncnet_python + its weights, deps in _deps/
+SYNCNET_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    # ROCm torch for the iGPU
+SYNC_MIN_CONF = 3.0             # SyncNet's usual bar; a weaker reading moves nothing (10-28: the two weak ones read
+SYNC_MAX_SHIFT = 12             # 0.3-0.5 s, a confident shift was 1-2 frames - the user picked confident-only)
+
+
+def sync_shift(clip: Path) -> int:
+    """The frames (24 fps) to show a talk clip earlier (+) or later (-) so its lips meet its voice: SyncNet's
+    measured offset when it is confident, else 0."""
+    f = clip.with_suffix(".sync.json")
+    try:
+        m = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return 0
+    st = clip.stat()
+    if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}" or m.get("conf") is None or m["conf"] < SYNC_MIN_CONF:
+        return 0
+    sh = round(m["offset"] * FPS / 25)          # SyncNet counts 25 fps frames; + = the picture lags the sound
+    return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
+
+
+def _sync_offsets(book: Path, L: Path, names: list, log=print) -> None:
+    """SyncNet on each talk clip against its own voice (on the iGPU), kept beside the clip as <name>.sync.json and
+    measured again only when the clip changes; the assembly shifts by it (sync_shift)."""
+    if not (SYNCNET / "data" / "syncnet_v2.model").exists() or not SYNCNET_PY.exists():
+        _problem(book, log, f"lip-sync offsets not measured: no SyncNet at {SYNCNET}")
+        return
+    ig = subprocess.run([str(Path.home() / "bin" / "hip-index"), "igpu"], capture_output=True, text=True).stdout.strip()
+    env = {**os.environ, "PYTHONPATH": str(SYNCNET / "_deps"), "HIP_VISIBLE_DEVICES": ig, "HSA_CU_MASK": f"{ig}:0-38"}
+    work = L / "syncnet"
+    done = shifted = 0
+    for n in names:
+        c = L / "out" / f"{n}.mp4"
+        if not c.exists():
+            continue
+        f, st = c.with_suffix(".sync.json"), c.stat()
+        sig = f"{st.st_size}:{st.st_mtime_ns}"
+        try:
+            if json.loads(f.read_text()).get("sig") == sig:
+                continue
+        except (OSError, ValueError):
+            pass
+        subprocess.run([str(SYNCNET_PY), "run_pipeline.py", "--videofile", str(c), "--reference", n, "--data_dir",
+                        str(work), "--min_track", "25", "--min_face_size", "60", "--overwrite"], cwd=SYNCNET, env=env,
+                       capture_output=True)
+        r = subprocess.run([str(SYNCNET_PY), "run_syncnet.py", "--videofile", str(c), "--reference", n, "--data_dir",
+                            str(work)], cwd=SYNCNET, env=env, capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        offs = [int(x) for x in re.findall(r"AV offset:\s*(-?\d+)", out)]
+        confs = [float(x) for x in re.findall(r"Confidence:\s*([\d.]+)", out)]
+        i = max(range(len(confs)), key=confs.__getitem__) if confs and len(confs) == len(offs) else None
+        f.write_text(json.dumps({"sig": sig, "offset": offs[i] if i is not None else 0,
+                                 "conf": confs[i] if i is not None else None}))
+        done += 1
+        shifted += bool(sync_shift(c))
+    if done:
+        log(f"lip sync: {done} talk clip(s) measured, {shifted} shifted")
+    shutil.rmtree(work, ignore_errors=True)
 
 
 def _stitch_talk(book: Path, R, L: Path, talk: list, log=print) -> None:
@@ -2077,6 +2202,11 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
             sg = L / f"seg_{s['id']}.mp4"
             if c.exists():
                 src, vf = ["-i", str(c)], "tpad=stop_mode=clone:stop_duration=120"
+                sh = sync_shift(c) if s.get("kind") == "talk" else 0
+                if sh > 0:              # 10-28 user ("version 3 is definitely an improvement"): the lips ran late
+                    src = ["-ss", f"{sh / FPS:.4f}", "-i", str(c)]                   # -> shown sh frames earlier
+                elif sh < 0:            # the lips ran early -> the first frame held -sh frames
+                    vf = f"tpad=start_mode=clone:start_duration={-sh / FPS:.4f}," + vf
             else:
                 log(f"!!! {s['id']}: no clip: " + ("its key held" if key.exists() else "black"))
                 src = ["-loop", "1", "-i", str(key)] if key.exists() else \
