@@ -98,9 +98,10 @@ for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), (
                        "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": pz},
                        "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
     check(f"10-28: a {pz} close-up says '{w}' outright", f"alone, {w}:" in k3, k3[:120])
-check("10-28: a two-shot cheats out - the speaker's face toward the viewer, not 'facing each other' in profile",
-      "turned three-quarters toward the viewer" in S.TALK_TWO and "facing each other" not in S.TALK_TWO
-      and "close to the viewer" in S.TALK_TWO)
+t2 = S.TALK_TWO.format(left="Helen Stoner", right="Sherlock Holmes", who="Sherlock Holmes", listener="Helen Stoner")
+check("10-28: a two-shot cheats the speaker out to the viewer; the listener looks at the speaker",
+      "Sherlock Holmes turned three-quarters toward the viewer" in t2 and "Helen Stoner turned toward Sherlock Holmes"
+      in t2 and "facing each other" not in t2 and "close to the viewer" in t2, t2)
 src_ = Path(S.__file__).read_text()
 tp = src_[src_.index("def _talk_prompt"):src_.index("def _key_questions")]
 check("10-28: the LTX talk words name no posture (it pulled a close-up back to the waist)",
