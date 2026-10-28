@@ -101,6 +101,20 @@ S._converse = lambda *a, **k: (_ for _ in ()).throw(AssertionError("asked the di
 new2, by2, _ = S.direct(b, stem, es, log=lambda m: None)
 check("a second run replays the cache (no director call) to the same shots",
       [by2[e["id"]][0]["picture"] for e in new2] == [s["picture"] for _, s in shots])
+# 10-28: a cached answer that breaks a rule it didn't break when it was cached is asked again (only that passage)
+for f in sorted((vd / "shots" / "passages").glob("p*.json")):
+    c = json.loads(f.read_text())
+    if "SCENES" not in str(c.get("reply"))[:40] and c.get("reply") and '"shots"' in c["reply"]:
+        c["reply"], c["faults"] = json.dumps(BAD), []
+        f.write_text(json.dumps(c))
+        break
+asked3 = []
+S._converse = lambda url, model, messages, **k: (asked3.append(1), (json.dumps(GOOD), 0))[1]
+S.direct(b, stem, es, log=lambda m: None)
+check("a cached answer breaking a newer rule is asked again", len(asked3) == 1, asked3)
+asked3.clear()
+S.direct(b, stem, es, log=lambda m: None)
+check("and once answered clean, it replays again", asked3 == [], asked3)
 scr = {}
 S.compose({"people": [{"name": "Helen Stoner", "side": "right"}], "setting": ""}, ["Helen Stoner", "Sherlock Holmes"], [], scr)
 S.compose({"people": [{"name": "Sherlock Holmes", "side": "right"}], "setting": ""}, ["Helen Stoner", "Sherlock Holmes"], [], scr)

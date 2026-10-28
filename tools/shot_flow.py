@@ -436,7 +436,7 @@ def _faults(a: dict, cast: list, sec: float) -> list:
                 out.append(f"shot {i}: '{MF.EFFECT.search(sent).group(0)}' does not say where it comes from")
         if len(act.split()) > 70:
             out.append(f"shot {i}'s action is over 50 words")
-        beats = len([z for z in re.split(r"(?<=[.!?])\s+", act.strip()) if len(z.split()) > 2])   # sentences = beats
+        beats = _beats(act)
         dur = float(s.get("dur") or 0)
         if dur and beats > max(1, round(dur / 2.0)):     # (10-27: turn, walk, unlock, take out - 4 beats in 3 s)
             out.append(f"shot {i} has {beats} actions in {dur:.1f} s: about one per 2 s; split it into shots")
@@ -871,10 +871,17 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             return a, faults, scr
 
         got = json.loads(cp.read_text()) if cp.exists() else {}
-        if got.get("k") == k and got.get("reply"):
+        hit = got.get("k") == k and bool(got.get("reply"))
+        if hit:
             reply = got["reply"]
             a, faults, scr = process(reply)
-        else:
+            new = [f for f in faults if f not in (got.get("faults") or [])]
+            if new:         # 10-28: a rule added since (the desk shot's three verbs in one sentence) only logged on
+                hit = False     # a cached answer; the passage that breaks it now is asked again, the others replay
+                log(f"  passage {pa:.1f} s: asked again: its cached shots break a newer rule: {new[:2]}")
+        if not hit:
+            if got.get("reply") and got.get("k") != k:
+                log(f"  passage {pa:.1f} s: asked again: {_what_changed(got.get('ask'), system, q0)}")
             if not animate_up:
                 animate.igpu("strata", log)
                 animate_up = True
@@ -893,7 +900,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                          {"role": "user", "content": "Your last answer broke the rules: " + "; ".join(faults) +
                           ". Write it again, the whole passage."}]
             if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
-                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults}, indent=1))   # re-asked every run)
+                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
+                                          "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
         if faults:
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: the director's shots still break the rules: {faults}")
             for x in a.get("shots") or []:      # what would contradict "people" in the picture leaves the setting
@@ -1433,6 +1441,11 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
         people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
         cont, setting = "", (f" Behind the face, softly out of focus, a glimpse of {place}." if place else "")
+        held = set((s.get("pose_held") or {}).values())     # 10-28 user: "Holmes is sitting then standing" - with
+        if held == {"stand"}:                               # the posture word gone, an armchair drawn behind the
+            setting += " Standing: no chair back, cushion or headboard behind the shoulders."   # shoulders sat him
+        elif held and held <= {"sit"}:
+            setting += " Seated: the top of a chair back behind the shoulders."
     else:
         setting = SETTING.format(place=place) if place else ""
     return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + place if place else ''}. {pic}. "
@@ -1497,6 +1510,9 @@ def _key_questions(cx, s: dict) -> tuple:
         pz = (s.get("pose_held") or {}).get(w, "")
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
+        elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated)
+            q[f"pose{i}"] = (f"Answer yes or no: does {first} look like they are standing, with no chair, sofa or "
+                             f"bed behind or under them?")
         if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
@@ -1955,6 +1971,47 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     return again
 
 
+NOT_VERB = {"his", "hers", "its", "this", "was", "is", "has", "as", "us", "yes", "always", "towards", "less",
+            # plural nouns that open a clause ("sits still, hands in her lap")
+            "hands", "eyes", "arms", "legs", "lips", "fingers", "shoulders", "papers", "books", "boots", "clothes",
+            "curtains", "flames", "shadows", "candles", "windows", "tears", "brows", "knees", "palms", "others"}
+
+
+def _beats(act: str) -> int:
+    """The actions in a shot's action text: its sentences, and within a sentence each clause that starts with a verb
+    (10-28: "turns away toward the desk, unlocks the drawer, and takes out a small case-book" was one sentence, so
+    one beat by the sentence count, and the director put three actions in 2.5 s)."""
+    n = 0
+    for sent in re.split(r"(?<=[.!?;])\s+", act.strip()):
+        if len(sent.split()) <= 2:
+            continue
+        parts = re.split(r",\s*(?:and\s+|then\s+)?|\s+(?:and|then)\s+(?:then\s+)?", sent)
+        verbs = [p_ for p_ in parts[1:] if _verbish((p_.split() or [""])[0])]
+        lead = any(_verbish(w) for w in parts[0].split()[1:])   # "The man ..., with his hat, stands" = one action
+        n += max(1, len(verbs) + lead)
+    return n
+
+
+def _verbish(w: str) -> bool:
+    """A present-tense verb, roughly: "unlocks", "takes" - not "dress", "glasses", "his"."""
+    w = w.lower().strip(",.;:")
+    return len(w) > 2 and w.endswith("s") and not w.endswith(("ss", "ous", "'s")) and w not in NOT_VERB
+
+
+def _what_changed(old, system: str, q: str) -> str:
+    """Why a cached passage missed (10-28: 43 passages were asked again and nothing said why): the first words that
+    differ between what it was asked then and now."""
+    if not old:
+        return "the cache has no record of the old question (written before 10-28)"
+    import difflib
+    for part, a_, b_ in (("the system prompt", old.get("system") or "", system), ("the passage", old.get("q") or "", q)):
+        if a_ != b_:
+            sm = difflib.SequenceMatcher(None, a_, b_, autojunk=False)
+            op = next(o for o in sm.get_opcodes() if o[0] != "equal")
+            return (f"{part} changed: {a_[max(0, op[1] - 40):op[2] + 40]!r} -> {b_[max(0, op[3] - 40):op[4] + 40]!r}")[:400]
+    return "the effort or the model changed"
+
+
 def _stitch_talk(book: Path, R, L: Path, talk: list, log=print) -> None:
     """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
     line was stitched all night, and yesterday's joins of other words were assembled). The joins are derived: dropped
@@ -2097,6 +2154,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         by = {k: v for k, v in by.items() if k in keep}
         shots = [s for s in shots if s["id"].rsplit("_s", 1)[0] in keep]
         log(f"rendering {render[0]:.1f}-{render[1]:.1f} s only: {len(shots)} shots of the directed stretch")
+        if not shots:
+            raise RuntimeError(f"the render window {render[0]:g}-{render[1]:g} s has no shots of the directed stretch")
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
