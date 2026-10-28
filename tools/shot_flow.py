@@ -561,6 +561,37 @@ def sentences(tl: list) -> list:
     return out
 
 
+TAG_WORDS = 8                       # a narration entry this short between two lines of one speaker is a speech tag
+
+
+def _turn_cuts(tl: list) -> dict:
+    """The timeline's entry starts sorted by what a cut there would do: "inside" = inside one speaker's turn (their
+    next line after a short tag like "said he", or that tag itself); "change" = where the speaker changes or a
+    narration paragraph begins."""
+    inside, change = set(), set()
+    for i, x in enumerate(tl):
+        t = float(x["t"])
+        prev = tl[i - 1] if i else None
+        if x.get("kind") == "quote":
+            p1 = prev
+            p2 = tl[i - 2] if i >= 2 else None
+            tag = p1 is not None and p1.get("kind") != "quote" and len(str(p1.get("text", "")).split()) <= TAG_WORDS
+            if (p1 and p1.get("kind") == "quote" and p1.get("speaker") == x.get("speaker")) or \
+                    (tag and p2 and p2.get("kind") == "quote" and p2.get("speaker") == x.get("speaker")):
+                inside.add(t)                       # the same speaker again, after at most a short tag
+            elif prev is None or prev.get("speaker") != x.get("speaker"):
+                change.add(t)
+        else:
+            nxt = tl[i + 1] if i + 1 < len(tl) else None
+            short = len(str(x.get("text", "")).split()) <= TAG_WORDS
+            if short and prev and nxt and prev.get("kind") == nxt.get("kind") == "quote" and \
+                    prev.get("speaker") == nxt.get("speaker"):
+                inside.add(t)                       # the tag between two lines of one speaker
+            elif not short:
+                change.add(t)
+    return {"inside": inside, "change": change}
+
+
 def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = ()) -> list:
     """[(start, end)] covering [t0, t1): cut at timeline entries (a paragraph or a spoken line) once a passage has
     reached 60% of `mx`, and inside an entry at a sentence when one entry alone runs past `mx`; always cut at the
@@ -572,16 +603,23 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
             out += passages(tl, a, f, mx)
             a = f
         return out
+    # 10-28 user: "the passage boundary has to be more flexible to fall at an actual shot boundary" - a cut inside one
+    # speaker's turn ("Farintosh," / said he. / "Ah yes...") split one close-up into two shots from two keys. A cut
+    # never falls inside a turn; a change of speaker is preferred; a passage may run to 1.2 x mx to reach one
+    turn = _turn_cuts(tl)
     cuts = sorted({float(x["t"]) for x in tl if t0 < float(x["t"]) < t1})
     marks = sorted(set(cuts) | {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1})
+    free = [c for c in cuts if c not in turn["inside"]]
     out, a = [], t0
     while t1 - a > 0.05:
         if t1 - a <= mx:
             out.append((a, t1))
             break
-        ok = [c for c in cuts if a + 0.6 * mx <= c <= a + mx] or [c for c in marks if a + 0.6 * mx <= c <= a + mx] or \
+        ok = [c for c in free if c in turn["change"] and a + 0.6 * mx <= c <= a + 1.2 * mx] or \
+             [c for c in free if a + 0.6 * mx <= c <= a + 1.2 * mx] or \
+             [c for c in marks if a + 0.6 * mx <= c <= a + mx and c not in turn["inside"]] or \
              [c for c in marks if a + 2.0 <= c <= a + mx]
-        b = max(ok) if ok else a + mx
+        b = (max(c for c in ok if c <= a + mx) if any(c <= a + mx for c in ok) else min(ok)) if ok else a + mx
         out.append((a, b))
         a = b
     return out
@@ -631,6 +669,19 @@ def _who_full(spk: str, names: list) -> str:
         return ""
     return next((w for w in names if w == spk), None) or next(
         (w for w in names if re.search(rf"\b{re.escape(spk)}\b", w, re.I)), spk)
+
+
+PERSON_WORD = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|man|woman|men|women|lady|gentleman|girl|boy|"
+                         r"figure|person|people)\b", re.I)
+
+
+def _people_words(text: str, cast=()) -> str:
+    """Only the sentences of a picture that are about a person (a cast name or a person word): "a case-book sits on
+    the surface" says nothing about anyone's posture."""
+    names = [w for c in cast or () for w in [c, *str(c).split()] if len(w) > 2]
+    keep = [z for z in re.split(r"(?<=[.;!?])\s+", str(text or ""))
+            if PERSON_WORD.search(z) or any(re.search(rf"\b{re.escape(n)}\b", z, re.I) for n in names)]
+    return " ".join(keep)
 
 
 def _no_place_words(text, places=()) -> str:
@@ -692,9 +743,10 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> lis
                 out.append(f"shot {i}'s action moves the camera ('{CAMERA.search(s['action']).group(0)}'): only the "
                            "people and things move")
             have = {pose_cat(v) for v in (s.get("pose") or {}).values()} - {""}
-            said = {c for c, rx in POSE_CAT if rx.search(_no_place_words(s.get("picture", ""),
-                                                                         [*places, s.get("place")]))} & \
-                {"sit", "stand", "lie"}     # (10-28: "Baker Street Sitting Room" read as someone sitting, 3 asks)
+            said = {c for c, rx in POSE_CAT if rx.search(_people_words(_no_place_words(
+                s.get("picture", ""), [*places, s.get("place")]), cast))} & \
+                {"sit", "stand", "lie"}     # (10-28: "Baker Street Sitting Room" read as someone sitting, 3 asks;
+                                            #  "a case-book sits on the surface" as someone sitting)
             if s.get("kind") != "talk" and have and said - have:   # 10-27: "Holmes stands by the desk", pose sitting
                 out.append(f"shot {i}'s picture has someone {POSE_WORDS[sorted(said - have)[0]].split()[0]} but its "
                            f"\"pose\" has nobody so: the picture shows each one in their pose")
@@ -1080,6 +1132,26 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     for mid, sh in new_sheets.items():   # the place's "as it is now" comes from the director's own state now
         sh.pop("now", None)
+    # 10-28 user: "Farintosh," and the next line jittered between them - two close-ups of Holmes, each from its own
+    # key, because a passage boundary fell between them (the same-speaker merge works inside a passage only). Across
+    # the whole stretch now: back-to-back talk shots of one speaker in one framing and place are ONE shot - one key,
+    # one chained render; the narration between them is silent in its voice cut, so the lips rest there
+    merged = []
+    for e in new_es:
+        p_ = merged[-1] if merged else None
+        if p_ and e.get("kind") == p_.get("kind") == "talk" and e.get("speaker") == p_.get("speaker") and \
+                len(by.get(e["id"]) or []) == len(by.get(p_["id"]) or []) == 1:
+            sp, se = by[p_["id"]][0], by[e["id"]][0]
+            if all(sp.get(k) == se.get(k) for k in ("framing", "place", "who")) and \
+                    abs(float(p_["t"]) + float(p_["dur"]) - float(e["t"])) < 0.05:
+                d = float(p_["dur"]) + float(e["dur"])
+                merged[-1] = talk_moment(p_["id"], p_["speaker"], float(p_["t"]), d, creature=p_.get("creature"))
+                sp["dur"] = d
+                by.pop(e["id"], None)
+                new_sheets.pop(e["id"], None)
+                continue
+        merged.append(e)
+    new_es = merged
     carry_poses(new_es, by, tuple(x["start"] for x in scenes[1:]))
     return new_es, by, new_sheets
 
