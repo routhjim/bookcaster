@@ -215,7 +215,12 @@ def uncarried(look: str, picture: str = "") -> str:
         thing = re.sub(r"^\W*(carrying|holding|with an?|armed with)\s+", "", m.group(0).strip(" ,"), flags=re.I)
         head = (thing.split() or [""])[-1]
         return m.group(0) if head and re.search(rf"\b{re.escape(head)}", picture or "", re.I) else ""
-    return re.sub(r"\s*,\s*$", "", CARRIED.sub(keep, look or "")).strip()
+    out = CARRIED.sub(keep, look or "")
+    # 10-28: "...and trousers, topped with a black top-hat" lost its "with ..." here and the key said "trousers,
+    # topped." - a verb left without its object goes too; and "His usual" (any case) is the wardrobe's word, not a look
+    out = re.sub(r",?\s*\b(?:topped|finished|trimmed|crowned)\b(?=\s*(?:[,.;]|$))", "", out, flags=re.I)
+    out = re.sub(r"\b(?:his|her|their)\s+usual\s+", "", out, flags=re.I)
+    return re.sub(r"\s*,\s*$", "", out).strip()
 
 
 def no_pose(look: str) -> str:
