@@ -23,6 +23,20 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
 
+
+def raise_nofile():
+    """10-28: every cross-card hop sends fresh shared-memory tensors, each an open file until both sides free it;
+    a long talk run held ~14 per piece and hit the 1024 soft limit after 71 pieces (EMFILE, then a dead thread and
+    a 3 h hang). Lift the soft limit to the hard one; spawned workers inherit it."""
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < hard:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+
+
+raise_nofile()
+
 import safetensors  # noqa: E402
 import torch  # noqa: E402
 
