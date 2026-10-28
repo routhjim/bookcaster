@@ -1863,9 +1863,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             th.join(60)
     if talk:
         gen("talk", talk, ["--a2vid", "--fa-amd", "--blaslt"], F._pp_split(sd, "a2vid", 25))
-        if any(len(byid[s["id"].rsplit("_s", 1)[0]].get("chunks") or []) > 1 for s in shots if s["kind"] == "talk"):
-            subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out"],
-                           cwd=str(L), capture_output=True)
+        _stitch_talk(book, R, L, talk, log)
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
@@ -1952,6 +1950,25 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         (out_ / f"{s['id']}.judged").write_text(json.dumps({"take1": fa, "take2": fb}))
         log(f"{s['id']}: take {'2' if len(fb) < len(fa) else '1'} kept ({fa} / {fb})")
     return again
+
+
+def _stitch_talk(book: Path, R, L: Path, talk: list, log=print) -> None:
+    """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
+    line was stitched all night, and yesterday's joins of other words were assembled). The joins are derived: dropped
+    first, made again from tonight's pieces, and a line that didn't come out is a problem, not a silent gap."""
+    names = sorted({j["name"].rsplit("_c", 1)[0] for j in talk if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1})
+    if not names:
+        return
+    for n in names:
+        (L / "out" / f"{n}.mp4").unlink(missing_ok=True)
+    r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out"],
+                       cwd=str(L), capture_output=True, text=True)
+    bad = [n for n in names if not (L / "out" / f"{n}.mp4").exists()]
+    if r.returncode or bad:
+        _problem(book, log, f"talk stitch: {len(bad)} of {len(names)} lines not joined ({', '.join(bad[:4])})"
+                 f"{': ' + r.stderr.strip().splitlines()[-1] if r.stderr.strip() else ''}")
+    else:
+        log(f"talk stitch: {len(names)} lines joined")
 
 
 def _impacts_in_clip(mp4: Path, fps: int = FPS) -> list:
