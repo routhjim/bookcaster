@@ -77,5 +77,12 @@ u = S.uncarried("wearing His usual dark frock coat, waistcoat, and trousers, top
 check("10-28: no dangling 'topped' and no 'His usual' in a look", "topped" not in u and "usual" not in u.lower()
       and u.endswith("trousers"), u)
 check("10-28: 'topped with fur' (no article) stays", "topped with fur" in S.uncarried("wearing a coat topped with fur"))
+sh = {"kind": "quiet", "place": "Baker Street Sitting Room (inside)", "who": ["Sherlock Holmes"],
+      "pose": {"Sherlock Holmes": "standing"}, "picture": "Sherlock Holmes stands by the desk. The Baker Street Sitting "
+      "Room in morning light; the sitting room's window open.", "action": "He looks up.", "dur": 3.0, "start": 0.0}
+f = S._shot_faults({"shots": [sh]}, ["Sherlock Holmes"], 3.0, [])
+check("10-28: 'Sitting Room' in a picture is not someone sitting", not any("someone sitting" in x for x in f), f)
+f = S._shot_faults({"shots": [dict(sh, picture="Sherlock Holmes sits by the desk.")]}, ["Sherlock Holmes"], 3.0, [])
+check("10-28: a real 'sits' against a standing pose is still sent back", any("someone sitting" in x for x in f), f)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
