@@ -238,8 +238,12 @@ def cand_sheets(c: Char, cands: list) -> None:
         im = Image.open(sh).convert("RGB")
         w, h = im.size
         tag = c.V.slug(oid or "base")
+        # an OUTFIT sheet's portrait half is the base look's face and clothes copied (10-27: Roylott's top hat over his
+        # dressing gown, Watson's tweed over his nightshirt, captioned as the outfit): only its full figure trains
         for part, box, framing in (("head", (0, 0, w // 2, h), "close-up portrait, head and shoulders, front view"),
                                    ("figure", (w // 2, 0, w, h), "full body, standing, front view")):
+            if oid is not None and part == "head":
+                continue
             p = c.out / "cand" / f"sheet_{tag}_{part}.png"
             if not p.exists():
                 _save(im.crop(box), p)
@@ -282,7 +286,7 @@ def cand_book(c: Char, cands: list) -> None:
                       "whole": False})
 
 
-PROPS = ("sword", "hammer", "shield", "spear", "axe", "bow_", "staff", "dagger", "lance")   # props in pose names
+PROPS = ("sword", "hammer", "shield", "spear", "axe", "bow_", "staff", "dagger", "lance", "helm")   # props in pose names
 POSE_SKIP = ("lying", "sleeping", "falling", "rolling", "crawling", "carried", "hanging", "embrace", "climbing",
              "leaping")
 LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the right", "soft overcast daylight",
@@ -411,7 +415,8 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
     places = list((c.look.get("places") or {}).items())
     jobs = []
     for k in range(n):
-        oid = c.pick(main_oid, rng)
+        # every outfit its share of the pose drawings, in turn (10-27: Roylott's "outdoor attire" got none)
+        oid = list(c.outfits)[k % len(c.outfits)] if main_oid == "*" and c.outfits else c.pick(main_oid, rng)
         refs = sheet_refs(c, oid)
         framing = rng.choices(["full", "half", "close"], [0.4, 0.35, 0.25])[0]
         land = rng.random() < 0.4
@@ -788,6 +793,10 @@ def select(c: Char, cands: list, J: dict, a) -> list:
     for k in kept:
         by[k["src"]] = by.get(k["src"], 0) + 1
     log(f"kept {len(kept)} ({by}), rejected {len(rej)}")
+    per = {o: sum(1 for k in kept if k["outfit"] == o) for o in c.outfits}
+    short = {str(o or "base"): n for o, n in per.items() if n < 6}
+    if short:                               # said loudly: a LoRA that barely knows an outfit draws it from words alone
+        log(f"!!! {c.name}: few training pictures for outfit(s) {short} (want 6+): their keys rely on the words")
     for i, w in rej[:200]:
         log(f"  rejected {i}: {', '.join(w)}")
     return kept

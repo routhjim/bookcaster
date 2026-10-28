@@ -90,7 +90,8 @@ Rules:
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
   where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
   shot shows ONE physical action (one move, one gesture, one exchange) or a quiet held moment, played through to its
-  result. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+  result: about one beat for every 2 seconds of the shot. More than that is more shots (he walks to the desk; a
+  close shot as he unlocks the drawer and takes out the book). A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
 - THE NARRATION FIRST: whatever the passage says about where someone is or how they are (sitting, lying, holding,
   wearing; "he had been leaning back in his chair" too) is how the picture shows them, whatever earlier shots had.
 - CONTINUITY: the first shot of a passage continues from the last shot before: the same people in the same places,
@@ -108,7 +109,8 @@ Rules:
   leaning back in a chair is sitting), "at" (where on the set: "in the armchair by the fire", "at the writing desk",
   "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
 - "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
-  action will use. Never a person's position or posture here (they are in "people"), nothing in mid-action, never
+  action will use, set up for the action's first moment (his hand already at the drawer; a thing the action takes out
+  is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
   writing, a title or a caption: the video model can't draw letters.
 - "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
   change over time is written as visible steps. Say what the hands hold. Call each one by a plain description (a tall
@@ -169,14 +171,21 @@ SHOT_SHORT = 1.5                    # a shot shorter than this is folded into th
 PASSAGE_MAX = 30.0                  # seconds of narration per director request (6-15 shots; 10-27: 67 s came back empty)
 
 
-TALK_PICTURE = ("{who}, seen from the chest up and filling much of the picture, turned three-quarters toward someone just "
-                "beside the viewer, mid-word")
+# 10-27 user: "Watson effectively disappears for certain shots... you'd need to zoom in on Holmes more": a one-person
+# talk shot is a true CLOSE-UP, so the other one is simply out of frame - and a large face is more mouth to sync
+TALK_PICTURE = ("a close-up of {who}: head and shoulders filling the frame, nobody else in the picture, turned three-quarters "
+                "toward someone just beside the viewer, mid-word")
 # an exchange (10-24 user: "having only one person in talking shots in the exact same position that the other one was
 # in isn't convincing"; "I don't like that there's only ever one person in each shot"): its first line a two-shot, the
 # replies over the listener's shoulder, each one on the side the two-shot gave them
 # 10-25 Acts: "a few steps apart" drew them head to toe, faces ~30 px - no lips to sync ("lip sync is off")
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
             "in the picture, an arm's length apart, facing each other, {who} mid-word")
+# a two-shot where someone sits or lies somewhere (in bed, in an armchair): only what lip sync needs - their sides and
+# both faces large - and the scene's postures place them (10-27 user: Watson talked from a chair, not his bed: the
+# "arm's length apart, facing each other" geometry had no room for a man sitting up in bed)
+TALK_TWO_HELD = ("{left} on the left and {right} on the right, both faces large and clear in the picture, turned toward each "
+                 "other, {who} mid-word")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -425,6 +434,10 @@ def _faults(a: dict, cast: list, sec: float) -> list:
                 out.append(f"shot {i}: '{MF.EFFECT.search(sent).group(0)}' does not say where it comes from")
         if len(act.split()) > 70:
             out.append(f"shot {i}'s action is over 50 words")
+        beats = len([z for z in re.split(r"(?<=[.!?])\s+", act.strip()) if len(z.split()) > 2])   # sentences = beats
+        dur = float(s.get("dur") or 0)
+        if dur and beats > max(1, round(dur / 2.0)):     # (10-27: turn, walk, unlock, take out - 4 beats in 3 s)
+            out.append(f"shot {i} has {beats} actions in {dur:.1f} s: about one per 2 s; split it into shots")
     tot = sum(float(s.get("dur") or 0) for s in shots)
     if abs(tot - sec) > max(1.0, 0.15 * sec):
         out.append(f"the lengths add up to {tot:.1f} s, not {sec:.1f}")
@@ -585,7 +598,7 @@ def describe(R_, w: str, dress: dict | None = None) -> str:
     lk = MF._appearance(R_.look(w) or "")
     noun = (re.search(r"\b(man|woman|boy|girl|creature|dragon|horse|dog|wolf|beast)\b", lk, re.I) or [None, "figure"])[1]
     cl = garments(uncarried((dress or {}).get(w) or clothes_of(lk))).split(",")[0].strip()
-    cl = re.sub(r"^(a|an|the)\s+", "", cl, flags=re.I)
+    cl = re.sub(r"^(?:(?:a|an|the|his|her|their|its)\s+)?(?:usual\s+)?", "", cl, flags=re.I)   # (10-27: "in the her usual")
     return f"the {noun.lower()} in the {cl[0].lower() + cl[1:]}" if cl else f"the {noun.lower()}"
 
 
@@ -909,6 +922,15 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
         for x0, x, b in zip(shots, st, st[1:] + [sec]):
+            after = None
+            if x0.get("kind") == "talk":    # (10-27: 10 of 74 talk shots ran on into the narration after their line)
+                who_ = cast_of(x0.get("speaker"), cast)
+                ends = [b_ for a_, b_, _ in spans.get(who_, []) if a_ < pa + b and b_ > pa + x]
+                end = min(b, max(ends) - pa) if ends else b
+                if b - end >= SHOT_SHORT and end - x >= SHOT_SHORT:     # the rest: the listener's reaction
+                    after = ({"kind": "reaction", "of": x0.get("listener") or x0.get("speaker"),
+                              "to": x0.get("speaker")}, end, b)
+                    b = end
             n_ = max(1, math.ceil((b - x) / 8.0)) if x0.get("kind") == "talk" else 1
             for j in range(n_):         # a long line: the speaker, the listener's reaction, the speaker (SHOT_RULES)
                 piece = x0
@@ -917,6 +939,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 elif j:
                     piece = dict(x0, framing="over-the-shoulder")
                 cuts_.append((piece, x + (b - x) * j / n_, x + (b - x) * (j + 1) / n_))
+            if after:
+                cuts_.append(after)
 
         def held(w):                    # how someone is in the scene now: from the last shot that placed them
             pz = last_pose.get(w, "")
@@ -958,8 +982,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         screen.setdefault(lis, 2 if screen[who] <= 1 else 0)
                         lr = sorted((who, lis), key=lambda w: (screen[w], w != who))
                         side = "left" if lr[0] == who else "right"
+                        seated = any(last_pose.get(w) in ("sit", "lie", "kneel", "crouch") for w in lr)
                         if pair != {who, lis} or fr.startswith("two"):
-                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who))
+                            sh.update(who=lr, listener=lis, picture=(TALK_TWO_HELD if seated else TALK_TWO).format(
+                                left=lr[0], right=lr[1], who=who))
                         else:
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
@@ -1470,6 +1496,8 @@ def _key_questions(cx, s: dict) -> tuple:
         hum += not re.search(r"^\W*(?:an?|the)?\s*(?:\w+\s+){0,3}(dragon|beast|creature|wyrm|wolf|horse|monster)\b", lk, re.I)
     if hum and not s.get("crowd"):
         q["count"] = "How many people are in this picture? Answer with a number."
+    if s.get("kind") == "talk" and len(s.get("who") or []) == 1:   # a one-person talk shot is a close-up (10-27)
+        q["close"] = "Answer yes or no: is this a close-up, the person's head and shoulders filling most of the picture?"
     return q, hum
 
 
@@ -1638,7 +1666,7 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     import characters as CH
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
-                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose")))
+                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
                         and not (need and c and int(c.group(0)) != need))
 
 
@@ -1990,12 +2018,24 @@ def out_path(book: Path, stem: str, t0: float, t1: float) -> Path:
     return p.with_name(p.name.replace("_mannequin", "_shots"))
 
 
+def _step(book: Path, text: str) -> None:
+    """The job's status line follows the flow's steps (10-27: it said "character LoRAs" through the whole render)."""
+    try:
+        sys.path.insert(0, str(HERE.parent))
+        from tts_reader import bookcaster as BC
+        BC._set_status(book, step=f"shots: {text}")
+    except Exception:                                   # noqa: BLE001 - a status line never stops the job
+        pass
+
+
 def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Path, log=print,
-        until: str | None = None, guide: str | None = None) -> Path:
+        until: str | None = None, guide: str | None = None, render: tuple | None = None) -> Path:
     """The whole stretch: shots (director) -> keys (both cards) -> pick (+3 seeds where none passed) -> [until=keys:
     the review sheet] -> LTX (pipelined) -> takes judged -> the takes sheet -> assembled."""
     es = MF.entries(book, stem, t0, t1)
-    op = out_path(book, stem, t0, t1)
+    # --render a:b: the director plans the whole stretch (cached), only this window is drawn, rendered, assembled
+    # (10-27 user: "shorten the clip to only a minute for now to increase the learning cycles")
+    op = out_path(book, stem, *(render or (t0, t1)))
     # 10-24 user: "you should have gone right back to rendering" - a render that was stopped resumes on the plan it
     # had (shots + keys), nothing planned, drawn or checked again; the plan is dropped once the cut is assembled
     fz = shot_dir(book, stem) / f"plan_{op.stem}.json"
@@ -2012,6 +2052,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         return _render(book, stem, es, by, shots, mix, op, fz, log)
     if MF.cover(book, stem, t0, t1, log):  # narrated stretches without a moment get theirs
         es = MF.entries(book, stem, t0, t1)
+    _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
     es, by, _ = direct(book, stem, es, log, keep_llm=True)    # the director's shots are the moments from here on
     sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
@@ -2025,6 +2066,13 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
                  scene=sh.get("scene", ""),
                  crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "")   # the set sheet's crowd only
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
+    if render:
+        keep = {e["id"] for e in es if render[0] - 1e-6 <= float(e["t"]) < render[1]}
+        es = [e for e in es if e["id"] in keep]
+        by = {k: v for k, v in by.items() if k in keep}
+        shots = [s for s in shots if s["id"].rsplit("_s", 1)[0] in keep]
+        log(f"rendering {render[0]:.1f}-{render[1]:.1f} s only: {len(shots)} shots of the directed stretch")
+    _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
     for s in keys_judged(book, stem, shots, log):
@@ -2065,6 +2113,7 @@ def _render(book, stem, es, by, shots, mix, op, fz, log) -> Path:
         subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
         time.sleep(5)
         animate._flush()
+    _step(book, f"LTX video ({len(shots)} shots)")
     ltx(book, stem, es, shots, log)
     again = judge_takes(book, stem, shots, log)
     if again:
@@ -2072,6 +2121,7 @@ def _render(book, stem, es, by, shots, mix, op, fz, log) -> Path:
         judge_takes(book, stem, shots, log)
     # 10-24: judge_talk no longer re-renders - it failed all 7 forge lines and the user judged every one good
     log(f"takes sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_takes.jpg'), takes=True)}")
+    _step(book, "assembling the cut")
     out = assemble(book, stem, es, by, mix, op, log)
     fz.unlink(missing_ok=True)
     return out
