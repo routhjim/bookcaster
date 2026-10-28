@@ -27,5 +27,21 @@ check("no pause near: the cut stays where it was", abs(st[1] - 7.5) < 1e-6, st)
 sh, st = S._talk_cuts([T("close"), {"kind": "talk", "speaker": "Helen", "framing": "close"}], [0.0, 4.3], 10.0, 0.0,
                       spans, wav, lambda v: v)
 check("a change of speaker stays a cut", len(sh) == 2, sh)
+tl = [{"t": 0.0, "kind": "narration", "speaker": "narrator", "text": "Holmes turned to his desk and drew out a small case-book, which he consulted."},
+      {"t": 10.0, "kind": "quote", "speaker": "Holmes", "text": "Farintosh,"},
+      {"t": 11.0, "kind": "narration", "speaker": "narrator", "text": "said he."},
+      {"t": 11.8, "kind": "quote", "speaker": "Holmes", "text": "Ah yes, I recall the case."},
+      {"t": 30.0, "kind": "quote", "speaker": "Helen", "text": "It is easy for me to be so."},
+      {"t": 40.0, "kind": "narration", "speaker": "narrator", "text": "She clasped her hands and looked down at the fire for a long while before she spoke again."}]
+tc = S._turn_cuts(tl)
+check("no cut inside one speaker's turn ('said he' and the line after it)", {11.0, 11.8} <= tc["inside"], tc)
+check("a change of speaker and a narration paragraph are good cuts", {10.0, 30.0, 40.0} <= tc["change"], tc)
+ps = S.passages(tl, 0.0, 50.0, mx=12.0)
+check("passages never break inside the turn", all(abs(a_ - c) > 1e-6 for a_, _ in ps for c in (11.0, 11.8)), ps)
+f = S._shot_faults({"shots": [{"start": 0.0, "kind": "quiet", "who": ["Sherlock Holmes"], "dur": 3.0,
+                               "pose": {"Sherlock Holmes": "standing"}, "action": "He looks up.",
+                               "picture": "Sherlock Holmes stands at the desk. A small case-book sits on the desk."}]},
+                   ["Sherlock Holmes"], 3.0, [], [])
+check("a thing that 'sits' is no one's posture", not any("someone sitting" in x for x in f), f)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

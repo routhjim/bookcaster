@@ -21,7 +21,7 @@ end = float(tl[-1]["t"]) + 5
 ps = S.passages(tl, 0.0, end)
 check("passages cover the stretch without gaps", abs(ps[0][0]) < 1e-6 and abs(ps[-1][1] - end) < 1e-6 and
       all(abs(a[1] - b[0]) < 1e-6 for a, b in zip(ps, ps[1:])), ps)
-check("passages are at most PASSAGE_MAX", all(b - a <= S.PASSAGE_MAX + 1e-6 for a, b in ps), ps)
+check("passages are at most 1.2 x PASSAGE_MAX (10-28: room to reach a turn boundary)", all(b - a <= 1.2 * S.PASSAGE_MAX + 1e-6 for a, b in ps), ps)
 check("a 67 s stretch becomes several passages (10-27: one 67 s ask came back empty)",
       len(S.passages(tl, 0.0, 67.0)) >= 3, S.passages(tl, 0.0, 67.0))
 check("who: a timeline speaker as the cast name", S._who_full("Holmes", ["Dr. Watson", "Sherlock Holmes"]) ==
