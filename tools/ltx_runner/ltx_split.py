@@ -731,7 +731,8 @@ def cmd_gen(args, jobs):
             tmp = str(mp4) + ".noaudio.mp4"
             os.replace(mp4, tmp)
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-ss", str(j.get("audio_start", 0.0)), "-i", j.get("audio_mux", j["audio"]),
-                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", str(mp4)], check=True)
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-af", "apad",
+                            "-t", f"{frames.shape[0] / j.get('fps', 24):.6f}", str(mp4)], check=True)   # (10-28: not -shortest)
             os.remove(tmp)
         with lock:
             timings[j["name"]] = {"sec": round(t_gen, 1), "lane": str(dev), "vram": vram(),

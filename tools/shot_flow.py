@@ -2085,6 +2085,7 @@ SYNCNET = Path.home() / "src" / "syncnet_python"     # joonson/syncnet_python + 
 SYNCNET_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    # ROCm torch for the iGPU
 SYNC_MIN_CONF = 3.0             # SyncNet's usual bar; a weaker reading moves nothing (10-28: the two weak ones read
 SYNC_MAX_SHIFT = 12             # 0.3-0.5 s, a confident shift was 1-2 frames - the user picked confident-only)
+SYNC_VSHIFT = 15                # run_syncnet.py's search range (+-15 frames at 25 fps)
 
 
 def sync_shift(clip: Path) -> int:
@@ -2098,6 +2099,8 @@ def sync_shift(clip: Path) -> int:
     st = clip.stat()
     if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}" or m.get("conf") is None or m["conf"] < SYNC_MIN_CONF:
         return 0
+    if abs(m["offset"]) >= SYNC_VSHIFT - 1:     # at the edge of the search: the real offset may lie beyond it, or
+        return 0                                # the match is degenerate (10-28: "Farintosh," read -15 of 15)
     sh = round(m["offset"] * FPS / 25)          # SyncNet counts 25 fps frames; + = the picture lags the sound
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
 

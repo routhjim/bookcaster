@@ -1270,8 +1270,11 @@ def cmd_gen(args, jobs):
             import subprocess
             tmp = str(mp4) + ".noaudio.mp4"
             os.replace(part, tmp)
+            # 10-28: ffmpeg's shortest-stream cut the video at a packet boundary - a line's last piece (its audio ending with its
+            # picture) lost 4 frames; the audio padded, both cut at the picture's own length
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-ss", str(j.get("audio_start", 0.0)), "-i", j.get("audio_mux", j["audio"]),
-                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", part], check=True)
+                            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-af", "apad",
+                            "-t", f"{frames.shape[0] / j.get('fps', 24):.6f}", part], check=True)
             os.remove(tmp)
         os.replace(part, mp4)
         with lock:
