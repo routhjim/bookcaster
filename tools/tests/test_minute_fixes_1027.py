@@ -43,8 +43,8 @@ check("a one-person talk key: the room only soft behind the face, no ', standing
       "Watson, standing" not in kp and "fills the whole picture" not in kp and "softly out of focus" in kp, kp)
 check("a one-person talk key gets no wide room reference", S.closeup({"kind": "talk", "who": ["A"]})
       and not S.closeup({"kind": "talk", "who": ["A", "B"]}) and "hero = None if closeup(s)" in Path(S.__file__).read_text())
-check("10-28 A/B: a standing close-up has the posture in its subject and no room name (0 of 6 seeds with a chair)",
-      "alone, standing upright:" in kp and "Baker Street Bedroom" not in kp and "a papered wall and a window" in kp
+check("10-28 A/B: a standing close-up has the posture in its subject and keeps its real background",
+      "alone, standing upright:" in kp and "a glimpse of Baker Street Bedroom" in kp and "papered wall" not in kp
       and "chair" not in kp, kp)
 kp2 = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": ["Doctor Watson"], "kind": "talk",
                     "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": "sit"},

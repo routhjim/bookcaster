@@ -1453,25 +1453,23 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     crowd = (f" In the background, small and still: {s['crowd'].rstrip('.')}." if s.get("crowd") else "")
     cont = crowd + (f" The room: {room.rstrip('.')}." if room else "") + \
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
-    shot_in = place
     if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
         people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
+        cont, setting = "", (f" Behind the face, softly out of focus, a glimpse of {place}." if place else "")
         held = set((s.get("pose_held") or {}).values())     # 10-28 user: "Holmes is sitting then standing"
-        # 10-28 A/B (4 wordings x 6 seeds, the chair judged): as was 3/6 with a chair; the posture in the subject 1/6;
-        # an indoor room's NAME left out ("Sitting Room" draws armchairs) 0/6; both 0/6 and he reads standing
-        inside = place and RG.side_of(place, "") != "outside" and not re.search(r"\(outside\)", place, re.I)
-        bg = "a papered wall and a window" if inside else place
-        shot_in = "" if inside else place
-        cont, setting = "", (f" Behind the face, softly out of focus, {bg}." if bg else "")
+        # 10-28 A/B (4 wordings x 6 seeds, chair judged): the posture in the subject took chairs from 3/6 to 1/6
+        # (the chair check rejects the rest); leaving the room's name out too gave 0/6 - not a clear difference on 6
+        # seeds, and the user keeps the real background: the posture only
         if held == {"stand"}:
             pic = re.sub(r"^(a close-up of .+? alone)(:)", r"\1, standing upright\2", pic, count=1)
-            setting += " Seen from the chest up, at standing height."
+            setting += (" Standing upright, seen from the chest up; behind the shoulders only the bare wall, curtains "
+                        "and window, at standing height.")
         elif held and held <= {"sit"}:
             pic = re.sub(r"^(a close-up of .+? alone)(:)", r"\1, seated\2", pic, count=1)
-            setting += " The top of a chair back behind the shoulders."
+            setting += " Seated: the top of a chair back behind the shoulders."
     else:
         setting = SETTING.format(place=place) if place else ""
-    return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + shot_in if shot_in else ''}. {pic}. "
+    return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + place if place else ''}. {pic}. "
             f"{'. '.join(people)}.{cont}{setting} "
             f"{MF.period_line(book)} {style} No text."
             ).replace("..", ".").replace("  ", " ")
