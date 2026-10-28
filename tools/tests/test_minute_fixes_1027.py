@@ -32,5 +32,15 @@ check("outfit-sheet portraits never train (only the full figure)", 'if oid is no
 check("pose drawings take the outfits in turn", "list(c.outfits)[k % len(c.outfits)]" in inspect.getsource(L.gen_jobs_pose))
 check("helmets are props", "helm" in L.PROPS)
 check("run() takes a render window", "render" in inspect.signature(S.run).parameters)
+(cx.book / "work" / "video" / "x").mkdir(parents=True, exist_ok=True)
+(cx.book / "work" / "video" / "x" / "plan.json").write_text(json.dumps({"look": {"characters": {}}}))
+S.MF._dress = lambda *a, **k: {}
+kp = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": ["Doctor Watson"], "kind": "talk",
+                   "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": "stand"},
+                   "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
+check("a one-person talk key: no posture, the room only soft behind the face (10-27: medium shots by an empty bed)",
+      ", standing" not in kp and "fills the whole picture" not in kp and "softly out of focus" in kp, kp)
+check("a one-person talk key gets no wide room reference", S.closeup({"kind": "talk", "who": ["A"]})
+      and not S.closeup({"kind": "talk", "who": ["A", "B"]}) and "hero = None if closeup(s)" in Path(S.__file__).read_text())
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

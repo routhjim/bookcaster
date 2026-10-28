@@ -308,6 +308,11 @@ GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, jo
 FOUR_LEGS = ("its body long and horizontal like a giant lizard's, all four feet on the ground, never upright on its "
              "hind legs")
 CREATURE_LORA = 0.5
+def closeup(s: dict) -> bool:
+    """A one-person talk shot: a true close-up (its key drops the wide room reference and the posture)."""
+    return s.get("kind") == "talk" and len(s.get("who") or []) == 1
+
+
 SETTING = (" The scene takes place in {place}, which fills the whole picture behind them to its edges: a single painted "
            "scene, never a character sheet, never a plain or white background.")
 def shot_dir(book: Path, stem: str) -> Path:
@@ -990,8 +995,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
                         pair = {who, lis}
-                    hs_ = [held(w) for w in sh["who"] if held(w)]   # their postures in the scene (10-27 audit:
-                    if hs_:                                         # Watson in bed was drawn standing to talk)
+                    hs_ = [held(w) for w in sh["who"] if held(w)] if len(sh["who"]) > 1 else []   # (a close-up:
+                    if hs_:                       # none - "beside the bed" put an empty bed and his whole stance in it)
                         sh["picture"] += ". " + "; ".join(hs_)
                     sh["pose_held"] = {w: last_pose[w] for w in sh["who"] if last_pose.get(w)}
                     new_es.append(e)
@@ -1427,8 +1432,13 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     crowd = (f" In the background, small and still: {s['crowd'].rstrip('.')}." if s.get("crowd") else "")
     cont = crowd + (f" The room: {room.rstrip('.')}." if room else "") + \
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
+    if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
+        people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
+        cont, setting = "", (f" Behind the face, softly out of focus, a glimpse of {place}." if place else "")
+    else:
+        setting = SETTING.format(place=place) if place else ""
     return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + place if place else ''}. {pic}. "
-            f"{'. '.join(people)}.{cont}{SETTING.format(place=place) if place else ''} "
+            f"{'. '.join(people)}.{cont}{setting} "
             f"{MF.period_line(book)} {style} No text."
             ).replace("..", ".").replace("  ", " ")
 
@@ -1535,7 +1545,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         loras = [[R_.lora(w)[0], min(lw, CREATURE_LORA) if w in crs else lw, bx]
                  for w, bx in zip(s["who"], boxes) if w != s.get("ots")]
         p = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s)
-        hero = heroes.get(s.get("place") or None)
+        hero = None if closeup(s) else heroes.get(s.get("place") or None)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
         # a place picture drawn again (10-24: the people-free hero redraws left every key there cached, so the
