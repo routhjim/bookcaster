@@ -1520,9 +1520,9 @@ def _key_questions(cx, s: dict) -> tuple:
         pz = (s.get("pose_held") or {}).get(w, "")
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
-        elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated)
-            q[f"pose{i}"] = (f"Answer yes or no: does {first} look like they are standing, with no chair, sofa or "
-                             f"bed behind or under them?")
+        elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated;
+            q[f"chair{i}"] = (f"Answer yes or no: is there a chair, sofa or bed right behind or under {first}?")
+            # "does he look like he is standing" can't be seen in a head-and-shoulders picture: "No" for every seed)
         if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
@@ -1701,6 +1701,7 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
                         and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
+                        and not any(CH._yes(a.get(x)) for x in a if x.startswith("chair"))      # (must be "no")
                         and not (need and c and int(c.group(0)) != need))
 
 
