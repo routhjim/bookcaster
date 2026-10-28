@@ -1606,13 +1606,12 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     pron = "her" if g == "woman" else "his" if g == "man" else "their"
     lst = ""
     other = next((w for w in s.get("who") or [] if w != who), None)
-    held = s.get("pose_held") or {}              # 10-28 user: the place's title can imply a posture ("Sitting Room");
-    def posed(w):                                 # the held one is said outright
-        return f", {POSE_WORDS[held[w]]}" if held.get(w) in POSE_WORDS else ""
+    # (10-28: "Sherlock Holmes, standing, ..." here made LTX pull a close-up back to the waist to show the posture -
+    # SyncNet 9.0 -> 1.0; the key carries the posture and TALK_LOCK holds the framing, so the talk words name none)
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
-        lst = f" {other}{posed(other) + ',' if posed(other) else ''} listens with a closed mouth."
+        lst = f" {other} listens with a closed mouth."
     pos = f" on the {'left' if s['who'][0] == who else 'right'}" if len(s.get("who") or []) == 2 else ""
-    return (f"Static camera, the framing does not change. {who}{pos}{posed(who)}, {look}{at}, speaks{emo} lips and jaw moving "
+    return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
             f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
 
 

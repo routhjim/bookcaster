@@ -101,5 +101,9 @@ for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), (
 check("10-28: a two-shot cheats out - the speaker's face toward the viewer, not 'facing each other' in profile",
       "turned three-quarters toward the viewer" in S.TALK_TWO and "facing each other" not in S.TALK_TWO
       and "close to the viewer" in S.TALK_TWO)
+src_ = Path(S.__file__).read_text()
+tp = src_[src_.index("def _talk_prompt"):src_.index("def _key_questions")]
+check("10-28: the LTX talk words name no posture (it pulled a close-up back to the waist)",
+      "posed(" not in tp and "POSE_WORDS" not in tp)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
