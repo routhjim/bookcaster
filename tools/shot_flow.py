@@ -1520,9 +1520,9 @@ def _key_questions(cx, s: dict) -> tuple:
         pz = (s.get("pose_held") or {}).get(w, "")
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
-        elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated)
-            q[f"pose{i}"] = (f"Answer yes or no: does {first} look like they are standing, with no chair, sofa or "
-                             f"bed behind or under them?")
+        elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated;
+            q[f"chair{i}"] = (f"Answer yes or no: is there a chair, sofa or bed right behind or under {first}?")
+            # "does he look like he is standing" can't be seen in a head-and-shoulders picture: "No" for every seed)
         if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
@@ -1701,6 +1701,7 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
                         and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
+                        and not any(CH._yes(a.get(x)) for x in a if x.startswith("chair"))      # (must be "no")
                         and not (need and c and int(c.group(0)) != need))
 
 
@@ -2084,6 +2085,7 @@ SYNCNET = Path.home() / "src" / "syncnet_python"     # joonson/syncnet_python + 
 SYNCNET_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    # ROCm torch for the iGPU
 SYNC_MIN_CONF = 3.0             # SyncNet's usual bar; a weaker reading moves nothing (10-28: the two weak ones read
 SYNC_MAX_SHIFT = 12             # 0.3-0.5 s, a confident shift was 1-2 frames - the user picked confident-only)
+SYNC_VSHIFT = 15                # run_syncnet.py's search range (+-15 frames at 25 fps)
 
 
 def sync_shift(clip: Path) -> int:
@@ -2097,6 +2099,8 @@ def sync_shift(clip: Path) -> int:
     st = clip.stat()
     if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}" or m.get("conf") is None or m["conf"] < SYNC_MIN_CONF:
         return 0
+    if abs(m["offset"]) >= SYNC_VSHIFT - 1:     # at the edge of the search: the real offset may lie beyond it, or
+        return 0                                # the match is degenerate (10-28: "Farintosh," read -15 of 15)
     sh = round(m["offset"] * FPS / 25)          # SyncNet counts 25 fps frames; + = the picture lags the sound
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
 

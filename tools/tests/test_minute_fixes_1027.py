@@ -1,7 +1,7 @@
 """10-27 evening fixes: talk shots end with their line (a reaction for the rest), one beat per ~2 s of action, a
 one-person talk key is a close-up (asked), a two-shot with someone seated/lying keeps only sides and faces, no 'his
 usual' in descriptions, outfit-sheet portraits out of training, outfits drawn in turn, helmets are props, --render."""
-import json, sys
+import json, tempfile, sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE.parent.parent)); sys.path.insert(0, str(HERE))
@@ -51,8 +51,16 @@ kp2 = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who":
 check("10-28: a seated close-up shows the chair back", "top of a chair back" in kp2 and "Standing" not in kp2, kp2)
 q2, _ = S._key_questions(cx, {"id": "talk-000964_s0", "who": ["Doctor Watson"], "kind": "talk", "picture": "",
                               "framing": "close", "pose_held": {"Doctor Watson": "stand"}})
-check("10-28: a standing close-up is checked for a chair behind him", any("standing, with no chair" in v
-      for k_, v in q2.items() if k_.startswith("pose")), q2)
+check("10-28: a standing close-up is checked for a chair behind him (answer must be no)",
+      any("is there a chair, sofa or bed" in v for k_, v in q2.items() if k_.startswith("chair"))
+      and not any(k_.startswith("pose") for k_ in q2), q2)
+import pathlib
+kf = pathlib.Path(tempfile.mkdtemp()) / "k.png"
+from PIL import Image
+Image.new("RGB", (64, 36), (90, 80, 70)).save(kf)
+check("10-28: 'yes, a chair' fails the seed, 'no' passes",
+      not S._clean({"text": "No", "who0": "Yes", "chair0": "Yes", "count": "1"}, kf, 1) and
+      S._clean({"text": "No", "who0": "Yes", "chair0": "No", "count": "1"}, kf, 1))
 for t_, n_ in (("The man in the dark frock coat turns away toward the desk, unlocks the drawer, and takes out a small "
                 "case-book.", 3), ("The man in the dark frock coat, with his hat in his hands, stands by the door.", 1),
                ("The woman in the black mourning dress sits still, hands in her lap.", 1),
