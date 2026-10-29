@@ -185,10 +185,14 @@ SHOT_SHORT = 1.5                    # a shot shorter than this is folded into th
 PASSAGE_MAX = 30.0                  # seconds of narration per director request (6-15 shots; 10-27: 67 s came back empty)
 
 
+# 10-28 night: every talk key drawn "mid-word" that evening had the lips CLOSED, and LTX kept them shut (the key at 0.8,
+# the framing lock's copy of it at the end): "Farintosh" unsaid, the two-shot still after 8 s. Swapping ONE input at a
+# time into the frozen job, only the afternoon's key (mouth open mid-word) brought the mouth back. The key says it.
+MOUTH_OPEN = "mid-word, lips parted and the mouth open on a vowel, the teeth just showing"
 # 10-27 user: "Watson effectively disappears for certain shots... you'd need to zoom in on Holmes more": a one-person
 # talk shot is a true CLOSE-UP, so the other one is simply out of frame - and a large face is more mouth to sync
 TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame, no one else and no shoulder or head in "
-                "the foreground, face turned three-quarters with the eyes just off the camera, mid-word")
+                "the foreground, face turned three-quarters with the eyes just off the camera, " + MOUTH_OPEN)
 # (10-28: "turned three-quarters toward someone just beside the viewer" drew that someone - a blurred shoulder in the
 # foreground, an over-the-shoulder two-shot - and 10 close-ups failed the one-person count in all 5 seeds)
 # an exchange (10-24 user: "having only one person in talking shots in the exact same position that the other one was
@@ -200,15 +204,15 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
 TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
             "in the picture, an arm's length apart; {who} angled toward {listener} and turned three-quarters to the "
-            "viewer, face and mouth in full view, mid-word; {listener} in profile, head turned to look at {who}, "
+            "viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} in profile, head turned to look at {who}, "
             "listening")       # (10-28: "toward the viewer" alone turned Holmes away from Watson)
 # (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
 # an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
 TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
-              "three-quarters toward the viewer, face and mouth in full view, mid-word; {listener} in profile, head turned to {who}, "
+              "three-quarters toward the viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} in profile, head turned to {who}, "
               "listening; {others} in profile, looking at {who}")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
-            "{other} and mid-word; in the {other} foreground, close to the viewer and out of focus, the back of "
+            "{other}, " + MOUTH_OPEN + "; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
 TALK_CREATURE = ("a close view of {who}'s head and long neck, low to the ground, jaws slightly parted, the body behind it "
                  "on four legs")
