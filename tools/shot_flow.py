@@ -1148,11 +1148,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 lis, spk = cast_of(x0.get("of"), cast), cast_of(x0.get("to"), cast)
                 if not lis:
                     continue
+                # 10-29: "eyes on the speaker" drew the speaker into the close-up - a second man in the listener's
+                # own nightshirt (27 of 74 quiet clips, retakes the same): the one spoken to looks off the picture's
+                # edge, on the speaker's side of the scene, and is said to be alone
+                off = ("" if lis not in screen or spk not in screen or screen[spk] == screen[lis] else
+                       " to the right" if screen[spk] > screen[lis] else " to the left")
                 x0 = {"kind": "quiet", "framing": "close", "place": where_of.get(lis) or home, "who": [lis],
                       "pose": {lis: POSE_WORDS.get(last_pose.get(lis, "stand"), "standing").split()[0]},
                       "picture": (held(lis) or f"{lis} listens") + (f", facing toward {spk}" if spk else "") + ".",
-                      "action": f"{describe(RGB, lis, dress)} listens closely, eyes on the speaker, then gives a "
-                                f"small nod."}
+                      "action": f"{describe(RGB, lis, dress)}, alone in the picture, listens closely, looking off "
+                                f"past the edge of the frame{off}, then gives a small nod."}
                 place = x0["place"]
             if x0.get("kind") == "talk":
                 who = cast_of(x0.get("speaker"), cast)
