@@ -725,6 +725,49 @@ def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> l
     return times
 
 
+# 10-29 user: "the audio clip starts in the middle of a word... you have to at least stop on a word boundary, better
+# yet, you should cut up the talking by sentences with actual space in between them" (Helen's 4785 opened inside
+# "money which"; a cut moved only to a pause within 0.6 s, else stayed where the director's second fell)
+SENT_END = re.compile(r"[.!?][\"”’')\]]*$")
+_CUTS = {}
+
+
+def cut_points(book: Path, stem: str, voices: Path) -> tuple:
+    """(sentence breaks, word breaks): track seconds, sorted - each the quietest moment between one book word's start
+    and the next's (word_times on this track), a sentence break where the first word ends a sentence."""
+    import numpy as np
+    k = (str(voices), voices.stat().st_mtime_ns if voices.exists() else 0)
+    if k in _CUTS:
+        return _CUTS[k]
+    f = book / "chapters" / f"{stem}.txt"
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    times = word_times(book, stem, track=voices) if bw and voices.exists() else []
+    env = _envelope(voices) if times else np.zeros(0)
+    sm = np.convolve(env, np.ones(8) / 8, mode="same") if len(env) else env
+    sent, word = [], []
+    known = [(j, x) for j, x in enumerate(times) if x is not None]
+    for (j, a), (j2, b) in zip(known, known[1:]):
+        if j2 != j + 1 or b - a < 0.15:
+            continue
+        lo, hi = int((a + 0.12) * 100), int(b * 100)
+        g = (lo + int(np.argmin(sm[lo:hi]))) / 100 if hi > lo and hi <= len(sm) else (a + b) / 2
+        (sent if SENT_END.search(bw[j]) else word).append(round(g, 2))
+    _CUTS.clear()
+    _CUTS[k] = (sent, sorted(sent + word))
+    return _CUTS[k]
+
+
+def snap_cut(t: float, lo: float, hi: float, pts: tuple | None, env=None, reach: float = 3.0) -> float:
+    """A cut inside someone's speech: at the sentence break nearest t (within `reach`, inside [lo, hi]); else the
+    nearest break between two words (within 1 s); else (no word times) the nearest real pause (_pause_near)."""
+    if pts:
+        for cand, r in ((pts[0], reach), (pts[1], 1.0)):
+            ok = [c for c in cand if lo <= c <= hi and abs(c - t) <= r]
+            if ok:
+                return min(ok, key=lambda c: abs(c - t))
+    return _pause_near(env, t, lo, hi) if env is not None else t
+
+
 def spoken_words(book: Path, stem: str, tl: list, lines: list, t: float, d: float, times: list | None = None) -> str:
     """The book's words of `lines` (timeline entries, (start, end, entry)) said between t and t + d (word_times),
     in the book's spelling and without its quotation marks; a word heard nowhere takes its neighbours' place."""
@@ -827,7 +870,7 @@ def _turn_cuts(tl: list) -> dict:
     return {"inside": inside, "change": change}
 
 
-def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = ()) -> list:
+def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = (), sent: list | None = None) -> list:
     """[(start, end)] covering [t0, t1): cut at timeline entries (a paragraph or a spoken line) once a passage has
     reached 60% of `mx`, and inside an entry at a sentence when one entry alone runs past `mx`; always cut at the
     `forced` times (the scenes' starts: no passage spans two scenes)."""
@@ -835,7 +878,7 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
     if forced:
         out, a = [], t0
         for f in forced + [t1]:
-            out += passages(tl, a, f, mx)
+            out += passages(tl, a, f, mx, sent=sent)
             a = f
         return out
     # 10-28 user: "the passage boundary has to be more flexible to fall at an actual shot boundary" - a cut inside one
@@ -843,7 +886,10 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
     # never falls inside a turn; a change of speaker is preferred; a passage may run to 1.2 x mx to reach one
     turn = _turn_cuts(tl)
     cuts = sorted({float(x["t"]) for x in tl if t0 < float(x["t"]) < t1})
-    marks = sorted(set(cuts) | {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1})
+    # inside an entry: at a REAL sentence break (cut_points, the silence between two sentences) when the words are
+    # timed; the estimate by word position (sentences) put Helen's 28 s turn's cuts mid-word (10-29)
+    marks = sorted(set(cuts) | ({ts for ts in sent if t0 < ts < t1} if sent else
+                                {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1}))
     free = [c for c in cuts if c not in turn["inside"]]
     out, a = [], t0
     while t1 - a > 0.05:
@@ -1098,6 +1144,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         if x.get("kind") == "quote" and x.get("speaker") not in (None, "", "narrator"):
             spans.setdefault(x["speaker"], []).append((float(x["t"]), float(y["t"]), x))
     voices = book / "work" / f"{stem}.mp3"
+    pts = cut_points(book, stem, voices)    # sentence and word breaks: where a cut inside speech may fall (10-29)
     (sd / "audio").mkdir(parents=True, exist_ok=True)
 
     def unname(txt, cast, dress):       # the video model reads looks, not names: the one description of each
@@ -1141,7 +1188,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if w not in place_sheet and base in place_sheet:
                 place_sheet[w] = place_sheet[base]
     cur = None
-    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes)):
+    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes), sent=pts[0]):
         sec = pb - pa
         si = max([i for i, x in enumerate(scenes) if x["start"] <= pa + 0.5] or [0])
         sc_ = scenes[si] if scenes else {"place": home, "who": [], "what": "", "cutaways": [], "opens": "",
@@ -1315,7 +1362,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         st[0] = 0.0
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
             st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
-        shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast))
+        shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast), pts)
         keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
@@ -1331,11 +1378,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     b = end
             n_ = max(1, math.ceil((b - x) / 8.0)) if x0.get("kind") == "talk" else 1
             edges = [x + (b - x) * j / n_ for j in range(n_ + 1)]
-            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; now at the voice's pauses)
+            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; 10-29: at sentence breaks)
                 env = _envelope(voices)
                 for j in range(1, n_):
-                    edges[j] = _pause_near(env, pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
-                                           pa + edges[j + 1] - SHOT_SHORT, reach=1.0) - pa
+                    edges[j] = snap_cut(pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
+                                        pa + edges[j + 1] - SHOT_SHORT, pts, env, reach=(b - x) / n_ / 2) - pa
             for j in range(n_):         # a long line: the speaker, the listener's reaction, the speaker (SHOT_RULES)
                 piece = x0
                 if j % 2 and x0.get("listener"):
@@ -2551,7 +2598,8 @@ def _pause_near(env, t: float, lo: float, hi: float, reach: float = 0.6) -> floa
     return (a + i + 6) / 100 if w[i] < 0.33 * float(np.median(ctx)) else t
 
 
-def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices: Path, who_of) -> tuple:
+def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices: Path, who_of,
+               pts: tuple | None = None) -> tuple:
     """10-28 user: a line was chopped into four ~2 s close-ups of the same speaker, cut mid-phrase ("opal |
     tee-ar-uh"), and "Watson" got a sliver before the cut. The talk shots' cuts follow the voice now: back-to-back
     shots of one speaker in one framing are one shot (its clip is chained pieces, seamless), and a cut still inside
@@ -2574,7 +2622,7 @@ def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices
             if any(a_ + 0.2 < t < b_ - 0.2 for a_, b_ in lines):        # inside a spoken line
                 lo = pa + st[i - 1] + SHOT_SHORT
                 hi = pa + (st[i + 1] if i + 1 < len(st) else sec) - SHOT_SHORT
-                st[i] = _pause_near(env, t, lo, hi) - pa
+                st[i] = snap_cut(t, lo, hi, pts, env) - pa
     return shots, st
 
 
