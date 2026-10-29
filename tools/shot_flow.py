@@ -636,6 +636,8 @@ def sentences(tl: list) -> list:
 TAG_WORDS = 8                       # a narration entry this short between two lines of one speaker is a speech tag
 
 
+SEAT_NEAR = re.compile(r"\s+(?:beside|by|next to|near|close to|at the (?:foot|side|head) of|in front of)\s+(?:the|his|her|a)\s+"
+                       r"(?:[\w-]+\s+){0,2}?(?:chairs?|armchairs?|sofas?|settees?|couch|beds?|bench|stools?)\b", re.I)
 SEAT_WORD = re.compile(r"\b(chairs?|armchairs?|sofas?|settees?|couch\w*|beds?|bench\w*|stools?|seats?)\b", re.I)
 SIDE_WORDS = (("far left", 0.0), ("centre-left", 1.5), ("center-left", 1.5), ("left", 1.0), ("far right", 4.0),
               ("centre-right", 2.5), ("center-right", 2.5), ("right", 3.0), ("centre", 2.0), ("center", 2.0),
@@ -1751,6 +1753,11 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
     pic = figurative(s["picture"])
+    if s.get("tight") and set((s.get("pose") or {}).values()) == {"standing"}:
+        # 10-29: "Holmes stands beside the bed" in a close shot drew an empty bed behind him (743, 834: all 5 seeds
+        # failed the chair check). Where a standing one stands by a seat is the director's, kept in his words; the
+        # close key only leaves the seat out (here, not in the picture: that text is quoted to the next passage)
+        pic = SEAT_NEAR.sub("", pic)
     for k_, v_ in GLOSS.items():
         pic = re.sub(k_, v_, pic, count=1, flags=re.I)
     room = s.get("room") or ""
