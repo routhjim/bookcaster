@@ -89,6 +89,10 @@ if g:
           in s["picture"] and "Julia Stoner in profile, head turned to Sherlock Holmes" in s["picture"], (s["who"], s["picture"]))
     check("its speaker zone is his own layout box", S._speaker_box(s, "Sherlock Holmes") ==
           S.group_layout(3)[s["who"].index("Sherlock Holmes")][0])
+o = [s for e, s in shots if s["kind"] == "talk" and s["who"] and "Helen Stoner" in s["who"] and len(s["who"]) == 2]
+check("the director's over-the-shoulder is kept for a pair's first line (Helen in her chair, Holmes by the fire: apart)",
+      bool(o) and o[0].get("ots") == "Sherlock Holmes", [(s.get("who"), s.get("ots")) for s in o])
+check("the rule puts the one spoken to in the picture", "THE ONE SPOKEN TO IS IN THE PICTURE" in S.SHOT_RULES)
 bl = ("Helen Stoner seated centre-left by the fire; Sherlock Holmes standing centre-right, facing her; Doctor Watson "
       "seated on the right, slightly behind Holmes.")
 sd_ = S._blocking_sides(bl, ["Helen Stoner", "Sherlock Holmes", "Doctor Watson"])
