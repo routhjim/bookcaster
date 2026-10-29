@@ -79,5 +79,8 @@ check("Holmes's close shot, Watson in the scene: a true close-up (no room pictur
       [(s.get("tight"), s["picture"]) for s in hc])
 check("a close shot of someone alone in a scene keeps the room", not S.closeup(
     {"kind": "quiet", "framing": "close", "who": ["Doctor Watson"]}))
+check("a close key of a standing one leaves the seat he stands by out", S.SEAT_NEAR.sub("",
+      "Sherlock Holmes stands beside the bed, facing right.") == "Sherlock Holmes stands, facing right.")
+check("...and keeps what isn't a seat", S.SEAT_NEAR.sub("", "Holmes stands near the desk.") == "Holmes stands near the desk.")
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
