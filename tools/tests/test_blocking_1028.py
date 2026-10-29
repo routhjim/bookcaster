@@ -95,6 +95,16 @@ check("the director's over-the-shoulder is kept for a pair's first line (Helen i
 check("the rule puts the one spoken to in the picture", "THE ONE SPOKEN TO IS IN THE PICTURE" in S.SHOT_RULES)
 check("every talk key asks for the mouth open mid-word (closed-lip keys froze the lips)",
       all(S.MOUTH_OPEN in t for t in (S.TALK_PICTURE, S.TALK_TWO, S.TALK_GROUP, S.TALK_OTS)))
+check("the director simplifies an action to fit its shot, and names the screen side of every turn",
+      "SIMPLIFY the action to fit" in S.SHOT_RULES and "SCREEN DIRECTION" in S.SHOT_RULES)
+fl = S._faults({"shots": [{"picture": "x", "action": "He turns to the desk. He unlocks it. He takes out a book.",
+                           "dur": 2.0, "who": []}]}, [], 2.0)
+check("too many moves for the time: the director is told to simplify, not to split",
+      any("simplify" in f for f in fl) and not any("split" in f for f in fl), fl)
+sf = S._shot_faults({"shots": [{"start": 0.0, "kind": "quiet", "picture": "x", "action": "He looks up."},
+                               {"start": 1.6, "kind": "quiet", "picture": "x", "action": "He looks down."},
+                               {"start": 4.0, "kind": "quiet", "picture": "x", "action": "He nods."}]}, [], 7.0, [])
+check("a 1.6 s action shot is a sliver (2 to 5 s)", any("lasts 1.6 s" in f for f in sf), sf)
 bl = ("Helen Stoner seated centre-left by the fire; Sherlock Holmes standing centre-right, facing her; Doctor Watson "
       "seated on the right, slightly behind Holmes.")
 sd_ = S._blocking_sides(bl, ["Helen Stoner", "Sherlock Holmes", "Doctor Watson"])

@@ -104,8 +104,14 @@ Rules:
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
   where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
   shot shows ONE physical action (one move, one gesture, one exchange) or a quiet held moment, played through to its
-  result: about one beat for every 2 seconds of the shot. More than that is more shots (he walks to the desk; a
-  close shot as he unlocks the drawer and takes out the book). A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+  result: about one beat for every 2 seconds of the shot. When the passage tells more than the shot's time holds,
+  SIMPLIFY the action to fit, never cut it into slivers: keep the one or two moves that tell it and leave the rest out
+  ("he turned to his desk and, unlocking it, drew out a small case-book" in 4 s: he turns to the desk and lifts a small
+  book from its open drawer). One continuous move per shot, the video model plays it as one take. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+- SCREEN DIRECTION: the opening picture is the moment BEFORE the action, so a turn starts facing the old way (he turns
+  from Helen to the desk: in the opening picture he still faces Helen). Every turn, walk or reach names the side of the
+  picture it goes toward, and "setting" puts that thing on that side ("turns to his right, toward the desk on the right
+  of the picture"; setting: "the desk on the right of the picture").
 - THE NARRATION FIRST: whatever the passage says about where someone is or how they are (sitting, lying, holding,
   wearing; "he had been leaning back in his chair" too) is how the picture shows them, whatever earlier shots had.
 - CONTINUITY: the first shot of a passage continues from the last shot before: the same people in the same places,
@@ -474,7 +480,9 @@ def _faults(a: dict, cast: list, sec: float) -> list:
         if dur and beats > max(1, round(dur / 1.25)):    # (10-27: turn, walk, unlock, take out - 4 beats in 3 s;
                                                          # 10-28: two small gestures in 2 s are fine, the director
                                                          # couldn't split those and the passage was asked 3 times)
-            out.append(f"shot {i} has {beats} actions in {dur:.1f} s: about one per 2 s; split it into shots")
+            # (10-28 user: "split it into shots" made one sentence four 1.5 s shots - choppy; simplify instead)
+            out.append(f"shot {i} has {beats} actions in {dur:.1f} s: about one per 2 s; simplify it to the one or two "
+                       f"moves that fit")
     tot = sum(float(s.get("dur") or 0) for s in shots)
     if abs(tot - sec) > max(1.0, 0.15 * sec):
         out.append(f"the lengths add up to {tot:.1f} s, not {sec:.1f}")
@@ -777,7 +785,7 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> lis
             elif d > 8.5:
                 out.append(f"shot {i} is a talk shot of {d:.1f} s: at most 8 (cut to the listener and back)")
         else:
-            if d > SHOT_MAX + 0.6 or (d < SHOT_MIN - 0.6 and b < sec):
+            if d > SHOT_MAX + 0.6 or (d < SHOT_MIN - 0.2 and b < sec):     # (10-28: 1.5 s slivers passed at - 0.6)
                 out.append(f"shot {i} lasts {d:.1f} s: other shots are {SHOT_MIN:.0f} to {SHOT_MAX:.0f} s")
             rest.append(dict(s, dur=d))
     if rest:
