@@ -93,6 +93,8 @@ o = [s for e, s in shots if s["kind"] == "talk" and s["who"] and "Helen Stoner" 
 check("the director's over-the-shoulder is kept for a pair's first line (Helen in her chair, Holmes by the fire: apart)",
       bool(o) and o[0].get("ots") == "Sherlock Holmes", [(s.get("who"), s.get("ots")) for s in o])
 check("the rule puts the one spoken to in the picture", "THE ONE SPOKEN TO IS IN THE PICTURE" in S.SHOT_RULES)
+check("every talk key asks for the mouth open mid-word (closed-lip keys froze the lips)",
+      all(S.MOUTH_OPEN in t for t in (S.TALK_PICTURE, S.TALK_TWO, S.TALK_GROUP, S.TALK_OTS)))
 bl = ("Helen Stoner seated centre-left by the fire; Sherlock Holmes standing centre-right, facing her; Doctor Watson "
       "seated on the right, slightly behind Holmes.")
 sd_ = S._blocking_sides(bl, ["Helen Stoner", "Sherlock Holmes", "Doctor Watson"])
