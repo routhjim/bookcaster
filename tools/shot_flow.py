@@ -896,20 +896,20 @@ def room_layouts(book: Path, stem: str, log=print) -> dict:
             continue
         cp, k = Path(hp).with_suffix(".layout.json"), hashlib.sha1(Path(hp).read_bytes()).hexdigest()[:12]
         got = json.loads(cp.read_text()) if cp.exists() else {}
-        if got.get("k") == k and got.get("layout"):
+        if got.get("k") == k and got.get("layout") and got.get("n") == 120:     # (10-29: 8 tokens cut them off)
             out[w] = got["layout"]
         else:
             ask.append((w, hp, cp, k))
     if ask:
         try:
-            a_ = CH.vl_ask([{"id": str(i), "image": str(hp), "ask": {"layout": LAYOUT_ASK}}
+            a_ = CH.vl_ask([{"id": str(i), "image": str(hp), "ask": {"layout": LAYOUT_ASK}, "max_new_tokens": 120}
                             for i, (w, hp, cp, k) in enumerate(ask)])
         finally:
             CH.vl_close()
         for i, (w, hp, cp, k) in enumerate(ask):
             ly = re.sub(r"\s+", " ", str((a_.get(str(i)) or {}).get("layout") or "")).strip()
             if ly:
-                cp.write_text(json.dumps({"k": k, "layout": ly}, indent=1))
+                cp.write_text(json.dumps({"k": k, "layout": ly, "n": 120}, indent=1))
                 out[w] = ly
                 log(f"room layout {w}: {ly}")
     return out
