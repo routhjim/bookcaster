@@ -523,6 +523,7 @@ def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effo
 
 
 SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
+IN_BED = re.compile(r"\b(?:in|on)\s+(?:the\s+|his\s+|her\s+|a\s+)?bed\b", re.I)
 POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
 
 
@@ -568,7 +569,7 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
                 sides[w] = prev + 0.01
             prev = sides[w]
     lay = [l for _, l in group_layout(len(rows))]
-    parts, placed = [], []
+    parts, placed, ends = [], [], {}
     for (w, sd_, pz, x), side in zip(rows, lay):
         where = str(x.get("at") or "").strip().rstrip(".")
         face = str(x.get("facing") or "").strip().rstrip(".")
@@ -576,17 +577,30 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
         where, face = was.get("at") or where, was.get("facing") or face
         where1 = str(x.get("at_end") or "").strip().rstrip(".") or where
         face1 = str(x.get("facing_end") or "").strip().rstrip(".") or face
+        # the pose too (10-29 user: "Watson should just remain in bed and sit up": the shot of him pushing himself up
+        # opened him already sitting, so the clip had nothing to do and the key sat him on a chair): the shot opens
+        # as the last one ended; a different pose from the director is where this shot's action takes them
+        end = next((pose_cat(v) for k_, v in (s.get("pose_end") or {}).items() if resolve(k_) == w), "") or pz
+        if was.get("pose") and was["pose"] != pz:
+            end = pz if end == pz else end
+            pz = was["pose"]
         if carry is not None:
-            carry[w] = {"at": where1, "facing": face1}
+            carry[w] = {"at": where1, "facing": face1, "pose": end}
+        ends[w] = end
         hold = str(x.get("holds") or "").strip().rstrip(".")
         hold = "" if hold.lower() in ("", "nothing", "none") else re.sub(r"^holding\s+", "", hold)
-        parts.append(f"{w} {POSE_VERB[pz]}{' ' + where if where else ''}{' ' + side if side else ''}"
+        verb = POSE_VERB[pz]
+        if pz == "sit" and IN_BED.search(where):     # (not on its edge, nor in a chair beside it)
+            verb, where = "sits up", IN_BED.sub("in bed, under the covers, propped against the pillows", where, 1)
+        parts.append(f"{w} {verb}{' ' + where if where else ''}{' ' + side if side else ''}"
                      f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
                      f"{', holding ' + hold if hold else ''}")
         placed.append({"name": w, "pose": pz, "at": where, "facing": face, "holds": hold, "at_end": where1,
                        "facing_end": face1})
     setting = str(s.get("setting") or "").strip().rstrip(".")
-    s = dict(s, who=[r[0] for r in rows], pose={r[0]: POSE_WORDS[r[2]].split()[0] for r in rows}, placed=placed,
+    opened = {p_["name"]: p_["pose"] for p_ in placed}
+    s = dict(s, who=[r[0] for r in rows], pose={w: POSE_WORDS[opened[w]].split()[0] for w in opened}, placed=placed,
+             pose_end={w: POSE_WORDS[e_].split()[0] for w, e_ in ends.items()},
              picture=("; ".join(parts) + (". " if parts and setting else "") + setting).strip() + ".")
     return s
 
