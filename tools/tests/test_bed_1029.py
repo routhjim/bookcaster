@@ -42,6 +42,9 @@ PLAN = {"state_end": "x", "shots": [
      "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "by the bed", "facing": "Watson", "holds": ""},
                 {"name": "Watson", "side": "right", "pose": "sitting", "at": "in bed", "facing": "Holmes", "holds": ""}],
      "setting": "Grey morning light through the window.", "action": "Watson sits up in bed.", "pose_end": {}},
+    {"start": 1.5, "kind": "quiet", "place": BED, "framing": "close",
+     "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "beside the bed", "facing": "Watson", "holds": ""}],
+     "setting": "The dim bedroom wall.", "action": "Holmes waits.", "pose_end": {}},
     {"start": 3.0, "kind": "talk", "speaker": "Holmes", "listener": "Watson", "framing": "two"},
     {"start": 6.0, "kind": "talk", "speaker": "Watson", "listener": "Holmes", "framing": "close"},
     {"start": 9.0, "kind": "talk", "speaker": "Holmes", "listener": "Watson", "framing": "over-the-shoulder"}]}
@@ -70,5 +73,11 @@ rx = [s for s in shots if s["kind"] == "quiet" and s["who"] == ["Doctor Watson"]
 check("Watson's reaction is a close view in bed", rx and all(s["picture"].startswith("a close view of Doctor Watson's")
                                                              and "in bed" in s["picture"] for s in rx),
       [s["picture"] for s in rx])
+hc = [s for s in shots if s["kind"] == "quiet" and s["who"] == ["Sherlock Holmes"]]
+check("Holmes's close shot, Watson in the scene: a true close-up (no room picture, so no empty bed)",
+      hc and all(S.closeup(s) and s["picture"].startswith("a close view of Sherlock Holmes's head") for s in hc),
+      [(s.get("tight"), s["picture"]) for s in hc])
+check("a close shot of someone alone in a scene keeps the room", not S.closeup(
+    {"kind": "quiet", "framing": "close", "who": ["Doctor Watson"]}))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

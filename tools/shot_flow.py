@@ -359,8 +359,10 @@ FOUR_LEGS = ("its body long and horizontal like a giant lizard's, all four feet 
              "hind legs")
 CREATURE_LORA = 0.5
 def closeup(s: dict) -> bool:
-    """A one-person talk shot: a true close-up (its key drops the wide room reference and the posture)."""
-    return s.get("kind") == "talk" and len(s.get("who") or []) == 1
+    """A one-person talk shot, or a close shot of one where others are in the scene: a true close-up (its key drops
+    the wide room reference and the posture). 10-29: Holmes's close shots (743, 834) were drawn on the whole bedroom,
+    Watson's bed empty behind him - a close shot of one must not show the spot where the others are."""
+    return (s.get("kind") == "talk" or s.get("tight")) and len(s.get("who") or []) == 1
 
 
 SETTING = (" The scene takes place in {place}, which fills the whole picture behind them to its edges: a single painted "
@@ -1308,6 +1310,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             sh.update(id=f"{mid}_s0", dur=d, place=place, framing=x0.get("framing") if x0.get("framing") in
                       ("wide", "medium", "close") else "medium",
                       kind=x0.get("kind") if x0.get("kind") in ("action", "quiet") else "quiet")
+            if sh["framing"] == "close" and len(sh.get("who") or []) == 1 and \
+                    len([w for w in sc_who if w not in crs]) > 1:
+                sh["tight"] = True
+                if not sh.get("picture", "").startswith("a close view of"):
+                    sh["picture"] = f"a close view of {sh['who'][0]}'s head and shoulders: " + sh.get("picture", "")
             by[mid] = [sh]
             new_sheets[mid] = dict(place_sheet.get(place) or {}, elsewhere="")
             prev_shot = sh
