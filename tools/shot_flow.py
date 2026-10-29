@@ -112,6 +112,10 @@ Rules:
   from Helen to the desk: in the opening picture he still faces Helen). Every turn, walk or reach names the side of the
   picture it goes toward, and "setting" puts that thing on that side ("turns to his right, toward the desk on the right
   of the picture"; setting: "the desk on the right of the picture").
+- THE ROOM AS DRAWN: where the bed, desk, fireplace and window are is the room's own ("As every picture of it is
+  drawn"); say sides and spots that fit it, never move them. Someone writing or reading AT a desk or table sits in
+  the chair BEHIND it, facing the viewer across it, the desk between them and the camera: "at" says "behind the
+  desk". Someone in bed stays in the bed: waking, he sits up in it.
 - THE NARRATION FIRST: whatever the passage says about where someone is or how they are (sitting, lying, holding,
   wearing; "he had been leaning back in his chair" too) is how the picture shows them, whatever earlier shots had.
 - CONTINUITY: the first shot of a passage continues from the last shot before: the same people in the same places,
@@ -523,6 +527,10 @@ def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effo
 
 
 SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
+# a posture written where a place goes (10-29: "at_end": "standing" made "Helen Stoner stands standing" and lost
+# where she stood): the pose has its own field, "at" keeps only the place
+AT_POSE = re.compile(r"^(?:still\s+)?(?:standing(?:\s+up)?|sitting(?:\s+up)?|seated|lying(?:\s+down)?|kneeling|"
+                     r"crouching(?:\s+low)?)\b,?\s*", re.I)
 IN_BED = re.compile(r"\b(?:in|on)\s+(?:the\s+|his\s+|her\s+|a\s+)?bed\b", re.I)
 POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
 
@@ -571,11 +579,11 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
     lay = [l for _, l in group_layout(len(rows))]
     parts, placed, ends = [], [], {}
     for (w, sd_, pz, x), side in zip(rows, lay):
-        where = str(x.get("at") or "").strip().rstrip(".")
+        where = AT_POSE.sub("", str(x.get("at") or "").strip().rstrip("."))
         face = str(x.get("facing") or "").strip().rstrip(".")
         was = (carry or {}).get(w) or {}
         where, face = was.get("at") or where, was.get("facing") or face
-        where1 = str(x.get("at_end") or "").strip().rstrip(".") or where
+        where1 = AT_POSE.sub("", str(x.get("at_end") or "").strip().rstrip(".")) or where
         face1 = str(x.get("facing_end") or "").strip().rstrip(".") or face
         # the pose too (10-29 user: "Watson should just remain in bed and sit up": the shot of him pushing himself up
         # opened him already sitting, so the clip had nothing to do and the key sat him on a chair): the shot opens
@@ -852,7 +860,63 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> lis
     return out
 
 
-def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = None, keep_llm: bool = False) -> tuple:
+LAYOUT_ASK = ("In one or two plain sentences, say where each piece of furniture and each fixture of this room is in the "
+              "picture: on the left, in the centre or on the right, and in the foreground or against the back wall. "
+              "Furniture and fixtures only, no colours, no light.")
+
+
+def room_layouts(book: Path, stem: str, log=print) -> dict:
+    """{place: where its things are in its picture}: every described place of the chapter's scenes has its picture
+    drawn BEFORE the director, and the vision model says where the bed, desk and fireplace stand in it (10-29 user:
+    Watson in a chair across the room - the director put the bed on the right; the picture every key is drawn from has
+    it on the left; the director had only "a single bed, a mantelpiece with a clock, and a window"). Cached by the
+    picture's bytes beside it (heroes/<name>.layout.json)."""
+    import hashlib
+    import characters as CH
+    R_ = RG.Book(book)
+    sd = shot_dir(book, stem) / "scenes"
+    places = {}
+    for sc in scene_list(book, stem, log):
+        w = sc.get("place") or ""
+        if w and R_.place_look(w) and RG.place_key(w) not in {RG.place_key(x) for x in places}:
+            sid = "set_" + re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")      # the fixtures its keys will ask
+            try:                                                                 # for (the last set sheet's)
+                fx = tuple(json.loads((sd / f"{sid}.json").read_text())["sheet"].get("fixtures") or ())
+            except (OSError, ValueError, KeyError):
+                fx = ()
+            places[w] = fx
+    if not places:
+        return {}
+    from tts_reader import animate
+    subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the iGPU's to judge
+    heroes = MF.heroes_for(book, places, log)
+    out, ask = {}, []
+    for w, hp in heroes.items():
+        if not hp or not Path(hp).exists():
+            continue
+        cp, k = Path(hp).with_suffix(".layout.json"), hashlib.sha1(Path(hp).read_bytes()).hexdigest()[:12]
+        got = json.loads(cp.read_text()) if cp.exists() else {}
+        if got.get("k") == k and got.get("layout"):
+            out[w] = got["layout"]
+        else:
+            ask.append((w, hp, cp, k))
+    if ask:
+        try:
+            a_ = CH.vl_ask([{"id": str(i), "image": str(hp), "ask": {"layout": LAYOUT_ASK}}
+                            for i, (w, hp, cp, k) in enumerate(ask)])
+        finally:
+            CH.vl_close()
+        for i, (w, hp, cp, k) in enumerate(ask):
+            ly = re.sub(r"\s+", " ", str((a_.get(str(i)) or {}).get("layout") or "")).strip()
+            if ly:
+                cp.write_text(json.dumps({"k": k, "layout": ly}, indent=1))
+                out[w] = ly
+                log(f"room layout {w}: {ly}")
+    return out
+
+
+def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = None, keep_llm: bool = False,
+           layouts: dict | None = None) -> tuple:
     """The director makes the film's shots itself, a PASSAGE at a time (10-27 user: "the whole point of the director
     is to break up the story into individual shots"): narration and spoken lines together, every sentence timed with
     who says it, the story before and after, where the people are, how things stand (carried passage to passage) and
@@ -878,9 +942,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
     real = list(dict.fromkeys(e["where"] for e in es if e.get("where") and not NO_PLACE.search(e["where"])))
 
+    lay_ = {RG.place_key(k_): v for k_, v in (layouts or {}).items()}
+
     class _Rooms(dict):                 # each place's fixed things: the book's one description of it (the registry;
         def get(self, w, d=None):       # 10-27 audit: the director got "(as the narration says)" for every main place)
             r = RGB.place_look(w) if w else ""
+            ly = lay_.get(RG.place_key(w)) if w else ""    # and where they stand in its picture (10-29)
+            r = r + (f" As every picture of it is drawn: {ly.rstrip('.')}. People stand and sit only where these "
+                     f"things allow." if r and ly else "")
             return {"room": r} if r else d
     place_sheet = _Rooms()
 
@@ -1583,6 +1652,7 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
             m = re.search(r"\((inside|outside)\)$|^(outside|inside)\b", w, re.I)
             sd_ = (next(g for g in m.groups() if g).lower() if m else
                    {"interior": "inside", "exterior": "outside"}.get(kind, "outside"))
+            room = RG.SIDE_PREFIX.sub("", room)        # its own side word only (10-29: they stacked up)
             slot, _ = RG.place_slot(places, w, f"{sd_.capitalize()}: {room}")   # its one entry (10-27 audit)
             places[slot] = f"{sd_.capitalize()}: {room}"
             look.setdefault("_described", {})[base] = rk
@@ -2644,7 +2714,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         es = MF.entries(book, stem, t0, t1)
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
-    es, by, _ = direct(book, stem, es, log, keep_llm=True)    # the director's shots are the moments from here on
+    lays = room_layouts(book, stem, log)                      # the rooms as their pictures have them (10-29)
+    es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
     sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)

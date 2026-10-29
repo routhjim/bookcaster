@@ -60,5 +60,15 @@ check("sitting in bed is sitting UP in bed under the covers (not on its edge or 
 check("someone not yet shown keeps the director's pose", S.compose({"kind": "quiet", "people": [
       {"name": "Holmes", "side": "left", "pose": "standing", "at": "beside the bed", "facing": "Watson"}],
       "setting": "", "action": "He waits."}, cast2, [], s2, res2, c2)["pose"]["Sherlock Holmes"] == "standing")
+c3, s3 = {}, {}
+st = S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "by the fire",
+                "facing": "Watson", "at_end": "standing"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
+st2 = S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "standing by the door",
+                 "facing": "Watson"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
+check("a posture in at_end is not a place: he is still by the fire (no 'stands standing')",
+      c3["Sherlock Holmes"]["at"] == "by the fire" and "stands by the fire" in st2["picture"]
+      and "standing" not in st2["picture"], (c3, st2["picture"]))
+check("a posture at the front of 'at' is dropped, the place kept", S.AT_POSE.sub("", "standing by the door") ==
+      "by the door" and S.AT_POSE.sub("", "Sitting up, in bed") == "in bed")
 print({"fails": fails})
 sys.exit(1 if fails else 0)
