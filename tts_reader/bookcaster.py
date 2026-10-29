@@ -2236,7 +2236,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("look", help="show or change how characters look in the pictures")
     s.add_argument("book")
     s.add_argument("--do", action="append", default=[], metavar="NAME = DESCRIPTION",
-                   help='full new description, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
+                   help='full new description of a character or a place, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
     s.add_argument("--swap", nargs=2, metavar=("A", "B"), help="two characters trade looks (LoRAs + sheets too)")
     s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
     s.add_argument("book")
@@ -2598,6 +2598,12 @@ def main(argv: list[str] | None = None) -> int:
                 if not who:
                     sys.exit(f"no outfit '{m.group(2)}' for {m.group(1)} (bookcaster look shows them)")
                 print(f"{who} now: {desc}")
+                continue
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+            import registry as RG
+            if RG.Book(d).place_entry(name) is not None:     # a place: its one description (10-29 user: Watson
+                slot = RG.write_place(d, RG.Book(d).place_entry(name), desc, overwrite=True)   # behind the desk)
+                print(f"place {slot} now: {desc} (its picture is redrawn at the next video job)")
                 continue
             print(f"{set_look(d, name, desc, pinned=True)} now: {desc} (pinned: the look audit keeps it)")
         if a.do:

@@ -264,7 +264,11 @@ class Book:
         return (e[0], e[1]) if e else (None, "")
 
     def place_look(self, name) -> str:
-        return self._entry(name)[1]
+        # one side word at the front (10-29: "Outside: Outside: Outside: Inside: A dark oak writing desk ..." - each run
+        # wrote its side word in front of the stored one; the last written is the side it was described from)
+        d = self._entry(name)[1]
+        m = SIDE_PREFIX.match(d or "")
+        return (re.findall(r"(inside|outside)", m.group(0), re.I)[-1].capitalize() + ": " + d[m.end():]) if m else d
 
     def place_entry(self, name):
         """The look.json key whose description place_look(name) returns, or None."""
@@ -313,6 +317,9 @@ class Book:
         the image model's own photographic look (the Speckled Band 10-26 keys the user chose 10-27)."""
         a = self.book / "art_style.txt"
         return a.read_text().strip() if a.exists() else ""
+
+
+SIDE_PREFIX = re.compile(r"^\s*(?:(?:inside|outside)\s*:\s*)+", re.I)
 
 
 def place_slot(places: dict, name, desc: str = ""):
