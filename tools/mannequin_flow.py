@@ -1727,11 +1727,16 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     ok = out.with_suffix(".empty")
     # the scene sheet's fixtures must be in it too (10-24: The Old Forge came out a tavern with no anvil, bellows or
     # hearth, and every key there copied it); the marker records what it was judged for
+    # 10-29: a SETTLED hero stays while its own words stay. The fixtures come from the set sheet, asked again from the
+    # director's shots, so their wording moved every run ("mantel clock" -> "wooden mantelpiece"); keyed on them, the
+    # bedroom was redrawn, its layout re-asked, the director re-planned against it - and the keys were drawn on a
+    # newer room than the one he planned in, every run. The fixtures judge a hero's FIRST drawing only
     mk = json.dumps(sorted(must))
-    if ok.exists() and must and (ok.read_text().split("\n", 1) + [""])[1] != mk:
+    settled = out.exists() and (same or not jp.exists())
+    if ok.exists() and must and not settled and (ok.read_text().split("\n", 1) + [""])[1] != mk:
         ok.unlink()                         # judged before the fixtures were asked for: judged again
-    tried = out.with_suffix(".tried")         # every seed failed with these words: kept, not drawn again each run
-    if out.exists() and same and tried.exists() and tried.read_text() == mk:
+    tried = out.with_suffix(".tried")         # every seed failed: kept, not drawn again each run
+    if out.exists() and same and tried.exists():
         log(f"hero image for {where}: {out} (!!! all seeds failed earlier: people in it or {list(must)} missing)")
         return out
     if out.exists() and (same or not jp.exists()) and ok.exists():
