@@ -11,7 +11,7 @@ into a cast, scored audiobook. Built for an agent (or a person) to drive:
     bookcaster voice-remove <name>             delete one of your recorded voices
     bookcaster audition <book> Holmes          hear a character's voice
     bookcaster music <book> ["style"]          set / show the music style
-    bookcaster pace <book> [1.25]              set / show the listening speed (pitch kept)
+    bookcaster pace <book> [1.25] [--who Name]  set / show the listening speed (pitch kept); --who: one voice's own
     bookcaster art <book> ["style"]            set / show the picture style (--sample)
     bookcaster make <book> [--level L]         record it (background job); L, cheapest first:
                                                audio | music (default) | pictures | moments | animated
@@ -363,16 +363,118 @@ DEFAULT_PACE = float(os.environ.get("BOOKCASTER_PACE", "1.25"))
 
 
 def book_pace(book: Path) -> float:
+    return pace_spec(book)[0]
+
+
+def pace_spec(book: Path) -> tuple:
+    """(the book's pace, {cast name: its own pace}). 10-29 user: "I think Helen just talks too fast, can you keep her
+    at 1x and everyone else at 1.25x?" - pace.txt's first line is the book's pace, each later "Name = pace" line one
+    voice's own (its quoted lines; the narration keeps the book's)."""
     f = book / "pace.txt"
     if not f.exists():
         set_pace(book, DEFAULT_PACE)
-    return float(f.read_text().strip())
+    lines = [x.strip() for x in f.read_text().splitlines() if x.strip()]
+    own = {}
+    for x in lines[1:]:
+        k, _, v = x.partition("=")
+        if k.strip() and v.strip():
+            own[k.strip()] = float(v)
+    return float(lines[0]), own
 
 
-def set_pace(book: Path, pace: float) -> None:
+def _check_pace(pace: float) -> None:
     if not 0.7 <= pace <= 1.6:
         sys.exit("pace must be between 0.7 and 1.6 (1.25 = a quarter faster)")
-    (book / "pace.txt").write_text(f"{pace:g}\n")      # always written: no file = DEFAULT_PACE
+
+
+def set_pace(book: Path, pace: float, own: dict | None = None) -> None:
+    _check_pace(pace)
+    own = {k: v for k, v in (own if own is not None else (pace_spec(book)[1] if (book / "pace.txt").exists()
+                                                           else {})).items() if abs(v - pace) > 1e-6}
+    for v in own.values():
+        _check_pace(v)
+    (book / "pace.txt").write_text(f"{pace:g}\n" + "".join(f"{k} = {v:g}\n" for k, v in sorted(own.items())))
+
+
+def pace_voice(book: Path, who: str) -> str:
+    """The cast name (the timeline's speaker) a "--who" means: "Helen Stoner", "Helen" or "Stoner" -> "Stoner"."""
+    cf = book / "book.cast.json"
+    keys = list((json.loads(cf.read_text()).get("characters") or {}) if cf.exists() else {})
+    w = who.casefold().split()
+    hit = [k for k in keys if k.casefold() == who.casefold() or k.casefold() in w]
+    if not hit:                         # a first name: through the looks' full names ("Helen" -> "Helen Stoner")
+        lf = book / "work" / "video" / "look.json"
+        full = list((json.loads(lf.read_text()).get("characters") or {}) if lf.exists() else {})
+        names = [n for n in full if set(w) <= set(n.casefold().split())]
+        hit = [k for k in keys for n in names if k.casefold() in n.casefold().split()]
+    hit = list(dict.fromkeys(hit))
+    if len(hit) != 1:
+        sys.exit(f"--who {who!r}: " + (f"which one of {', '.join(hit)}?" if hit else
+                                       f"no such voice (the cast: {', '.join(keys)})"))
+    return hit[0]
+
+
+def _pace_mark(spec: tuple) -> str:
+    return f"{spec[0]:g}" + "".join(f";{k}={v:g}" for k, v in sorted(spec[1].items()))
+
+
+def _pace_map(mark: Path, raw_len: float) -> list:
+    """[[raw second, track second], ...] for the track as it is now (its .pace mark): a plain number is one stretch
+    (older marks); a per-voice one carries its own map."""
+    if not mark.exists():
+        return [[0.0, 0.0], [raw_len, raw_len]]
+    t = mark.read_text().strip()
+    if t.startswith("{"):
+        return json.loads(t)["map"]
+    return [[0.0, 0.0], [raw_len, raw_len / float(t)]]
+
+
+def _remap(x: float, src: list, dst: list) -> float:
+    """Piecewise-linear from one track's seconds to another's, through their raw-second maps."""
+    import numpy as np
+    s_raw, s_t = np.array([a for a, _ in src]), np.array([b for _, b in src])
+    d_raw, d_t = np.array([a for a, _ in dst]), np.array([b for _, b in dst])
+    return float(np.interp(np.interp(x, s_t, s_raw), d_raw, d_t))
+
+
+def _stretch_by_voice(raw: Path, timeline: list, spec: tuple, out: Path) -> list:
+    """The voice track with each run of lines at its own pace (ffmpeg atempo per run, the PCM pieces joined
+    sample-exact); returns the [raw second, new second] map at the runs' edges."""
+    import tempfile, wave
+    pace, own = spec
+    with tempfile.TemporaryDirectory(prefix="pace_") as td:
+        td = Path(td)
+        wav = td / "raw.wav"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw), "-ac", "2", "-ar", "44100", str(wav)], check=True)
+        with wave.open(str(wav)) as w:
+            sr, n = w.getframerate(), w.getnframes()
+        end = n / sr
+        ps = [own.get(str(x.get("speaker") or ""), pace) if x.get("kind") == "quote" else pace for x in timeline]
+        runs = []                       # (raw start, raw end, pace): consecutive lines at one pace are one run
+        for i, x in enumerate(timeline):
+            a = 0.0 if i == 0 else float(x["t"])
+            if runs and abs(runs[-1][2] - ps[i]) < 1e-6:
+                continue
+            if runs:
+                runs[-1][1] = a
+            runs.append([a, end, ps[i]])
+        pieces, mp, at = [], [[0.0, 0.0]], 0.0
+        for j, (a, b, pc) in enumerate(runs):
+            if b - a < 1e-3:
+                continue
+            pz = td / f"p{j:05d}.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(wav), "-af",
+                            f"atrim=start_sample={round(a * sr)}:end_sample={round(b * sr)},asetpts=N/SR/TB,atempo={pc:g}",
+                            str(pz)], check=True)
+            with wave.open(str(pz)) as w:
+                at += w.getnframes() / sr
+            pieces.append(pz)
+            mp.append([round(b, 4), round(at, 4)])
+        lst = td / "list.txt"
+        lst.write_text("".join(f"file '{x}'\n" for x in pieces))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-b:a", "192k",
+                        "-f", "mp3", str(out)], check=True)
+    return mp
 
 
 def _unit_active(unit: str) -> bool:
@@ -491,16 +593,34 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
             x.unlink(missing_ok=True)
     if not r.exists() or not tl.exists():
         return False
-    target, current = book_pace(book), float(mark.read_text()) if mark.exists() else 1.0
-    if abs(target - current) < 1e-6:
+    spec = pace_spec(book)
+    target = spec[0]
+    now = mark.read_text().strip() if mark.exists() else "1"
+    now = json.loads(now)["spec"] if now.startswith("{") else f"{float(now):g}"
+    if now == _pace_mark(spec):
         return False
     if not raw.exists():
         shutil.copyfile(r, raw)
         shutil.copyfile(tl, raw_tl)
     timeline = json.loads(raw_tl.read_text())
-    if abs(target - 1.0) < 1e-6:
+    try:                                # (a uniform stretch's map doesn't need the length: 1e6 when unknown)
+        raw_len = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                                        "csv=p=0", str(raw)], capture_output=True, text=True).stdout.strip()) or 1e6
+    except ValueError:
+        raw_len = 1e6
+    old_map = _pace_map(mark, raw_len)
+    voices = {str(x.get("speaker") or "") for x in timeline if x.get("kind") == "quote"}
+    if any(k in voices and abs(v - target) > 1e-6 for k, v in spec[1].items()):
+        tmp = r.with_name("." + r.name)
+        new_map = _stretch_by_voice(raw, timeline, spec, tmp)
+        tmp.replace(r)
+        for seg in timeline:
+            seg["t"] = round(_remap(float(seg["t"]), [[a, a] for a, _ in new_map], new_map), 3)
+        mark.write_text(json.dumps({"spec": _pace_mark(spec), "map": new_map}))
+    elif abs(target - 1.0) < 1e-6:
         shutil.copyfile(raw, r)
         mark.unlink(missing_ok=True)
+        new_map = [[0.0, 0.0], [raw_len, raw_len]]
     else:
         tmp = r.with_name("." + r.name)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw), "-af",
@@ -510,6 +630,7 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
         for seg in timeline:
             seg["t"] = round(float(seg["t"]) / target, 3)
         mark.write_text(f"{target:g}")
+        new_map = [[0.0, 0.0], [raw_len, raw_len / target]]
     tl.write_text(json.dumps(timeline, ensure_ascii=False))
     # Everything timed in seconds against the old track is stale now - except, for a fresh recording,
     # the music composed ahead from estimated lengths: the score run re-times those cues to the real
@@ -525,10 +646,12 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
     moments = json.loads(man.read_text()) if man.exists() else None
     shutil.rmtree(vw / "anim", ignore_errors=True)
     if moments is not None:
-        for m in moments:
-            for k in ("t", "dur"):
-                if isinstance(m.get(k), (int, float)):
-                    m[k] = round(float(m[k]) * current / target, 3)
+        for m in moments:               # through the old and new maps (a per-voice pace stretches unevenly)
+            if isinstance(m.get("t"), (int, float)):
+                t0 = float(m["t"])
+                m["t"] = round(_remap(t0, old_map, new_map), 3)
+                if isinstance(m.get("dur"), (int, float)):
+                    m["dur"] = round(_remap(t0 + float(m["dur"]), old_map, new_map) - m["t"], 3)
         man.parent.mkdir(parents=True, exist_ok=True)
         man.write_text(json.dumps(moments, indent=1))
     (vw / "flow3d" / "plan.json").unlink(missing_ok=True)
@@ -536,7 +659,7 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
     # timings (10-27; tools/shot_flow.py's _plan_sig doesn't see the pace)
     for fz in (vw / "shots").glob("plan_*.json"):
         fz.unlink()
-    log(f"  {f.stem}: voices at {target:g}x (music, effects and animated shots will be redone)")
+    log(f"  {f.stem}: voices at {_pace_mark(spec).replace(';', ', ')}x (music, effects and animated shots will be redone)")
     return True
 
 
@@ -2074,7 +2197,12 @@ def stop_job(book: Path) -> int:
     return 0
 
 
-def change_pace(book: Path, pace: float) -> int:
+def pace_text(book: Path) -> str:
+    pace, own = pace_spec(book)
+    return f"{book.name}: pace {pace:g}x" + "".join(f", {k} {v:g}x" for k, v in sorted(own.items()))
+
+
+def change_pace(book: Path, pace: float, who: str | None = None) -> int:
     """`bookcaster pace <book> <value>`: re-time the recorded chapters, then say - and only then start - the music
     remix. 10-27: it re-paced and deleted work under a running job, then start_job refused "already recording" after
     the damage, and it decided the remix from the last job's "music" flag."""
@@ -2085,9 +2213,14 @@ def change_pace(book: Path, pace: float) -> int:
         # the chapters whose finished file has its music now (a score, no .nomusic marker): they get it again
         scored = {f.stem for f in chapter_files(book) if (book / "work" / "final" / f"{f.stem}.mp3").exists()
                   and (book / "work" / "score" / f.stem).exists() and not has_nomusic(book, f.stem)}
-        set_pace(book, pace)
+        if who:                         # one voice's own pace; the book's stays
+            own = dict(pace_spec(book)[1])
+            own[pace_voice(book, who)] = pace
+            set_pace(book, book_pace(book), own)
+        else:
+            set_pace(book, pace)
         changed = [f.stem for f in chapter_files(book) if apply_pace(book, f, print)]
-    print(f"{book.name}: pace {book_pace(book):g}x")
+    print(pace_text(book))
     if not changed:
         return 0
     remix = [c for c in changed if c in scored]
@@ -2220,6 +2353,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("pace", help="set or show the listening speed (1.25 = a quarter faster, pitch kept)")
     s.add_argument("book")
     s.add_argument("value", nargs="?", type=float)
+    s.add_argument("--who", help="one voice's own pace (its spoken lines), e.g. --who Helen 1.0; the book's stays")
     s = sub.add_parser("sfx", help="add sound effects to the recorded chapters (background job)")
     s.add_argument("book")
     s = sub.add_parser("storyboard", help="review pack before recording: voices, looks, music, art (background job)")
@@ -2551,9 +2685,9 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "pace":
         d = book_dir(a.book)
         if a.value is None:
-            print(f"{d.name}: pace {book_pace(d):g}x")
+            print(pace_text(d))
         else:
-            return change_pace(d, a.value)
+            return change_pace(d, a.value, a.who)
     elif a.cmd == "sfx":
         d = book_dir(a.book)
         if not any(final_path(d, f).exists() for f in chapter_files(d)):
