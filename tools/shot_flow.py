@@ -92,11 +92,14 @@ Rules:
 - Every SPOKEN line is covered by "talk" shots of the one who says it: their lips are synced to the voice. Nobody
   speaks in any other shot. A talk shot starts when its line starts and lasts at most 8 seconds: a longer line cuts
   to a close reaction of the listener and back to the speaker. Give "speaker", "listener" (the one spoken to, or "")
-  and "framing": "two" (both in the picture, waist up: the first line of an exchange - only two who stand next to each
-  other in the scene's BLOCKING), "group" (everyone in the scene in the picture, in the blocking's order: a line to
-  someone other than the one they have been talking with, or an exchange of three or more), "over-the-shoulder" (a
-  reply in a running exchange) or "close". Keep the BLOCKING: nobody appears in a place someone else stood in, and
-  everyone stays on their side. A talk shot is always where the speaker really is,
+  and "framing". THE ONE SPOKEN TO IS IN THE PICTURE, looking at the speaker: a line said to someone is never the
+  speaker alone, however far apart they are. "two" (both in the picture, waist up: the first line between two who are
+  near each other in the scene's BLOCKING), "over-the-shoulder" (the speaker seen past the listener's shoulder: a reply
+  in a running exchange, or two who are apart in the BLOCKING, one at the desk and one in the armchair), "group"
+  (everyone in the scene in the picture, in the blocking's order: a line to someone other than the one they have been
+  talking with, or an exchange of three or more), or "close" (the speaker alone: only a line said to nobody, or a
+  reply straight after a shot that showed the listener). Keep the BLOCKING: nobody appears in a place someone else
+  stood in, and everyone stays on their side. A talk shot is always where the speaker really is,
   never in a place someone describes. No picture or action words.
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
   where, how they react. When it describes a person (their face, clothes, manner), show that person in the moment. Each
@@ -1138,7 +1141,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                             sh.update(who=gr, listener=lis, picture=TALK_GROUP.format(
                                 people=", ".join(f"{w} {lab[w]}" for w in gr), who=who, listener=lis,
                                 others=" and ".join(w for w in gr if w not in (who, lis)) or "the others"))
-                        elif pair != {who, lis} or fr.startswith("two"):
+                        # the director's over-the-shoulder kept for a pair's first line too (10-28 user: Helen in
+                        # the armchair, Holmes at the desk - apart, so a two-shot side by side broke the blocking)
+                        elif fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over")):
                             sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
                                                                                    listener=lis))
                         else:
