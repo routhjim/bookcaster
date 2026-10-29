@@ -1,5 +1,4 @@
-"""10-28 user: "the director and the key frame have to not contradict each other". Each shot opens where the shot
-before LEFT everyone (at_end / facing_end carried, like poses); the LTX action words say where a move ends."""
+"""Poses carry from shot to shot within a scene (10-29); the 10-28 at_end/facing_end carry is gone."""
 import sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
@@ -11,33 +10,9 @@ def check(name, ok, got=None):
     print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  got {got}"))
     ok or fails.append(name)
 
-cast = ["Sherlock Holmes", "Helen Stoner"]
-res = lambda v: next((w for w in cast if v and v.split()[-1] in w), None)
-carry, sides = {}, {}
-a = S.compose({"kind": "action", "people": [
-        {"name": "Holmes", "side": "right", "pose": "standing", "at": "by the fire", "facing": "Helen Stoner",
-         "at_end": "at the desk", "facing_end": "the desk"},
-        {"name": "Helen Stoner", "side": "left", "pose": "sitting", "at": "in the armchair", "facing": "Holmes"}],
-    "setting": "The desk on the right of the picture.", "action": "He turns to his right and crosses to the desk."},
-    cast, [], sides, res, carry)
-check("the opening picture is the moment before the move (by the fire, facing Helen)",
-      "by the fire" in a["picture"] and "facing Helen Stoner" in a["picture"] and "desk," not in a["picture"].split(".")[0],
-      a["picture"])
-check("the end is carried: Holmes left at the desk, facing it", {k: v for k, v in carry.get("Sherlock Holmes", {}).items()
-      if k != "pose"} == {"at": "at the desk", "facing": "the desk"}, carry)
-b = S.compose({"kind": "action", "people": [
-        {"name": "Holmes", "side": "right", "pose": "standing", "at": "by the window", "facing": "the door"}],
-    "setting": "", "action": "He opens the drawer."}, cast, [], sides, res, carry)
-check("the next shot OPENS where he was left, whatever the director re-wrote (at the desk, facing the desk)",
-      "at the desk" in b["picture"] and "facing the desk" in b["picture"] and "window" not in b["picture"], b["picture"])
-check("someone the scene hasn't moved keeps the director's own opening", "in the armchair" in a["picture"], a["picture"])
-class CX: book = None
-S.describe = lambda R, w, d: "the tall man in a dark frock coat"
-S.RG.Book = lambda b: None
-S._shot_dress = lambda cx, s: {}
-e = S._ends(CX, a)
-check("the LTX words say where the move ends", "ends at the desk, facing the desk" in e, e)
-check("nobody who doesn't move gets an ending", S._ends(CX, b) == "", S._ends(CX, b))
+# 10-29: the at_end/facing_end carry is gone (never a real move in 256 rows; postures carried instead)
+check("the director is not asked for at_end/facing_end", "at_end" not in S.SHOT_RULES and "facing_end" not in S.SHOT_RULES)
+check("no ending words for LTX", not hasattr(S, "_ends"))
 # 10-29 user: "Watson should just remain in bed and sit up"
 cast2 = ["Doctor Watson", "Sherlock Holmes"]
 res2 = lambda v: next((w for w in cast2 if v and v.split()[-1] in w), None)
@@ -61,14 +36,12 @@ check("someone not yet shown keeps the director's pose", S.compose({"kind": "qui
       {"name": "Holmes", "side": "left", "pose": "standing", "at": "beside the bed", "facing": "Watson"}],
       "setting": "", "action": "He waits."}, cast2, [], s2, res2, c2)["pose"]["Sherlock Holmes"] == "standing")
 c3, s3 = {}, {}
-st = S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "by the fire",
-                "facing": "Watson", "at_end": "standing"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
-st2 = S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "standing by the door",
-                 "facing": "Watson"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
-check("a posture in at_end is not a place: he is still by the fire (no 'stands standing')",
-      c3["Sherlock Holmes"]["at"] == "by the fire" and "stands by the fire" in st2["picture"]
-      and "standing" not in st2["picture"], (c3, st2["picture"]))
-check("a posture at the front of 'at' is dropped, the place kept", S.AT_POSE.sub("", "standing by the door") ==
-      "by the door" and S.AT_POSE.sub("", "Sitting up, in bed") == "in bed")
+S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "by the fire",
+           "facing": "Watson"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
+st2 = S.compose({"kind": "quiet", "people": [{"name": "Holmes", "side": "left", "pose": "standing", "at": "by the door",
+                 "facing": "the window"}], "setting": "", "action": "He waits."}, cast2, [], s3, res2, c3)
+check("each shot's place and facing are the director's own (only the pose carries)",
+      "by the door" in st2["picture"] and "facing the window" in st2["picture"] and c3["Sherlock Holmes"] == {"pose": "stand"},
+      (st2["picture"], c3))
 print({"fails": fails})
 sys.exit(1 if fails else 0)

@@ -131,9 +131,7 @@ Rules:
 - "people": everyone in the OPENING picture, left to right, only from the passage's names, each with "name", "side"
   ("left", "centre" or "right"), "pose" (standing, sitting, lying, kneeling or crouching: as the passage says, someone
   leaning back in a chair is sitting), "at" (where on the set: "in the armchair by the fire", "at the writing desk",
-  "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""), and where the action leaves
-  them: "at_end" and "facing_end" (he crosses to the desk: "at" by the fire, "at_end" at the desk; "facing" Helen,
-  "facing_end" the desk). Each shot OPENS where the shot before left everyone: the film carries it. [] for a thing alone.
+  "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
 - "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
   action will use, set up for the action's first moment (his hand already at the drawer; a thing the action takes out
   is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
@@ -150,7 +148,7 @@ Rules:
 - "state_end": how things stand at the END of the passage: what each one holds, each one's posture and where they
   are, and any visible change to the place (a lamp lit, a door open, a letter on the table). Not their clothes: the
   wardrobe keeps those. Plain words, at most 80.
-Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": "", "at_end": "...", "facing_end": "..."}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
+Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": ""}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
 PASSAGE_ASK = """{scene}
 The story just before: {before}
 THE PASSAGE ({sec:.1f} seconds). Each line: [seconds from the passage's start] who: the words. Spoken lines say
@@ -291,21 +289,6 @@ def garments(clothes: str) -> str:
 def pose_cat(text) -> str:
     """'sit' / 'stand' / 'lie' / 'kneel' / 'crouch' for a pose word or phrase, '' when it names none."""
     return next((c for c, rx in POSE_CAT if rx.search(str(text or ""))), "")
-
-
-def _ends(cx, s: dict) -> str:
-    """' The man in a dark frock coat ends at the desk, facing the desk.' for each one the action moves or turns (10-28:
-    Lightricks' guide - saying where a move ends helps the model complete it; the key shows where it starts)."""
-    out = []
-    for pl in s.get("placed") or []:
-        moved = [f"ends {pl['at_end']}" if pl.get("at_end") and pl["at_end"] != pl.get("at") else "",
-                 f"facing {re.sub(r'^(facing|toward|towards)\s+', 'toward ', pl['facing_end'])}"
-                 if pl.get("facing_end") and pl["facing_end"] != pl.get("facing") else ""]
-        moved = [m for m in moved if m]
-        if moved:
-            first = describe(RG.Book(cx.book), pl["name"], _shot_dress(cx, s))
-            out.append(f" {first[0].upper() + first[1:]} {', '.join(moved) if moved[0].startswith('ends') else 'ends ' + moved[0]}.")
-    return "".join(out)
 
 
 def _pose_hold(cx, s: dict) -> str:
@@ -527,10 +510,6 @@ def _converse(url: str, model: str, messages: list, max_tokens: int = 5000, effo
 
 
 SIDE = {"left": 0, "centre": 1, "center": 1, "middle": 1, "right": 2}
-# a posture written where a place goes (10-29: "at_end": "standing" made "Helen Stoner stands standing" and lost
-# where she stood): the pose has its own field, "at" keeps only the place
-AT_POSE = re.compile(r"^(?:still\s+)?(?:standing(?:\s+up)?|sitting(?:\s+up)?|seated|lying(?:\s+down)?|kneeling|"
-                     r"crouching(?:\s+low)?)\b,?\s*", re.I)
 IN_BED = re.compile(r"\b(?:in|on)\s+(?:the\s+|his\s+|her\s+|a\s+)?bed\b", re.I)
 POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
 
@@ -550,10 +529,10 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
     (0 left, 1 centre, 2 right), read and extended as shots are composed in order (talk shots read it too);
     `resolve`: name -> cast name (the registry). The position words are the key layout's own (10-27 audit: "on the
     centre"; two people "on the left" while the key's boxes go by order).
-    `carry`: the SCENE's {name: {"at", "facing"}} as the shot before LEFT each one, read and moved on like `sides`
-    (10-28 user: "the director and the key frame have to not contradict each other": the picture said "facing toward
-    the desk" and the action "turns away from Helen" - he turned away from the desk. The opening is the last end now,
-    by construction; the director's own opening only places someone the scene hasn't shown yet)."""
+    `carry`: the SCENE's {name: {"pose"}} as the shot before LEFT each one, read and moved on like `sides` (10-29:
+    where and facing were carried too, from the director's "at_end"/"facing_end" - in the Speckled Band's 256 rows it
+    never wrote a real move, 94 were postures ("standing") and the carry wiped out where people were for the rest of
+    the scene; dropped. The opening-moment and screen-direction rules hold the turn the right way)."""
     ppl = [x for x in s.get("people") or [] if isinstance(x, dict)]
     if not ppl and not s.get("setting"):
         return s                        # an old-style answer: as it is
@@ -579,12 +558,9 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
     lay = [l for _, l in group_layout(len(rows))]
     parts, placed, ends = [], [], {}
     for (w, sd_, pz, x), side in zip(rows, lay):
-        where = AT_POSE.sub("", str(x.get("at") or "").strip().rstrip("."))
+        where = str(x.get("at") or "").strip().rstrip(".")
         face = str(x.get("facing") or "").strip().rstrip(".")
         was = (carry or {}).get(w) or {}
-        where, face = was.get("at") or where, was.get("facing") or face
-        where1 = AT_POSE.sub("", str(x.get("at_end") or "").strip().rstrip(".")) or where
-        face1 = str(x.get("facing_end") or "").strip().rstrip(".") or face
         # the pose too (10-29 user: "Watson should just remain in bed and sit up": the shot of him pushing himself up
         # opened him already sitting, so the clip had nothing to do and the key sat him on a chair): the shot opens
         # as the last one ended; a different pose from the director is where this shot's action takes them
@@ -593,7 +569,7 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
             end = pz if end == pz else end
             pz = was["pose"]
         if carry is not None:
-            carry[w] = {"at": where1, "facing": face1, "pose": end}
+            carry[w] = {"pose": end}
         ends[w] = end
         hold = str(x.get("holds") or "").strip().rstrip(".")
         hold = "" if hold.lower() in ("", "nothing", "none") else re.sub(r"^holding\s+", "", hold)
@@ -603,8 +579,7 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
         parts.append(f"{w} {verb}{' ' + where if where else ''}{' ' + side if side else ''}"
                      f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
                      f"{', holding ' + hold if hold else ''}")
-        placed.append({"name": w, "pose": pz, "at": where, "facing": face, "holds": hold, "at_end": where1,
-                       "facing_end": face1})
+        placed.append({"name": w, "pose": pz, "at": where, "facing": face, "holds": hold})
     setting = str(s.get("setting") or "").strip().rstrip(".")
     opened = {p_["name"]: p_["pose"] for p_ in placed}
     s = dict(s, who=[r[0] for r in rows], pose={w: POSE_WORDS[opened[w]].split()[0] for w in opened}, placed=placed,
@@ -1020,7 +995,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         if si != cur:                   # a new scene: its place; the conversation starts again (no old shots to copy)
             cur, home = si, sc_["place"] or home
             pair, people_here, where_of, talk_, screen, last_pose, last_at = None, [], {}, [], {}, {}, {}
-            carry = {}                  # where each one was left facing: nothing carried into a new scene
+            carry = {}                  # each one's pose as left: nothing carried into a new scene
             # 10-28: the scene's side map starts from the director's own blocking (it put Watson right of Holmes;
             # the two-shot code, with no map yet, put him on the left - in Helen's place)
             screen.update(_blocking_sides(sc_.get("blocking"), RGB.people()))
@@ -1310,8 +1285,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             for pl in sh.get("placed") or []:  # how each one is now, for the talk and reaction shots that follow
                 end = pose_cat((sh.get("pose_end") or {}).get(pl["name"])) or pl["pose"]
                 last_pose[pl["name"]] = end
-                if pl.get("at_end") or pl.get("at"):
-                    last_at[pl["name"]] = pl.get("at_end") or pl["at"]
+                if pl.get("at"):
+                    last_at[pl["name"]] = pl["at"]
             if place and (place == home or not home):
                 where_of.update({w: place for w in sh.get("who") or []})
         pics_scene += [by[m_["id"]][0].get("picture", "") for m_ in new_es if float(m_["t"]) >= pa - 1e-6
@@ -2140,7 +2115,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = figurative(s["action"]) + _ends(cx, s) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd"))
+            act = figurative(s["action"]) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
