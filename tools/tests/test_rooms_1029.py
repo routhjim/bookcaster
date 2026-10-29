@@ -96,6 +96,7 @@ CH.vl_ask = lambda items: (vl.append(items), {x["id"]: {"layout": "  The bed on 
 CH.vl_close = lambda: None
 got = S.room_layouts(b, stem, log=lambda m: None)
 check("only described places get a picture first", drawn and list(drawn[0]) == ["Baker Street Sitting Room (inside)"], drawn)
+check("asked for a full answer (not the yes/no 8 tokens)", vl and vl[0][0].get("max_new_tokens") == 120, vl)
 check("its layout is the vision model's words, tidied", got == {"Baker Street Sitting Room (inside)": "The bed on the left."}, got)
 S.room_layouts(b, stem, log=lambda m: None)
 check("asked once: cached beside the picture", len(vl) == 1, len(vl))
