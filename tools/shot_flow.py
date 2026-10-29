@@ -218,6 +218,16 @@ TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up
             "listening")       # (10-28: "toward the viewer" alone turned Holmes away from Watson)
 # (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
 # an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
+# 10-29 user: "what are the next steps to preserve his position in bed?": the two-shot's "waist up, an arm's length
+# apart" sat Watson on a chair beside an empty bed (868, 964, 986, 1173, 1275) - the director's talk shots carry no
+# placing, so the template IS the blocking. Someone in bed has a template of their own: the same waist-up, large-face
+# framing the lip sync needs, the other one at the bedside
+TALK_TWO_BED = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces "
+                "large in the picture; {abed} {bedpose} in bed under the covers, propped against the pillows, and {other} "
+                "standing at the bedside close beside {abed}, bending a little toward {abed}; {who} turned three-quarters "
+                "to the viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} head turned to look at {who}, "
+                "listening")
+BED_POSE = {"sit": "sitting up", "lie": "lying back, head raised on the pillows"}
 TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
               "three-quarters toward the viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} in profile, head turned to {who}, "
               "listening; {others} in profile, looking at {who}")
@@ -1196,6 +1206,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             pz = last_pose.get(w, "")
             return f"{w} {POSE_VERB[pz]}{' ' + last_at[w] if last_at.get(w) else ''}" if pz else ""
 
+        def abed(w):                    # in bed now (the last shot that placed them): stays there until a shot moves them
+            return last_pose.get(w) in BED_POSE and bool(IN_BED.search(last_at.get(w, "")))
+
         sc_who = [w for w in (cast_of(v, cast) for v in sc_.get("who") or []) if w]   # everyone in the scene
         for x0, x, b in cuts_:
             t, d = pa + x, b - x
@@ -1213,7 +1226,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                        " to the right" if screen[spk] > screen[lis] else " to the left")
                 x0 = {"kind": "quiet", "framing": "close", "place": where_of.get(lis) or home, "who": [lis],
                       "pose": {lis: POSE_WORDS.get(last_pose.get(lis, "stand"), "standing").split()[0]},
-                      "picture": (held(lis) or f"{lis} listens") + (f", facing toward {spk}" if spk else "") + ".",
+                      "picture": ((f"a close view of {lis}'s head and shoulders, " if abed(lis) else "")   # (10-29: in
+                                  + (held(lis) or f"{lis} listens")          # bed, drawn as a wide of the whole room)
+                                  + (f", facing toward {spk}" if spk else "") + "."),
                       "action": f"{describe(RGB, lis, dress)}, alone in the picture, listens closely, looking off "
                                 f"past the edge of the frame{off}, then gives a small nod."}
                 place = x0["place"]
@@ -1229,6 +1244,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     sh = {"id": f"{mid}_s0", "dur": d, "who": [who], "framing": "close" if fr.startswith("close")
                           else "medium", "kind": "talk", "place": tp, "action": "",
                           "picture": (TALK_CREATURE if who in crs else TALK_PICTURE).format(who=who)}
+                    if abed(who) and who not in crs:      # a close-up in bed: the pillows behind the face, not a chair
+                        sh["picture"] += f", {BED_POSE[last_pose[who]]} in bed, against the pillows, the covers at the chest"
                     if lis and who not in crs and lis not in crs and not fr.startswith("close"):
                         # the scene's ONE side map, the same the other shots use (10-27 audit: talk shots kept their
                         # own, and Helen and Holmes swapped sides at every cut between a talk shot and the others)
@@ -1251,14 +1268,26 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                                 others=" and ".join(w for w in gr if w not in (who, lis)) or "the others"))
                         # the director's over-the-shoulder kept for a pair's first line too (10-28 user: Helen in
                         # the armchair, Holmes at the desk - apart, so a two-shot side by side broke the blocking)
+                        elif (fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over"))) and \
+                                len([w for w in lr if abed(w)]) == 1:
+                            ab = next(w for w in lr if abed(w))
+                            sh.update(who=lr, listener=lis, bed=ab, picture=TALK_TWO_BED.format(
+                                left=lr[0], right=lr[1], who=who, listener=lis, abed=ab, other=lr[1 - lr.index(ab)],
+                                bedpose=BED_POSE[last_pose[ab]]))
                         elif fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over")):
                             sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
                                                                                    listener=lis))
+                        elif abed(lis):         # over the shoulder of someone in bed: his back drawn standing (10-29,
+                            sh["framing"] = "close"     # 1092) - the speaker's close-up instead
                         else:
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
+                            if abed(who):       # past the one at the bedside onto the one in bed
+                                sh["picture"] = sh["picture"].replace("seen from the chest up", f"{BED_POSE[last_pose[who]]} "
+                                                                      "in bed under the covers, propped against the "
+                                                                      "pillows, seen from the chest up", 1)
                         pair = {who, lis}
-                    hs_ = [held(w) for w in sh["who"] if held(w)] if len(sh["who"]) > 1 else []   # (a close-up:
+                    hs_ = [held(w) for w in sh["who"] if held(w)] if len(sh["who"]) > 1 and not sh.get("bed") else []   # (a close-up:
                     if hs_:                       # none - "beside the bed" put an empty bed and his whole stance in it)
                         sh["picture"] += ". " + "; ".join(hs_)
                     sh["pose_held"] = {w: last_pose[w] for w in sh["who"] if last_pose.get(w)}
