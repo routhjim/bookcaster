@@ -617,6 +617,145 @@ def _repeats(a: dict, before: list, scene: list) -> list:
     return out
 
 
+# 10-29 user: "is it possible to hand LTX both the audio and the text of that audio?" - LTX's training captions quote
+# the dialogue ("spoken dialogue (quoted exactly in the original language)", ltx_trainer/captioning.py) and its
+# negative prompt names "incorrect dialogue": a talk prompt says what is said. "you should just use the source words
+# directly": the BOOK's words - the timeline holds the voice's respellings ("tee-ar-uh", "Missus"), mapped back here
+_WORD = re.compile(r"[^\s]+")
+_BOOK_ALIGN = {}
+
+
+def _norm(w: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", w.lower())
+
+
+def _book_align(book: Path, stem: str, tl: list):
+    """(book words, [per timeline entry: (first, last) book word index, or None]) - the timeline's words matched to
+    the chapter text's, word by word (difflib over the whole chapter); respelled words fall inside the run."""
+    import difflib
+    f = book / "chapters" / f"{stem}.txt"
+    key = (str(f), f.stat().st_mtime_ns if f.exists() else 0, len(tl), tl[-1].get("text") if tl else "")
+    if key in _BOOK_ALIGN:
+        return _BOOK_ALIGN[key]
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    tw, own = [], []
+    for i, x in enumerate(tl):
+        ws = _WORD.findall(str(x.get("text") or ""))
+        own.append(list(range(len(tw), len(tw) + len(ws))))
+        tw += ws
+    a, b = [_norm(w) for w in tw], [_norm(w) for w in bw]
+    to = [None] * len(tw)
+    blocks = difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    pi = pj = 0
+    for blk in blocks:
+        gi, gj = blk.a - pi, blk.b - pj            # an unmatched run between matches: word for word as far as it goes
+        for k in range(gi):
+            if gj > 0:
+                to[pi + k] = pj + min(k, gj - 1)
+        for k in range(blk.size):
+            to[blk.a + k] = blk.b + k
+        pi, pj = blk.a + blk.size, blk.b + blk.size
+    # each entry's book words run from its own first match to the next entry's (10-29: the timeline keeps only a
+    # line's first ~150 characters - "happy to dev" - so a long line matched its opening words alone)
+    starts = [min((to[k] for k in idx if to[k] is not None), default=None) for idx in own]
+    nxt, spans_ = len(bw), [None] * len(tl)
+    for i in range(len(tl) - 1, -1, -1):
+        if starts[i] is not None and starts[i] < nxt:
+            spans_[i] = (starts[i], nxt - 1)
+            nxt = starts[i]
+    got = (bw, spans_)
+    _BOOK_ALIGN.clear()
+    _BOOK_ALIGN[key] = got
+    return got
+
+
+# WHEN each book word is said: the timeline marks only where a paragraph starts (Helen's run to 28 s, and a guess by
+# word position quoted words seconds off - "incorrect dialogue"). Forced alignment: Whisper's word timestamps on the
+# chapter's own voice track, matched to the book's words; the words quoted are always the book's
+WHISPER_PY = Path.home() / "tts-ab" / ".venv-qwen" / "bin" / "python"      # faster-whisper (CPU, int8)
+WHISPER_MODEL = "small.en"
+_WHISPER_RUN = r"""
+import json, subprocess, sys
+import numpy as np
+from faster_whisper import WhisperModel
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", sys.argv[1], "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                     capture_output=True, check=True).stdout
+m = WhisperModel(sys.argv[3], device="cpu", compute_type="int8")
+segs, _ = m.transcribe(np.frombuffer(raw, np.float32), beam_size=5, word_timestamps=True,
+                       condition_on_previous_text=False, initial_prompt=sys.argv[4] or None)
+json.dump([[w.word.strip(), round(w.start, 3)] for s in segs for w in (s.words or [])], open(sys.argv[2], "w"))
+"""
+
+
+def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> list:
+    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes."""
+    import difflib
+    track = track or book / "work" / f"{stem}.mp3"
+    st = track.stat()
+    cp = track.with_name(track.name + ".wordtimes.json")
+    key = f"{st.st_size}:{st.st_mtime_ns}:{WHISPER_MODEL}"
+    try:
+        got = json.loads(cp.read_text())
+        if got.get("k") == key:
+            return got["t"]
+    except (OSError, ValueError):
+        pass
+    f = book / "chapters" / f"{stem}.txt"
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    if not bw or not WHISPER_PY.exists():
+        return [None] * len(bw)             # no book text or no Whisper: the talk prompts quote nothing
+    names = ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
+    log(f"  word timing: {track.name} (Whisper {WHISPER_MODEL}, CPU)")
+    tmp = cp.with_suffix(".tmp")
+    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), WHISPER_MODEL, names])
+    try:
+        hw = json.loads(tmp.read_text()) if getattr(r, "returncode", 1) == 0 else None
+    except (OSError, ValueError):
+        hw = None
+    tmp.unlink(missing_ok=True)
+    if hw is None:
+        log(f"  !!! word timing failed for {track.name}: the talk prompts quote only whole lines")
+        return [None] * len(bw)
+    times = [None] * len(bw)
+    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(w) for w in bw], autojunk=False)
+    for blk in sm.get_matching_blocks():
+        for k in range(blk.size):
+            times[blk.b + k] = hw[blk.a + k][1]
+    cp.write_text(json.dumps({"k": key, "t": times}))
+    return times
+
+
+def spoken_words(book: Path, stem: str, tl: list, lines: list, t: float, d: float, times: list | None = None) -> str:
+    """The book's words of `lines` (timeline entries, (start, end, entry)) said between t and t + d (word_times),
+    in the book's spelling and without its quotation marks; a word heard nowhere takes its neighbours' place."""
+    if not lines:
+        return ""
+    bw, rng = _book_align(book, stem, tl)
+    times = times if times is not None else word_times(book, stem)
+    idx = {id(x): i for i, x in enumerate(tl)}
+    out = []
+    for a_, b_, x in lines:
+        i = idx.get(id(x))
+        if i is None or rng[i] is None:
+            continue
+        lo, hi = rng[i]
+        if a_ >= t - 0.5 and b_ <= t + d + 0.5:     # the whole line is in the clip: all its words, no timing needed
+            out.append(" ".join(bw[lo:hi + 1]))
+            continue
+        sel, last = [], None                # a long line the clip's edge cuts: its words heard inside the clip
+        for j in range(lo, hi + 1):
+            tj = times[j] if j < len(times) and times[j] is not None else last
+            last = tj
+            if tj is not None and t - 0.15 <= tj < t + d - 0.05:
+                sel.append(j)
+        if sel:                             # a line that starts (ends) at the clip's edge: from (to) its first (last)
+            a0 = lo if a_ >= t - 0.5 else min(sel)          # word (10-29: Whisper put "No," 0.4 s before the cut)
+            b0 = hi if b_ <= t + d + 0.5 else max(sel)
+            out.append(" ".join(bw[a0:b0 + 1]))
+    txt = re.sub(r"[“”\"‘’]|(?<!\w)'|'(?!\w)", "", " ".join(out))
+    return re.sub(r"\s+", " ", txt).strip()
+
+
 def sentences(tl: list) -> list:
     """Every sentence of the chapter: (start, end, speaker, kind, words), each sentence's times estimated from its word
     position in its timeline entry (an entry is a paragraph or a spoken line; the pace is steady)."""
@@ -979,6 +1118,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         x = mine[0][2] if mine else {}
         # built from scratch: the planner's moment fields (another line's pic/first/emotion) no longer leak in
         return {"id": mid, "kind": "talk", "route": "talk", "t": t, "dur": d, "speaker": who, "line": x.get("text", ""),
+                "words": spoken_words(book, stem, tl, mine, t, d),
                 "emotion": x.get("emotion") or "", "creature": bool(creature), "speech_s": d, "frames": _frames(d),
                 "chunks": [[0, _frames(d)]], "wav": str(wav)}
 
@@ -1830,8 +1970,10 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     n_ = len(s.get("who") or [])
     pos = (f" on the {'left' if s['who'][0] == who else 'right'}" if n_ == 2 else
            f" {group_layout(n_)[s['who'].index(who)][1]}" if n_ > 2 and who in s["who"] else "")
+    says = (f' {dict(his="He says", her="She says").get(pron, "They say")}, "{e["words"]}"'
+            if e.get("words") else "")      # the line itself, as LTX's captions quote it (10-29)
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
-            f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
+            f"clearly in sync with {pron} voice.{says}{lst} No text anywhere in the picture.")
 
 
 def _key_questions(cx, s: dict) -> tuple:
