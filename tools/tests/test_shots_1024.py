@@ -123,6 +123,11 @@ th.start()
 (o / "A_s0.mp4").write_text("x")
 time.sleep(11)
 (o / "B_s0.mp4").write_text("x")
+for _ in range(400):                    # (10-30: the judge waits for the retakes it queued; the render's end stops it)
+    if json.loads(more.read_text()):
+        break
+    time.sleep(0.1)
+stop.set()
 th.join(40)
 check(json.loads(more.read_text()) == [{"name": "B_s0_t2", "seed": SF.RETAKE}] and done.exists()
       and (o / "A_s0.judged").exists(), "takes: judged as they land, the faulted one's retake queued")
