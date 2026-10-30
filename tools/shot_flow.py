@@ -177,10 +177,9 @@ About {nmin} to {nmax} shots. Places: {places}. Names: {names}.
 # the rules for what only some passages have, given only when the passage has it (10-27: forge, dragon and
 # tongues-of-fire rules were a third of every Speckled Band prompt)
 RULE_TOLD = ("Other places in this passage: {others}. When its words tell of another time or place (someone recounting "
-             "what happened, a memory), the non-talk shots may show those events there, while the talk shots stay with "
-             "the teller where the people are now. Only people from the Names are ever drawn: anyone else the telling "
-             "mentions (a stepfather, a crowd, gypsies, guests) is never in a picture, so those shots show the place, a "
-             "thing or a light, with nobody in it. When the people of the story really go there, they are there.\n")
+             "what happened, a memory), the non-talk shots may show those events there, with only the people the words "
+             "describe, while the talk shots stay with the teller where the people are now. When the people of the story "
+             "really go there, they are there.\n")
 # 10-27 audit: only rules any book can need, each given only when its passage has it (the passing-effect rule made a
 # lit hearth a fault; the making rule fired on "made a remark"; both were one story's band-aids)
 RULE_EXTRA = [
@@ -476,12 +475,6 @@ def timed(tl: list, t0: float, sec: float) -> list:
     return out
 
 
-# 10-30: people-free shots (a telling's cutaways) whose action had people in it - LTX invented them mid-clip
-IN_EMPTY = re.compile(r"\b(man|men|woman|women|people|person|figures?|girls?|boys?|child(?:ren)?|couple|guests?|"
-                      r"servants?|someone|somebody|(?<!minute )(?<!hour )(?<!second )hands?|fingers?|he|she|his|her)\b", re.I)
-EMPTY_HOLD = " Nobody is in the picture and nobody comes into it."
-
-
 def _faults(a: dict, cast: list, sec: float) -> list:
     out = []
     shots = a.get("shots") if isinstance(a.get("shots"), list) else []
@@ -508,10 +501,6 @@ def _faults(a: dict, cast: list, sec: float) -> list:
         for sent in re.split(r"(?<=[.;])\s+", act):
             if MF.EFFECT.search(sent) and not re.search(r"\bfrom\b", sent):
                 out.append(f"shot {i}: '{MF.EFFECT.search(sent).group(0)}' does not say where it comes from")
-        m_ = not s.get("who") and not s.get("crowd") and IN_EMPTY.search(act)
-        if m_:      # 10-30: a people-free picture whose action had "the couple exchanges rings": LTX drew strangers
-            out.append(f"shot {i} has nobody in \"people\" but its action has a person ('{m_.group(0)}'): with nobody "
-                       f"in the picture, show only the place and its things")
         if len(act.split()) > 70:
             out.append(f"shot {i}'s action is over 50 words")
         beats = _beats(act)
@@ -2373,8 +2362,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = figurative(s["action"]) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd")) + \
-                EMPTY_HOLD * (not s.get("who") and not s.get("crowd"))
+            act = figurative(s["action"]) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -2385,7 +2373,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "people": None if s.get("crowd") else len(s.get("who") or [])})
         else:
             p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + _pose_hold(cx, s) + \
-                STILL_CROWD * bool(s.get("crowd")) + EMPTY_HOLD * (not s.get("who") and not s.get("crowd"))
+                STILL_CROWD * bool(s.get("crowd"))
             emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
             enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
