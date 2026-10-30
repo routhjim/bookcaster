@@ -131,7 +131,7 @@ def cover(book: Path, stem: str, t0: float, t1: float, log=print) -> list:
         fr["mode"] = "key"
     animate.apply_wardrobe(kf_new, plan, starts)
     kp = vd / "anim" / "keyframes.json"
-    kf = json.loads(kp.read_text())
+    kf = _keyframes(vd)                     # (10-29: a pace change deletes anim/ - the moments kept, this file not)
     kf["frames"] = sorted([x for x in kf["frames"] if x.get("shot") not in {m["id"] for m in new}] + kf_new["frames"],
                           key=lambda x: animate._shot_t(x.get("shot", "")))
     kf.setdefault("props", {}).update({k: v for k, v in (kf_new.get("props") or {}).items() if k not in kf["props"]})
@@ -234,9 +234,21 @@ def stage(book: Path, stem: str, ids: list, log=print) -> dict:
     return out
 
 
+def _keyframes(vd: Path) -> dict:
+    """The planner's anim/keyframes.json, or an empty one when it is gone (a pace change deletes anim/)."""
+    kp = vd / "anim" / "keyframes.json"
+    try:
+        kf = json.loads(kp.read_text())
+    except (OSError, ValueError):
+        kf = {}
+    kf.setdefault("frames", [])
+    kf.setdefault("props", {})
+    return kf
+
+
 def _frame(book: Path, stem: str, mid: str) -> dict:
     vd, _, _ = paths(book, stem)
-    kf = json.loads((vd / "anim" / "keyframes.json").read_text())
+    kf = _keyframes(vd)
     return next((f for f in kf["frames"] if f.get("shot") == mid), {})
 
 
@@ -2001,7 +2013,7 @@ def review_sheet(book: Path, stem: str, es: list, out: Path, log=print) -> Path:
     """One row per moment: the staging (clay, mid-shot), its key, and the moment's id, time and first beats."""
     from PIL import Image, ImageDraw, ImageFont
     _, _, md = paths(book, stem)
-    kf = {f.get("shot"): f for f in json.loads((paths(book, stem)[0] / "anim" / "keyframes.json").read_text())["frames"]}
+    kf = {f.get("shot"): f for f in _keyframes(paths(book, stem)[0])["frames"]}
     tw, th = 576, 320
     try:
         font = ImageFont.truetype("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", 15)
