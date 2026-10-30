@@ -558,7 +558,10 @@ def fight_clip_ok(mp4: Path, people: int | None = None) -> list:
                                     str(mp4)], capture_output=True, text=True).stdout.strip())   # once at 1.5 s (10-26)
     except ValueError:
         dur = 5.0
-    for t in ((1.5, 3.0, 4.5) if dur >= 3.2 else (round(dur * 0.3, 1), round(dur * 0.75, 1))):
+    # 10-30: with a head count, 4 points to the clip's end (a second Helen walked through between 2.3 s and the end)
+    pts = (tuple(round(dur * f, 1) for f in (0.2, 0.45, 0.7, 0.95)) if people else
+           (1.5, 3.0, 4.5) if dur >= 3.2 else (round(dur * 0.3, 1), round(dur * 0.75, 1)))
+    for t in pts:
         png = mp4.with_name(f"{mp4.stem}_chk{int(t * 10)}.png")
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(t), "-i", str(mp4), "-frames:v", "1", str(png)])
         if png.exists():

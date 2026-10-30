@@ -47,6 +47,11 @@ with tempfile.TemporaryDirectory() as d:
                           {"name": "Q2_s0", "seed": SF.QUIET_SEED}], more, done, stop, print))
     th.start()
     (o / "Q1_s0.mp4").write_text("x"); (o / "Q2_s0.mp4").write_text("x")
+    for _ in range(400):                # (10-30: the judge now waits for the retakes it queued; the render's end stops it)
+        if json.loads(more.read_text()) and (o / "Q1_s0.judged").exists():
+            break
+        time.sleep(0.1)
+    stop.set()
     th.join(40)
     check("quiet: judged as they land, the faulted one's retake queued (seed RETAKE)",
           json.loads(more.read_text()) == [{"name": "Q2_s0_t2", "seed": SF.RETAKE}] and (o / "Q1_s0.judged").exists(),

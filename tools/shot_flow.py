@@ -41,6 +41,11 @@ SHOT_MIN, SHOT_MAX = 2.0, 5.0
 TAKES = (42,)
 RETAKE = 1042
 QUIET_SEED = 7                      # a quiet shot's first take (its retake: RETAKE)
+# 10-30 user: "narrow the prompt and redo the shot until we get rid of the dupes" - a take with more people than its
+# shot (a second Holmes walking in) is taken again on the loaded model with the HELD prompt (the people only hold
+# still), a new seed each time, up to DUPE_TAKES more; the take with the fewest faults is kept
+DUPE_TAKES = 3
+HELD = "{who} {verb} still in place, with small natural movements: breathing, a blink, a slight turn of the head."
 PP_POOL = True                      # activations between the cards through reused pinned buffers (runner --pp-pool)
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
 # 10-28 talk A/B (the 15 s window, SyncNet + the user's eye): 8 s pieces + 20 steps + STG off = 44% less GPU time
@@ -351,6 +356,16 @@ def _offscreen(cx, s: dict, text: str) -> str:
     text = GROUP_OFF.sub("people out of the picture", text)
     n = len(who)
     return text + ONLY_HERE.format(n="one person" if n == 1 else f"{n} people", be="is" if n == 1 else "are")
+
+
+def _held(cx, s: dict) -> str:
+    """The narrowed prompt for a take that grew an extra person: the shot's people only hold still (no action toward
+    anyone), their pose held, nobody else comes in."""
+    R_ = RG.Book(cx.book)
+    ds = [describe(R_, w, _shot_dress(cx, s)) for w in s.get("who") or []]
+    who = ", ".join(ds[:-1]) + " and " + ds[-1] if len(ds) > 1 else ds[0]
+    t = HELD.format(who=who[0].upper() + who[1:], verb="stay" if len(ds) > 1 else "stays") + _pose_hold(cx, s)
+    return _offscreen(cx, s, t)
 
 
 def _shot_dress(cx, s: dict) -> dict:
@@ -2392,21 +2407,31 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
+            hd = None
+            if s.get("who") and not s.get("crowd"):      # the narrowed prompt, encoded now for a retake on the loaded model
+                hp = _held(cx, s)
+                hd = {"emb": f"xh_{s['id']}_{MF._h(hp + MF.FIGHT_NEG)}", "prompt": hp}
+                enc_dev += [{"name": hd["emb"], "prompt": hp}, {"name": hd["emb"] + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 two.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": act,
                             "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
-                            "guider": GUIDER, "aguider": GUIDER, "images": img,
+                            "guider": GUIDER, "aguider": GUIDER, "images": img, "held": hd,
                             "people": None if s.get("crowd") else len(s.get("who") or [])})
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
             enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
+            hd = None
+            if s.get("who") and not s.get("crowd"):
+                hp = _held(cx, s)
+                hd = {"emb": f"qh_{s['id']}_{MF._h(hp)}", "prompt": hp}
+                enc_dev.append({"name": hd["emb"], "prompt": hp})
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
-                              "route": "i2v", "images": img,
+                              "route": "i2v", "images": img, "held": hd,
                               "people": None if s.get("crowd") else len(s.get("who") or [])})
     for j in talk + two + quiet:            # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
@@ -2423,7 +2448,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if stale:
             c.unlink()
             if not re.search(r"_t\d+$", j["name"]):    # (10-27 audit: an old _t2 or .judged outlived a new take)
-                for x in (L / "out" / f"{j['name']}_t2.mp4", L / "out" / f"{j['name']}.judged"):
+                for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)] + \
+                        [L / "out" / f"{j['name']}.judged"]:
                     x.unlink(missing_ok=True)
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
@@ -2512,36 +2538,58 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             th.join(60)
 
 
+def _crowded(faults: list) -> bool:
+    """A take whose fault is a head count (more people than the shot has)."""
+    return any(re.search(r"\d+ people, not \d+", f) for f in faults)
+
+
+def _next_take(j: dict, n: str, k: int, faults: list) -> dict | None:
+    """The job for take k (2, 3, ...) of shot `n` after a take with `faults`: an extra person -> the HELD prompt and a
+    new seed, up to 1 + DUPE_TAKES takes; any other fault -> one retake as it was (seed RETAKE)."""
+    if _crowded(faults) and j.get("held") and k <= 1 + DUPE_TAKES:
+        return dict(j, name=f"{n}_t{k}", seed=RETAKE + shot_seed(n) + 101 * (k - 2), **j["held"])
+    if k == 2:
+        return dict(j, name=f"{n}_t2", seed=RETAKE + shot_seed(n))
+    return None
+
+
 def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, log) -> None:
-    """Judge each action or quiet shot's first take as soon as its clip exists (the vision judge stays loaded); a faulted one
-    gets its retake job (seed RETAKE, name <id>_t2) appended to `more`; `done` once every first take is judged (or
-    the render stopped). judge_takes() afterwards keeps the better take of each pair."""
+    """Judge each action or quiet shot's takes as soon as each clip exists (the vision judge stays loaded); a faulted
+    take gets its next take (_next_take: the held prompt for an extra person, until one is clean) appended to `more`;
+    `done` once every chain is through (or the render stopped). judge_takes() afterwards keeps the best take."""
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the judge's iGPU
     try:
         firsts = [j for j in jobs if not re.search(r"_t\d+$", j["name"])]
         names = {j["name"] for j in jobs}
-        left = {j["name"]: j for j in firsts}
+        left = {j["name"]: (j, j["name"], 1) for j in firsts}     # take name -> (shot job, shot id, take number)
         while left and not stop.is_set():
-            ready = [n for n in left if (out_ / f"{n}.mp4").exists()]
+            ready = [t for t in left if (out_ / f"{t}.mp4").exists()]
             if not ready:
                 time.sleep(10)
                 continue
-            for n in ready:
-                j = left.pop(n)
-                if (out_ / f"{n}.judged").exists() or f"{n}_t2" in names:
+            for t in ready:
+                j, n, k = left.pop(t)
+                if k == 1 and ((out_ / f"{n}.judged").exists() or f"{n}_t2" in names):
                     continue
-                fa = MF.fight_clip_ok(out_ / f"{n}.mp4", j.get("people"))
+                fa = MF.fight_clip_ok(out_ / f"{t}.mp4", j.get("people"))
                 if not fa:
-                    (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
+                    if k == 1:
+                        (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
                     continue
-                log(f"{n}: {fa}: taken once more (queued on the loaded model)")
+                nx = _next_take(j, n, k + 1, fa)
+                if not nx:
+                    log(f"{n}: take {k}: {fa}: no more takes (the best is kept)")
+                    continue
+                log(f"{n}: take {k}: {fa}: taken again{' held still' if nx.get('emb') != j.get('emb') else ''} "
+                    f"(queued on the loaded model)")
                 extra = json.loads(more.read_text())
-                extra.append(dict(j, name=f"{n}_t2", seed=RETAKE + shot_seed(n)))
+                extra.append(nx)
                 tmp = more.with_suffix(".tmp")
                 tmp.write_text(json.dumps(extra, indent=1))
                 os.replace(tmp, more)
+                left[nx["name"]] = (j, n, k + 1)
     except Exception as e:                  # noqa: BLE001  (the render goes on; judge_takes catches up after)
         log(f"!!! take judge while rendering: {e!r}")
     finally:
@@ -2549,9 +2597,9 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
 
 
 def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
-    """Each action or quiet shot (quiet too since 10-26): its takes judged (melted / merged bodies, fire from hands); the take with the fewest faults
-    becomes <id>.mp4 (a tie keeps the first), the other stays as <id>_t2.mp4. -> the shots whose only take is
-    faulted (to be taken once more)."""
+    """Each action or quiet shot (quiet too since 10-26): its takes judged (melted / merged bodies, more people than
+    the shot has); the take with the fewest faults becomes <id>.mp4 (a tie keeps the earlier), the others stay as
+    <id>_t<k>.mp4. -> the shots whose only take is faulted (to be taken once more)."""
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the judge's iGPU
@@ -2560,26 +2608,27 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     for s in shots:
         if s["kind"] not in ("action", "quiet"):
             continue
-        a, b = out_ / f"{s['id']}.mp4", out_ / f"{s['id']}_t2.mp4"
+        a = out_ / f"{s['id']}.mp4"
         if not a.exists() or (out_ / f"{s['id']}.judged").exists():
             continue
         n_ = None if s.get("crowd") else len(s.get("who") or [])
-        fa = MF.fight_clip_ok(a, n_)
-        if not b.exists():
-            if fa:
-                log(f"{s['id']}: {fa}: taken once more")
+        takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)) if x.exists()]
+        fs = [MF.fight_clip_ok(x, n_) for x in takes]
+        if len(takes) == 1:
+            if fs[0]:
+                log(f"{s['id']}: {fs[0]}: taken once more")
                 again.add(s["id"])
             else:
-                (out_ / f"{s['id']}.judged").write_text(json.dumps({"take1": fa}))
+                (out_ / f"{s['id']}.judged").write_text(json.dumps({"take1": fs[0]}))
             continue
-        fb = MF.fight_clip_ok(b, n_)
-        if len(fb) < len(fa):               # swap: the better take under the shot's own name
+        best = min(range(len(takes)), key=lambda i: (len(fs[i]), i))
+        if best:                            # swap: the best take under the shot's own name
             tmp = a.with_suffix(".swap.mp4")
             os.replace(a, tmp)
-            os.replace(b, a)
-            os.replace(tmp, b)
-        (out_ / f"{s['id']}.judged").write_text(json.dumps({"take1": fa, "take2": fb}))
-        log(f"{s['id']}: take {'2' if len(fb) < len(fa) else '1'} kept ({fa} / {fb})")
+            os.replace(takes[best], a)
+            os.replace(tmp, takes[best])
+        (out_ / f"{s['id']}.judged").write_text(json.dumps({f"take{i + 1}": f for i, f in enumerate(fs)}))
+        log(f"{s['id']}: take {best + 1} of {len(takes)} kept ({' / '.join(map(str, fs))})")
     return again
 
 
