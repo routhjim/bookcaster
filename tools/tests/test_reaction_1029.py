@@ -76,6 +76,6 @@ check("a long line has the listener's close reaction", bool(r), [(s["kind"], s["
 if r:
     a = r[0]["action"]
     check("the reaction names no speaker for LTX to draw in", "speaker" not in a and "alone in the picture" in a, a)
-    check("Holmes looks off the frame to the LEFT, Helen's side of the scene", "past the edge of the frame to the left" in a, a)
+    check("10-30: his eyes stay in the picture (looking off the edge drew someone in)", "eyes lowered" in a and "edge" not in a, a)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
