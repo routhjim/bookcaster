@@ -48,7 +48,9 @@ DECODE_B = True                     # quiet clips decode on card 65 (runner --de
 # two-shot until its last frame was lightly pinned (TALK_LOCK 0.3: framing held, the cheapest of the three tried)
 TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-24: 97; 10-28 A/B: 193)
 TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no measured lip-sync loss)
-TALK_GUIDER = {"stg_scale": 0.0}    # STG off for talk: one of the four guidance passes (as LTX's own HQ preset)
+TALK_GUIDER = {"stg_scale": 0.0, "modality_scale": 1.0}   # STG off (as LTX's own HQ preset); 10-29: the audio-video
+# guidance pass off too - LTX 2.5 users found it "unusable at every strength" (HF LTX-2.5 discussion 44); measured:
+# equal or better on every line (Holmes 2203 6.4/0.8 -> 6.0/7.3) and one forward pass a step fewer
 TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned to its first: the framing holds
 # 10-29 lip-sync hunt (SyncNet, calibrated 8/8 on the user's eye at a bar of ~5): a CLOSE-UP's key pinned at 0.8 and
 # copied into its last frame froze the mouth in the key's pose ("ventriloquist") - Helen's 4785 passed 1 of 6 seeds;

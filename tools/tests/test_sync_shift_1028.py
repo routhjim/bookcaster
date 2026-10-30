@@ -42,7 +42,7 @@ check("four people: the speaker's own box, not a half", S._speaker_box({"who": l
 (d / "out" / "talk-3_s0_c0.json").write_text(json.dumps({"speaker_box": [0.02, 0.1, 0.5, 1.0]}))
 check("a joined line's zone comes from its first piece", S._job_speaker_box(d, "talk-3_s0") == [0.02, 0.1, 0.5, 1.0])
 check("10-28 talk defaults: 8 s pieces, 20 steps, STG off, framing lock 0.3", S.TALK_PIECE == 193 and
-      S.TALK_STEPS == 20 and S.TALK_GUIDER == {"stg_scale": 0.0} and S.TALK_LOCK == 0.3 and (S.TALK_PIECE - 1) % 8 == 0)
+      S.TALK_STEPS == 20 and S.TALK_GUIDER == {"stg_scale": 0.0, "modality_scale": 1.0} and S.TALK_LOCK == 0.3 and (S.TALK_PIECE - 1) % 8 == 0)
 src = (HERE.parent / "shot_flow.py").read_text()
 check("the assembly drops the lead-in plus the sync shift", "st_ = talk_pre(c) + sync_shift(c)" in src)
 check("talk jobs carry the settings, and a clip made with other settings is drawn again",
