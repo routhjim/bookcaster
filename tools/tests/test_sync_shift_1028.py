@@ -46,7 +46,7 @@ check("10-28 talk defaults: 8 s pieces, 20 steps, STG off, framing lock 0.3", S.
 src = (HERE.parent / "shot_flow.py").read_text()
 check("the assembly drops the lead-in plus the sync shift", "st_ = talk_pre(c) + sync_shift(c)" in src)
 check("talk jobs carry the settings, and a clip made with other settings is drawn again",
-      '"steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": TALK_LOCK' in src and
+      '"steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None if close else TALK_LOCK' in src and
       'for k in ("steps", "guider", "lock_end", "base")' in src)
 check("talk audio starts TALK_PRE frames of silence early", "adelay={TALK_PRE / 24 * 1000:.0f}" in src and
       S.TALK_PRE >= S.SYNC_MAX_SHIFT)

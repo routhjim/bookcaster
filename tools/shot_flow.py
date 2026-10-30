@@ -50,6 +50,16 @@ TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-2
 TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no measured lip-sync loss)
 TALK_GUIDER = {"stg_scale": 0.0}    # STG off for talk: one of the four guidance passes (as LTX's own HQ preset)
 TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned to its first: the framing holds
+# 10-29 lip-sync hunt (SyncNet, calibrated 8/8 on the user's eye at a bar of ~5): a CLOSE-UP's key pinned at 0.8 and
+# copied into its last frame froze the mouth in the key's pose ("ventriloquist") - Helen's 4785 passed 1 of 6 seeds;
+# with no end lock and the key at 0.5, 4 of 4 (7.0-7.8), the framing held. Two-shots keep the lock (it held the push-in)
+TALK_CLOSE_KEY = 0.5
+TALK_KEY = 0.8
+# Holmes's voice drove almost no mouth (envelope swing 17.8 dB vs ~23, few dips between syllables): LTX hears a
+# cleaned copy - low-passed at 3.8 kHz and expanded so the gaps between syllables drop - while the clip keeps the
+# real voice (audio_mux). Farintosh: 1.1/0.5 -> 7.9/7.8 and 8.0/8.0 (two runs); good lines unchanged
+TALK_DRIVE_AF = ("lowpass=f=3800,lowpass=f=3800,compand=attacks=0.003:decays=0.04:"
+                 "points=-90/-90|-42/-62|-30/-34|-18/-18|0/-1:soft-knee=4")
 # 10-26 user ("Peter's sermon just gets further and further out ... the last frame from one 3s clip should be the
 # starting frame for the next"): each piece starts ON the previous piece's last frame (lossless, from the render, not
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
@@ -2327,20 +2337,23 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             n_all = max(st + nn for st, nn in e["chunks"])
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lead), "-ac", "2", "-ar", "48000", "-af",
                             f"apad=whole_dur={n_all / 24:.4f}", str(pad)], check=True)
+            drv = L / "audio" / f"{mid}_drv.wav"        # what LTX hears; the clip keeps `pad` (TALK_DRIVE_AF)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", TALK_DRIVE_AF, str(drv)], check=True)
+            close = len(s.get("who") or []) <= 1
             p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
             emb = f"t_{mid}_{MF._h(p_)}"
             enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
             for k, (st, nn) in enumerate(e["chunks"]):
                 talk.append({"name": s["id"] if len(e["chunks"]) == 1 else f"{s['id']}_c{k}", "emb": emb, "prompt": p_,
-                             "width": W, "height": H, "fps": FPS, "frames": nn, "audio": str(pad),
+                             "width": W, "height": H, "fps": FPS, "frames": nn, "audio": str(drv), "audio_mux": str(pad),
                              "seed": (int((sd / mid / s["id"] / "talk_seed").read_text())
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
                              "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
-                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": TALK_LOCK,
-                             "images": [dict(img[0], strength=0.8)]})
+                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None if close else TALK_LOCK,
+                             "images": [dict(img[0], strength=TALK_CLOSE_KEY if close else TALK_KEY)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
                     pst, pn = e["chunks"][k - 1]    # the frame of the piece before where their overlap begins
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,

@@ -2717,6 +2717,16 @@ def make_jobs_files(cx: Ctx, P: dict, last: set | None = None) -> dict:
 
 # --------------------------------------------------------------------------------------------- LTX queue
 
+# 10-29: an LTX gen died at its first step with a GPU page fault on card 05 three times in ~10 starts (no ring reset;
+# the next start ran clean) and, looking back 4 h, the check stopped clean steps hours later. A fault of that kind -
+# page-fault lines only, no reset/ring/hang/oops - is let through PAGE_FAULT_RETRIES times a job (the gen loop makes
+# the missing clips again); anything else stops at once, as before
+PAGE_FAULT_RETRIES = 2
+_PAGE_FAULT = re.compile(r"page fault|PROTECTION_FAULT|Faulty UTCL2|MORE_FAULTS|WALKER_ERROR|PERMISSION_FAULTS|"
+                         r"MAPPING_ERROR|sq_intr: error|\bRW: |\bCID: |in page starting", re.I)
+_faults_let_through = []
+
+
 def kernel_check(out: Path, since: str = "-10min") -> None:
     r = subprocess.run(["journalctl", "-k", "--since", since], capture_output=True, text=True).stdout
     # (10-25: an XTX's HDMI-audio "CORB reset timeout" = a dock link retrain, not the GPU)
@@ -2724,6 +2734,10 @@ def kernel_check(out: Path, since: str = "-10min") -> None:
     benign = re.compile(r"Reset line busy|reset \S+ USB device|ACPI|Firmware Bug|report a bug|reporting any bugs|uses VM inv eng|factory-reset|CORB reset timeout", re.I)
     hits = [ln for ln in r.splitlines() if re.search(r"\b(bug|oops|lockup|reset|ring|fault)\b", ln, re.I)
             and not benign.search(ln)]
+    if hits and all(_PAGE_FAULT.search(ln) for ln in hits) and len(_faults_let_through) < PAGE_FAULT_RETRIES:
+        _faults_let_through.append(time.time())
+        log_entry(out, {"phase": "kernel", "page_fault_retry": len(_faults_let_through), "hits": hits[-3:]})
+        return
     if hits:
         (out / "KERNEL_HIT.txt").write_text("\n".join(hits))
         log_entry(out, {"phase": "kernel", "hits": hits[-5:]})
@@ -2810,7 +2824,7 @@ def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
         raise SystemExit(lf.read_text().strip().splitlines()[-1] if lf.exists() and lf.read_text().strip()
                          else f"MemAvailable < {LTX_MEM_FLOOR_GB} GiB: not loading LTX")
     log_entry(cx.OUT, {"phase": "ltx", "step": name, "rc": r.returncode, "sec": round(time.time() - t), "log": str(lf)})
-    kernel_check(cx.OUT, f"-{HOLD_TIMEOUT // 60 + 6}min")
+    kernel_check(cx.OUT, f"@{int(t) - 5}")       # this step's own messages (10-29: not the last 4 h)
     return r.returncode
 
 
