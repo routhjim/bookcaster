@@ -2101,8 +2101,10 @@ def _key_questions(cx, s: dict) -> tuple:
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
         elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated;
-            q[f"chair{i}"] = (f"Answer yes or no: is there a chair, sofa or bed right behind or under {first}?")
-            # "does he look like he is standing" can't be seen in a head-and-shoulders picture: "No" for every seed)
+            q[f"chair{i}"] = (f"Answer yes or no: is {first} sitting or lying on a chair, sofa or bed?")
+            # "does he look like he is standing" can't be seen in a head-and-shoulders picture: "No" for every seed;
+            # 10-30: "a bed right behind or under him" failed all 10 seeds of Holmes standing BESIDE Watson's bed -
+            # on 45 close-ups this asks right for 43 (seated 22/22, standing 21/23) vs 31 before)
         if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
