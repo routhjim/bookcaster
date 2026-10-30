@@ -325,6 +325,34 @@ def _pose_hold(cx, s: dict) -> str:
     return "".join(out)
 
 
+ONLY_HERE = " Only the {n} already in the picture {be} ever in it: nobody else comes into the picture."
+GROUP_OFF = re.compile(r"\b(?:the|two|both)\s+(?:other\s+)?(?:men|women|people|others|visitors|gentlemen|ladies)\b", re.I)
+
+
+def _offscreen(cx, s: dict, text: str) -> str:
+    """10-30: a quiet shot of one person whose action named another ("watches the man in the white nightshirt", "as
+    the men approach") made LTX walk that one in - a second Holmes, Watson or Helen; and "leans forward" over "stays
+    sitting" drew two Watsons. Whoever is not in the picture is "someone out of the picture", and the prompt says
+    nobody else comes in."""
+    who = s.get("who") or []
+    if s.get("crowd") or not who:
+        return text
+    R_ = RG.Book(cx.book)
+    gone = [w for w in R_.people() if w not in who]
+    mid = str(s.get("id") or "").rsplit("_s", 1)[0]
+    try:
+        dress = MF._dress(cx.book, cx.stem, mid, gone)
+    except Exception:                                   # noqa: BLE001 - no wardrobe: the looks' own clothes
+        dress = {}
+    mine = {describe(R_, w, _shot_dress(cx, s)) for w in who} | {describe(R_, w) for w in who}
+    for d in sorted({x for w in gone for x in (describe(R_, w, dress), describe(R_, w))
+                     if x != "the figure" and x not in mine}, key=len, reverse=True):   # (one who looks the same stays)
+        text = re.sub(re.escape(d), "someone out of the picture", text, flags=re.I)
+    text = GROUP_OFF.sub("people out of the picture", text)
+    n = len(who)
+    return text + ONLY_HERE.format(n="one person" if n == 1 else f"{n} people", be="is" if n == 1 else "are")
+
+
 def _shot_dress(cx, s: dict) -> dict:
     """Each person's clothes at the shot's own time (the wardrobe), by its id."""
     mid = str(s.get("id") or "").rsplit("_s", 1)[0]
@@ -1424,16 +1452,15 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     continue
                 # 10-29: "eyes on the speaker" drew the speaker into the close-up - a second man in the listener's
                 # own nightshirt (27 of 74 quiet clips, retakes the same): the one spoken to looks off the picture's
-                # edge, on the speaker's side of the scene, and is said to be alone
-                off = ("" if lis not in screen or spk not in screen or screen[spk] == screen[lis] else
-                       " to the right" if screen[spk] > screen[lis] else " to the left")
+                # edge, on the speaker's side of the scene, and is said to be alone. 10-30: looking off the edge drew a
+                # second Helen in from that side too: eyes lowered, inside the picture
                 x0 = {"kind": "quiet", "framing": "close", "place": where_of.get(lis) or home, "who": [lis],
                       "pose": {lis: POSE_WORDS.get(last_pose.get(lis, "stand"), "standing").split()[0]},
                       "picture": ((f"a close view of {lis}'s head and shoulders, " if abed(lis) else "")   # (10-29: in
                                   + (held(lis) or f"{lis} listens")          # bed, drawn as a wide of the whole room)
                                   + (f", facing toward {spk}" if spk else "") + "."),
-                      "action": f"{describe(RGB, lis, dress)}, alone in the picture, listens closely, looking off "
-                                f"past the edge of the frame{off}, then gives a small nod."}
+                      "action": f"{describe(RGB, lis, dress)}, alone in the picture, listens closely with eyes "
+                                f"lowered, then gives a small nod."}
                 place = x0["place"]
             if x0.get("kind") == "talk":
                 who = cast_of(x0.get("speaker"), cast)
@@ -2362,7 +2389,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = figurative(s["action"]) + _pose_hold(cx, s) + STILL_CROWD * bool(s.get("crowd"))
+            act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -2372,8 +2399,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "guider": GUIDER, "aguider": GUIDER, "images": img,
                             "people": None if s.get("crowd") else len(s.get("who") or [])})
         else:
-            p_ = figurative(s["action"] or "Small, natural movements; the camera holds still.") + _pose_hold(cx, s) + \
-                STILL_CROWD * bool(s.get("crowd"))
+            p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
+                            _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
             enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
