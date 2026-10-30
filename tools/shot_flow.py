@@ -48,8 +48,20 @@ DECODE_B = True                     # quiet clips decode on card 65 (runner --de
 # two-shot until its last frame was lightly pinned (TALK_LOCK 0.3: framing held, the cheapest of the three tried)
 TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-24: 97; 10-28 A/B: 193)
 TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no measured lip-sync loss)
-TALK_GUIDER = {"stg_scale": 0.0}    # STG off for talk: one of the four guidance passes (as LTX's own HQ preset)
+TALK_GUIDER = {"stg_scale": 0.0, "modality_scale": 1.0}   # STG off (as LTX's own HQ preset); 10-29: the audio-video
+# guidance pass off too - LTX 2.5 users found it "unusable at every strength" (HF LTX-2.5 discussion 44); measured:
+# equal or better on every line (Holmes 2203 6.4/0.8 -> 6.0/7.3) and one forward pass a step fewer
 TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned to its first: the framing holds
+# 10-29 lip-sync hunt (SyncNet, calibrated 8/8 on the user's eye at a bar of ~5): a CLOSE-UP's key pinned at 0.8 and
+# copied into its last frame froze the mouth in the key's pose ("ventriloquist") - Helen's 4785 passed 1 of 6 seeds;
+# with no end lock and the key at 0.5, 4 of 4 (7.0-7.8), the framing held. Two-shots keep the lock (it held the push-in)
+TALK_CLOSE_KEY = 0.5
+TALK_KEY = 0.8
+# Holmes's voice drove almost no mouth (envelope swing 17.8 dB vs ~23, few dips between syllables): LTX hears a
+# cleaned copy - low-passed at 3.8 kHz and expanded so the gaps between syllables drop - while the clip keeps the
+# real voice (audio_mux). Farintosh: 1.1/0.5 -> 7.9/7.8 and 8.0/8.0 (two runs); good lines unchanged
+TALK_DRIVE_AF = ("lowpass=f=3800,lowpass=f=3800,compand=attacks=0.003:decays=0.04:"
+                 "points=-90/-90|-42/-62|-30/-34|-18/-18|0/-1:soft-knee=4")
 # 10-26 user ("Peter's sermon just gets further and further out ... the last frame from one 3s clip should be the
 # starting frame for the next"): each piece starts ON the previous piece's last frame (lossless, from the render, not
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
@@ -617,6 +629,188 @@ def _repeats(a: dict, before: list, scene: list) -> list:
     return out
 
 
+# 10-29 user: "is it possible to hand LTX both the audio and the text of that audio?" - LTX's training captions quote
+# the dialogue ("spoken dialogue (quoted exactly in the original language)", ltx_trainer/captioning.py) and its
+# negative prompt names "incorrect dialogue": a talk prompt says what is said. "you should just use the source words
+# directly": the BOOK's words - the timeline holds the voice's respellings ("tee-ar-uh", "Missus"), mapped back here
+_WORD = re.compile(r"[^\s]+")
+_BOOK_ALIGN = {}
+
+
+def _norm(w: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", w.lower())
+
+
+def _book_align(book: Path, stem: str, tl: list):
+    """(book words, [per timeline entry: (first, last) book word index, or None]) - the timeline's words matched to
+    the chapter text's, word by word (difflib over the whole chapter); respelled words fall inside the run."""
+    import difflib
+    f = book / "chapters" / f"{stem}.txt"
+    key = (str(f), f.stat().st_mtime_ns if f.exists() else 0, len(tl), tl[-1].get("text") if tl else "")
+    if key in _BOOK_ALIGN:
+        return _BOOK_ALIGN[key]
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    tw, own = [], []
+    for i, x in enumerate(tl):
+        ws = _WORD.findall(str(x.get("text") or ""))
+        own.append(list(range(len(tw), len(tw) + len(ws))))
+        tw += ws
+    a, b = [_norm(w) for w in tw], [_norm(w) for w in bw]
+    to = [None] * len(tw)
+    blocks = difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks()
+    pi = pj = 0
+    for blk in blocks:
+        gi, gj = blk.a - pi, blk.b - pj            # an unmatched run between matches: word for word as far as it goes
+        for k in range(gi):
+            if gj > 0:
+                to[pi + k] = pj + min(k, gj - 1)
+        for k in range(blk.size):
+            to[blk.a + k] = blk.b + k
+        pi, pj = blk.a + blk.size, blk.b + blk.size
+    # each entry's book words run from its own first match to the next entry's (10-29: the timeline keeps only a
+    # line's first ~150 characters - "happy to dev" - so a long line matched its opening words alone)
+    starts = [min((to[k] for k in idx if to[k] is not None), default=None) for idx in own]
+    nxt, spans_ = len(bw), [None] * len(tl)
+    for i in range(len(tl) - 1, -1, -1):
+        if starts[i] is not None and starts[i] < nxt:
+            spans_[i] = (starts[i], nxt - 1)
+            nxt = starts[i]
+    got = (bw, spans_)
+    _BOOK_ALIGN.clear()
+    _BOOK_ALIGN[key] = got
+    return got
+
+
+# WHEN each book word is said: the timeline marks only where a paragraph starts (Helen's run to 28 s, and a guess by
+# word position quoted words seconds off - "incorrect dialogue"). Forced alignment: Whisper's word timestamps on the
+# chapter's own voice track, matched to the book's words; the words quoted are always the book's
+WHISPER_PY = Path.home() / "tts-ab" / ".venv-qwen" / "bin" / "python"      # faster-whisper (CPU, int8)
+WHISPER_MODEL = "small.en"
+_WHISPER_RUN = r"""
+import json, subprocess, sys
+import numpy as np
+from faster_whisper import WhisperModel
+raw = subprocess.run(["ffmpeg", "-v", "error", "-i", sys.argv[1], "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                     capture_output=True, check=True).stdout
+m = WhisperModel(sys.argv[3], device="cpu", compute_type="int8")
+segs, _ = m.transcribe(np.frombuffer(raw, np.float32), beam_size=5, word_timestamps=True,
+                       condition_on_previous_text=False, initial_prompt=sys.argv[4] or None)
+json.dump([[w.word.strip(), round(w.start, 3)] for s in segs for w in (s.words or [])], open(sys.argv[2], "w"))
+"""
+
+
+def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> list:
+    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes."""
+    import difflib
+    track = track or book / "work" / f"{stem}.mp3"
+    st = track.stat()
+    cp = track.with_name(track.name + ".wordtimes.json")
+    key = f"{st.st_size}:{st.st_mtime_ns}:{WHISPER_MODEL}"
+    try:
+        got = json.loads(cp.read_text())
+        if got.get("k") == key:
+            return got["t"]
+    except (OSError, ValueError):
+        pass
+    f = book / "chapters" / f"{stem}.txt"
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    if not bw or not WHISPER_PY.exists():
+        return [None] * len(bw)             # no book text or no Whisper: the talk prompts quote nothing
+    names = ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
+    log(f"  word timing: {track.name} (Whisper {WHISPER_MODEL}, CPU)")
+    tmp = cp.with_suffix(".tmp")
+    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), WHISPER_MODEL, names])
+    try:
+        hw = json.loads(tmp.read_text()) if getattr(r, "returncode", 1) == 0 else None
+    except (OSError, ValueError):
+        hw = None
+    tmp.unlink(missing_ok=True)
+    if hw is None:
+        log(f"  !!! word timing failed for {track.name}: the talk prompts quote only whole lines")
+        return [None] * len(bw)
+    times = [None] * len(bw)
+    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(w) for w in bw], autojunk=False)
+    for blk in sm.get_matching_blocks():
+        for k in range(blk.size):
+            times[blk.b + k] = hw[blk.a + k][1]
+    cp.write_text(json.dumps({"k": key, "t": times}))
+    return times
+
+
+# 10-29 user: "the audio clip starts in the middle of a word... you have to at least stop on a word boundary, better
+# yet, you should cut up the talking by sentences with actual space in between them" (Helen's 4785 opened inside
+# "money which"; a cut moved only to a pause within 0.6 s, else stayed where the director's second fell)
+SENT_END = re.compile(r"[.!?][\"”’')\]]*$")
+_CUTS = {}
+
+
+def cut_points(book: Path, stem: str, voices: Path) -> tuple:
+    """(sentence breaks, word breaks): track seconds, sorted - each the quietest moment between one book word's start
+    and the next's (word_times on this track), a sentence break where the first word ends a sentence."""
+    import numpy as np
+    k = (str(voices), voices.stat().st_mtime_ns if voices.exists() else 0)
+    if k in _CUTS:
+        return _CUTS[k]
+    f = book / "chapters" / f"{stem}.txt"
+    bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
+    times = word_times(book, stem, track=voices) if bw and voices.exists() else []
+    env = _envelope(voices) if times else np.zeros(0)
+    sm = np.convolve(env, np.ones(8) / 8, mode="same") if len(env) else env
+    sent, word = [], []
+    known = [(j, x) for j, x in enumerate(times) if x is not None]
+    for (j, a), (j2, b) in zip(known, known[1:]):
+        if j2 != j + 1 or b - a < 0.15:
+            continue
+        lo, hi = int((a + 0.12) * 100), int(b * 100)
+        g = (lo + int(np.argmin(sm[lo:hi]))) / 100 if hi > lo and hi <= len(sm) else (a + b) / 2
+        (sent if SENT_END.search(bw[j]) else word).append(round(g, 2))
+    _CUTS.clear()
+    _CUTS[k] = (sent, sorted(sent + word))
+    return _CUTS[k]
+
+
+def snap_cut(t: float, lo: float, hi: float, pts: tuple | None, env=None, reach: float = 3.0) -> float:
+    """A cut inside someone's speech: at the sentence break nearest t (within `reach`, inside [lo, hi]); else the
+    nearest break between two words (within 1 s); else (no word times) the nearest real pause (_pause_near)."""
+    if pts:
+        for cand, r in ((pts[0], reach), (pts[1], 1.0)):
+            ok = [c for c in cand if lo <= c <= hi and abs(c - t) <= r]
+            if ok:
+                return min(ok, key=lambda c: abs(c - t))
+    return _pause_near(env, t, lo, hi) if env is not None else t
+
+
+def spoken_words(book: Path, stem: str, tl: list, lines: list, t: float, d: float, times: list | None = None) -> str:
+    """The book's words of `lines` (timeline entries, (start, end, entry)) said between t and t + d (word_times),
+    in the book's spelling and without its quotation marks; a word heard nowhere takes its neighbours' place."""
+    if not lines:
+        return ""
+    bw, rng = _book_align(book, stem, tl)
+    times = times if times is not None else word_times(book, stem)
+    idx = {id(x): i for i, x in enumerate(tl)}
+    out = []
+    for a_, b_, x in lines:
+        i = idx.get(id(x))
+        if i is None or rng[i] is None:
+            continue
+        lo, hi = rng[i]
+        if a_ >= t - 0.5 and b_ <= t + d + 0.5:     # the whole line is in the clip: all its words, no timing needed
+            out.append(" ".join(bw[lo:hi + 1]))
+            continue
+        sel, last = [], None                # a long line the clip's edge cuts: its words heard inside the clip
+        for j in range(lo, hi + 1):
+            tj = times[j] if j < len(times) and times[j] is not None else last
+            last = tj
+            if tj is not None and t - 0.15 <= tj < t + d - 0.05:
+                sel.append(j)
+        if sel:                             # a line that starts (ends) at the clip's edge: from (to) its first (last)
+            a0 = lo if a_ >= t - 0.5 else min(sel)          # word (10-29: Whisper put "No," 0.4 s before the cut)
+            b0 = hi if b_ <= t + d + 0.5 else max(sel)
+            out.append(" ".join(bw[a0:b0 + 1]))
+    txt = re.sub(r"[“”\"‘’]|(?<!\w)'|'(?!\w)", "", " ".join(out))
+    return re.sub(r"\s+", " ", txt).strip()
+
+
 def sentences(tl: list) -> list:
     """Every sentence of the chapter: (start, end, speaker, kind, words), each sentence's times estimated from its word
     position in its timeline entry (an entry is a paragraph or a spoken line; the pace is steady)."""
@@ -688,7 +882,7 @@ def _turn_cuts(tl: list) -> dict:
     return {"inside": inside, "change": change}
 
 
-def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = ()) -> list:
+def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tuple = (), sent: list | None = None) -> list:
     """[(start, end)] covering [t0, t1): cut at timeline entries (a paragraph or a spoken line) once a passage has
     reached 60% of `mx`, and inside an entry at a sentence when one entry alone runs past `mx`; always cut at the
     `forced` times (the scenes' starts: no passage spans two scenes)."""
@@ -696,7 +890,7 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
     if forced:
         out, a = [], t0
         for f in forced + [t1]:
-            out += passages(tl, a, f, mx)
+            out += passages(tl, a, f, mx, sent=sent)
             a = f
         return out
     # 10-28 user: "the passage boundary has to be more flexible to fall at an actual shot boundary" - a cut inside one
@@ -704,7 +898,10 @@ def passages(tl: list, t0: float, t1: float, mx: float = PASSAGE_MAX, forced: tu
     # never falls inside a turn; a change of speaker is preferred; a passage may run to 1.2 x mx to reach one
     turn = _turn_cuts(tl)
     cuts = sorted({float(x["t"]) for x in tl if t0 < float(x["t"]) < t1})
-    marks = sorted(set(cuts) | {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1})
+    # inside an entry: at a REAL sentence break (cut_points, the silence between two sentences) when the words are
+    # timed; the estimate by word position (sentences) put Helen's 28 s turn's cuts mid-word (10-29)
+    marks = sorted(set(cuts) | ({ts for ts in sent if t0 < ts < t1} if sent else
+                                {ts for ts, _, _, _, _ in sentences(tl) if t0 < ts < t1}))
     free = [c for c in cuts if c not in turn["inside"]]
     out, a = [], t0
     while t1 - a > 0.05:
@@ -959,6 +1156,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         if x.get("kind") == "quote" and x.get("speaker") not in (None, "", "narrator"):
             spans.setdefault(x["speaker"], []).append((float(x["t"]), float(y["t"]), x))
     voices = book / "work" / f"{stem}.mp3"
+    pts = cut_points(book, stem, voices)    # sentence and word breaks: where a cut inside speech may fall (10-29)
     (sd / "audio").mkdir(parents=True, exist_ok=True)
 
     def unname(txt, cast, dress):       # the video model reads looks, not names: the one description of each
@@ -979,6 +1177,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         x = mine[0][2] if mine else {}
         # built from scratch: the planner's moment fields (another line's pic/first/emotion) no longer leak in
         return {"id": mid, "kind": "talk", "route": "talk", "t": t, "dur": d, "speaker": who, "line": x.get("text", ""),
+                "words": spoken_words(book, stem, tl, mine, t, d),
                 "emotion": x.get("emotion") or "", "creature": bool(creature), "speech_s": d, "frames": _frames(d),
                 "chunks": [[0, _frames(d)]], "wav": str(wav)}
 
@@ -1001,7 +1200,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if w not in place_sheet and base in place_sheet:
                 place_sheet[w] = place_sheet[base]
     cur = None
-    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes)):
+    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes), sent=pts[0]):
         sec = pb - pa
         si = max([i for i, x in enumerate(scenes) if x["start"] <= pa + 0.5] or [0])
         sc_ = scenes[si] if scenes else {"place": home, "who": [], "what": "", "cutaways": [], "opens": "",
@@ -1175,7 +1374,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         st[0] = 0.0
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
             st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
-        shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast))
+        shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast), pts)
         keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
@@ -1191,11 +1390,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     b = end
             n_ = max(1, math.ceil((b - x) / 8.0)) if x0.get("kind") == "talk" else 1
             edges = [x + (b - x) * j / n_ for j in range(n_ + 1)]
-            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; now at the voice's pauses)
+            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; 10-29: at sentence breaks)
                 env = _envelope(voices)
                 for j in range(1, n_):
-                    edges[j] = _pause_near(env, pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
-                                           pa + edges[j + 1] - SHOT_SHORT, reach=1.0) - pa
+                    edges[j] = snap_cut(pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
+                                        pa + edges[j + 1] - SHOT_SHORT, pts, env, reach=(b - x) / n_ / 2) - pa
             for j in range(n_):         # a long line: the speaker, the listener's reaction, the speaker (SHOT_RULES)
                 piece = x0
                 if j % 2 and x0.get("listener"):
@@ -1830,8 +2029,10 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     n_ = len(s.get("who") or [])
     pos = (f" on the {'left' if s['who'][0] == who else 'right'}" if n_ == 2 else
            f" {group_layout(n_)[s['who'].index(who)][1]}" if n_ > 2 and who in s["who"] else "")
+    says = (f' {dict(his="He says", her="She says").get(pron, "They say")}, "{e["words"]}"'
+            if e.get("words") else "")      # the line itself, as LTX's captions quote it (10-29)
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
-            f"clearly in sync with {pron} voice.{lst} No text anywhere in the picture.")
+            f"clearly in sync with {pron} voice.{says}{lst} No text anywhere in the picture.")
 
 
 def _key_questions(cx, s: dict) -> tuple:
@@ -2138,20 +2339,23 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             n_all = max(st + nn for st, nn in e["chunks"])
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lead), "-ac", "2", "-ar", "48000", "-af",
                             f"apad=whole_dur={n_all / 24:.4f}", str(pad)], check=True)
+            drv = L / "audio" / f"{mid}_drv.wav"        # what LTX hears; the clip keeps `pad` (TALK_DRIVE_AF)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", TALK_DRIVE_AF, str(drv)], check=True)
+            close = len(s.get("who") or []) <= 1
             p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
             emb = f"t_{mid}_{MF._h(p_)}"
             enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
             for k, (st, nn) in enumerate(e["chunks"]):
                 talk.append({"name": s["id"] if len(e["chunks"]) == 1 else f"{s['id']}_c{k}", "emb": emb, "prompt": p_,
-                             "width": W, "height": H, "fps": FPS, "frames": nn, "audio": str(pad),
+                             "width": W, "height": H, "fps": FPS, "frames": nn, "audio": str(drv), "audio_mux": str(pad),
                              "seed": (int((sd / mid / s["id"] / "talk_seed").read_text())
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
                              "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
-                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": TALK_LOCK,
-                             "images": [dict(img[0], strength=0.8)]})
+                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None if close else TALK_LOCK,
+                             "images": [dict(img[0], strength=TALK_CLOSE_KEY if close else TALK_KEY)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
                     pst, pn = e["chunks"][k - 1]    # the frame of the piece before where their overlap begins
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
@@ -2409,7 +2613,8 @@ def _pause_near(env, t: float, lo: float, hi: float, reach: float = 0.6) -> floa
     return (a + i + 6) / 100 if w[i] < 0.33 * float(np.median(ctx)) else t
 
 
-def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices: Path, who_of) -> tuple:
+def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices: Path, who_of,
+               pts: tuple | None = None) -> tuple:
     """10-28 user: a line was chopped into four ~2 s close-ups of the same speaker, cut mid-phrase ("opal |
     tee-ar-uh"), and "Watson" got a sliver before the cut. The talk shots' cuts follow the voice now: back-to-back
     shots of one speaker in one framing are one shot (its clip is chained pieces, seamless), and a cut still inside
@@ -2432,7 +2637,7 @@ def _talk_cuts(shots: list, st: list, sec: float, pa: float, spans: dict, voices
             if any(a_ + 0.2 < t < b_ - 0.2 for a_, b_ in lines):        # inside a spoken line
                 lo = pa + st[i - 1] + SHOT_SHORT
                 hi = pa + (st[i + 1] if i + 1 < len(st) else sec) - SHOT_SHORT
-                st[i] = _pause_near(env, t, lo, hi) - pa
+                st[i] = snap_cut(t, lo, hi, pts, env) - pa
     return shots, st
 
 

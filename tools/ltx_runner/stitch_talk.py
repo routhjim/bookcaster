@@ -36,7 +36,7 @@ for line, cs in lines.items():
     name = cs[0]["name"].rsplit("_c", 1)[0]
     tmp = f"{out}/{name}_noaudio.mp4"
     save_mp4(torch.from_numpy(frames.clip(0, 255).astype(np.uint8)), tmp, cs[0]["fps"])
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-i", cs[0]["audio"], "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", tmp, "-i", cs[0].get("audio_mux", cs[0]["audio"]), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
                     "-c:a", "aac", "-af", "apad", "-t", f"{frames.shape[0] / cs[0]['fps']:.6f}",   # (10-28: not -shortest:
                     f"{out}/{name}.mp4"], check=True)                                      # it cut whole packets)
     subprocess.run(["rm", "-f", tmp])

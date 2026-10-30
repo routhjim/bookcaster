@@ -92,7 +92,7 @@ dur = lambda f: float(REAL_RUN(["ffprobe", "-v", "error", "-show_entries", "form
 check("each talk shot's voice cut is as long as the shot", all(abs(dur(e["wav"]) - e["dur"]) < 0.1 for e, _ in talks),
       [(round(e["dur"], 2), round(dur(e["wav"]), 2)) for e, _ in talks])
 check("no planner fields leak into a talk moment", all(set(e) <= {"id", "kind", "route", "t", "dur", "speaker", "line",
-      "emotion", "creature", "speech_s", "frames", "chunks", "wav"} for e, _ in talks))
+      "emotion", "creature", "speech_s", "frames", "chunks", "wav", "words"} for e, _ in talks))
 cache = [json.loads(f.read_text()) for f in sorted((vd / "shots" / "passages").glob("p*.json"))]
 check("the passage cache holds the model's words with their key", cache and all(c.get("k") and c.get("reply") for c in cache))
 # a second run: no director at all - the cached words go through today's code again
