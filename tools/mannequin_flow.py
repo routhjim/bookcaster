@@ -1007,10 +1007,13 @@ def _blank_edges(k: Path, thr: float = 0.25) -> bool:
     out as white-background character-sheet poses that the text question passed)."""
     import numpy as np
     from PIL import Image
-    a = np.asarray(Image.open(k).convert("L"), dtype=np.float32)
+    a = np.asarray(Image.open(k).convert("L"), dtype=np.float32) > 215
     b = max(4, a.shape[1] // 40)
-    edge = np.concatenate([a[:, :b].ravel(), a[:, -b:].ravel(), a[:b].ravel(), a[-b:].ravel()])
-    return float((edge > 215).mean()) > thr
+    # 10-30: the top edge left out of the mean - a pale overcast sky failed every seed of the Stoke Moran exteriors
+    # (27 Speckled Band keys, none a sheet); a sheet still shows white on 3 sides, a side text panel on the others
+    sides = [a[:, :b], a[:, -b:], a[-b:]]
+    return (float(np.concatenate([s.ravel() for s in sides]).mean()) > thr
+            or sum(float(s.mean()) > 0.5 for s in sides + [a[:b]]) >= 3)
 
 
 def pick_keys(book: Path, stem: str, ids: list, log=print, fights: dict | None = None) -> dict:

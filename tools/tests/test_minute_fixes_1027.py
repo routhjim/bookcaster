@@ -53,8 +53,8 @@ check("10-28: a seated close-up shows the chair back", "top of a chair back" in 
       and "standing" not in kp2, kp2)
 q2, _ = S._key_questions(cx, {"id": "talk-000964_s0", "who": ["Doctor Watson"], "kind": "talk", "picture": "",
                               "framing": "close", "pose_held": {"Doctor Watson": "stand"}})
-check("10-28: a standing close-up is checked for a chair behind him (answer must be no)",
-      any("is there a chair, sofa or bed" in v for k_, v in q2.items() if k_.startswith("chair"))
+check("10-28: a standing close-up is checked for sitting on a chair (answer must be no)",
+      any("sitting or lying on a chair, sofa or bed" in v for k_, v in q2.items() if k_.startswith("chair"))
       and not any(k_.startswith("pose") for k_ in q2), q2)
 import pathlib
 kf = pathlib.Path(tempfile.mkdtemp()) / "k.png"
