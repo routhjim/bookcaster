@@ -406,6 +406,8 @@ def carry_poses(es: list, out: dict, cuts: tuple = ()) -> None:
         for s in out.get(e["id"]) or []:
             if s.get("kind") == "talk":
                 continue
+            # (10-31: by place - young Helen in bed in the telling is not the Helen telling it at Baker Street)
+            cur_ = cur.setdefault(RG.place_key(s.get("place") or ""), {})
             p0 = {w: pose_cat(v) for w, v in (s.get("pose") or {}).items()}
             p1 = {w: pose_cat(v) for w, v in (s.get("pose_end") or {}).items()}
             held = {}
@@ -413,13 +415,13 @@ def carry_poses(es: list, out: dict, cuts: tuple = ()) -> None:
                 # one owner: the director's own opening pose (given per person, as the narration says) wins; the
                 # carried one only fills a gap (10-27: Watson "sitting" in bed was carried into the sitting room,
                 # where the picture had him standing - the key prompt and its check said "sitting")
-                c0 = p0.get(w) or cur.get(w) or ""
+                c0 = p0.get(w) or cur_.get(w) or ""
                 if not c0:
                     continue
                 held[w] = c0
-                cur[w] = p1.get(w) or c0
+                cur_[w] = p1.get(w) or c0
             s["pose_held"] = held
-            s["pose_after"] = {w: cur[w] for w in held}
+            s["pose_after"] = {w: cur_[w] for w in held}
 
 
 # words the image model draws as something else (10-23: "bellows" = a bell, twice)
@@ -1283,7 +1285,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     new_es, by, new_sheets = [], {}, {}
     system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
     pics_before, pics_scene, screen, last_pose, last_at, carry = [], [], {}, {}, {}, {}
-    pair = None
+    pair, lasts, cut_where = None, {}, {}
     animate_up = False
     scenes = scene_list(book, stem, log)     # the chapter's scenes (shared, cached: the wardrobe reads them too)
     animate_up = subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0
@@ -1302,6 +1304,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             cur, home = si, sc_["place"] or home
             pair, people_here, where_of, talk_, screen, last_pose, last_at = None, [], {}, [], {}, {}, {}
             carry = {}                  # each one's pose as left: nothing carried into a new scene
+            lasts, cut_where = {}, {}   # the same, in each told place; who was last shown in which told place
             # 10-28: the scene's side map starts from the director's own blocking (it put Watson right of Holmes;
             # the two-shot code, with no map yet, put him on the left - in Helen's place)
             screen.update(_blocking_sides(sc_.get("blocking"), RGB.people()))
@@ -1340,6 +1343,25 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                  (not c["teller"] or c["teller"] in tellers or (c["teller"] == nar and len(quotes) < len(lines_)))]
         others = list(dict.fromkeys(c["place"] for c in open_ if c["place"] != home)) if scenes else \
             [w for w in wheres or real if w != home]
+        def at_key(p):                  # whose state a shot reads and moves: "" the scene's own place, else a told place's
+            w = next((w for w in others if RG.place_key(w) == RG.place_key(p)), None) if home else None
+            return RG.place_key(w) if w else ""
+
+        # 10-31 user ("Helen is often in bed while talking to Sherlock"): poses were ONE state per person for the whole
+        # scene, so young Helen in bed in the telling (Helen's Bedroom) put the Helen telling it in a bed at Baker
+        # Street (17 of 160 shots, 600-1381 s; "Helen Stoner lies by the fire"). The present and each told place keep
+        # their own poses
+        def state_at(p):
+            k_ = at_key(p)
+            return (last_pose, last_at) if not k_ else lasts.setdefault(k_, ({}, {}))
+
+        def told_at(t, who, lis):       # a line inside the telling (Julia to young Helen): at the told place, not home
+            if not (scenes and sc_who and any(w and w not in sc_who for w in (who, lis))):
+                return None
+            open_t = [c["place"] for c in open_ if c["from"] - 2 <= t <= c["to"] + 2 and c["place"] != home]
+            return next((cut_where[w] for w in (who, lis) if cut_where.get(w) in open_t), None) or \
+                (open_t[0] if open_t else None)
+
         scene_txt = scene_txt.replace("{CUTS}", (" In this passage it may cut to: " + "; ".join(
             f"{c['place']} (as {c['teller'] or 'the narration'} tells of it)" for c in open_) + ".") if open_ else
             " In this passage it stays there.")
@@ -1386,9 +1408,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 a = {}
             a = a if isinstance(a, dict) else {}
             scr = dict(screen)
-            crr = {w: dict(v) for w, v in carry.items()}
+            crr = {p_: {w: dict(v) for w, v in c_.items()} for p_, c_ in carry.items()}     # (by place: at_key)
             res = (lambda v: cast_of(v, cast))
-            a["shots"] = [compose(x, cast, crs, scr, res, crr) if isinstance(x, dict) and x.get("kind") != "talk"
+            a["shots"] = [compose(x, cast, crs, scr, res, crr.setdefault(at_key(x.get("place")), {}))
+                          if isinstance(x, dict) and x.get("kind") != "talk"
                           else x for x in a.get("shots") or []] if isinstance(a.get("shots"), list) else []
             a["_carry"] = crr
             for x in a["shots"]:
@@ -1445,9 +1468,9 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 if x.get("kind") != "talk" and named_in(x.get("setting"), cast):
                     x["setting"] = " ".join(z for z in re.split(r"(?<=[.;])\s+", str(x["setting"]))
                                             if not named_in(z, cast))
-            scr, crr = dict(screen), {w: dict(v) for w, v in carry.items()}
-            a["shots"] = [compose(x, cast, crs, scr, lambda v: cast_of(v, cast), crr) if x.get("kind") != "talk" else x
-                          for x in a.get("shots") or []]
+            scr, crr = dict(screen), {p_: {w: dict(v) for w, v in c_.items()} for p_, c_ in carry.items()}
+            a["shots"] = [compose(x, cast, crs, scr, lambda v: cast_of(v, cast), crr.setdefault(at_key(x.get("place")), {}))
+                          if x.get("kind") != "talk" else x for x in a.get("shots") or []]
             a["_carry"] = crr
         screen.update(scr)
         carry = a.pop("_carry", None) or carry
@@ -1494,11 +1517,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                  for j in range(k_)]
 
         def held(w):                    # how someone is in the scene now: from the last shot that placed them
-            pz = last_pose.get(w, "")
-            return f"{w} {POSE_VERB[pz]}{' ' + last_at[w] if last_at.get(w) else ''}" if pz else ""
+            pz = lp.get(w, "")          # (lp, la: the poses in the place this shot is at - state_at)
+            return f"{w} {POSE_VERB[pz]}{' ' + la[w] if la.get(w) else ''}" if pz else ""
 
         def abed(w):                    # in bed now (the last shot that placed them): stays there until a shot moves them
-            return last_pose.get(w) in BED_POSE and bool(IN_BED.search(last_at.get(w, "")))
+            return lp.get(w) in BED_POSE and bool(IN_BED.search(la.get(w, "")))
 
         sc_who = [w for w in (cast_of(v, cast) for v in sc_.get("who") or []) if w]   # everyone in the scene
         for x0, x, b in cuts_:
@@ -1506,16 +1529,19 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if d < 0.4:
                 continue
             place = next((w for w in [home] + others if RG.place_key(w) == RG.place_key(x0.get("place"))), home)
+            lp, la = state_at(place)
             if x0.get("kind") == "reaction":          # the listener's reaction during a long line
                 lis, spk = cast_of(x0.get("of"), cast), cast_of(x0.get("to"), cast)
                 if not lis:
                     continue
+                rp = told_at(t, spk, lis) or where_of.get(lis) or home     # (a reaction inside the telling: there)
+                lp, la = state_at(rp)
                 # 10-29: "eyes on the speaker" drew the speaker into the close-up - a second man in the listener's
                 # own nightshirt (27 of 74 quiet clips, retakes the same): the one spoken to looks off the picture's
                 # edge, on the speaker's side of the scene, and is said to be alone. 10-30: looking off the edge drew a
                 # second Helen in from that side too: eyes lowered, inside the picture
-                x0 = {"kind": "quiet", "framing": "close", "place": where_of.get(lis) or home, "who": [lis],
-                      "pose": {lis: POSE_WORDS.get(last_pose.get(lis, "stand"), "standing").split()[0]},
+                x0 = {"kind": "quiet", "framing": "close", "place": rp, "who": [lis],
+                      "pose": {lis: POSE_WORDS.get(lp.get(lis, "stand"), "standing").split()[0]},
                       "picture": ((f"a close view of {lis}'s head and shoulders, " if abed(lis) else "")   # (10-29: in
                                   + (held(lis) or f"{lis} listens")          # bed, drawn as a wide of the whole room)
                                   + (f", facing toward {spk}" if spk else "") + "."),
@@ -1530,12 +1556,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     tp = where_of.get(who) or home or place    # 10-27: talk shots on the title card / back in the bedroom
                     lis = cast_of(x0.get("listener"), cast)
                     lis = lis if lis and lis != who else None
+                    # 10-31: Julia's lines to young Helen were drawn in the Baker Street sitting room (8 of them,
+                    # 673-710 s): a line between people of the telling is at the told place, with its poses
+                    tp = told_at(t, who, lis) or tp
+                    lp, la = state_at(tp)
                     fr = str(x0.get("framing") or "").lower()
                     sh = {"id": f"{mid}_s0", "dur": d, "who": [who], "framing": "close" if fr.startswith("close")
                           else "medium", "kind": "talk", "place": tp, "action": "",
                           "picture": (TALK_CREATURE if who in crs else TALK_PICTURE).format(who=who)}
                     if abed(who) and who not in crs:      # a close-up in bed: the pillows behind the face, not a chair
-                        sh["picture"] += f", {BED_POSE[last_pose[who]]} in bed, against the pillows, the covers at the chest"
+                        sh["picture"] += f", {BED_POSE[lp[who]]} in bed, against the pillows, the covers at the chest"
                     if lis and who not in crs and lis not in crs and not fr.startswith("close"):
                         # the scene's ONE side map, the same the other shots use (10-27 audit: talk shots kept their
                         # own, and Helen and Holmes swapped sides at every cut between a talk shot and the others)
@@ -1566,7 +1596,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                             ab = next(w for w in lr if abed(w))
                             sh.update(who=lr, listener=lis, bed=ab, picture=TALK_TWO_BED.format(
                                 left=lr[0], right=lr[1], who=who, listener=lis, abed=ab, other=lr[1 - lr.index(ab)],
-                                bedpose=BED_POSE[last_pose[ab]]))
+                                bedpose=BED_POSE[lp[ab]]))
                         elif fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over")):
                             sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
                                                                                    listener=lis))
@@ -1576,14 +1606,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                             sh.update(who=lr, listener=lis, ots=lis, picture=TALK_OTS.format(
                                 who=who, side=side, other="right" if side == "left" else "left", listener=lis))
                             if abed(who):       # past the one at the bedside onto the one in bed
-                                sh["picture"] = sh["picture"].replace("seen from the chest up", f"{BED_POSE[last_pose[who]]} "
+                                sh["picture"] = sh["picture"].replace("seen from the chest up", f"{BED_POSE[lp[who]]} "
                                                                       "in bed under the covers, propped against the "
                                                                       "pillows, seen from the chest up", 1)
                         pair = {who, lis}
                     hs_ = [held(w) for w in sh["who"] if held(w)] if len(sh["who"]) > 1 and not sh.get("bed") else []   # (a close-up:
                     if hs_:                       # none - "beside the bed" put an empty bed and his whole stance in it)
                         sh["picture"] += ". " + "; ".join(hs_)
-                    sh["pose_held"] = {w: last_pose[w] for w in sh["who"] if last_pose.get(w)}
+                    sh["pose_held"] = {w: lp[w] for w in sh["who"] if lp.get(w)}
                     new_es.append(e)
                     by[mid] = [sh]
                     new_sheets[mid] = dict(place_sheet.get(tp) or {}, elsewhere="")
@@ -1591,8 +1621,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 # a talk shot when its speaker isn't speaking: the people listening, never "speaking" (said so)
                 _problem(book, log, f"{t:.1f} s: a talk shot of {who or x0.get('speaker')} while they are not speaking")
                 ppl_ = [w for w in [who, cast_of(x0.get("listener"), cast)] if w] or cast[:1]
+                place = home
+                lp, la = state_at(place)
                 x0 = {"kind": "quiet", "framing": "medium", "who": ppl_, "place": home,
-                      "pose": {w: POSE_WORDS.get(last_pose.get(w, "stand"), "standing").split()[0] for w in ppl_},
+                      "pose": {w: POSE_WORDS.get(lp.get(w, "stand"), "standing").split()[0] for w in ppl_},
                       "picture": "; ".join(held(w) or w for w in ppl_) + ".", "action": "They look at one another."}
             kind_ = x0.get("kind") if x0.get("kind") in ("action", "quiet") else "quiet"
             mid = shot_mid(kind_, t)
@@ -1610,13 +1642,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             by[mid] = [sh]
             new_sheets[mid] = dict(place_sheet.get(place) or {}, elsewhere="")
             prev_shot = sh
+            lp, la = state_at(place)
             for pl in sh.get("placed") or []:  # how each one is now, for the talk and reaction shots that follow
                 end = pose_cat((sh.get("pose_end") or {}).get(pl["name"])) or pl["pose"]
-                last_pose[pl["name"]] = end
+                lp[pl["name"]] = end    # (in the place it shows: the telling's poses stay in the telling)
                 if pl.get("at"):
-                    last_at[pl["name"]] = pl["at"]
+                    la[pl["name"]] = pl["at"]
             if place and (place == home or not home):
                 where_of.update({w: place for w in sh.get("who") or []})
+            elif place:
+                cut_where.update({w: place for w in sh.get("who") or []})
         pics_scene += [by[m_["id"]][0].get("picture", "") for m_ in new_es if float(m_["t"]) >= pa - 1e-6
                        and by[m_["id"]][0].get("kind") != "talk"]
         people_here = list(dict.fromkeys(people_here + [w for m_ in new_es if by.get(m_["id"]) and
