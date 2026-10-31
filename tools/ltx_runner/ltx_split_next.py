@@ -1231,6 +1231,21 @@ def serialize_sdpa():
     LA.PytorchAttention._serialized = True
 
 
+ORDER_COST = {"a2vid": 1.0, "ti2v": 1.3}   # card time per frame vs talk (10-30 pp_timing: 1.30 vs 1.66 s/frame)
+
+
+def order_jobs(todo: list, ti2v_default: bool = False) -> list:
+    """--order cost (10-31 user): the hold's jobs from the most to the least estimated card time (frames x route
+    factor). Neighbouring jobs - the ones the two lanes run side by side - then have similar half-steps, so the
+    lanes keep alternating instead of colliding on one card, their paired decodes are of similar length (decode
+    ~0.13 s/frame), and the hold ends on short clips instead of one long straggler. Order changes no output (each
+    job has its own seed); a chained piece still waits for its source (lane_loop), retakes still join at the end."""
+    def cost(j):
+        route = "a2vid" if j.get("audio") else ("ti2v" if ti2v_default or j.get("neg_extra") is not None else "a2vid")
+        return (j.get("frames") or 0) * ORDER_COST.get(route, 1.0)
+    return sorted(todo, key=lambda j: -cost(j))     # stable: equal costs keep the plan's order
+
+
 def cmd_gen(args, jobs):
     from ltx_core.quantization.fp8_cast import build_policy
     from ltx_pipelines.distilled import DistilledPipeline
@@ -1463,6 +1478,10 @@ def cmd_gen(args, jobs):
         # 10-24: the two takes of a shot (same length) ran side by side in lockstep, so both lanes decoded on card A
         # at once while card B sat idle (0% for 6-8 s at a time); takes apart + a late second lane keep them out of step
         todo = [j for j in todo if not re.search(r"_t\d+$", j["name"])] + [j for j in todo if re.search(r"_t\d+$", j["name"])]
+    if args.order == "cost":
+        todo = order_jobs(todo, ti2v_default=bool(args.ti2v and not args.a2vid))
+        log(f"job order: longest first ({len(todo)} jobs, {todo[0]['frames'] if todo else 0} -> "
+            f"{todo[-1]['frames'] if todo else 0} frames)")
     timings, lock, errors = {}, threading.Lock(), []
     t_all = time.time()
 
@@ -1811,6 +1830,8 @@ def main():
                     help="--pp: lane k starts k*S s late, takes ordered apart, so lanes don't decode on card A together")
     ap.add_argument("--pp-pool", action="store_true",
                     help="--pp: reused pinned shared-memory buffers for the activations between the processes")
+    ap.add_argument("--order", choices=["plan", "cost"], default="plan",
+                    help="job order: the plan's, or longest estimated card time first (order_jobs)")
     ap.add_argument("--decode-pair", action="store_true",
                     help="decodes parked and paired across both cards (PairSched; implies a decoder on each card)")
     ap.add_argument("--decode-b", action="store_true",
