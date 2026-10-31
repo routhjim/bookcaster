@@ -1659,13 +1659,13 @@ def assemble(book: Path, stem: str, es: list, mix: Path, out: Path, log=print) -
 
 
 def mux(book: Path, stem: str, vid: Path, t0: float, dur: float, mix: Path, out: Path, hits: list, n: int,
-        log=print) -> Path:
+        log=print, planned: bool = True) -> Path:
     """The picture on the chapter mix from t0, the stretch's planned sound effects, a clang at each hit (s from t0)."""
     # sound effects of the stretch: a spot inside a staged strike moves onto its impact frame
     vd, _, _ = paths(book, stem)
     sfx_plan = book / "work" / "sfx" / stem / "jobs.json"
     spots = []
-    if sfx_plan.exists():
+    if planned and sfx_plan.exists():    # (planned=False: the mix has them already - the shots flow, 10-31)
         jobs = json.loads(sfx_plan.read_text())
         plan = json.loads((book / "work" / "sfx" / stem / "plan.json").read_text())
         pl = plan if isinstance(plan, list) else plan.get("spots", [])

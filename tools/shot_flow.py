@@ -3193,6 +3193,106 @@ def _impacts_in_clip(mp4: Path, fps: int = FPS) -> list:
     return hits
 
 
+# 10-31 user: "sound effects have silently dropped out of the flow" - 145 clips, 0 effects: the shots flow never
+# planned them (only `bookcaster sfx` / make --level pictures did) and the mux said nothing. Now: planned with the
+# director (its language model is up), generated after the LTX holds (MOSS on the music card), each spot on the words
+# that tell it, an impact moved onto its clip's motion peak, mixed into the cut's sound (beds ducked under the voices)
+SNAP_S = 1.0                            # an impact moves onto a motion peak at most this far from its words
+
+
+def sfx_plan(book: Path, stem: str, log=print) -> None:
+    """The chapter's sound effects planned (cached in work/sfx/<stem>/plan.json); needs the language model up."""
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import animate, bookcaster as BC, sfx as SX, video as V
+    try:
+        p = book / "work" / "sfx" / stem / "plan.json"
+        if not (p.exists() and json.loads(p.read_text()).get("version") == SX.PLAN_VERSION) and \
+                subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode:
+            animate.igpu("strata", log)                 # (every passage cached: the director never started it)
+        plan = SX.ensure_plan(book / "work" / "sfx" / stem, book / "work" / f"{stem}.timeline.json",
+                              V.audio_seconds(book / "work" / f"{stem}.mp3"), BC.LLM_URL, BC.LLM_MODEL, log)
+        log(f"sound effects: {len(plan['beds'])} bed(s), {len(plan['spots'])} spot(s) planned")
+    except Exception as exc:                            # noqa: BLE001 - said loudly; the cut goes on without them
+        _problem(book, log, f"sound effects not planned: {exc}")
+
+
+def spot_times(book: Path, stem: str, spots: list, log=print) -> int:
+    """Each spot moved from its line's start onto the first of its cue words (Whisper's word times); -> how many."""
+    f = book / "chapters" / f"{stem}.txt"
+    if not f.exists():
+        return 0
+    bw = [_norm(w) for w in _WORD.findall(f.read_text(encoding="utf-8"))]
+    times = word_times(book, stem, log=log)
+    n = 0
+    for sp in spots:
+        cue = [w for w in (_norm(x) for x in _WORD.findall(sp.get("words") or "")) if w]
+        a, b = float(sp["t"]) - 0.5, float(sp.get("t_end") or sp["t"] + 10) + 0.5
+        if not cue or len(times) != len(bw):
+            continue
+        for i in range(len(bw) - len(cue) + 1):
+            if times[i] is not None and a <= times[i] <= b and bw[i:i + len(cue)] == cue:
+                sp["t"], n = round(float(times[i]), 2), n + 1
+                break
+    return n
+
+
+def snap_impacts(spots: list, spans: list, log=print) -> int:
+    """An impact sound (a slam, a knock, a clang) inside an action or quiet shot moves onto that clip's motion peak
+    when one is within SNAP_S of it; -> how many moved. spans: [(t_start, t_end, clip, kind)] in chapter seconds."""
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import sfx as SX
+    peaks, n = {}, 0
+    for sp in spots:
+        if not SX.IMPACT.search(sp.get("sound") or ""):
+            continue
+        t = float(sp["t"])
+        hit = next(((a, c) for a, b, c, k in spans if a <= t < b and k != "talk" and c and Path(c).exists()), None)
+        if not hit:
+            continue
+        a, c = hit
+        if c not in peaks:
+            peaks[c] = [a + f_ / FPS for f_ in _impacts_in_clip(Path(c))]
+        near = [p_ for p_ in peaks[c] if abs(p_ - t) <= SNAP_S]
+        if near:
+            sp["t"], n = round(min(near, key=lambda p_: abs(p_ - t)), 2), n + 1
+    return n
+
+
+def effects_mix(book: Path, stem: str, mix: Path, spans: list, log=print) -> Path:
+    """The cut's sound: the chapter mix with its planned effects (cached by what goes in); the plain mix when there
+    are none (said so)."""
+    import fcntl
+    import hashlib
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import sfx as SX
+    work = book / "work" / "sfx" / stem
+    p = work / "plan.json"
+    if not p.exists():
+        _problem(book, log, "no sound effects: none were planned (the director's step plans them)")
+        return mix
+    plan = json.loads(p.read_text())
+    try:
+        with open("/tmp/gpu-65.lock", "w") as lk:      # MOSS runs on the music card, the LTX B card
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            SX.generate(plan, work, log)
+    except Exception as exc:                            # noqa: BLE001
+        _problem(book, log, f"no sound effects: {exc}")
+        return mix
+    on_words = spot_times(book, stem, plan["spots"], log)
+    snapped = snap_impacts(plan["spots"], spans, log)
+    base = mix.with_name(mix.stem + ".nosfx" + mix.suffix)      # (`bookcaster sfx` mixed its own in: not twice)
+    base = base if base.exists() else mix
+    voice = book / "work" / f"{stem}.mp3"
+    bs = base.stat()
+    k = hashlib.sha1(json.dumps([plan, str(base), bs.st_size, bs.st_mtime_ns], sort_keys=True).encode()).hexdigest()[:12]
+    out = shot_dir(book, stem) / "audio" / f"fx_{k}.mp3"
+    if not out.exists():
+        SX.mix(base, voice, plan, out)
+    log(f"sound effects: {len(plan['beds'])} bed(s), {len(plan['spots'])} spot(s) ({on_words} on their words, "
+        f"{snapped} on the picture's impact)")
+    return out
+
+
 def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Path, log=print) -> Path:
     """The shots in time order: each moment's whole frames (counted from the stretch's start, so the picture never
     drifts from the voice) split over its shots by their lengths; a missing clip = its key held."""
@@ -3201,7 +3301,7 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
     t0 = float(es[0]["t"])
     span = _spans(es)
     edge = [round((float(e["t"]) - t0) * FPS) for e in es] + [round((float(es[-1]["t"]) + span[es[-1]["id"]] - t0) * FPS)]
-    segs, hits, f_at = [], [], 0
+    segs, hits, f_at, spans = [], [], 0, []
     for i, e in enumerate(es):
         n_all = max(edge[i + 1] - edge[i], 1)
         shots = shots_by.get(e["id"]) or []
@@ -3215,6 +3315,7 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
             c = L / "out" / f"{s['id']}.mp4"
             key = sd / e["id"] / s["id"] / "key.png"
             sg = L / f"seg_{s['id']}.mp4"
+            spans.append((t0 + f_at / FPS, t0 + (f_at + nf) / FPS, str(c) if c.exists() else "", s.get("kind")))
             if c.exists():
                 src, vf = ["-i", str(c)], "tpad=stop_mode=clone:stop_duration=120"
                 # a talk clip: its silent lead-in dropped (talk_pre), and SyncNet's shift (10-28 user: "version 3
@@ -3242,7 +3343,8 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                               "stream=nb_read_packets", "-of", "csv=p=0", str(vid)], capture_output=True, text=True).stdout or 0)
     if got != edge[-1]:
         log(f"!!! picture is {got} frames, the timeline {edge[-1]}: out of sync by {(got - edge[-1]) / FPS:+.2f} s")
-    return MF.mux(book, stem, vid, t0, edge[-1] / FPS, mix, out, hits, len(segs), log)
+    fx = effects_mix(book, stem, mix, spans, log)
+    return MF.mux(book, stem, vid, t0, edge[-1] / FPS, fx, out, hits, len(segs), log, planned=fx == mix)
 
 
 def out_path(book: Path, stem: str, t0: float, t1: float) -> Path:
@@ -3288,6 +3390,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     wardrobe(book, stem, log)
     lays = room_layouts(book, stem, log)                      # the rooms as their pictures have them (10-29)
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
+    sfx_plan(book, stem, log)                                 # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
