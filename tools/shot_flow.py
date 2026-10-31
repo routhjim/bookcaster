@@ -57,6 +57,8 @@ DECODE_B = True                     # quiet clips decode on card 65 (runner --de
 # 10-28 talk A/B (the 15 s window, SyncNet + the user's eye): 8 s pieces + 20 steps + STG off = 44% less GPU time
 # and lip sync 4.9 -> 9.0 on a 6.5 s close-up ("the close up is much better"); the long piece pushed the camera in on a
 # two-shot until its last frame was lightly pinned (TALK_LOCK 0.3: framing held, the cheapest of the three tried)
+TALK_PIECE_MIN = 73                 # no talk piece under ~3 s (talk_pieces)
+TALK_PIECE_COST = 0.8               # what one more piece costs against a cut mid-word (~1.1) (talk_pieces)
 TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-24: 97; 10-28 A/B: 193)
 TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no measured lip-sync loss)
 TALK_GUIDER = {"stg_scale": 0.0, "modality_scale": 1.0}   # STG off (as LTX's own HQ preset); 10-29: the audio-video
@@ -2367,6 +2369,61 @@ def sheet(book: Path, stem: str, shots: list, out: Path, takes: bool = False) ->
     return out
 
 
+def talk_pieces(total: int, env, mx: int = 193, overlap: int = 1, mn: int = TALK_PIECE_MIN) -> list:
+    """A long line's chained pieces [(start, frames)], each 8m+1 frames in [mn, mx], cut where the voice pauses.
+    10-30 user ("a decent chunk in all segments, but also divide in natural breaks"): the old cut looked for the
+    quietest frames in the last second of each 8 s window only - 19 of 28 cuts fell mid-word, and 5 lines ended in a
+    0.4-2.7 s tail (talk-002477: 8 s + 9 frames, lip sync 0.3). Now the whole line is cut at once (dynamic
+    programming over the piece lengths): each cut costs the loudness there less a bonus for a long pause, each piece
+    costs TALK_PIECE_COST plus its distance from an even split, so an extra piece is only worth a mid-word cut
+    avoided. On the 19 long lines of 10-30: 8 mid-word cuts, no tails, 45 pieces (was 46)."""
+    import numpy as np
+    env = np.asarray(env, float)
+    loud = float(np.percentile(env[env > 0], 75)) if (env > 0).any() else 1.0
+    quiet = env < 0.12 * loud
+    run = np.zeros(len(env))                    # how long the quiet stretch each frame sits in lasts
+    i = 0
+    while i < len(env):
+        j = i
+        while j < len(env) and quiet[j]:
+            j += 1
+        run[i:j] = j - i
+        i = max(j, i + 1)
+    k0 = max(1, math.ceil((total - 1) / (mx - overlap)))
+    even = min(mx, (total + (k0 - 1) * overlap) / k0)
+
+    def piece(n):
+        return TALK_PIECE_COST + 1.5 * abs(n - even) / mx
+
+    def cut(c):                                 # c: a piece's last frame (the next one starts on it)
+        return float(env[max(0, c - 2):c + 2].mean() / loud) - 0.6 * min(run[c], 12) / 12
+    lengths = [n for n in range(mn, mx + 1) if (n - 1) % 8 == 0]
+    best, out = {0: (0.0, [])}, None             # start frame -> (cost, pieces so far)
+    for s in range(total):
+        if s not in best:
+            continue
+        cost, ch = best[s]
+        rest = 8 * math.ceil((total - s - 1) / 8) + 1
+        if rest <= mx and (rest >= mn or not ch):           # the last piece
+            if out is None or cost + piece(rest) < out[0]:
+                out = (cost + piece(rest), ch + [(s, rest)])
+        for n in lengths:
+            c = s + n - 1
+            if c >= total - mn // 2:
+                break
+            s2, cc = s + n - overlap, cost + cut(c) + piece(n)
+            if s2 not in best or cc < best[s2][0]:
+                best[s2] = (cc, ch + [(s, n)])
+    return out[1] if out else _even_pieces(total, mx, overlap)
+
+
+def _even_pieces(total: int, mx: int, overlap: int) -> list:
+    """Even pieces when no cut plan fits (cannot happen for mn <= mx / 2; kept so a line is never dropped)."""
+    k = max(1, math.ceil((total - 1) / (mx - overlap)))
+    n = 8 * math.ceil(((total + (k - 1) * overlap) / k - 1) / 8) + 1
+    return [(i * (n - overlap), n) for i in range(k)]
+
+
 def voice_pitch(wavs: list, sr: int = 16000) -> float | None:
     """Median pitch (Hz) over the voiced frames of all these wavs pooled (autocorrelation, 60-400 Hz)."""
     import numpy as np
@@ -2434,8 +2491,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", e["wav"], "-af",
                             f"adelay={TALK_PRE / 24 * 1000:.0f}:all=1", str(lead)], check=True)
             n_all = max(st + nn for st, nn in e["chunks"]) + TALK_PRE
-            e["chunks"] = R.talk_chunks(n_all, R.audio_env(lead, n_all + TALK_PIECE), TALK_PIECE,
-                                        TALK_CHAIN_OVERLAP)
+            e["chunks"] = talk_pieces(n_all, R.audio_env(lead, n_all + TALK_PIECE), TALK_PIECE,
+                                      TALK_CHAIN_OVERLAP)
             pad = L / "audio" / f"{mid}_pad.wav"
             n_all = max(st + nn for st, nn in e["chunks"])
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lead), "-ac", "2", "-ar", "48000", "-af",
