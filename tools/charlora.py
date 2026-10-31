@@ -1034,7 +1034,7 @@ def cmd_train(a) -> int:
     _fa_attention()
     log(f"DiT + LoRA r{a.rank} loaded in {time.time() - t0:.0f} s: {sum(p.numel() for p in params) / 1e6:.1f} M "
         f"trainable, {torch.cuda.memory_allocated() / 2**30:.1f} GiB")
-    opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=a.wd, betas=(0.9, 0.99))
+    opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=a.wd, betas=(0.9, 0.99), fused=True)
     start = 0
     # resume only from a checkpoint of THIS dataset that loads (10-22 v3: Hulda's step-100 .pt was cut short by a
     # full disk and every retrain died on it; a retry's new dataset must not continue the old one's training)
@@ -1103,9 +1103,12 @@ def cmd_train(a) -> int:
         eps = torch.randn(x0.shape, generator=g, device=dev)
         xt = (1 - sig) * x0 + sig * eps
         pad = torch.cat([cp["pad"].to(dev), cp["pad"].new_ones(1, n // 4).to(dev)], dim=1)
-        pred = tr(hidden_states=xt.to(torch.bfloat16), timestep=torch.tensor([sig], device=dev, dtype=torch.bfloat16),
-                  encoder_hidden_states=emb, encoder_hidden_states_mask=mask, img_shapes=[[(1, hh, ww)]],
-                  img_mask=pad, return_dict=False)[0][:, -n:]
+        # bf16 autocast: the fp32 LoRA weights (the optimizer's master copy) multiply in bf16 instead of fp32 GEMMs
+        # with tiny tiles + casts (10-31 bench on an XTX: 1.52 -> 1.33 s/step, same loss)
+        with torch.autocast("cuda", torch.bfloat16):
+            pred = tr(hidden_states=xt.to(torch.bfloat16), timestep=torch.tensor([sig], device=dev, dtype=torch.bfloat16),
+                      encoder_hidden_states=emb, encoder_hidden_states_mask=mask, img_shapes=[[(1, hh, ww)]],
+                      img_mask=pad, return_dict=False)[0][:, -n:]
         loss = torch.nn.functional.mse_loss(pred.float(), (eps - x0).float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
