@@ -67,6 +67,15 @@ TALK_KEY = 0.8
 # real voice (audio_mux). Farintosh: 1.1/0.5 -> 7.9/7.8 and 8.0/8.0 (two runs); good lines unchanged
 TALK_DRIVE_AF = ("lowpass=f=3800,lowpass=f=3800,compand=attacks=0.003:decays=0.04:"
                  "points=-90/-90|-42/-62|-30/-34|-18/-18|0/-1:soft-knee=4")
+# 10-30: Holmes still failed (close-ups 1/8 at SyncNet 5, two-shots worse) - not his amused tone (a plain re-say failed
+# too) but the voice itself: a deep man (pitch ~88 Hz) moves LTX's mouth little. Raising what LTX hears 3 semitones
+# (formants kept) with the treble down 6 dB took his four worst lines from 2.8 to 7.8 mean, 8 of 8 seeds passing.
+# A speaker whose pitch is under TALK_SHIFT_BELOW is lifted to TALK_SHIFT_TO; everyone else is left alone. LTX input
+# only: the clip keeps the real voice
+TALK_SHIFT_BELOW = 100.0
+TALK_SHIFT_TO = 106.0
+TALK_SHIFT_MAX = 1.25
+TALK_SHIFT_TREBLE = "highshelf=f=2000:g=-6"
 # 10-26 user ("Peter's sermon just gets further and further out ... the last frame from one 3s clip should be the
 # starting frame for the next"): each piece starts ON the previous piece's last frame (lossless, from the render, not
 # the mp4) and the stitch hands over there with no crossfade; was a 12-frame overlap = 0.5 s of two blended mouths at
@@ -107,8 +116,8 @@ Rules:
   from the passage's start): the first starts at 0.0, each later one after the one before, the last before the
   passage's end. A shot starting at second X shows what the narration is telling at second X.
 - Every SPOKEN line is covered by "talk" shots of the one who says it: their lips are synced to the voice. Nobody
-  speaks in any other shot. A talk shot starts when its line starts and lasts at most 8 seconds: a longer line cuts
-  to a close reaction of the listener and back to the speaker. Give "speaker", "listener" (the one spoken to, or "")
+  speaks in any other shot. A talk shot starts when its line starts and runs to the line's end, however long: never
+  cut away from the speaker in the middle of their line. Give "speaker", "listener" (the one spoken to, or "")
   and "framing". THE ONE SPOKEN TO IS IN THE PICTURE, looking at the speaker: a line said to someone is never the
   speaker alone, however far apart they are. "two" (both in the picture, waist up: the first line between two who are
   near each other in the scene's BLOCKING), "over-the-shoulder" (the speaker seen past the listener's shoulder: a reply
@@ -1431,22 +1440,17 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     after = ({"kind": "reaction", "of": x0.get("listener") or x0.get("speaker"),
                               "to": x0.get("speaker")}, end, b)
                     b = end
-            n_ = max(1, math.ceil((b - x) / 8.0)) if x0.get("kind") == "talk" else 1
-            edges = [x + (b - x) * j / n_ for j in range(n_ + 1)]
-            if n_ > 1:                  # (10-28: these cut at equal fractions, mid-word; 10-29: at sentence breaks)
-                env = _envelope(voices)
-                for j in range(1, n_):
-                    edges[j] = snap_cut(pa + edges[j], pa + edges[j - 1] + SHOT_SHORT,
-                                        pa + edges[j + 1] - SHOT_SHORT, pts, env, reach=(b - x) / n_ / 2) - pa
-            for j in range(n_):         # a long line: the speaker, the listener's reaction, the speaker (SHOT_RULES)
-                piece = x0
-                if j % 2 and x0.get("listener"):
-                    piece = {"kind": "reaction", "of": x0.get("listener"), "to": x0.get("speaker")}
-                elif j:
-                    piece = dict(x0, framing="over-the-shoulder")
-                cuts_.append((piece, edges[j], edges[j + 1]))
+            # 10-30 user ("remove the cutaways"): a long line cut to the listener every 8 s - 11 close-ups of Holmes
+            # while Helen spoke. A line stays on its speaker to its end (the talk clip chains its pieces)
+            cuts_.append((x0, x, b))
             if after:
                 cuts_.append(after)
+        # 10-30 user ("some pauses in the video while audio is delivered"): a quiet clip is at most SHOT_MAX + 0.5 s,
+        # and a longer slot froze its last frame (1.4-3.5 s, five times in ten minutes): it is cut in even pieces
+        cuts_ = [(p_, a_ + (b_ - a_) * j / k_, a_ + (b_ - a_) * (j + 1) / k_)
+                 for p_, a_, b_ in cuts_
+                 for k_ in [1 if p_.get("kind") == "talk" else max(1, math.ceil((b_ - a_) / (SHOT_MAX + 0.5)))]
+                 for j in range(k_)]
 
         def held(w):                    # how someone is in the scene now: from the last shot that placed them
             pz = last_pose.get(w, "")
@@ -1502,7 +1506,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         side = "left" if lr[0] == who else "right"
                         # (10-27 user: the seated/lying variant without "waist up, close to the viewer" broke the lip
                         # sync - one two-shot template again, the one that worked)
-                        group = [w for w in (sc_who or []) if w in cast and w not in crs]
+                        # (10-30: a group shot drew everyone in the scene's list - Roylott at Baker Street before
+                        # he came in, taken for a second Watson): only those already shown here, and the two talking
+                        group = [w for w in (sc_who or []) if w in cast and w not in crs
+                                 and (w in people_here or w in where_of or w in (who, lis))]
                         if fr.startswith("group") and len(group) >= 3 and who in group:
                             for w in group:     # (10-28 user: Holmes's aside to Watson as a three-shot, Watson never
                                 screen.setdefault(w, max(screen.values(), default=-1) + 1)   # in Helen's place)
@@ -1662,7 +1669,10 @@ def scene_list(book: Path, stem: str, log=print) -> list:
     real = [e["where"] for e in (MF.entries(book, stem, 0, 1e9) if fp.exists() else [])
             if e.get("where") and not NO_PLACE.search(e["where"])]
     known = list({RG.place_key(w): w for w in R_.places() + real}.values())   # each place once, by its one name
-    return breakdown(book, stem, tl, chars, known, R_.narrator() or "", log)
+    lp = book / "work" / "video" / "look.json"
+    ours = {RG.place_key(w) for w in (json.loads(lp.read_text()).get("_described") or {} if lp.exists() else {})}
+    stable = [w for w in known if RG.place_key(w) not in ours]
+    return breakdown(book, stem, tl, chars, known, R_.narrator() or "", log, stable=stable)
 
 
 def scene_notes(book: Path, stem: str, log=print) -> str:
@@ -1681,7 +1691,8 @@ def scene_notes(book: Path, stem: str, log=print) -> str:
     return "\n".join(out)
 
 
-def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: str, log=print) -> list:
+def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: str, log=print,
+              stable: list | None = None) -> list:
     """The chapter's scenes [{"start", "end", "place", "who", "what", "cutaways", "opens"}], by the director over the
     whole chapter at once (cached in shots/scenes/breakdown.json by its question)."""
     from tts_reader import animate
@@ -1695,9 +1706,15 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
     k = MF._h(q + BREAKDOWN_EFFORT)
+    # 10-30: describe_places adds the places a run invented to look.json, which changed this question and re-asked
+    # the whole breakdown on the next run (a 4-hour re-plan and re-render): k2 leaves those places out
+    k2 = MF._h(q.replace("; ".join(places) or "(none yet)", "; ".join(stable if stable is not None else places)
+                         or "(none yet)", 1) + BREAKDOWN_EFFORT)
     got = json.loads(cp.read_text()) if cp.exists() else {}
-    if got.get("k") == k:
+    if got.get("k") == k or (got.get("k2") and got.get("k2") == k2):
         sc = got["scenes"]
+        if got.get("k2") != k2:
+            cp.write_text(json.dumps(dict(got, k2=k2), indent=1))
     else:
         animate.igpu("strata", log)
         sc, turn = [], [{"role": "user", "content": q}]
@@ -1718,7 +1735,8 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
         if faults:
             log(f"!!! the scene breakdown still breaks the rules: {faults}")
         if sc:
-            cp.write_text(json.dumps({"k": k if not faults else "", "scenes": sc}, indent=1))
+            cp.write_text(json.dumps({"k": k if not faults else "", "k2": k2 if not faults else "", "scenes": sc},
+                                     indent=1))
     sc = [x for x in sc if isinstance(x, dict) and x.get("place")]
     sc.sort(key=lambda x: float(x.get("start") or 0))
     starts = sorted(float(x["t"]) for x in tl)
@@ -2343,6 +2361,35 @@ def sheet(book: Path, stem: str, shots: list, out: Path, takes: bool = False) ->
     return out
 
 
+def voice_pitch(wavs: list, sr: int = 16000) -> float | None:
+    """Median pitch (Hz) over the voiced frames of all these wavs pooled (autocorrelation, 60-400 Hz)."""
+    import numpy as np
+    f0 = []
+    for w in wavs:
+        a = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", str(w), "-ac", "1", "-ar", str(sr), "-f",
+                                          "f32le", "-"], capture_output=True).stdout, np.float32)
+        n = 1024
+        if len(a) < n * 2:
+            continue
+        fr = np.lib.stride_tricks.sliding_window_view(a, n)[::256]
+        e = np.sqrt((fr ** 2).mean(1))
+        v = fr[e > max(e.max() * 0.1, 1e-4)]
+        ac = np.fft.irfft(np.abs(np.fft.rfft(v * np.hanning(n), 2 * n)) ** 2)[:, :n]
+        lo, hi = sr // 400, sr // 60
+        lag = lo + ac[:, lo:hi].argmax(1)
+        ok = ac[np.arange(len(ac)), lag] > 0.4 * ac[:, 0]
+        f0 += list(sr / lag[ok])
+    return float(np.median(f0)) if len(f0) >= 20 else None
+
+
+def drive_af(pitch: float | None) -> str:
+    """What LTX hears (TALK_DRIVE_AF), a low voice first lifted toward TALK_SHIFT_TO (TALK_SHIFT_BELOW)."""
+    if not pitch or pitch >= TALK_SHIFT_BELOW:
+        return TALK_DRIVE_AF
+    r = min(TALK_SHIFT_MAX, TALK_SHIFT_TO / pitch)
+    return f"rubberband=pitch={r:.3f}:formant=preserved,{TALK_SHIFT_TREBLE},{TALK_DRIVE_AF}"
+
+
 def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | None = None,
         retake: set | None = None) -> None:
     """The clips, pipelined over both XTXs: action = two-stage in TAKES, quiet = distilled, talk = A2Vid."""
@@ -2358,6 +2405,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                           "from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT as N; print(N)"],
                          capture_output=True, text=True).stdout.strip() + R.NEG_EXTRA
     byid = {e["id"]: e for e in es}
+    pitch = {k: voice_pitch([e["wav"] for e in es if e.get("speaker") == k and e.get("wav")])
+             for k in {e.get("speaker") for e in es if e.get("speaker")}}
+    for k, v in sorted(pitch.items()):
+        log(f"voice {k}: pitch {v and round(v)} Hz -> LTX hears {drive_af(v).split(',')[0]}")
     enc_dev, enc_dist, two, quiet, talk = [], [], [], [], []
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
@@ -2384,7 +2435,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lead), "-ac", "2", "-ar", "48000", "-af",
                             f"apad=whole_dur={n_all / 24:.4f}", str(pad)], check=True)
             drv = L / "audio" / f"{mid}_drv.wav"        # what LTX hears; the clip keeps `pad` (TALK_DRIVE_AF)
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", TALK_DRIVE_AF, str(drv)], check=True)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", drive_af(pitch.get(e.get("speaker"))),
+                            str(drv)], check=True)
             close = len(s.get("who") or []) <= 1
             p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
             emb = f"t_{mid}_{MF._h(p_)}"
