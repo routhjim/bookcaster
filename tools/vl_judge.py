@@ -54,6 +54,44 @@ class Judge:
             out = self.m.generate(**x, max_new_tokens=max_new_tokens, do_sample=False)
         return prefix + self.proc.batch_decode(out[:, x["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
 
+    def ask_many(self, im, qs: dict, max_new_tokens: int = 8, max_side: int = 640) -> dict:
+        """{key: question} about ONE picture -> {key: answer}: the picture is encoded and prefilled once and every
+        question is decoded together as one batch on copies of that cache (10-31: ask() per question re-encoded
+        the picture each time - a key's ~7 questions took 3.98 s, now 1.44 s; 147 answers, same yes/no/number)."""
+        if len(qs) < 2:
+            return {k: self.ask(im, v, max_new_tokens, max_side) for k, v in qs.items()}
+        torch = self.torch
+        sc = max_side / max(im.size)
+        if sc < 1:
+            im = im.resize((max(28, round(im.width * sc)), max(28, round(im.height * sc))))
+        ks = list(qs)
+        xs = [self.proc.apply_chat_template([{"role": "user", "content": [{"type": "image", "image": im},
+                                                                          {"type": "text", "text": qs[k]}]}],
+                                            add_generation_prompt=True, tokenize=True, return_dict=True,
+                                            return_tensors="pt").to(self.device) for k in ks]
+        x, ids0 = xs[0], xs[0]["input_ids"][0]
+        vend = (ids0 == self.m.config.vision_end_token_id).nonzero()
+        if not len(vend) or any(not torch.equal(xx["input_ids"][0, :int(vend[0]) + 1], ids0[:int(vend[0]) + 1])
+                                for xx in xs[1:]):
+            return {k: self.ask(im, v, max_new_tokens, max_side) for k, v in qs.items()}
+        vend = int(vend[0]) + 1                 # the shared prefix: the template + the picture, up to <|vision_end|>
+        mm = {"mm_token_type_ids": x["mm_token_type_ids"][:, :vend]} if "mm_token_type_ids" in x else {}
+        with torch.inference_mode():
+            cache = self.m(input_ids=x["input_ids"][:, :vend], attention_mask=x["attention_mask"][:, :vend],
+                           pixel_values=x["pixel_values"], image_grid_thw=x["image_grid_thw"], use_cache=True,
+                           **mm).past_key_values
+            cache.batch_repeat_interleave(len(ks))
+            sufs = [xx["input_ids"][0, vend:] for xx in xs]
+            n = max(len(t) for t in sufs)
+            pad = self.proc.tokenizer.pad_token_id or 0
+            # each question left-padded right after the prefix; the mask hides the pads (positions from its cumsum)
+            ids = torch.stack([torch.cat([ids0[:vend], ids0.new_full((n - len(t),), pad), t]) for t in sufs])
+            am = torch.stack([torch.cat([ids0.new_ones(vend), ids0.new_zeros(n - len(t)), ids0.new_ones(len(t))])
+                              for t in sufs])
+            out = self.m.generate(input_ids=ids, attention_mask=am, past_key_values=cache,
+                                  max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=pad)
+        return {k: a.strip() for k, a in zip(ks, self.proc.batch_decode(out[:, ids.shape[1]:], skip_special_tokens=True))}
+
     def box(self, im, what: str):
         """[x0, y0, x1, y1] in 0-1 of *what*, or None (Qwen3-VL grounding, 0-1000 coordinates)."""
         import re
@@ -85,7 +123,7 @@ def main() -> int:
             continue
         q = json.loads(line)
         im = crop(q["image"], q.get("crop"))
-        ans = {k: j.ask(im, v, int(q.get("max_new_tokens", 8))) for k, v in q["ask"].items()}
+        ans = j.ask_many(im, q["ask"], int(q.get("max_new_tokens", 8)))
         print(json.dumps({"id": q.get("id"), "answers": ans}), flush=True)
     return 0
 
