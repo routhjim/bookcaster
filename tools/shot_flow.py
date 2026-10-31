@@ -598,6 +598,39 @@ IN_BED = re.compile(r"\b(?:in|on)\s+(?:the\s+|his\s+|her\s+|a\s+)?bed\b", re.I)
 POSE_VERB = {"stand": "stands", "sit": "sits", "lie": "lies", "kneel": "kneels", "crouch": "crouches"}
 
 
+def shot_mid(kind: str, t: float) -> str:
+    """A moment's id, readable both ways: its kind, its start for a person, its start in tenths of a second for a
+    machine - "quiet-02m26s-001464" = a quiet shot at 2:26 (146.4 s). 10-30 user ("make the naming useful for humans
+    to read and also machines to decipher"): every non-talk shot was "action-<tenths>", quiet ones too, so the 46
+    "action" retakes of a run with no action in it were quiet shots. Parsers read the trailing number (shot_seed,
+    animate._shot_t, MF._dress)."""
+    k = round(t * 10)
+    return f"{kind}-{k // 600:02d}m{k // 10 % 60:02d}s-{k:06d}"
+
+
+OLD_MID = re.compile(r"(?<![a-z])(?:talk|action)-\d{6}(?!\d)")
+
+
+def _migrate_ids(sd: Path, shots: list, log=print) -> None:
+    """Rename what a run before shot_mid left under the old ids ("action-001464", "talk-000868": keys, clips, sync
+    records, voice cuts, prompt embeddings) to the plan's new ids, so nothing cached is drawn or rendered again."""
+    m = {}
+    for s_ in shots:
+        mid = s_["id"].rsplit("_s", 1)[0]
+        old = f"{'talk' if s_.get('kind') == 'talk' else 'action'}-{mid.rsplit('-', 1)[-1]}"
+        if old != mid:
+            m[old] = mid
+    n = 0
+    for root, dirs, files in os.walk(sd, topdown=False) if m else ():
+        for name in files + dirs:
+            new = OLD_MID.sub(lambda x: m.get(x.group(0), x.group(0)), name)
+            if new != name and not (Path(root) / new).exists():
+                os.replace(Path(root) / name, Path(root) / new)
+                n += 1
+    if n:
+        log(f"shot names: {n} cached file(s) moved to the new ids (kind-MMmSSs-tenths)")
+
+
 def shot_seed(sid: str) -> int:
     """A shot's own seed offset, from its time (10-27 user: Watson's preamble may repeat its desk shots, but the same
     words and seed drew the same pixels: a repeated setup is a fresh take of it)."""
@@ -1316,7 +1349,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         cast = [w for w in cast if w in chars] or cast
         crs = [w for e in ms for w in _cast(book, stem, e)[1]]
         mid_t = round(pa * 10)
-        dress = MF._dress(book, stem, f"action-{mid_t:06d}", cast)
+        dress = MF._dress(book, stem, shot_mid("quiet", mid_t / 10), cast)
         looks = {w: MF._brief(MF._appearance(RGB.look(w))) for w in cast}
         people = "; ".join(f"{w} ({looks.get(w, '')}{'; wears ' + dress[w] if dress.get(w) else ''})" for w in cast)
         hs = place_sheet.get(home) or {}
@@ -1492,7 +1525,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if x0.get("kind") == "talk":
                 who = cast_of(x0.get("speaker"), cast)
                 if who and any(min(t + d, b_) - max(t, a_) > 0.3 for a_, b_, _ in spans.get(who, [])):
-                    mid = f"talk-{round(t * 10):06d}"
+                    mid = shot_mid("talk", t)
                     e = talk_moment(mid, who, t, d, creature=who in crs)
                     tp = where_of.get(who) or home or place    # 10-27: talk shots on the title card / back in the bedroom
                     lis = cast_of(x0.get("listener"), cast)
@@ -1561,13 +1594,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 x0 = {"kind": "quiet", "framing": "medium", "who": ppl_, "place": home,
                       "pose": {w: POSE_WORDS.get(last_pose.get(w, "stand"), "standing").split()[0] for w in ppl_},
                       "picture": "; ".join(held(w) or w for w in ppl_) + ".", "action": "They look at one another."}
-            mid = f"action-{round(t * 10):06d}"
+            kind_ = x0.get("kind") if x0.get("kind") in ("action", "quiet") else "quiet"
+            mid = shot_mid(kind_, t)
             new_es.append({"id": mid, "kind": "action", "t": t, "dur": d, "route": "shot", "where": place,
                            "who": x0.get("who") or []})
             sh = {k_: v for k_, v in x0.items() if k_ not in ("start", "speaker", "listener")}
             sh.update(id=f"{mid}_s0", dur=d, place=place, framing=x0.get("framing") if x0.get("framing") in
                       ("wide", "medium", "close") else "medium",
-                      kind=x0.get("kind") if x0.get("kind") in ("action", "quiet") else "quiet")
+                      kind=kind_)
             if sh["framing"] == "close" and len(sh.get("who") or []) == 1 and \
                     len([w for w in sc_who if w not in crs]) > 1:
                 sh["tight"] = True
@@ -3191,6 +3225,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     shots = [s for e in es for s in by.get(e["id"], [])]
+    _migrate_ids(shot_dir(book, stem), shots, log)
     R_ = RG.Book(book)
     for s in shots:                     # each place's ONE room: the book's description, else its set sheet's (10-27
         sh = sheets.get(s["id"].rsplit("_s", 1)[0]) or {}        # audit: keys used the set sheet, the hero the book's)

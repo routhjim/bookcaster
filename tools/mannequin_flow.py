@@ -871,7 +871,7 @@ def _dress(book: Path, stem: str, mid: str, who: list) -> dict:
     if not plan.get("wardrobe"):
         return {}
     e = next((x for x in json.loads((vd / "flow3d" / "plan.json").read_text())["entries"] if x["id"] == mid), None)
-    if e is None and re.fullmatch(r"[a-z]+-\d{6}", mid):    # a director's own moment: its time is in its id (tenths)
+    if e is None and re.fullmatch(r"[a-z]+-(?:\d\dm\d\ds-)?\d{6}", mid):    # a director's own moment: its time is in its id (tenths)
         e = {"t": int(mid.rsplit("-", 1)[1]) / 10}
     tl = book / "work" / f"{stem}.timeline.json"
     if e is None or not tl.exists():
