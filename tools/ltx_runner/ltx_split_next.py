@@ -540,15 +540,17 @@ def back_server(args, inq, outqs, ready):
         log(f"[B] back half loaded: blocks {args.split}..{nb - 1}; alloc {torch.cuda.memory_allocated(0) / 2**30:.1f} GiB"
             + (" (+ VAE decoder)" if dec is not None else ""))
         ready.put(("ok", torch.cuda.memory_allocated(0)))
-        busy = 0.0
+        busy = [0.0]
         bpool = ShmPool()
-        with torch.inference_mode():
-            while True:
-                msg = inq.get()
-                if msg is None:
-                    break
-                if msg[0] == "decode":
-                    _, lane, latent, tiling, dt, gstate = msg
+        import queue
+        decq = queue.Queue()
+
+        def decoder():
+            """(10-31) Decodes on their own thread + stream: the other lane's DiT calls no longer queue behind a
+            ~14 s decode (FIFO head-of-line block = the main idle on both cards)."""
+            with torch.inference_mode(), torch.cuda.stream(torch.cuda.Stream(D0)):
+                while (m := decq.get()) is not None:
+                    _, lane, latent, tiling, dt, gstate = m
                     t = time.time()
                     g = None
                     if gstate is not None:
@@ -556,11 +558,21 @@ def back_server(args, inq, outqs, ready):
                         g.set_state(gstate)
                     fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
                     fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                    torch.cuda.synchronize(0)
+                    torch.cuda.current_stream().synchronize()
                     out = to_shm(fr)
-                    busy += time.time() - t
+                    busy[0] += time.time() - t
                     outqs[lane].put((out, time.time() - t))
-                    del latent, fr, out, msg
+                    del latent, fr, out, m
+        dthr = threading.Thread(target=decoder, daemon=True)
+        dthr.start()
+        with torch.inference_mode():
+            while True:
+                msg = inq.get()
+                if msg is None:
+                    break
+                if msg[0] == "decode":
+                    decq.put(msg)
+                    del msg
                     continue
                 lane, video, audio, pert, on = msg
                 t = time.time()
@@ -570,7 +582,7 @@ def back_server(args, inq, outqs, ready):
                 else:
                     video, audio, pert = move(video, D0), move(audio, D0), move(pert, D0)
                 del msg
-                torch.cuda.synchronize(0)
+                torch.cuda.current_stream().synchronize()
                 t_in = time.time()
                 for i in range(args.split, nb):
                     if video is not None:
@@ -580,13 +592,16 @@ def back_server(args, inq, outqs, ready):
                         audio = ltx.block_input_processor(audio, pert, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
                                                           cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
                     video, audio = ltx.transformer_blocks[i](video=video, audio=audio)
-                torch.cuda.synchronize(0)
+                torch.cuda.current_stream().synchronize()
                 t_c = time.time()
                 out = bpool.pack((video, audio), f"b{lane}") if args.pp_pool else (to_shm(video), to_shm(audio))
                 t_out = time.time()
-                busy += t_out - t
+                busy[0] += t_out - t
                 outqs[lane].put((*out, (t_c - t_in, (t_in - t) + (t_out - t_c))))
                 del video, audio, pert, out
+        decq.put(None)
+        dthr.join()
+        busy = busy[0]
         log(f"[B] done; busy {busy:.1f}s; peak {torch.cuda.max_memory_allocated(0) / 2**30:.1f} GiB")
         ready.put(("busy", busy, torch.cuda.max_memory_allocated(0)))
     except BaseException as e:  # noqa: BLE001
