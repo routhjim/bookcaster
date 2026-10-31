@@ -86,7 +86,7 @@ LTX_PP_ARGS = "--lanes 2 --pp-shared-a --pp-pool --decode-b"
 # ~45 s quiet one): half the route's median clip wall time from pp_timing (this chapter, else the book's newest),
 # else STAGGER_DEFAULT
 STAGGER_DEFAULT = {"a2vid": 100, "ti2v": 60, "ic": 60, "distilled": 22}
-LTX_GEN_ARGS = ("--fa-amd", "--blaslt")
+LTX_GEN_ARGS = ("--fa-amd", "--blaslt", "--compile")
 SPLIT_DEFAULT = {"a2vid": 25, "ti2v": 24, "ic": 17, "distilled": 17}
 LTX_PY = HOME / "tts-ab" / ".venv-ltx" / "bin" / "python"
 POSE_PY = HOME / "tts-ab" / ".venv-pose" / "bin" / "python"
