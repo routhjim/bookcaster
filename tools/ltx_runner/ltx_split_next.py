@@ -22,6 +22,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", os.path.expanduser("~/.cache/torchinductor-ltx"))  # survives reboots
 
 
 def raise_nofile():
@@ -65,6 +66,8 @@ D0, D1 = torch.device("cuda:0"), torch.device("cuda:1")
 T0 = time.time()
 PP_BACK_DEV = "1"
 MAX_BATCH = 4                # guidance passes per DiT call (A2Vid CFG = 2, TI2Vid CFG + STG = 3)
+TALK_CFG_CUT = 0.6           # talk (A2Vid) stage 1: guidance passes on the first 60% of steps only (see install_cfg_cut)
+COMPILE_MIN_JOBS = int(os.environ.get("LTX_COMPILE_MIN_JOBS", 20))       # --compile pays its ~80 s warm-up back after ~12-20 clips; smaller holds stay eager
 
 
 def log(*a):
@@ -531,6 +534,8 @@ def back_server(args, inq, outqs, ready):
             attach_runtime_lora(ltx, DLORA, args.dlora_strength, state)
         elif args.base == "dev":
             attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
+        if args.compile:
+            compile_blocks(ltx)
         nb = len(ltx.transformer_blocks)
         dec = None
         if args.decode_b:   # (10-24) the clips' VAE decode here, on the card that idles while card A decodes
@@ -602,6 +607,8 @@ def back_server(args, inq, outqs, ready):
         decq.put(None)
         dthr.join()
         busy = busy[0]
+        if args.compile:
+            log("[B]", compile_stats())
         log(f"[B] done; busy {busy:.1f}s; peak {torch.cuda.max_memory_allocated(0) / 2**30:.1f} GiB")
         ready.put(("busy", busy, torch.cuda.max_memory_allocated(0)))
     except BaseException as e:  # noqa: BLE001
@@ -965,36 +972,45 @@ def install_debug(pipe, x0, ddir, name_fn=lambda: "job"):
     pipe.video_decoder = Wrap(pipe.video_decoder, "vdecode")
 
 
-def _lora_forward(m):
-    """The runtime LoRAs on Linear m: a list of (A, B, state), applied by a forward that replaces m's own.
-    10-31: on a big input the active LoRAs are FOLDED into the weight m upcasts from fp8 anyway (W + B A, one
-    out x r x in GEMM) and m runs one GEMM; the unfused x A^T B^T cost two thin rank-450 GEMMs over every token
+def _lora_linear_forward(self, x):
+    """Class-level forward of a Linear with runtime LoRAs (self._runtime_loras: (A, B, state)). Class-level, not an
+    instance closure, so torch.compile traces it inline (a closure per module = a graph break and a recompile per
+    block). 10-31: on a big input the active LoRAs are FOLDED into the weight upcast from fp8 anyway (W + B A, one
+    out x r x in GEMM) and one GEMM runs; the unfused x A^T B^T cost two thin rank-450 GEMMs over every token
     (11% of a stage-2 call at 12k tokens). Small inputs (rows below in*out/(in+out)) keep the unfused sum."""
+    on = [(A, B) for A, B, st in self._runtime_loras if st.on]
+    if not on:
+        return self._base_forward(x)
+    F_ = torch.nn.functional
+    n_in, n_out = self.weight.shape[1], self.weight.shape[0]
+    if (x.numel() // n_in) * (n_in + n_out) <= n_in * n_out:
+        out = self._base_forward(x)
+        for A, B in on:
+            out = out + F_.linear(F_.linear(x.to(A.dtype), A), B).to(out.dtype)
+        return out
+    # a weight already in x's dtype: .to() returns the parameter itself, so copy it (never fold into the parameter)
+    w = self.weight.clone() if self.weight.dtype == x.dtype else self.weight.to(x.dtype)
+    for A, B in on:
+        w.addmm_(B.to(w.dtype), A.to(w.dtype))
+    return F_.linear(x, w, None if self.bias is None else self.bias.to(x.dtype))
+
+
+_LORA_CLASSES = {}
+
+
+def _lora_forward(m):
+    """The runtime LoRAs on Linear m: a list of (A, B, state). m's class becomes a LoRA subclass of its own
+    (one per base class) whose forward is _lora_linear_forward."""
     lst = getattr(m, "_runtime_loras", None)
     if lst is not None:
         return lst
+    base = type(m)
+    cls = _LORA_CLASSES.get(base)
+    if cls is None:
+        cls = _LORA_CLASSES[base] = type(f"Lora{base.__name__}", (base,),
+                                         {"forward": _lora_linear_forward, "_base_forward": base.forward})
     lst = m._runtime_loras = []
-    orig = m.forward
-    F_ = torch.nn.functional
-
-    def forward(x):
-        on = [(A, B) for A, B, st in lst if st.on]
-        if not on:
-            return orig(x)
-        n_in, n_out = m.weight.shape[1], m.weight.shape[0]
-        if (x.numel() // n_in) * (n_in + n_out) <= n_in * n_out:
-            out = orig(x)
-            for A, B in on:
-                out = out + F_.linear(F_.linear(x.to(A.dtype), A), B).to(out.dtype)
-            return out
-        w = m.weight.to(x.dtype)
-        if w.data_ptr() == m.weight.data_ptr():
-            w = w.clone()                   # a bf16 weight: never fold into the parameter itself
-        for A, B in on:
-            w.addmm_(B.to(w.dtype), A.to(w.dtype))
-        return F_.linear(x, w, None if m.bias is None else m.bias.to(x.dtype))
-
-    m.forward = forward
+    m.__class__ = cls
     return lst
 
 
@@ -1061,6 +1077,9 @@ def cmd_gen(args, jobs):
     from ltx_pipelines.utils.types import ImageConditioningInput
 
     torch.cuda.set_device(0)
+    if args.compile and len(jobs) < COMPILE_MIN_JOBS:
+        args.compile = False        # before B is spawned with these args: both halves stay eager
+        log(f"--compile off: {len(jobs)} jobs < {COMPILE_MIN_JOBS} (its warm-up would not pay back)")
     HASHLOG["on"] = args.hashlog
     if args.lanes > 1:
         serialize_sdpa()
@@ -1170,6 +1189,9 @@ def cmd_gen(args, jobs):
         attach_runtime_lora(ltx, DLORA, args.dlora_strength, lstate)
     elif args.base == "dev":  # distilled behaviour = dev + distilled LoRA, always on
         attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
+    if args.compile:
+        compile_blocks(ltx)
+    install_cfg_cut()
     log("DiT loaded;", vram())
 
     def gate_hook(mod, a, kw):
@@ -1333,6 +1355,7 @@ def cmd_gen(args, jobs):
             # default max_batch_size=1 split them back into sequential B=1 calls, so every step upcast the fp8
             # weights once per pass (11% of a stage-1 call). Talk 121 f: -2.4% card time, PSNR 43.5 dB vs B=1
             kw["max_batch_size"] = MAX_BATCH
+        CFG_TL.cut = TALK_CFG_CUT if j_a2v else 1.0
         t = time.time()
         tm_reset()
         frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
@@ -1455,6 +1478,8 @@ def cmd_gen(args, jobs):
         th.join()
     wall = time.time() - t_all
     n = len(timings)
+    if args.compile:
+        log("[A]", compile_stats())
     log(f"done {n} jobs in {wall:.1f}s wall ({60 * n / max(wall, 1e-9):.2f} jobs/min, lanes={len(lanes)}); peak", vram())
     log(json.dumps(timings, indent=1))
     if pp:
@@ -1467,19 +1492,79 @@ def cmd_gen(args, jobs):
         raise SystemExit(f"{len(errors)} lane error(s)")
 
 
+CFG_TL = threading.local()      # per lane: .cut = the share of a guided stage's steps that run the guidance passes
+
+
+def install_cfg_cut():
+    """Guidance interval / CFG truncation (10-31 A/B, user OK): a guided stage runs its guidance passes (uncond,
+    STG, modality) on the first CFG_TL.cut of its steps; the later steps run the conditioned pass alone. Talk
+    at 0.6: 6 talk lines, SyncNet within +-0.15 of full guidance, card time -17% A / -13% B, wall -8%; 0.4 lost
+    a face. Stage 2 (SimpleDenoiser) is unguided and untouched."""
+    import ltx_pipelines.utils.denoisers as DN
+    if getattr(DN, "_cfg_cut", False):
+        return
+    orig = DN._guided_denoise
+
+    def off(g):
+        return dataclasses.replace(g, params=dataclasses.replace(g.params, cfg_scale=1.0, stg_scale=0.0,
+                                                                 modality_scale=1.0))
+
+    def gd(*a, **k):
+        n, cut = getattr(CFG_TL, "n", 0), getattr(CFG_TL, "cut", 1.0)
+        if n and cut < 1.0 and k["step_index"] >= round(cut * n):
+            k["video_guider"], k["audio_guider"] = off(k["video_guider"]), off(k["audio_guider"])
+        return orig(*a, **k)
+    DN._guided_denoise = gd
+    for C in (DN.GuidedDenoiser, DN.FactoryGuidedDenoiser):
+        def call(self, transformer, video_state, audio_state, sigmas, step_index, _oc=C.__call__):
+            CFG_TL.n = len(sigmas) - 1
+            return _oc(self, transformer, video_state, audio_state, sigmas, step_index)
+        C.__call__ = call
+    DN._cfg_cut = True
+
+
+def compile_blocks(ltx):
+    """--compile: torch.compile each resident block (regional: same-structure blocks share one graph). Fuses the
+    norm / modulation / gate / residual elementwise ops around the GEMMs and attention."""
+    import torch._dynamo as dyn
+    dyn.config.cache_size_limit = 64
+    n = 0
+    for b in ltx.transformer_blocks:
+        p = next(b.parameters(), None)
+        if p is None or p.device.type != "cuda":
+            continue
+        b.compile(dynamic=True)
+        n += 1
+    log(f"torch.compile on {n} blocks")
+
+
+def compile_stats():
+    import torch._dynamo as dyn
+    c = dyn.utils.counters
+    return f"compile: {c['stats'].get('unique_graphs', 0)} graphs, {sum(c['graph_break'].values())} graph breaks, {dict(c['recompiles']) if 'recompiles' in c else ''}"
+
+
 def install_fa_amd(ltx):
     """Unmasked attention -> AMD Triton flash kernel (~/src/attn-lab/fa_amd); masked calls stay on SDPA."""
     sys.path.insert(0, str(Path.home() / "src/attn-lab"))
     from fa_amd import interface_v2 as fa
     from ltx_core.model.transformer.attention import Attention
 
+    @torch.library.custom_op("bookcaster::fa_amd", mutates_args=())
+    def fa_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        # an opaque op to torch.compile: the block stays one graph around the Triton kernel's Python launcher
+        with torch.cuda.device(q.device):
+            return fa.fwd(q, k, v, None, None, 0.0, q.shape[-1] ** -0.5, False, -1, -1, 0.0, False)[0]
+
+    @fa_op.register_fake
+    def _(q, k, v):
+        return torch.empty_like(q)
+
     def fa_attn(q, k, v, heads):
         b, _, hd = q.shape
         d = hd // heads
-        q, k, v = (t.reshape(b, -1, heads, d).contiguous() for t in (q, k, v))
-        with torch.cuda.device(q.device):
-            out = fa.fwd(q, k.to(q.dtype), v.to(q.dtype), None, None, 0.0, d ** -0.5, False, -1, -1, 0.0, False)[0]
-        return out.reshape(b, -1, heads * d)
+        q, k, v = (t.reshape(b, -1, heads, d).contiguous() for t in (q, k.to(q.dtype), v.to(q.dtype)))
+        return fa_op(q, k, v).reshape(b, -1, heads * d)
 
     n = 0
     for m in ltx.modules():
@@ -1517,6 +1602,8 @@ def main():
     ap.add_argument("--pp-streams", action="store_true", help="per-lane CUDA streams in process A (default: one stream)")
     ap.add_argument("--pp", action="store_true", help="process-per-card pipelining (process B = back half on card 2)")
     ap.add_argument("--blaslt", action="store_true", help="prefer hipBLASLt for GEMMs")
+    ap.add_argument("--compile", action="store_true",
+                    help=f"torch.compile the DiT blocks (holds of {COMPILE_MIN_JOBS}+ jobs; 10-31: -18%% DiT time)")
     ap.add_argument("--fa-amd", action="store_true", help="fa_amd attention instead of SDPA")
     ap.add_argument("--miopen", action="store_true", help="re-enable MIOpen convs (BROKEN on gfx1100)")
     ap.add_argument("--stagger", type=float, default=0.0,
