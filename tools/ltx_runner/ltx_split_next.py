@@ -950,8 +950,41 @@ def install_debug(pipe, x0, ddir, name_fn=lambda: "job"):
     pipe.video_decoder = Wrap(pipe.video_decoder, "vdecode")
 
 
+def _lora_forward(m):
+    """The runtime LoRAs on Linear m: a list of (A, B, state), applied by a forward that replaces m's own.
+    10-31: on a big input the active LoRAs are FOLDED into the weight m upcasts from fp8 anyway (W + B A, one
+    out x r x in GEMM) and m runs one GEMM; the unfused x A^T B^T cost two thin rank-450 GEMMs over every token
+    (11% of a stage-2 call at 12k tokens). Small inputs (rows below in*out/(in+out)) keep the unfused sum."""
+    lst = getattr(m, "_runtime_loras", None)
+    if lst is not None:
+        return lst
+    lst = m._runtime_loras = []
+    orig = m.forward
+    F_ = torch.nn.functional
+
+    def forward(x):
+        on = [(A, B) for A, B, st in lst if st.on]
+        if not on:
+            return orig(x)
+        n_in, n_out = m.weight.shape[1], m.weight.shape[0]
+        if (x.numel() // n_in) * (n_in + n_out) <= n_in * n_out:
+            out = orig(x)
+            for A, B in on:
+                out = out + F_.linear(F_.linear(x.to(A.dtype), A), B).to(out.dtype)
+            return out
+        w = m.weight.to(x.dtype)
+        if w.data_ptr() == m.weight.data_ptr():
+            w = w.clone()                   # a bf16 weight: never fold into the parameter itself
+        for A, B in on:
+            w.addmm_(B.to(w.dtype), A.to(w.dtype))
+        return F_.linear(x, w, None if m.bias is None else m.bias.to(x.dtype))
+
+    m.forward = forward
+    return lst
+
+
 def attach_runtime_lora(ltx, path, strength, state):
-    """Unfused LoRA: forward hooks add strength * (x A^T) B^T on each target Linear, on that Linear's card.
+    """Runtime LoRA (see _lora_forward): adds strength * B A to each target Linear, on that Linear's card.
     One resident fp8 DiT serves both the LoRA stage (state.on=True) and the bare stage.
     Streams: each A/B pair goes to its card as soon as both halves are read (no full LoRA in RAM)."""
     n, nbytes, missing, pend = 0, 0, [], {}
@@ -975,13 +1008,7 @@ def attach_runtime_lora(ltx, path, strength, state):
             B = (f.get_tensor(keys["B"]).to(dev, torch.float32) * strength).to(torch.bfloat16)
             nbytes += A.nbytes + B.nbytes
 
-            def hook(mod, inp, out, A=A, B=B):
-                if not state.on:
-                    return out
-                x = inp[0]
-                return out + torch.nn.functional.linear(torch.nn.functional.linear(x.to(A.dtype), A), B).to(out.dtype)
-
-            m.register_forward_hook(hook)
+            _lora_forward(m).append((A, B, state))
             n += 1
     log(f"runtime LoRA {Path(path).name} x{strength}: {n} linears hooked, {nbytes / 2**20:.0f} MiB, "
         f"missing {len(missing)} {missing[:5]}, unpaired {len(pend)}")
