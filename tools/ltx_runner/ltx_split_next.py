@@ -67,6 +67,7 @@ T0 = time.time()
 PP_BACK_DEV = "1"
 MAX_BATCH = 4                # guidance passes per DiT call (A2Vid CFG = 2, TI2Vid CFG + STG = 3)
 TALK_CFG_CUT = 0.6           # talk (A2Vid) stage 1: guidance passes on the first 60% of steps only (see install_cfg_cut)
+ACTION_CFG_CUT = 0.6         # action (TI2Vid) too (10-31 A/B, 6 clips, user: "it's the same"; card B -13%, A -7%)
 COMPILE_MIN_JOBS = int(os.environ.get("LTX_COMPILE_MIN_JOBS", 20))       # --compile pays its ~80 s warm-up back after ~12-20 clips; smaller holds stay eager
 
 
@@ -1355,7 +1356,7 @@ def cmd_gen(args, jobs):
             # default max_batch_size=1 split them back into sequential B=1 calls, so every step upcast the fp8
             # weights once per pass (11% of a stage-1 call). Talk 121 f: -2.4% card time, PSNR 43.5 dB vs B=1
             kw["max_batch_size"] = MAX_BATCH
-        CFG_TL.cut = TALK_CFG_CUT if j_a2v else 1.0
+        CFG_TL.cut = TALK_CFG_CUT if j_a2v else ACTION_CFG_CUT if j_ti2v else 1.0
         t = time.time()
         tm_reset()
         frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
