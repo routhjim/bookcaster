@@ -2028,7 +2028,30 @@ def _key_style(style: str) -> str:
     return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
 
 
-def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
+def _two_shot_posed(s: dict, pic: str) -> str:
+    """A talk two-shot where one sits (kneels, ...) and the other stands: the posture said in the opening clause.
+    TALK_TWO stages two faces side by side, so the held pose added after it ("Holmes sits in the armchair") lost:
+    10-31, 16 Speckled Band two-shots drew both standing in all 5 seeds (mixed-posture groups passed 65%, uniform
+    100%); this wording took 3 such shots from 2/12 to 8/12 seeds (Roylott's own LoRA still stands). The framing
+    words stay (10-27: the seated variant without "waist up, close to the viewer" broke the lip sync). Key words only:
+    the shot's picture is quoted to the next passage's director (10-29)."""
+    held = s.get("pose_held") or {}
+    lr = s.get("who") or []
+    head = f"{lr[0]} on the left and {lr[1]} on the right, seen from the waist up" if len(lr) == 2 else ""
+    down = [w for w in lr if held.get(w) in ("sit", "kneel", "crouch")]
+    if not (s.get("listener") and head and pic.startswith(head) and len(down) == 1
+            and held.get(next(w for w in lr if w not in down), "stand") == "stand"):
+        return pic
+    sit, st = down[0], next(w for w in lr if w not in down)
+    at = re.search(rf"{re.escape(sit)} {POSE_VERB[held[sit]]} ([^;.]+)", pic)
+    i = pic.find("listening")
+    base = pic[:i + len("listening")] if i >= 0 else pic   # TALK_TWO without the held suffix (said in the clause now)
+    return base.replace("seen from the waist up", f"{sit} {POSE_WORDS[held[sit]].replace('sitting', 'seated')} "
+                        f"{at.group(1) if at else 'in a chair'}, face lower in the picture, {st} standing beside and "
+                        f"leaning in; seen from the waist up", 1)
+
+
+def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) -> str:
     vd, _, _ = MF.paths(book, stem)
     R_ = RG.Book(book)                  # the looks and the style have one owner each (10-27 audit: the plan's copies
     looks = {w: no_pose(MF._appearance(R_.look(w))) for w in s["who"]}      # of the looks, art_style.txt only)
@@ -2054,6 +2077,8 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
     pic = figurative(s["picture"])
+    if not legacy:
+        pic = _two_shot_posed(s, pic)
     if s.get("tight") and set((s.get("pose") or {}).values()) == {"standing"}:
         # 10-29: "Holmes stands beside the bed" in a close shot drew an empty bed behind him (743, 834: all 5 seeds
         # failed the chair check). Where a standing one stands by a seat is the director's, kept in his words; the
@@ -2214,6 +2239,11 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         hero = None if closeup(s) else heroes.get(s.get("place") or None)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
+        if (d / "key.sig").exists() and (d / "key.sig").read_text() != sig:
+            p0 = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s, legacy=True)
+            sig0 = MF._h(json.dumps([p0, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
+            if p0 != p and (d / "key.sig").read_text() == sig0:
+                p, sig = p0, sig0       # keyed before the two-shot posture wording (10-31): kept, not redrawn
         # a place picture drawn again (10-24: the people-free hero redraws left every key there cached, so the
         # rerun changed nothing): the keys drawn before it are drawn again
         older = hero is not None and hero.exists() and any(k.stat().st_mtime < hero.stat().st_mtime
