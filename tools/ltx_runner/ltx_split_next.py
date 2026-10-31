@@ -593,6 +593,22 @@ def back_server(args, inq, outqs, ready, decout=None):
                 msg = inq.get()
                 if msg is None:
                     break
+                if msg[0] == "pairdec" and ATOMIC:       # inline: card B also does one job at a time
+                    _, jid, latent, tiling, dt, gstate = msg
+                    t = time.time()
+                    g = None
+                    if gstate is not None:
+                        g = torch.Generator(device=D0)
+                        g.set_state(gstate)
+                    fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
+                    fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+                    torch.cuda.current_stream().synchronize()
+                    out = to_shm(fr)
+                    busy[0] += time.time() - t
+                    tl("B", -1, "decode", t, time.time())
+                    decout.put((jid, out, time.time() - t))
+                    del latent, fr, out, msg
+                    continue
                 if msg[0] in ("decode", "pairdec"):
                     decq.put(msg)
                     del msg
@@ -779,6 +795,8 @@ def install_pp_forward(ltx, split, pp, get_state):
                     audio = ltx.block_input_processor(audio, perturbations, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
                                                       cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
                 video, audio = ltx.transformer_blocks[i](video=video, audio=audio)
+            if ATOMIC:
+                torch.cuda.current_stream().synchronize()     # inside the card lock: one job at a time on card A
         torch.cuda.current_stream().synchronize()     # this lane's stream (a parked decode may run on card A)
         t1 = time.time()
         tm_add("a_dit_s", t1 - t0)
@@ -822,6 +840,11 @@ class DeferredDecode(Exception):
 
 
 PAIR = None     # --decode-pair scheduler
+# 10-31 user: work on a card is ATOMIC - one job at a time, start to finish (a lane's front run, or a decode, holds
+# card A until done; card B runs its parked decodes inline in its serial loop). Each lane on its own stream had let
+# the lanes' kernels interleave on card A. Atomic, the two lanes fall into alternating by themselves, so the lane
+# stagger is 0. 7 talk clips (paired decode, split 24): 422 -> 386.5 s; output identical to non-atomic.
+ATOMIC = os.environ.get("LTX_ATOMIC", "1") != "0"
 
 
 class PairSched:
@@ -876,7 +899,7 @@ class PairSched:
         latent, tiling, dt, gstate, fin = item
         t = time.time()
         try:
-            with torch.inference_mode():
+            with (CARD_LOCKS[0] if ATOMIC else nullcontext()), torch.inference_mode():
                 g = None
                 if gstate is not None:
                     g = torch.Generator(device=D0)
