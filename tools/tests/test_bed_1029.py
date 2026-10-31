@@ -72,7 +72,7 @@ check("Watson's close-up is in bed, against the pillows", cw and all("in bed, ag
 rx = [s for s in shots if s["kind"] == "quiet" and s["who"] == ["Doctor Watson"]]
 # (10-30 user "remove the cutaways": Holmes's long line no longer cuts to Watson mid-line; a reaction after a line still
 # must be the close view in bed)
-check("Holmes's long last line stays on Holmes, one talk shot", len([s for s in talk if s["id"].startswith("talk-000090")])
+check("Holmes's long last line stays on Holmes, one talk shot", len([s for s in talk if s["id"].endswith("-000090_s0")])
       == 1, [s["id"] for s in talk])
 check("Watson's reaction (if any) is a close view in bed", not rx or all(s["picture"].startswith("a close view of Doctor Watson's")
                                                              and "in bed" in s["picture"] for s in rx),
