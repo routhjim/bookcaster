@@ -512,7 +512,7 @@ def vram_guard(limit_gb: float = 1.5):
         raise SystemExit(f"VRAM held before the hold: {bad} (GiB used per visible card); GPU processes: {pids}")
 
 
-def back_server(args, inq, outqs, ready):
+def back_server(args, inq, outqs, ready, decout=None):
     """Process B (its own Python, its own card as cuda:0): DiT blocks >= split, served FIFO for all lanes."""
     global T0
     T0 = time.time()
@@ -539,7 +539,7 @@ def back_server(args, inq, outqs, ready):
             compile_blocks(ltx)
         nb = len(ltx.transformer_blocks)
         dec = None
-        if args.decode_b:   # (10-24) the clips' VAE decode here, on the card that idles while card A decodes
+        if args.decode_b or args.decode_pair:   # (10-24) clip decodes here too (10-31: --decode-pair, see PairSched)
             from ltx_pipelines.utils.blocks.video_decoder import VideoDecoder
             vd = VideoDecoder(VAE, torch.bfloat16, D0)
             dec = vd._prepared_builder().build(device=D0, dtype=torch.bfloat16).eval()
@@ -556,6 +556,22 @@ def back_server(args, inq, outqs, ready):
             ~14 s decode (FIFO head-of-line block = the main idle on both cards)."""
             with torch.inference_mode(), torch.cuda.stream(torch.cuda.Stream(D0)):
                 while (m := decq.get()) is not None:
+                    if m[0] == "pairdec":     # --decode-pair: a parked clip's decode; frames to the collector on A
+                        _, jid, latent, tiling, dt, gstate = m
+                        t = time.time()
+                        g = None
+                        if gstate is not None:
+                            g = torch.Generator(device=D0)
+                            g.set_state(gstate)
+                        fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
+                        fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+                        torch.cuda.current_stream().synchronize()
+                        out = to_shm(fr)
+                        busy[0] += time.time() - t
+                        tl("B", -1, "decode", t, time.time())
+                        decout.put((jid, out, time.time() - t))
+                        del latent, fr, out, m
+                        continue
                     _, lane, latent, tiling, dt, gstate = m
                     t = time.time()
                     g = None
@@ -577,7 +593,7 @@ def back_server(args, inq, outqs, ready):
                 msg = inq.get()
                 if msg is None:
                     break
-                if msg[0] == "decode":
+                if msg[0] in ("decode", "pairdec"):
                     decq.put(msg)
                     del msg
                     continue
@@ -763,7 +779,7 @@ def install_pp_forward(ltx, split, pp, get_state):
                     audio = ltx.block_input_processor(audio, perturbations, i, self_attn_type=P.SKIP_AUDIO_SELF_ATTN,
                                                       cross_attn_type=P.SKIP_V2A_CROSS_ATTN)
                 video, audio = ltx.transformer_blocks[i](video=video, audio=audio)
-        torch.cuda.synchronize(0)
+        torch.cuda.current_stream().synchronize()     # this lane's stream (a parked decode may run on card A)
         t1 = time.time()
         tm_add("a_dit_s", t1 - t0)
         hlog(getattr(st, "job", st.name), st.dcalls, "handoff", video)
@@ -777,7 +793,11 @@ def install_pp_forward(ltx, split, pp, get_state):
         try:
             pp["inq"].put(msg)
             del msg
+            if PAIR is not None:
+                PAIR.a_turn(st.lane)
             v, a, bt = pp["outqs"][st.lane].get()
+            if PAIR is not None:
+                PAIR.after_b()
         finally:
             A_OWNER.acquire()
         t3 = time.time()
@@ -796,6 +816,106 @@ def install_pp_forward(ltx, split, pp, get_state):
     ltx._process_transformer_blocks = proc
 
 
+class DeferredDecode(Exception):
+    """Raised out of the pipeline when a clip's decode is parked for the pair scheduler (--decode-pair): the lane
+    leaves this job here and takes its next clip; the decode finishes the clip later."""
+
+
+PAIR = None     # --decode-pair scheduler
+
+
+class PairSched:
+    """--decode-pair (10-31, the user's scheme). Lanes never decode: a finished clip's latent is parked here and the
+    lane starts its next clip. Card B decodes when it has completed its layers (a lane just got B's reply) and at
+    least 2 latents are parked, so one is left for card A. Card A decodes when it has completed its layers (a lane
+    handed its step to B and now waits) and sees card B decoding. Both cards decode in the same window, instead of
+    one card's 14-25 s decode starving the other (timeline 10-31: card A idle ~50% with every decode on B).
+    7 talk clips, 2 lanes: 463 -> 425 s (-8.4%), clips byte-identical. A parked clip's job stays 'running' until
+    its mp4 is written, so a chained piece still waits for its source."""
+
+    def __init__(self, pp):
+        from ltx_pipelines.utils.blocks.video_decoder import VideoDecoder
+        self.deca = VideoDecoder(VAE, torch.bfloat16, D0)._prepared_builder().build(device=D0, dtype=torch.bfloat16).eval()
+        self.pp, self.lk, self.parked, self.b_busy, self.on_b, self.n, self.err = pp, threading.Condition(), [], False, {}, 0, []
+        threading.Thread(target=self.collect, daemon=True).start()
+
+    def park(self, item):
+        with self.lk:
+            self.parked.append(item)
+
+    def take(self):
+        with self.lk:
+            return self.parked.pop(0) if self.parked else None
+
+    def to_b(self, item):
+        with self.lk:
+            self.b_busy = True
+            self.n += 1
+            self.on_b[self.n] = item[4]
+            jid = self.n
+        latent, tiling, dt, gstate, _ = item
+        self.pp["inq"].put(("pairdec", jid, latent, tiling, dt, gstate))
+
+    def after_b(self):
+        """Card B has completed its layers: it decodes if it is free and >= 2 latents are parked."""
+        with self.lk:
+            if self.b_busy or len(self.parked) < 2:
+                return
+            it = self.parked.pop(0)
+        self.to_b(it)
+
+    def a_turn(self, lane):
+        """Card A has completed its layers: it decodes while card B decodes."""
+        with self.lk:
+            if not self.b_busy or not self.parked:
+                return
+            it = self.parked.pop(0)
+        self.decode_a(it, lane)
+
+    def decode_a(self, item, lane):
+        latent, tiling, dt, gstate, fin = item
+        t = time.time()
+        try:
+            with torch.inference_mode():
+                g = None
+                if gstate is not None:
+                    g = torch.Generator(device=D0)
+                    g.set_state(gstate)
+                fr = list(self.deca.decode_video(latent.to(D0, dtype=dt), tiling, g))
+                fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+                torch.cuda.current_stream().synchronize()
+            tl("A", lane, "decode", t, time.time())
+            fin(fr, time.time() - t, "A")
+        except BaseException as e:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            self.err.append(e)
+
+    def collect(self):
+        while True:
+            jid, fr, sec = self.pp["decout"].get()
+            try:
+                self.on_b[jid](fr, sec, "B")
+            except BaseException as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                self.err.append(e)
+            finally:
+                with self.lk:
+                    del self.on_b[jid]
+                    self.b_busy = False
+                    self.lk.notify_all()
+
+    def flush(self):
+        """End of the hold: the parked rest, on whichever card is free; then wait for card B's."""
+        while (it := self.take()) is not None:
+            with self.lk:
+                use_b = not self.b_busy
+            self.to_b(it) if use_b else self.decode_a(it, -1)
+        with self.lk:
+            self.lk.wait_for(lambda: not self.on_b)
+
+
 class RemoteDecoder:
     """--decode-b (10-24): a lane's VAE decode on process B's card (which waits while card A decodes: quiet clips
     spent 22 of their 45 s of work there). Same latent, dtype, tiling and generator state; keyframe decodes stay
@@ -812,6 +932,10 @@ class RemoteDecoder:
             return self.local(latent, tiling_config, generator, dtype=dtype, keyframes=keyframes, device_fn=device_fn)
         st = self.get_state()
         dt = dtype or self.local._dtype
+        if PAIR is not None and getattr(st, "defer", None) is not None:
+            torch.cuda.current_stream().synchronize()
+            st.defer(latent.to(dtype=dt).cpu(), tiling_config, dt, generator.get_state() if generator is not None else None)
+            raise DeferredDecode()
         t0 = time.time()
         msg = ("decode", st.lane, to_shm(latent.to(dtype=dt)), tiling_config, dt,
                generator.get_state() if generator is not None else None)
@@ -1157,24 +1281,24 @@ def cmd_gen(args, jobs):
     builder = getattr(pipe, stage_attr)._prepared_builder()
     split = args.split
     pp = None
-    global A_OWNER, POOL
+    global A_OWNER, POOL, PAIR
     if args.pp and args.pp_shared_a:
         A_OWNER = _SharedOwner()
         args.pp_streams = True       # lanes must not share one stream once they overlap on card A
     if args.pp:
         import torch.multiprocessing as tmp
         ctx = tmp.get_context("spawn")
-        inq, ready = ctx.Queue(), ctx.Queue()
+        inq, ready, decout = ctx.Queue(), ctx.Queue(), ctx.Queue()
         outqs = [ctx.Queue() for _ in range(args.lanes)]
         env_keep = os.environ.get("HIP_VISIBLE_DEVICES")
         os.environ["HIP_VISIBLE_DEVICES"] = PP_BACK_DEV
         vram_guard()
-        procB = ctx.Process(target=back_server, args=(args, inq, outqs, ready), daemon=True)
+        procB = ctx.Process(target=back_server, args=(args, inq, outqs, ready, decout), daemon=True)
         procB.start()
         import atexit
         atexit.register(lambda: (procB.terminate(), procB.join(10)) if procB.is_alive() else None)
         os.environ["HIP_VISIBLE_DEVICES"] = env_keep
-        pp = dict(inq=inq, outqs=outqs, ready=ready, proc=procB)
+        pp = dict(inq=inq, outqs=outqs, ready=ready, proc=procB, decout=decout)
         log(f"[A] spawned back-half process pid {procB.pid} on HIP device {PP_BACK_DEV}; loading front half ...")
         ltx = build_split(builder, layer_devfn(r"^transformer_blocks\.(\d+)\.", split, "front")).eval()
         r = ready.get()
@@ -1214,6 +1338,9 @@ def cmd_gen(args, jobs):
     if args.compile:
         compile_blocks(ltx)
     install_cfg_cut()
+    if pp and args.decode_pair:
+        PAIR = PairSched(pp)
+        log("paired decode: card B decodes at >= 2 parked, card A decodes while card B decodes")
     log("DiT loaded;", vram())
 
     def gate_hook(mod, a, kw):
@@ -1281,7 +1408,7 @@ def cmd_gen(args, jobs):
             return out
 
         p.prompt_encoder = fake_encoder
-        if pp and args.decode_b and hasattr(p, "video_decoder"):
+        if pp and (args.decode_b or args.decode_pair) and hasattr(p, "video_decoder"):
             p.video_decoder = RemoteDecoder(p.video_decoder, pp, lambda: lstate)
         return p
 
@@ -1380,8 +1507,31 @@ def cmd_gen(args, jobs):
         CFG_TL.cut = TALK_CFG_CUT if j_a2v else ACTION_CFG_CUT if j_ti2v else 1.0
         t = time.time()
         tm_reset()
-        frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
-        t_gen = time.time() - t
+        lstate.defer = None
+        if PAIR is not None and not (j.get("chain_from") and j.get("seam_tries") != 0):
+            def defer(latent, tiling, dt, gstate, j=j, t=t, kind=kind):
+                t_dit, tm = time.time() - t, {**tm_snapshot(), "dit_calls": lstate.dcalls}
+
+                def fin(frames, dec_s, card):
+                    frames = frames if frames.ndim == 4 else frames[0]
+                    finish_job(j, frames, t_dit, {**tm, "b_decode_s": round(dec_s, 2) if card == "B" else 0.0,
+                                                  "a_decode_s": round(dec_s, 2) if card == "A" else 0.0,
+                                                  "decode_wait_s": 0.0, "decode_card": card}, kind, dev)
+                    with lock:
+                        running.discard(j["name"])
+                PAIR.park((latent, tiling, dt, gstate, fin))
+            lstate.defer = defer
+        try:
+            frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
+        except DeferredDecode:
+            return "deferred"
+        finally:
+            lstate.defer = None
+        finish_job(j, frames, time.time() - t, {**tm_snapshot(), "dit_calls": lstate.dcalls}, kind, dev)
+
+    def finish_job(j, frames, t_gen, tm, kind, dev):
+        """A clip's frames -> mp4 (+ audio), job json, timings (run in the lane, or after a parked decode)."""
+        mp4 = out_dir / f"{j['name']}.mp4"
         log(f"[{dev}] {j['name']}: video {tuple(frames.shape)} gen {t_gen:.1f}s ;", vram())
         part = str(mp4) + ".part.mp4"      # atomic: a clip killed mid-write never counts as done (10-21 dry run)
         if j.get("chunk"):                 # a talk piece: its last frame, lossless, starts the next piece (10-26)
@@ -1402,10 +1552,9 @@ def cmd_gen(args, jobs):
             timings[j["name"]] = {"sec": round(t_gen, 1), "lane": str(dev), "vram": vram(),
                                   "shape": list(frames.shape)}
             (out_dir / f"{j['name']}.json").write_text(json.dumps({**j, **timings[j["name"]]}, indent=1))
-        tm = tm_snapshot()
         rec = {"job": j["name"], "route": kind or ("ic" if ic else "distilled"), "pp": bool(pp),
                "lanes": args.lanes, "split": split, "w": j["width"], "h": j["height"], "frames": int(frames.shape[0]),
-               "dit_calls": lstate.dcalls, "wall_s": round(t_gen, 2), **tm}
+               "wall_s": round(t_gen, 2), **tm}
         if pp:  # card A's non-DiT busy = the job's time on card A minus its DiT front and copies
             rec["a_other_s"] = round(t_gen - tm["wait_b_s"] - tm["a_dit_s"] - tm["a_copy_s"] - tm.get("decode_wait_s", 0), 2)
             rec["a_idle_s"] = round(tm["wait_b_s"], 2)  # this job's lane waiting on B (A may serve the other lane)
@@ -1467,6 +1616,9 @@ def cmd_gen(args, jobs):
                 else:
                     j = todo.pop(k)
                     running.add(j["name"])
+            if j in (None, "wait") and PAIR is not None and (it := PAIR.take()) is not None:
+                PAIR.decode_a(it, lstate.lane)    # nothing runnable (e.g. a chained piece waits on a parked decode)
+                continue
             if j is None:
                 time.sleep(2)
                 continue
@@ -1476,10 +1628,10 @@ def cmd_gen(args, jobs):
             try:
                 if pp:
                     with A_OWNER:
-                        run_job(p, dev, j)
-                        torch.cuda.synchronize(0)
+                        r = run_job(p, dev, j)
+                        torch.cuda.current_stream().synchronize()
                 else:
-                    run_job(p, dev, j)
+                    r = run_job(p, dev, j)
             except BaseException as e:  # noqa: BLE001
                 import traceback
                 traceback.print_exc()
@@ -1487,8 +1639,9 @@ def cmd_gen(args, jobs):
                     errors.append(e)
                     running.discard(j["name"])
                 return
-            with lock:
-                running.discard(j["name"])
+            if r != "deferred":            # a parked clip leaves 'running' once its decode has written it
+                with lock:
+                    running.discard(j["name"])
             gc.collect()
 
     for d in range(torch.cuda.device_count()):
@@ -1498,6 +1651,9 @@ def cmd_gen(args, jobs):
         th.start()
     for th in threads:
         th.join()
+    if PAIR is not None:
+        PAIR.flush()
+        errors.extend(PAIR.err)
     wall = time.time() - t_all
     n = len(timings)
     if args.compile:
@@ -1632,6 +1788,8 @@ def main():
                     help="--pp: lane k starts k*S s late, takes ordered apart, so lanes don't decode on card A together")
     ap.add_argument("--pp-pool", action="store_true",
                     help="--pp: reused pinned shared-memory buffers for the activations between the processes")
+    ap.add_argument("--decode-pair", action="store_true",
+                    help="decodes parked and paired across both cards (PairSched; implies a decoder on each card)")
     ap.add_argument("--decode-b", action="store_true",
                     help="--pp: VAE decode on process B's card (B keeps a decoder loaded)")
     ap.add_argument("--more", default="", help="a jobs file read again whenever the queue runs dry")
