@@ -3201,8 +3201,12 @@ SNAP_S = 1.0                            # an impact moves onto a motion peak at 
 def sfx_plan(book: Path, stem: str, log=print) -> None:
     """The chapter's sound effects planned (cached in work/sfx/<stem>/plan.json); needs the language model up."""
     sys.path.insert(0, str(HERE.parent))
-    from tts_reader import bookcaster as BC, sfx as SX, video as V
+    from tts_reader import animate, bookcaster as BC, sfx as SX, video as V
     try:
+        p = book / "work" / "sfx" / stem / "plan.json"
+        if not (p.exists() and json.loads(p.read_text()).get("version") == SX.PLAN_VERSION) and \
+                subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode:
+            animate.igpu("strata", log)                 # (every passage cached: the director never started it)
         plan = SX.ensure_plan(book / "work" / "sfx" / stem, book / "work" / f"{stem}.timeline.json",
                               V.audio_seconds(book / "work" / f"{stem}.mp3"), BC.LLM_URL, BC.LLM_MODEL, log)
         log(f"sound effects: {len(plan['beds'])} bed(s), {len(plan['spots'])} spot(s) planned")
