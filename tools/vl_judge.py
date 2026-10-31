@@ -28,6 +28,7 @@ class Judge:
 
         self.torch = torch
         torch.backends.cudnn.enabled = False          # no MIOpen tuning (iGPU with a desktop up)
+        torch.backends.cuda.preferred_blas_library("cublaslt")   # hipBLASLt: decode ~12% faster on the iGPU (10-31)
         self.proc = AutoProcessor.from_pretrained(MODEL / "processor")
         self.m = Qwen3VLForConditionalGeneration.from_pretrained(
             MODEL / "text_encoder", torch_dtype=torch.bfloat16, attn_implementation="sdpa").to(device).eval()
@@ -39,7 +40,8 @@ class Judge:
         import torch.nn.functional as F
         pe.forward = lambda x: F.linear(x.reshape(-1, w2.shape[1]).to(w2.dtype), w2, pe.proj.bias)
 
-    def ask(self, im, question: str, max_new_tokens: int = 8, max_side: int = 640, prefix: str = "") -> str:
+    def ask(self, im, question: str, max_new_tokens: int = 8, max_side: int = 640, prefix: str = "",
+            stop: list | None = None) -> str:
         sc = max_side / max(im.size)          # vision tokens grow with the area: 1536 px cost ~10 s a question
         if sc < 1:
             im = im.resize((max(28, round(im.width * sc)), max(28, round(im.height * sc))))
@@ -51,7 +53,8 @@ class Judge:
             x = self.proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True, return_dict=True,
                                               return_tensors="pt").to(self.device)
         with self.torch.inference_mode():
-            out = self.m.generate(**x, max_new_tokens=max_new_tokens, do_sample=False)
+            out = self.m.generate(**x, max_new_tokens=max_new_tokens, do_sample=False,
+                                  **({"stop_strings": stop, "tokenizer": self.proc.tokenizer} if stop else {}))
         return prefix + self.proc.batch_decode(out[:, x["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
 
     def ask_many(self, im, qs: dict, max_new_tokens: int = 8, max_side: int = 640) -> dict:
@@ -95,8 +98,10 @@ class Judge:
     def box(self, im, what: str):
         """[x0, y0, x1, y1] in 0-1 of *what*, or None (Qwen3-VL grounding, 0-1000 coordinates)."""
         import re
+        # stop at the coordinates' "]": the label after it was ~11 of the 26 tokens (10-31: ~1.6 s a box on the iGPU,
+        # decode is memory-bound there at ~150 ms a token; the same four numbers)
         a = self.ask(im, f"Locate {what} in the image and output the bbox coordinates in JSON format.", 26,
-                     prefix='```json\n[\n\t{"bbox_2d": [')
+                     prefix='```json\n[\n\t{"bbox_2d": [', stop=["]"])
         m = re.search(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", a)
         if not m:
             return None
