@@ -377,7 +377,9 @@ class JobLoras:
         self.model, self.device = model, device
         self.files: dict = {}          # path -> {module name: (A, B, s)}
         self.hooked: set = set()
-        self.active: list = []         # [(deltas dict, scale)]
+        self.active: list = []         # [(deltas dict, scale, mask)]
+        self.comb: dict = {}           # module name -> the job's LoRAs stacked (set())
+        self.key = None
 
     def _load(self, path: str) -> dict:
         from safetensors import safe_open
@@ -406,18 +408,19 @@ class JobLoras:
         return out
 
     def _add(self, name, x, y):
-        for deltas, scale, mask in self.active:
-            d = deltas.get(name)
-            if d is not None:
-                a, b, s = d
-                dy = F.linear(F.linear(x.to(a.dtype), a), b) * (s * scale)
-                if mask is not None and dy.shape[1] >= mask.shape[0]:
-                    # regional: on the picture's own tokens (always the LAST h*w of the joint stream, also
-                    # under the KV cache) only inside the character's box; text and references unmasked
-                    n = mask.shape[0]
-                    dy = torch.cat([dy[:, :-n], dy[:, -n:] * mask[:, None].to(dy.dtype)], 1)
-                y = y + dy.to(y.dtype)
-        return y
+        g = self.comb.get(name)
+        if g is None:
+            return y
+        a, b, s_all, img = g
+        h = F.linear(x.to(a.dtype), a)                   # [1, L, rank x LoRAs]: scaled and masked HERE, not on y
+        if img is not None and h.shape[1] >= img.shape[0]:
+            # regional: on the picture's own tokens (always the LAST h*w of the joint stream, also under the KV
+            # cache) only inside the character's box; text and references unmasked
+            n = img.shape[0]
+            h = torch.cat([h[:, :-n] * s_all, h[:, -n:] * img], 1)
+        else:
+            h = h * s_all
+        return y.add_(F.linear(h, b).to(y.dtype))
 
     def set(self, loras, grid=None) -> None:
         """loras: [[path, scale] or [path, scale, [x0, y0, x1, y1] (0-1 box: apply only there)], ...];
@@ -434,6 +437,32 @@ class JobLoras:
                 f = lambda v, lo, hi, n: ((v - lo) * n / 1.5 + 0.5).clamp(0, 1) * ((hi - v) * n / 1.5 + 0.5).clamp(0, 1)
                 mask = (f(ys, y0, y1, gh)[:, None] * f(xs, x0, x1, gw)[None, :]).reshape(-1)
             self.active.append((self._load(str(Path(l[0]).expanduser())), float(l[1]), mask))
+        self._stack(loras, grid)
+
+    def _stack(self, loras, grid) -> None:
+        """Per module, the job's LoRAs as ONE low-rank pair: A stacked [sum r, in], B [out, sum r], and each LoRA's
+        scale (and regional mask, per picture token) on its own r columns of the small A(x) (10-31: masking and
+        adding every LoRA's full-width B(A(x)) separately cost ~0.2 s a step with two LoRAs, ~25% of a key)."""
+        key = json.dumps([loras, grid], default=str)
+        if key == self.key:
+            return                                       # a keyframe's other seeds
+        self.key, self.comb = key, {}
+        by: dict = {}
+        for k, (deltas, scale, mask) in enumerate(self.active):
+            for name, (a, b, s) in deltas.items():
+                by.setdefault(name, []).append((k, a, b, s * scale))
+        imgs: dict = {}
+        for name, parts in by.items():
+            ks = tuple(k for k, *_ in parts)
+            s_all = torch.cat([torch.full((a.shape[0],), sc, device=self.device) for _, a, _, sc in parts])
+            if ks not in imgs:
+                ms = [self.active[k][2] for k in ks]
+                imgs[ks] = None if all(m is None for m in ms) else torch.cat(
+                    [(torch.ones(grid[0] * grid[1], device=self.device) if m is None else m)[:, None].expand(-1, a.shape[0])
+                     for m, (_, a, _, _) in zip(ms, parts)], 1)
+            img = imgs[ks]
+            self.comb[name] = (torch.cat([a for _, a, _, _ in parts]), torch.cat([b for _, _, b, _ in parts], 1),
+                               s_all.to(torch.bfloat16), None if img is None else (img * s_all).to(torch.bfloat16))
 
 
 # --- attention: AMD's Triton flash kernel where the call allows it ----------------------------------
