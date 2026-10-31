@@ -24,7 +24,10 @@ MOSS_PY = Path(os.environ.get("BOOKCASTER_SFX_PYTHON",
                               Path.home() / "src" / "MOSS-TTS" / "moss_soundeffect_v2" / ".venv" / "bin" / "python"))
 GEN = Path(__file__).resolve().parents[1] / "tools" / "sfx_gen.py"
 SFX_GPU_BUS = os.environ.get("BOOKCASTER_SFX_BUS", "65")      # the music card (ACE + the drawer live there)
-PLAN_VERSION = 1
+PLAN_VERSION = 2       # 2 (10-31): each spot's cue words and its line's end, for word-level placement in a video
+# a sound that lands on one frame (a video can move it onto the picture's impact, tools/shot_flow.py)
+IMPACT = re.compile(r"\b(knock|knocks|knocking|slam|slams|slammed|bang|bangs|clang|clangs|crash|crashes|thud|thuds|"
+                    r"smash|shatter|shatters|gunshot|shot|strike|strikes|struck|snap|snaps|slap|thump|dashed)\b", re.I)
 SPOT_DB = {"soft": -8.0, "medium": -3.0, "loud": 1.0}        # after normalising each effect to -22 LUFS
 BED_DB = -12.0                                               # after normalising each bed to -28 LUFS; ducked
 MAX_SPOT_S, MAX_BED_S = 8.0, 30.0
@@ -51,10 +54,11 @@ def plan_sfx(timeline: list[dict], total: float, llm_url: str, model: str) -> di
         "on stairs, a knock, hooves and wheels arriving, a clang of metal, a whistle, a scream, a match "
         "struck, a clock striking). Give the line where it happens. Only real, present sounds: not "
         "remembered or imagined ones, not figures of speech, not anything inside a quotation that is "
-        "only being told about. At most about one per 30 seconds, only where it helps.\n"
+        "only being told about. At most about one per 30 seconds, only where it helps. With each spot, "
+        "the 2-5 words of that line where the sound happens, copied exactly from it.\n"
         "Describe every sound concretely, as heard (what makes it, the surface, the space), 4-14 words.\n\n"
         'Reply with ONLY JSON: {"beds": [{"from": 3, "to": 40, "sound": "..."}], '
-        '"spots": [{"at": 12, "sound": "...", "seconds": 2.5, "loud": "soft|medium|loud"}]}\n\n'
+        '"spots": [{"at": 12, "words": "...", "sound": "...", "seconds": 2.5, "loud": "soft|medium|loud"}]}\n\n'
         + "\n".join(lines))
     from .score import _chat
     reply = _chat(llm_url, model, prompt, max_tokens=6000)
@@ -83,8 +87,9 @@ def plan_sfx(timeline: list[dict], total: float, llm_url: str, model: str) -> di
             continue
         secs = max(0.8, min(MAX_SPOT_S, float(s.get("seconds") or 2.5)))
         loud = s.get("loud") if s.get("loud") in SPOT_DB else "medium"
-        spots.append({"t": round(t, 2), "seconds": round(secs, 1), "sound": str(s["sound"]).strip(),
-                      "loud": loud})
+        spots.append({"t": round(t, 2), "t_end": round(times[int(s["at"]) + 1], 2),
+                      "words": str(s.get("words") or "").strip(), "seconds": round(secs, 1),
+                      "sound": str(s["sound"]).strip(), "loud": loud})
     beds.sort(key=lambda b: b["t0"])
     for a, b in zip(beds, beds[1:]):                       # no overlapping beds
         a["t1"] = min(a["t1"], b["t0"])
@@ -106,14 +111,21 @@ def ensure_plan(work: Path, timeline_path: Path, total: float, llm_url: str, mod
     return plan
 
 
+def _fx_name(kind: str, n: int, sound: str, secs: float) -> str:
+    """A file named by what it holds (10-31: named by its index, a re-planned chapter played the old plan's sound
+    for the new one's spot n)."""
+    import hashlib
+    return f"{kind}{n:03d}_{hashlib.sha1(f'{sound}|{secs:.1f}'.encode()).hexdigest()[:8]}.wav"
+
+
 def generate(plan: dict, work: Path, log) -> None:
     jobs = []
     for n, b in enumerate(plan["beds"]):
-        b["file"] = str(work / f"bed{n:03d}.wav")
+        b["file"] = str(work / _fx_name("bed", n, b["sound"], min(MAX_BED_S, b["t1"] - b["t0"])))
         jobs.append({"id": f"bed{n:03d}", "prompt": b["sound"], "path": b["file"],
                      "seconds": min(MAX_BED_S, b["t1"] - b["t0"]), "seed": 11 + n})
     for n, s in enumerate(plan["spots"]):
-        s["file"] = str(work / f"spot{n:03d}.wav")
+        s["file"] = str(work / _fx_name("spot", n, s["sound"], s["seconds"]))
         jobs.append({"id": f"spot{n:03d}", "prompt": s["sound"], "path": s["file"],
                      "seconds": s["seconds"], "seed": 101 + n})
     todo = [j for j in jobs if not Path(j["path"]).exists()]
