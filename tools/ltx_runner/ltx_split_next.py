@@ -64,6 +64,7 @@ DLORA = _w("loras/ltx-2.5-22b-distilled-lora-450-bf16.safetensors")
 D0, D1 = torch.device("cuda:0"), torch.device("cuda:1")
 T0 = time.time()
 PP_BACK_DEV = "1"
+MAX_BATCH = 4                # guidance passes per DiT call (A2Vid CFG = 2, TI2Vid CFG + STG = 3)
 
 
 def log(*a):
@@ -1285,6 +1286,11 @@ def cmd_gen(args, jobs):
             kw["conditioning_attention_strength"] = ctls[0].get("attn", 1.0) if ctls else 1.0
         elif ctl:
             raise SystemExit(f"job {j['name']} has control but --ic-lora not given")
+        if j_a2v or j_ti2v:
+            # 10-31: all guidance passes (cond + uncond [+ STG]) in ONE DiT call, as the pipeline batches them; its
+            # default max_batch_size=1 split them back into sequential B=1 calls, so every step upcast the fp8
+            # weights once per pass (11% of a stage-1 call). Talk 121 f: -2.4% card time, PSNR 43.5 dB vs B=1
+            kw["max_batch_size"] = MAX_BATCH
         t = time.time()
         tm_reset()
         frames, j = gen_with_seam_retries(p, kw, j, dev, out_dir)
