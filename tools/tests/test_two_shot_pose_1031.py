@@ -45,5 +45,9 @@ p5 = SF.TALK_PICTURE.format(who=H)
 check("a close-up: unchanged", SF._two_shot_posed(s5, p5) == p5)
 s6 = {"who": [Hel, H], "pose_held": {Hel: "stand", H: "sit"}}
 check("not a talk two-shot (no listener): unchanged", SF._two_shot_posed(s6, p) == p)
+s7 = {"who": ["Julia Stoner", Hel], "listener": Hel, "pose_held": {Hel: "sit"}}
+p7 = SF.TALK_TWO_BED.format(left="Julia Stoner", right=Hel, abed=Hel, bedpose="sitting up", other="Julia Stoner",
+                            who="Julia Stoner", listener=Hel)
+check("the in-bed two-shot: unchanged (no second Helen in a chair)", SF._two_shot_posed(s7, p7) == p7)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

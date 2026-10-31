@@ -2072,7 +2072,9 @@ def _two_shot_posed(s: dict, pic: str) -> str:
     the shot's picture is quoted to the next passage's director (10-29)."""
     held = s.get("pose_held") or {}
     lr = s.get("who") or []
-    head = f"{lr[0]} on the left and {lr[1]} on the right, seen from the waist up" if len(lr) == 2 else ""
+    # TALK_TWO's own opening only (10-31 run: the in-bed two-shot TALK_TWO_BED got "seated in a chair" too and drew
+    # Helen twice, in the chair and standing: 6 shots, every seed counted 3 people)
+    head = TALK_TWO.split("{who}")[0].format(left=lr[0], right=lr[1]) if len(lr) == 2 else ""
     down = [w for w in lr if held.get(w) in ("sit", "kneel", "crouch")]
     if not (s.get("listener") and head and pic.startswith(head) and len(down) == 1
             and held.get(next(w for w in lr if w not in down), "stand") == "stand"):
