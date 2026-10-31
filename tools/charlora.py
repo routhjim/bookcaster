@@ -459,9 +459,15 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
             meta["framing"] = f"{what}, {desc.rstrip('.')}"
             body = f"{c.name}, {what}, {desc.rstrip('.')}"
         clothes = f"wearing {c.outfits[oid]['dress'].rstrip('.')}" if oid else ""
+        # a close-up has no pose skeleton to hold ONE body: the figure reference came out as a second person beside
+        # the face (10-31: 109 of 224 close-ups over 3 books had 2+ people, full/waist 7 of 696; the head reference
+        # alone: 0/15 vs 10/15, the outfit worn as often, 9/15) - the clothes in words only
+        if framing == "close":
+            job["refs"] = refs[:1]
+        two = " and the clothes of the person in image 2" if len(job["refs"]) > 1 else ""
         job["prompt"] = (f"{body}. {c.name} is {c.text(oid) if oid is None else c.face}"
                          f"{', ' + clothes if clothes else ''}; exactly the face, age and hair of the person in "
-                         f"image 1 and the clothes of the person in image 2. Only this one person in the picture. "
+                         f"image 1{two}. Only this one person in the picture. "
                          f"The scene is {setting}, {light}. {c.style} {c.period_s}No text, no lettering, no signature.")
         jobs.append((job, meta))
     return jobs
