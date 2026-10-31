@@ -558,8 +558,14 @@ def restore_idle(book: Path, st: dict, log=print) -> None:
             now = set(box_state())
             back = [k for k in ("fish", "ace") if k in before and k not in now]
             llm = "strata" in before and "strata" not in now
+            # 10-31: the job started the language model itself (the director, on the iGPU) and a stop left it up -
+            # 90 GB held, another session's LTX bench aborted on its RAM guard. What the job started goes down too
+            started = "strata" in now and "strata" not in before
             if back and animate._servers("up", log, back):
                 log("  " + " and ".join({"fish": "voice", "ace": "music"}[k] for k in back) + " server back up")
+            if started:
+                subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+                log("  the language model stopped (the job had started it)")
             if llm:
                 try:
                     animate.igpu("strata", log)  # the VAE server off, the language model back (its own memory check)
@@ -567,7 +573,7 @@ def restore_idle(book: Path, st: dict, log=print) -> None:
                     log(f"  {exc}")
             elif _unit_active(animate.VAE_UNIT):
                 animate._vae_server("down", log)
-            if not back and not llm:
+            if not back and not llm and not started:
                 log("  the servers are as the job found them: nothing to restart")
     except BlockingIOError as exc:
         log(f"  left the servers as they are: {exc} has the box now")
