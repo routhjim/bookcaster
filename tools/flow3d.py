@@ -1209,9 +1209,18 @@ def review(book, chapter=None, log=print) -> dict:
     return {"sheets": sheets, "pending": pend}
 
 
+EVEN_SPLIT = 24     # 48 DiT blocks, half on each card
+
+
 def _pp_split(out: Path, route: str, default: int) -> int:
     """The split pp_fit suggests for a route from this chapter's own timing (pp_timing.jsonl), else from the book's
-    other chapters (10-26: a fresh chapter's first quiet batch ran at the default), else the default."""
+    other chapters (10-26: a fresh chapter's first quiet batch ran at the default), else the default.
+    10-31 user: with paired decode (--decode-pair, the default) the split is EVEN for every route: the cards run a
+    block in the same time (timeline: 0.040 vs 0.041 s) and share the decodes, so the old uneven splits (talk 25,
+    quiet 17) only compensated for every decode sitting on card B."""
+    import remake_chapter as R
+    if "--decode-pair" in os.environ.get("REMAKE_LTX_PP_ARGS", R.LTX_PP_ARGS).split():
+        return EVEN_SPLIT
     tj = out / "ltx" / "out" / "pp_timing.jsonl"
     best = _pp_fit([tj]) if tj.exists() else {}
     if route not in best:                   # newest chapter first: today's links/clocks beat a bigger old sample

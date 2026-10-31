@@ -81,7 +81,7 @@ RUNNER_DIR = HERE / "ltx_runner"
 # chapter (flow3d._pp_split), with the decode counted on card 65 so the split moves blocks back to card 05. REMAKE_LTX_PP=0 = the old one-process ltx_split.py;
 # REMAKE_LTX_PP_ARGS replaces LTX_PP_ARGS.
 PP = os.environ.get("REMAKE_LTX_PP", "1") != "0"
-LTX_PP_ARGS = "--lanes 2 --pp-shared-a --pp-pool --decode-b --decode-pair"
+LTX_PP_ARGS = "--lanes 2 --pp-shared-a --pp-pool --decode-b --decode-pair --stagger 0"   # 10-31: atomic cards, no stagger
 # lane 2 starts half a clip late (10-26 user: per clip type; 70 s was half a two-stage action clip, more than a whole
 # ~45 s quiet one): half the route's median clip wall time from pp_timing (this chapter, else the book's newest),
 # else STAGGER_DEFAULT
