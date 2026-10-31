@@ -603,7 +603,7 @@ class Drawer:
         self.ctl.scale = float(c.get("scale", 1.0))
         return im
 
-    def draw(self, j: dict, steps_out: list | None = None):
+    def draw(self, j: dict, steps_out: list | None = None, kv: bool = True):
         from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import calculate_shift, retrieve_timesteps
         from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
 
@@ -674,7 +674,8 @@ class Drawer:
                                        f"{lat.shape[1]} ({w}x{h})")
             pad = torch.cat([pad.to(dev), pad.new_ones(1, lat.shape[1] // 4).to(dev)], dim=1)
             prefix = int(emb.shape[1] - pad[0, :emb.shape[1]].sum()) + 4 * int(pad[0, :emb.shape[1]].sum())
-            use_kv = KV_CACHE and self._kv_fits(prefix * (3 if ctl_on else 2) // 2)     # + 16 control blocks' K/V
+            use_kv = KV_CACHE and kv and self._kv_fits(prefix * (3 if ctl_on else 2) // 2)  # + 16 control blocks' K/V
+            j["_kv"] = use_kv
             cache = QwenImage21KVCache(len(tr.transformer_blocks)) if use_kv else None
             if self.ctl:
                 self.ctl.cache = QwenImage21KVCache(len(Control.LAYERS)) if use_kv and ctl_on else None
@@ -737,8 +738,10 @@ class Drawer:
     def _kv_fits(self, prefix_tokens: int) -> bool:
         """The prefix KV cache costs 32 blocks x K,V x 4096 x bf16 = 512 KiB a token: only when it fits."""
         free = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
-        # + the uncached forward's own peak: 2.6 GiB at 4 refs (measured 10-19), and a margin
-        return prefix_tokens * 512 * 1024 + 3 * 2**30 < free
+        # + the extract step's own peak (10-31: 0.96 GiB over the cache at 2 refs + control; the old flat 3 GiB turned
+        # the cache off for every control draw of a charlora dataset, 10.2 s instead of 6.7). Too tight = run_job's
+        # out-of-memory retry without the cache, so the margin only has to be right most of the time.
+        return prefix_tokens * 512 * 1024 + int(1.5 * 2**30) < free
 
 
 # --- protocol (as illustrate.py) -------------------------------------------------------------------
@@ -748,7 +751,21 @@ def run_job(d: Drawer, j: dict) -> dict:
     torch.cuda.reset_peak_memory_stats()
     if not Path(j["path"]).exists():
         steps: list = []
-        d.draw(j, steps)
+        oom = False
+        try:
+            d.draw(j, steps)
+        except torch.OutOfMemoryError:
+            if not j.get("_kv"):
+                raise
+            oom = True              # retried below, outside the handler: its traceback holds the failed draw's tensors
+        if oom:
+            log(f"{j['id']}: out of memory with the prompt cache: drawing it again without")
+            if d.ctl:
+                d.ctl.cache, d.ctl.context, d.ctl.extra = None, None, []
+            gc.collect()
+            torch.cuda.empty_cache()
+            steps = []
+            d.draw(j, steps, kv=False)
         log(f"{j['id']}: {time.time() - t:.1f} s (steps+decode {steps}, refs {j.get('_refs', 0)}, "
             f"kv {j.get('_kv')}, control {bool(j.get('control'))}, sigma0 {j.get('_sigma0', 1.0)}"
             + (f", per-pixel {j['_dd']}" if j.get("_dd") else "") + ")")
