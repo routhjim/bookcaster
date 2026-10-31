@@ -105,7 +105,8 @@ class Char:
         self.desc = R.look(self.name).strip().rstrip(".")
         self.slug = V.slug(self.name)
         self.trigger = f"chr_{self.slug}"
-        self.out = self.vdir / "charlora" / self.slug
+        # CHARLORA_OUT: a test build writes beside, not over, the book's (both of its processes see the env)
+        self.out = (Path(os.environ["CHARLORA_OUT"]) if os.environ.get("CHARLORA_OUT") else self.vdir / "charlora") / self.slug
         self.refs_dir = self.vdir / "refs"
         self.chapters = sorted(p for p in self.vdir.iterdir() if (p / "plan.json").exists())
         self.plans = {c.name: json.loads((c / "plan.json").read_text()) for c in self.chapters}
@@ -636,7 +637,18 @@ def crop(im, b):
     return im.crop((x0, y0, max(x0 + 8, int(b[2] * W)), max(y0 + 8, int(b[3] * H))))
 
 
-def judge(c: Char, cands: list, S: Scorer, ref_heads: dict) -> dict:
+def _claim(q: Path, cid: str) -> bool:
+    try:
+        os.close(os.open(q / f"{cid}.claim", os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False
+
+
+def judge(c: Char, cands: list, S: Scorer, ref_heads: dict, q: Path | None = None, tag: str = "",
+          done: list | None = None) -> dict:
+    """-> {candidate id: verdicts}, kept in judge.json. With *q* (the shared queue dir, cmd_dataset) two judges work
+    one list: a candidate is judged by whoever claims it first (q/<id>.claim), its verdicts land in q/<id>.json."""
     from PIL import Image
     jf = c.out / "judge.json"
     J = json.loads(jf.read_text()) if jf.exists() else {}
@@ -644,6 +656,13 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict) -> dict:
     for k, cd in enumerate(cands):
         if cd["id"] in J or not Path(cd["path"]).exists():
             continue
+        if q is not None:
+            pf = q / f"{cd['id']}.json"
+            if pf.exists():
+                J[cd["id"]] = json.loads(pf.read_text())
+                continue
+            if not _claim(q, cd["id"]):
+                continue
         t = time.time()
         im = Image.open(cd["path"]).convert("RGB")
         r = {"src": cd["src"]}
@@ -656,6 +675,8 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict) -> dict:
         r["box"] = b
         if b is None:
             J[cd["id"]] = r
+            if q is not None:
+                _put(q, cd["id"], r)
             continue
         person = crop(im, b)
         hb = S.j.box(person, f"the head of {c.subject}")
@@ -675,13 +696,44 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict) -> dict:
                 worn.append(oid)
         r["outfits"] = worn
         J[cd["id"]] = r
-        log(f"judge {k + 1}/{len(cands)} {cd['id']}: {json.dumps(r)} ({time.time() - t:.1f} s)")
+        log(f"{tag}judge {k + 1}/{len(cands)} {cd['id']}: {json.dumps(r)} ({time.time() - t:.1f} s)")
+        if done is not None:
+            done.append(cd["id"])
+        if q is not None:
+            _put(q, cd["id"], r)
+        else:
+            jf.write_text(json.dumps(J, indent=1))
+    if q is None:
         jf.write_text(json.dumps(J, indent=1))
-    jf.write_text(json.dumps(J, indent=1))
     return J
 
 
-def ref_head_embs(c: Char, S: Scorer) -> dict:
+def _put(q: Path, cid: str, r: dict) -> None:
+    tmp = q / f".{cid}.tmp"
+    tmp.write_text(json.dumps(r))
+    tmp.replace(q / f"{cid}.json")
+
+
+def cmd_judge_worker(a) -> int:
+    """The iGPU's half of a dataset's judging (cmd_dataset starts it while its XTX draws): claims candidates from
+    cands.json as they exist, until the drawing is done and nothing is left to claim, or the dataset process ends."""
+    c = Char(a.book, a.character)
+    q = c.out / "jq"
+    need_mem(15)
+    S = Scorer()
+    rh = ref_head_embs(c, S, save=False)
+    while os.getppid() == a.parent:
+        drawn = (q / "drawn").exists()
+        did = []
+        judge(c, json.loads((c.out / "cands.json").read_text()), S, rh, q=q, tag="[igpu] ", done=did)
+        if not did:
+            if drawn:
+                break
+            time.sleep(3)
+    return 0
+
+
+def ref_head_embs(c: Char, S: Scorer, save: bool = True) -> dict:
     from PIL import Image
     embs = []
     for oid in c.outfits:
@@ -692,7 +744,8 @@ def ref_head_embs(c: Char, S: Scorer) -> dict:
         half = im.crop((0, 0, im.width // 2, im.height))
         hb = S.j.box(half, f"the head of {c.subject}") or [0.15, 0.05, 0.85, 0.75]
         h = crop(half, _pad(hb, 0.15))
-        h.save(c.out / "refs" / f"head_{c.V.slug(oid or 'base')}.png")
+        if save:
+            h.save(c.out / "refs" / f"head_{c.V.slug(oid or 'base')}.png")
         embs.append(S.embed(h))
     import torch
     e = torch.stack(embs).mean(0)
@@ -832,6 +885,23 @@ def cmd_dataset(a) -> int:
     if main_oid not in (None, "*") and main_oid not in c.outfits:
         sys.exit(f"outfit {main_oid!r} not in the wardrobe: {[o for o in c.outfits if o]}")
     log(f"{c.name}: subject '{c.subject}', age {c.age}, outfits {list(c.outfits)}, trigger {c.trigger}")
+    q, helper = c.out / "jq", None
+    if a.igpu_judge and not a.only_jobs:
+        # the iGPU judges the sheets and the book's pictures from the start, then the pose pictures as they are
+        # drawn, while this card repairs the head and draws (10-31: judging was 2-4 min of a ~22 min build, after
+        # the drawing, with the iGPU idle)
+        early: list = []
+        cand_sheets(c, early)
+        if not a.no_book:
+            cand_book(c, early)
+        q.mkdir(exist_ok=True)
+        for f in q.glob("*.claim"):
+            if not (q / f"{f.stem}.json").exists():
+                f.unlink()                                  # an ended run's unfinished claim
+        (q / "drawn").unlink(missing_ok=True)
+        _write(c.out / "cands.json", early)
+        helper = subprocess.Popen([CHARLORA_PY, "-I", str(HERE / "charlora.py"), "judge-worker", a.book, a.character,
+                                   "--parent", str(os.getpid())], env=_card_env("igpu"))
     if not a.only_jobs and c.kind == "human" and (c.beard is not None or c.age):
         need_mem(15)
         fixed = repair_head(c, Scorer)
@@ -857,20 +927,43 @@ def cmd_dataset(a) -> int:
         job["path"] = str(gdir / f"{job['id']}.png")
         cands.append({"id": job["id"], "path": job["path"], "whole": True, **meta})
     (c.out / "gen_jobs.json").write_text(json.dumps([j for j, _ in gen], indent=1))
-    (c.out / "cands.json").write_text(json.dumps(cands, indent=1))
+    _write(c.out / "cands.json", cands)
     if a.only_jobs:
         return 0
     draw([j for j, _ in gen], gdir)
+    if helper:
+        (q / "drawn").touch()
     need_mem(15)
     S = Scorer()
     rh = ref_head_embs(c, S)
-    J = judge(c, cands, S, rh)
+    mine: list = []
+    J = judge(c, cands, S, rh, q=q if helper else None, done=mine)
+    if helper:
+        try:
+            helper.wait(timeout=900)
+        except subprocess.TimeoutExpired:
+            helper.terminate()
+            helper.wait()
+        for f in q.glob("*.claim"):
+            if not (q / f"{f.stem}.json").exists():
+                f.unlink()                                  # the helper ended mid-candidate: judged here
+        J = judge(c, cands, S, rh, q=q, done=mine)
+        (c.out / "judge.json").write_text(json.dumps(J, indent=1))
+        log(f"judging: {len(mine)} of {len(J)} on this card, the rest on the iGPU or earlier (helper exit "
+            f"{helper.returncode})")
     del S
     kept = select(c, cands, J, a)
     labels = {f"{k['n']:03d}": f"{k['src']} {k['outfit'] or 'base'} {k['like']}" for k in kept}
     contact_sheet(c.out / "data", c.out / "data" / "sheet.jpg", labels=labels)
     log(f"sheet: {c.out / 'data' / 'sheet.jpg'}")
     return 0
+
+
+def _write(p: Path, obj) -> None:
+    """Whole or not at all (the iGPU judge reads cands.json while this process rewrites it)."""
+    tmp = p.with_name(f".{p.name}.tmp")
+    tmp.write_text(json.dumps(obj, indent=1))
+    tmp.replace(p)
 
 
 def cmd_select(a) -> int:
@@ -1430,7 +1523,7 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
                 if (c.out / "lora").exists():             # keep the old LoRA (10-20: a rebuild wiped Hulda's)
                     shutil.rmtree(c.out / "lora.prev", ignore_errors=True)
                     (c.out / "lora").rename(c.out / "lora.prev")
-                for d in ("cand", "data", "refs"):
+                for d in ("cand", "data", "refs", "jq"):
                     shutil.rmtree(c.out / d, ignore_errors=True)
                 for f in ("judge.json", "cands.json", "gen_jobs.json"):
                     (c.out / f).unlink(missing_ok=True)
@@ -1439,6 +1532,8 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
             mot = _rig_motions(c, env)
             cmd = [card_py(card), "-I", str(HERE / "charlora.py"), "dataset", book, name, "--n-pose", str(n_pose),
                    "--n-mesh", str(n_mesh), "--min-like", "0.4", "--strength-lo", "0.8", "--strength-hi", "0.9"]
+            if card != "igpu":
+                cmd += ["--igpu-judge"]
             if len(c.outfits) > 1:
                 cmd += ["--outfit", "*"]
             if mot:
@@ -1558,6 +1653,11 @@ def main(argv=None) -> int:
     d.add_argument("--strength-hi", type=float, default=0.75)
     d.add_argument("--no-book", action="store_true")
     d.add_argument("--only-jobs", action="store_true", help="write the jobs/candidates, draw nothing")
+    d.add_argument("--igpu-judge", action="store_true", help="the iGPU judges alongside (a build on an XTX)")
+    jw = sub.add_parser("judge-worker", help="(cmd_dataset's) the iGPU's share of a dataset's judging")
+    jw.add_argument("book")
+    jw.add_argument("character")
+    jw.add_argument("--parent", type=int, required=True)
     t.add_argument("--steps", type=int, default=1200)
     t.add_argument("--rank", type=int, default=16)
     t.add_argument("--alpha", type=int, default=None)
@@ -1601,6 +1701,8 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "dataset":
         return cmd_dataset(a)
+    if a.cmd == "judge-worker":
+        return cmd_judge_worker(a)
     if a.cmd == "train":
         return cmd_train(a)
     if a.cmd == "select":
