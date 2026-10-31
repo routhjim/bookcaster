@@ -308,6 +308,7 @@ class Control(nn.Module):
         self.control_img_in = nn.Linear(129, 4096)
         self.control_blocks = nn.ModuleList([ControlBlock(i == 0) for i in range(len(self.LAYERS))])
         self.context, self.scale, self.c, self.kw = None, 1.0, None, None
+        self.cache = None        # the control blocks' own prompt+refs K/V under the prefix KV cache (draw sets it)
         self.extra = []          # more (context, scale) pairs: multi-control (depth + canny), summed skips
 
     def attach(self, tr: nn.Module) -> None:
@@ -321,7 +322,8 @@ class Control(nn.Module):
             return None
         x = kwargs["hidden_states"]
         self.kw = {k: v for k, v in kwargs.items() if k != "hidden_states"}
-        self.kw.update(layer_cache=None, kv_cache_mode=None, cache_write_slice=None)
+        if self.cache is None:
+            self.kw.update(layer_cache=None, kv_cache_mode=None, cache_write_slice=None)
         self.c = []
         for ctx, _ in [(self.context, self.scale)] + self.extra:
             cj = torch.zeros_like(x)
@@ -334,7 +336,10 @@ class Control(nn.Module):
             return out
         cb = self.control_blocks[n]
         for i, (_, sc) in enumerate([(self.context, self.scale)] + self.extra):
-            self.c[i] = cb.block(self.c[i], **self.kw)
+            # under the KV cache each control block keeps the prefix K/V too (the prefix never sees the target:
+            # block-causal, so its control rows are the same every step - 10-31: kv off made a pose draw 10.2 s, not 4.4)
+            kw = self.kw if self.cache is None else dict(self.kw, layer_cache=self.cache.get_layer(n))
+            self.c[i] = cb.block(self.c[i], **kw)
             out = out + cb.after_proj(self.c[i]) * sc
         if n == len(self.LAYERS) - 1:
             self.c = self.kw = None
@@ -669,8 +674,10 @@ class Drawer:
                                        f"{lat.shape[1]} ({w}x{h})")
             pad = torch.cat([pad.to(dev), pad.new_ones(1, lat.shape[1] // 4).to(dev)], dim=1)
             prefix = int(emb.shape[1] - pad[0, :emb.shape[1]].sum()) + 4 * int(pad[0, :emb.shape[1]].sum())
-            use_kv = KV_CACHE and not ctl_on and self._kv_fits(prefix)
+            use_kv = KV_CACHE and self._kv_fits(prefix * (3 if ctl_on else 2) // 2)     # + 16 control blocks' K/V
             cache = QwenImage21KVCache(len(tr.transformer_blocks)) if use_kv else None
+            if self.ctl:
+                self.ctl.cache = QwenImage21KVCache(len(Control.LAYERS)) if use_kv and ctl_on else None
             sched.set_begin_index(0)
             last = time.time()
             # control ENDS part-way (10-22 mannequin flow: pose/depth fix the structure early, the LoRAs and prompt
@@ -678,11 +685,12 @@ class Drawer:
             cl_ = j.get("control")
             ends_ = [float(c_.get("end", 1.0)) for c_ in (cl_ if isinstance(cl_, list) else [cl_] if cl_ else [])]
             ctl_steps = math.ceil(min(ends_) * len(timesteps)) if ends_ else len(timesteps)
-            ctl_saved = None
+            ctl_saved, refresh = None, False
             for i, t in enumerate(timesteps):
                 if self.ctl and i == ctl_steps and self.ctl.context is not None:
                     ctl_saved = (self.ctl.context, self.ctl.extra)      # control off from here on
                     self.ctl.context, self.ctl.extra = None, []
+                    refresh = True                  # the control skips were in the prefix rows: extract them again
                 if init and dmask is not None:          # tokens not started yet stay on the noised init path
                     sg = float(sched.sigmas[i])
                     hold = (dmask[0] < sg - 1e-4).float()
@@ -690,7 +698,8 @@ class Drawer:
                 x = lat.to(torch.bfloat16)
                 if ref is not None:
                     x = torch.cat([ref, x], dim=1)
-                kv_mode = ("extract" if i == 0 else "cached") if use_kv else None
+                kv_mode = ("extract" if i == 0 or refresh else "cached") if use_kv else None
+                refresh = False
                 pred = tr(hidden_states=x, timestep=(t.expand(1) / 1000).to(torch.bfloat16),
                           encoder_hidden_states=emb, encoder_hidden_states_mask=mask, img_shapes=img_shapes,
                           img_mask=pad, kv_cache=cache, kv_cache_mode=kv_mode, return_dict=False)[0]
@@ -702,6 +711,7 @@ class Drawer:
                     last = time.time()
             del cache
             if self.ctl:
+                self.ctl.cache = None
                 self.ctl.context = None
                 self.ctl.extra = []
             if not torch.isfinite(lat).all():
