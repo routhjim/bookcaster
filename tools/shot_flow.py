@@ -45,6 +45,12 @@ QUIET_SEED = 7                      # a quiet shot's first take (its retake: RET
 # shot (a second Holmes walking in) is taken again on the loaded model with the HELD prompt (the people only hold
 # still), a new seed each time, up to DUPE_TAKES more; the take with the fewest faults is kept
 DUPE_TAKES = 3
+# 10-30 user ("re-roll the seed and keep the take with the best SyncNet" - "yeah we should do that"): a one-piece talk
+# shot under TALK_SYNC_BAR is rendered again with a new seed (queued on the loaded model as it lands), up to TALK_TAKES
+# takes in all; the best-scoring take is kept. (Holmes, voice lifted: 001659 scored 1.0 on one seed, 6.7 on the next)
+TALK_SYNC_BAR = 5.0
+TALK_TAKES = 3
+_MORE_LOCK = threading.Lock()           # the take judge and the lip-sync checker both append to the runner's queue
 HELD = "{who} {verb} still in place, with small natural movements: breathing, a blink, a slight turn of the head."
 PP_POOL = True                      # activations between the cards through reused pinned buffers (runner --pp-pool)
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
@@ -2502,8 +2508,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if stale:
             c.unlink()
             if not re.search(r"_t\d+$", j["name"]):    # (10-27 audit: an old _t2 or .judged outlived a new take)
-                for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)] + \
-                        [L / "out" / f"{j['name']}.judged"]:
+                for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, TALK_TAKES))] + \
+                        [L / "out" / f"{j['name']}.judged", L / "out" / f"{j['name']}.synced"]:
                     x.unlink(missing_ok=True)
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
@@ -2549,7 +2555,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                         args=(L / "out", two, more, L / "two_more.adone", stop, log)))
         if talk:
             ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
-                                        args=(book, R, L, talk, stop, log, True)))
+                                        args=(book, R, L, talk, stop, log, True, more)))
         for th in ths:
             th.start()
 
@@ -2607,6 +2613,41 @@ def _next_take(j: dict, n: str, k: int, faults: list) -> dict | None:
     return None
 
 
+def _queue_more(more: Path, job: dict) -> None:
+    """Append a job to the loaded runner's --more queue (atomically: the runner reads it whenever it runs dry)."""
+    with _MORE_LOCK:
+        extra = json.loads(more.read_text())
+        extra.append(job)
+        tmp = more.with_suffix(".tmp")
+        tmp.write_text(json.dumps(extra, indent=1))
+        os.replace(tmp, more)
+
+
+def _sync_conf(L: Path, name: str) -> float:
+    try:
+        return float(json.loads((L / "out" / f"{name}.sync.json").read_text()).get("conf") or 0.0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _keep_best_talk(L: Path, n: str, k: int, log) -> None:
+    """Of shot n's k talk takes (<n>.mp4, <n>_t2.mp4, ...) the best SyncNet becomes <n>.mp4, its sync record with it
+    (a tie keeps the earlier). The job file stays the shot's own, so the next run finds the clip current."""
+    names = [n] + [f"{n}_t{i}" for i in range(2, k + 1)]
+    cs = [_sync_conf(L, x) for x in names]
+    best = max(range(len(names)), key=lambda i: (cs[i], -i))
+    if best:
+        for ext in (".mp4", ".sync.json"):
+            a, b = L / "out" / f"{n}{ext}", L / "out" / f"{names[best]}{ext}"
+            if a.exists() and b.exists():
+                tmp = a.with_name(a.name + ".swap")
+                os.replace(a, tmp)
+                os.replace(b, a)
+                os.replace(tmp, b)
+    (L / "out" / f"{n}.synced").write_text(json.dumps({x: c for x, c in zip(names, cs)}))
+    log(f"{n}: lip sync take {best + 1} of {k} kept ({' / '.join(f'{c:.1f}' for c in cs)})")
+
+
 def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, log) -> None:
     """Judge each action or quiet shot's takes as soon as each clip exists (the vision judge stays loaded); a faulted
     take gets its next take (_next_take: the held prompt for an extra person, until one is clean) appended to `more`;
@@ -2638,11 +2679,7 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                     continue
                 log(f"{n}: take {k}: {fa}: taken again{' held still' if nx.get('emb') != j.get('emb') else ''} "
                     f"(queued on the loaded model)")
-                extra = json.loads(more.read_text())
-                extra.append(nx)
-                tmp = more.with_suffix(".tmp")
-                tmp.write_text(json.dumps(extra, indent=1))
-                os.replace(tmp, more)
+                _queue_more(more, nx)
                 left[nx["name"]] = (j, n, k + 1)
     except Exception as e:                  # noqa: BLE001  (the render goes on; judge_takes catches up after)
         log(f"!!! take judge while rendering: {e!r}")
@@ -2890,16 +2927,32 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
     shutil.rmtree(work, ignore_errors=True)
 
 
-def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, check: bool = False) -> None:
+def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, check: bool = False,
+                       more: Path | None = None) -> None:
     """While the talk clips render on the XTXs: each finished shot (a one-piece clip, or a line whose pieces are all
     there, joined first) is measured by SyncNet on the iGPU at once, so nothing waits for it after the render; and
     body-checked like action and quiet clips (10-28 user: talk clips had no clip check) - a fault is a counted defect
-    (a job problem) to remove at its cause, not a retake (lean: fewer defects, not more catching)."""
-    shots = {}
+    (a job problem) to remove at its cause, not a retake (lean: fewer defects, not more catching). With `more`
+    (10-30 user): a one-piece shot under TALK_SYNC_BAR is taken again with a new seed, up to TALK_TAKES takes, and
+    the best kept (_keep_best_talk)."""
+    shots, takes = {}, {}               # takes: take name -> (shot, take number)
     for j in talk:
         shots.setdefault(j["name"].rsplit("_c", 1)[0] if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1
                          else j["name"], []).append(j)
     left = dict(shots)
+
+    def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
+        j = shots[n][0]
+        c = _sync_conf(L, n if k == 1 else f"{n}_t{k}")
+        if not more or len(shots[n]) > 1 or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
+                (k == 1 and (L / "out" / f"{n}.synced").exists()):
+            return False
+        nx = dict(j, name=f"{n}_t{k + 1}", seed=j["seed"] + 7919 * k)
+        _queue_more(more, nx)
+        left[nx["name"]] = [nx]
+        takes[nx["name"]] = (n, k + 1)
+        log(f"{n}: lip sync {c:.1f} < {TALK_SYNC_BAR}: take {k + 1} (new seed, queued on the loaded model)")
+        return True
     try:
         while left and not stop.is_set():
             ready = [n for n, js in left.items() if all((L / "out" / f"{j['name']}.mp4").exists() for j in js)]
@@ -2908,9 +2961,17 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
                 continue
             for n in ready:
                 left.pop(n)
+                if n in takes:          # a lip-sync retake landed: measured, then again or the best kept
+                    s_, k = takes[n]
+                    _sync_offsets(book, L, [n], log, quiet=True)
+                    if not again(s_, k):
+                        _keep_best_talk(L, s_, k, log)
+                    continue
                 if len(shots[n]) > 1:
                     _stitch_talk(book, R, L, talk, log, only={n}, quiet=True)
                 _sync_offsets(book, L, [n], log, quiet=True)
+                if (L / "out" / f"{n}.mp4").exists():
+                    again(n, 1)
                 c = L / "out" / f"{n}.mp4"
                 if not check or not c.exists():
                     continue
