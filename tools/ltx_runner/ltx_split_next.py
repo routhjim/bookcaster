@@ -567,6 +567,7 @@ def back_server(args, inq, outqs, ready):
                     torch.cuda.current_stream().synchronize()
                     out = to_shm(fr)
                     busy[0] += time.time() - t
+                    tl("B", lane, "decode", t, time.time())
                     outqs[lane].put((out, time.time() - t))
                     del latent, fr, out, m
         dthr = threading.Thread(target=decoder, daemon=True)
@@ -602,6 +603,9 @@ def back_server(args, inq, outqs, ready):
                 t_c = time.time()
                 out = bpool.pack((video, audio), f"b{lane}") if args.pp_pool else (to_shm(video), to_shm(audio))
                 t_out = time.time()
+                tl("B", lane, "copyin", t, t_in)
+                tl("B", lane, "dit", t_in, t_c)
+                tl("B", lane, "copyout", t_c, t_out)
                 busy[0] += t_out - t
                 outqs[lane].put((*out, (t_c - t_in, (t_in - t) + (t_out - t_c))))
                 del video, audio, pert, out
@@ -728,6 +732,17 @@ class _SharedOwner(_TimedLock):
 
 
 A_OWNER = _TimedLock()
+_TL_LOCK = threading.Lock()
+
+
+def tl(card, lane, kind, t0, t1):
+    """(10-31) Per-call timeline, [card, lane, kind, t0, t1] per line to $LTX_TIMELINE (default <out>/timeline.jsonl):
+    the per-card occupancy the per-lane pp_timing timers can't give (with 2 lanes they count overlap twice).
+    timeline_report.py reads it."""
+    f = os.environ.get("LTX_TIMELINE")
+    if f:
+        with _TL_LOCK, open(f, "a") as fh:
+            fh.write(json.dumps([card, lane, kind, round(t0, 4), round(t1, 4)]) + "\n")
 
 
 def install_pp_forward(ltx, split, pp, get_state):
@@ -766,11 +781,15 @@ def install_pp_forward(ltx, split, pp, get_state):
         finally:
             A_OWNER.acquire()
         t3 = time.time()
+        tl("A", st.lane, "dit", t0, t1)
+        tl("A", st.lane, "copy", t1, t2)
+        tl("A", st.lane, "wait", t2, t3)
         tm_add("wait_b_s", t3 - t2)
         tm_add("b_dit_s", bt[0])
         tm_add("b_copy_s", bt[1])
         v, a = (POOL.unpack(v, D0), POOL.unpack(a, D0)) if POOL is not None else (move(v, D0), move(a, D0))
         tm_add("a_copy_s", time.time() - t3)
+        tl("A", st.lane, "copyback", t3, time.time())
         hlog(getattr(st, "job", st.name), st.dcalls, "back", v)
         return v, a
 
@@ -1078,6 +1097,8 @@ def cmd_gen(args, jobs):
     from ltx_pipelines.utils.types import ImageConditioningInput
 
     torch.cuda.set_device(0)
+    if args.out:
+        os.environ.setdefault("LTX_TIMELINE", str(Path(args.out) / "timeline.jsonl"))   # B inherits it (spawn)
     if args.compile and len(jobs) < COMPILE_MIN_JOBS:
         args.compile = False        # before B is spawned with these args: both halves stay eager
         log(f"--compile off: {len(jobs)} jobs < {COMPILE_MIN_JOBS} (its warm-up would not pay back)")
