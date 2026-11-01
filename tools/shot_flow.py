@@ -1174,7 +1174,11 @@ def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
         lo, hi = a_ + SHOT_MIN, b - SHOT_MIN
         add = f"start another shot between {lo:.1f} and {hi:.1f} s" if hi >= lo else f"start another shot near {(a_ + b) / 2:.1f} s"
         return add + (f", or start shot {i + 1} earlier" if i < n else "")
-    return "start it earlier" + (f", or drop it and let shot {i - 1} run on" if i > 1 else "")
+    # too short: the next shot starts later; or this one earlier, or it goes (11-01: shot 1 at 0.0 was told to
+    # "start it earlier", which it can't)
+    opts = ([f"start shot {i + 1} later"] if i < n else []) + \
+           ([f"start it earlier", f"drop it and let shot {i - 1} run on"] if i > 1 else [])
+    return ", or ".join(opts) or "make it longer"
 
 
 def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> list:
