@@ -242,7 +242,7 @@ def cand_sheets(c: Char, cands: list) -> None:
         # an OUTFIT sheet's portrait half is the base look's face and clothes copied (10-27: Roylott's top hat over his
         # dressing gown, Watson's tweed over his nightshirt, captioned as the outfit): only its full figure trains
         for part, box, framing in (("head", (0, 0, w // 2, h), "close-up portrait, head and shoulders, front view"),
-                                   ("figure", (w // 2, 0, w, h), "full body, standing, front view")):
+                                   ("figure", (w // 2 + w // 32, 0, w, h), "full body, standing, front view")):
             if oid is not None and part == "head":
                 continue
             p = c.out / "cand" / f"sheet_{tag}_{part}.png"
@@ -287,9 +287,22 @@ def cand_book(c: Char, cands: list) -> None:
                       "whole": False})
 
 
-PROPS = ("sword", "hammer", "shield", "spear", "axe", "bow_", "staff", "dagger", "lance", "helm")   # props in pose names
+PROPS = ("sword", "hammer", "shield", "spear", "axe", "bow_", "staff", "dagger", "lance", "helm", "anvil", "tongs",
+         "blade", "trough", "cup", "rope")   # props in a pose's name or words (11-01 audit: Acts' disciples drew
+                                             # swords and helms, Sherlock's sisters an anvil, a quench, a raised cup)
 POSE_SKIP = ("lying", "sleeping", "falling", "rolling", "crawling", "carried", "hanging", "embrace", "climbing",
-             "leaping")
+             "leaping", "dancing", "cheering")    # (11-01 audit: cheering and dancing for a terrified Julia)
+# 11-01 audit: no one in the Speckled Band was ever seated in a chair ("sitting" was the ground by a fire), so the
+# LoRAs stood Holmes and Roylott up in their armchairs. A chair pose is drawn three times as often, as a chair
+SEAT_POSES = {"sitting_chair": "seated in a wooden chair, back against it, hands resting on the thighs"}
+COVERS_FACE = re.compile(r"\b(helm|helmet|visor|mask|veil(?:ed)?)\b", re.I)
+UNCOVERED = re.compile(r"\b(off|removed|lifted|raised|without|thrown back)\b", re.I)
+
+
+def covers_face(dress: str) -> bool:
+    """An outfit that hides the face (Edric's eye-slit helm, Helen's veil): no face to compare, so its pictures are
+    judged on the outfit, not on likeness (11-01: the helm-on set kept 3, none with the helm as written)."""
+    return bool(COVERS_FACE.search(dress or "")) and not UNCOVERED.search(dress or "")
 LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the right", "soft overcast daylight",
           "cold blue moonlight", "candlelight from below", "strong rim light from behind",
           "dim lantern light", "bright midday sun with hard shadows"]
@@ -421,8 +434,13 @@ def repair_head(c: Char, make_scorer, n: int = 4) -> Path | None:
 def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
     import poses as P
     own = f"{c.desc} {' '.join(str(r.get('dress', '')) for r in c.outfits.values())}".lower()
+    # ... or a thing the BOOK keeps coming back to (11-01: Edric is a smith - "own" alone left him no hammer or anvil)
+    root = c.vdir.parent.parent
+    txt = " ".join(f.read_text(errors="ignore") for f in (root / "chapters").glob("*.txt")).lower()
+    own += " " + " ".join(x for x in PROPS if len(re.findall(rf"\b{x.rstrip('_')}s?\b", txt)) >= 3)
     lib = [p for p in P.list_poses() if not any(s in p["name"] for s in POSE_SKIP)
-           and not any(x in p["name"] and x not in own for x in PROPS)]    # no prop the person doesn't have
+           and not any(x in f"{p['name']} {p.get('desc', '')}".lower() and x not in own for x in PROPS)]
+    lib += [p for p in lib if p["name"] in SEAT_POSES] * 2
     places = list((c.look.get("places") or {}).items())
     jobs = []
     for k in range(n):
@@ -433,6 +451,7 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
         land = rng.random() < 0.4
         W, H = (1024, 768) if land else (768, 1024)
         place, pdesc = rng.choice(places) if places else ("", "")
+        pdesc = re.sub(r"^(\s*(inside|outside)\s*:\s*)+", "", pdesc, flags=re.I)    # (11-01: "Outside: Outside:")
         setting = f"in {place}: {pdesc.split(',')[0].rstrip('.')}" if place else "in a plain stone room"
         light = rng.choice(LIGHTS)
         job = {"id": f"gen_pose_{k:03d}", "seed": rng.randrange(1, 10**6), "size": [W, H], "refs": refs}
@@ -444,6 +463,7 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
                     "full": "the whole body from head to tail"}[framing]
             pose = rng.choice(CREATURE_POSES) if framing != "close" else ""
             meta["framing"] = f"{what}, {view}" + (f", {pose}" if pose else "")
+            meta["pose"] = pose
             # the sheet gives its look, never its stance: "exactly the body of image 2" copied the sheet's pose
             like = ("the head, scales, colours and wings of the creature in image 2, in a new pose" if pose else
                     "the body of the creature in image 2")
@@ -470,8 +490,9 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
             P.render_skeleton([{"pose": pz["name"], "box": box, "facing": facing}], size=(W, H)).save(sk)
             job["control"] = {"image": str(sk), "type": "pose", "scale": 0.6}
             what = "full body, head to feet" if framing == "full" else "from the waist up"
-            desc = pz.get("desc") or pz["name"].replace("_", " ")
+            desc = SEAT_POSES.get(pz["name"]) or pz.get("desc") or pz["name"].replace("_", " ")
             meta["framing"] = f"{what}, {desc.rstrip('.')}"
+            meta["pose"] = desc.split(",")[0].split("(")[0].strip()
             body = f"{c.name}, {what}, {desc.rstrip('.')}"
         clothes = f"wearing {c.outfits[oid]['dress'].rstrip('.')}" if oid else ""
         # a close-up has no pose skeleton to hold ONE body: the figure reference came out as a second person beside
@@ -693,10 +714,27 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict, q: Path | None = Non
                 _put(q, cd["id"], r)
             continue
         person = crop(im, b)
+        who = "person" if c.kind == "human" else "creature"
+        if cd["src"] != "sheet":    # 11-01 audit: what the picture SHOWS, for the caption and the gate (the captions
+            # said what was asked: "close-up" on knee-length pictures, "profile" on frontal ones, "kneeling" standing)
+            r["text"] = _yes(S.ask(im, "Is there any writing, lettering, a signature or a caption anywhere in this "
+                                       "picture? Answer yes or no.", 3))
+            r["panels"] = _yes(S.ask(im, "Is this picture divided into two or more separate panels or views? "
+                                         "Answer yes or no.", 3))
+            if cd["src"] in ("pose", "mesh"):
+                r["bare"] = _yes(S.ask(im, "Is most of the background a plain, empty grey or white backdrop? "
+                                           "Answer yes or no.", 3))
+            r["feet"] = _yes(S.ask(person, f"Are the {who}'s feet visible in the picture? Answer yes or no.", 3))
+            v = S.ask(person, f"Is the {who}'s face turned toward the viewer, turned to the side so it is seen in "
+                              f"profile, or turned away from the viewer? Answer front, side or away.", 4).lower()
+            r["view"] = "away" if "away" in v or "back" in v else "side" if "side" in v or "profile" in v else "front"
+            if cd.get("pose"):
+                r["pose_ok"] = _yes(S.ask(person, f"Does this picture show the {who} {cd['pose']}? Answer yes or no.", 3))
         hb = S.j.box(person, f"the head of {c.subject}")
         if hb:
             head = crop(person, _pad(hb, 0.15))
             r["head_px"] = min(head.size)
+            r["head_frac"] = round(float(hb[3] - hb[1]), 3)
             r["like"] = round(float(S.embed(head) @ ref_heads["any"]), 4)
             if c.age:
                 r["age"] = _num(S.ask(head, "How old does this person look, judging only by the face and skin? "
@@ -768,13 +806,29 @@ def ref_head_embs(c: Char, S: Scorer, save: bool = True) -> dict:
 
 # --- selection + captions -----------------------------------------------------------------------------
 
+def _seen(c: Char, cd: dict, r: dict) -> str:
+    """A training caption's framing, angle and pose from what the judge SAW (11-01 audit: every set captioned what
+    was asked - "close-up" on knee-length pictures, "profile" on frontal ones, "kneeling" on someone standing - and
+    the LoRA learned those words wrong). A sheet's own words stand; an unseen pose is left out, not asserted."""
+    if cd["src"] == "sheet" or "feet" not in r:
+        return cd.get("framing") or ("a scene from the story" if cd["src"] == "book" else "")
+    hf = r.get("head_frac") or 0
+    size = "full" if r.get("feet") else "close" if hf >= 0.3 else "half"
+    what = ({"close": "close-up portrait, head and shoulders", "half": "from the waist up",
+             "full": "full body, head to feet"} if c.kind == "human" else
+            {"close": "a close-up of the head and neck", "half": "the head, neck and front of the body",
+             "full": "the whole body from head to tail"})[size]
+    view = {"front": "facing the viewer", "side": "seen in profile", "away": "seen from behind"}[r.get("view", "front")]
+    return ", ".join(x for x in (what, view, cd.get("pose") if r.get("pose_ok") else "") if x)
+
+
 def select(c: Char, cands: list, J: dict, a) -> list:
     from PIL import Image
     data = c.out / "data"
     if data.exists():
         shutil.rmtree(data)
     data.mkdir(parents=True)
-    kept, rej = [], []
+    kept, rej, thumbs = [], [], []
     # 10-21 knight_forged_v2 King (clean-shaven): the judge called 40 of 56 small heads (110-200 px) "bearded",
     # the checked sheet's own figure (143 px) among them -> 3 kept, no LoRA. A facial-hair verdict counts only on
     # heads at the size where it read the sheet right (the sheet passed the plan check); 144-200 px stayed noisy.
@@ -814,23 +868,32 @@ def select(c: Char, cands: list, J: dict, a) -> list:
                 why.append("sheet contradicts the look (facial hair)")
             if age_wrong(r):
                 why.append(f"sheet contradicts the look (age {r.get('age')})")
+        covered = bool(cd["outfit"] not in (None, "?") and covers_face(c.outfits.get(cd["outfit"], {}).get("dress", "")))
         if cd["src"] != "sheet":
             if r.get("box") is None:
                 why.append("not found")
+            if r.get("text"):
+                why.append("lettering")
+            if r.get("panels"):
+                why.append("split into panels")
+            if r.get("bare"):
+                why.append("bare backdrop")
+            if cd["src"] == "book" and (r.get("like") or 0) < 0.6:     # 11-01 audit: ~half the book stills were
+                why.append(f"book picture like {r.get('like')}")       # someone else (Acts, Holmes 0.48)
             if cd["src"] in ("pose", "mesh") and c.kind == "human" and r.get("n_people") not in (1,):
                 why.append(f"people {r.get('n_people')}")
-            if beard_wrong(r):
+            if beard_wrong(r) and not covered:
                 why.append("bearded" if r["beard"] else "no beard")
             if r.get("render_look"):
                 why.append("3D-render look")
-            if age_wrong(r):
+            if age_wrong(r) and not covered:
                 why.append(f"age {r.get('age')}")
             lim = getattr(a, "min_like_mesh", a.min_like) if cd["src"] == "mesh" else a.min_like
-            if r.get("like") is None or r["like"] < lim:
+            if (r.get("like") is None or r["like"] < lim) and not covered:     # a hidden face: judged on the outfit
                 why.append(f"like {r.get('like')}")
             if not r.get("match"):
                 why.append("no match")
-            if r.get("head_px", 0) < a.min_head_px:
+            if r.get("head_px", 0) < a.min_head_px and not covered:
                 why.append(f"head {r.get('head_px')} px")
         # outfit: what the generator asked must be what is worn; book pictures take what the judge saw
         oid = cd["outfit"]
@@ -852,11 +915,14 @@ def select(c: Char, cands: list, J: dict, a) -> list:
             b = r["box"]
             if cd["src"] == "book":
                 im = crop(im, _pad(b, 0.12))
+        th = im.convert("L").resize((16, 16))
+        if any(sum(abs(x - y) for x, y in zip(th.getdata(), t0.getdata())) / 256 < 8 for t0 in thumbs):
+            rej.append((cd["id"], ["near-duplicate"]))      # 11-01 audit: Holmes 13/15 and 14/16 the same picture
+            continue
+        thumbs.append(th)
         n = len(kept)
         _save(im, data / f"{n:03d}.png", 1280)
-        parts = [c.trigger, c.text(oid), cd.get("framing") or "", cd.get("setting") or ""]
-        if cd["src"] == "book" and not cd.get("framing"):
-            parts[2] = "a scene from the story"
+        parts = [c.trigger, c.text(oid), _seen(c, cd, r), cd.get("setting") or ""]
         cap = ", ".join(p.strip().rstrip(".") for p in parts if p and p.strip()) + ", " + c.style.split(":")[0]
         (data / f"{n:03d}.txt").write_text(cap)
         kept.append({"n": n, "id": cd["id"], "src": cd["src"], "outfit": oid, "caption": cap,
@@ -1492,7 +1558,7 @@ def _rig_motions(c: Char, env: dict) -> list[str]:
 
 
 def build_all(book: str, characters: list[str] | None = None, card: str = "igpu", force: bool = False,
-              steps: int = STEPS, n_pose: int = 40, n_mesh: int = 12, log_fn=log) -> dict:
+              steps: int = STEPS, n_pose: int = 40, n_mesh: int = 0, log_fn=log) -> dict:
     """A character LoRA for every character of the book (or *characters*), cached by input hash.
 
     -> {name: {"lora": path to the .safetensors, "trigger": "chr_<slug>", "sheet": dataset contact sheet,
