@@ -65,5 +65,69 @@ try:
     print({"graphs": g1, "recompiles": dict(dyn.utils.counters.get("recompiles", {}))})
 except Exception as e:                 # noqa: BLE001  (no C compiler etc.: report, don't hide)
     fails.append(f"compile test could not run: {e!r}"[:300])
+# (4) 11-01: torch.compile reads a threading.local attribute as the class default, not the lane's value - a block's
+# LoRA reads its card's gate (BLOCK_GATES), synced from the lane state under the card lock; compiled ON in a worker
+# thread must equal eager ON
+try:
+    import tempfile
+    import threading
+    import safetensors.torch as stt
+
+    class Lane(threading.local):
+        on = False
+        scales = None
+        unit = False
+
+    lane = Lane()
+
+    class Blk(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(64, 48)
+
+    class Toy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.transformer_blocks = torch.nn.ModuleList([Blk()])
+            self.head = torch.nn.Linear(48, 48)
+
+    toy = Toy()
+    with tempfile.TemporaryDirectory() as td:
+        fp = f"{td}/l.safetensors"
+        stt.save_file({"diffusion_model.transformer_blocks.0.lin.lora_A.weight": torch.randn(8, 64).to(torch.bfloat16),
+                       "diffusion_model.transformer_blocks.0.lin.lora_B.weight": torch.randn(48, 8).to(torch.bfloat16),
+                       "diffusion_model.head.lora_A.weight": torch.randn(8, 48).to(torch.bfloat16),
+                       "diffusion_model.head.lora_B.weight": torch.randn(48, 8).to(torch.bfloat16)}, fp)
+        R.attach_runtime_lora(toy, fp, 1.0, lane, block_gate=True)
+    if toy.transformer_blocks[0].lin._runtime_loras[0][2] is not R.BLOCK_GATES[0]:
+        fails.append("a block Linear is not on its card's gate")
+    if toy.head._runtime_loras[0][2] is not lane:
+        fails.append("a non-block Linear left the lane state")
+    blk = toy.transformer_blocks[0].lin
+    cb = torch.compile(blk, dynamic=True)
+    x = torch.randn(200, 64)
+    res = {}
+
+    def worker():
+        with torch.inference_mode():
+            lane.on, lane.scales, lane.unit = True, R.scales_for(0.8), False
+            R.gate_from(lane, 0)
+            res["eager_on"], res["comp_on"] = blk(x), cb(x)
+            lane.on = False
+            R.gate_from(lane, 0)
+            res["eager_off"], res["comp_off"] = blk(x), cb(x)
+    th = threading.Thread(target=worker)
+    th.start()
+    th.join()
+    d_on = (res["comp_on"] - res["eager_on"]).abs().max().item()
+    eff = (res["eager_on"] - res["eager_off"]).abs().max().item()
+    # (the LoRA dropped = a diff the size of its effect; a fused bf16 -> fp32 cast without the intermediate rounding
+    # on this fp32 toy = ~0.2%: the GPU path is bf16 end to end, bit-exactness there is the A/B's job)
+    if d_on > 0.01 * eff or eff == 0:
+        fails.append(f"compiled block LoRA ON in a lane thread != eager ON (diff {d_on:.3g}, LoRA effect {eff:.3g})")
+    if not torch.allclose(res["comp_off"], res["eager_off"], atol=1e-3):
+        fails.append("compiled block LoRA OFF != eager OFF")
+except Exception as e:                 # noqa: BLE001
+    fails.append(f"gate test could not run: {e!r}"[:300])
 print({"fails": fails})
 sys.exit(1 if fails else 0)

@@ -532,7 +532,8 @@ def back_server(args, inq, outqs, ready, decout=None):
             for lp, ls in ic_loras(args):
                 attach_runtime_lora(ltx, lp, ls, state)
         if args.a2vid or args.ti2v:      # once at 1.0; each DiT call's strength comes with it (A's lane state)
-            state.scales = scales_for(args.dlora_strength)
+            state.scales, state.unit = scales_for(args.dlora_strength), args.dlora_strength == 1.0
+            scales_for(args.quiet_dlora_strength)
             attach_runtime_lora(ltx, DLORA, 1.0, state)
         elif args.base == "dev":
             attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
@@ -618,7 +619,7 @@ def back_server(args, inq, outqs, ready, decout=None):
                 t = time.time()
                 state.on = on
                 if sv is not None:
-                    state.scales = scales_for(sv)
+                    state.scales, state.unit = scales_for(sv), sv == 1.0
                 if args.pp_pool:
                     video, audio, pert = (bpool.unpack(x, D0) for x in (video, audio, pert))
                 else:
@@ -780,6 +781,23 @@ def tl(card, lane, kind, t0, t1):
             fh.write(json.dumps([card, lane, kind, round(t0, 4), round(t1, 4)]) + "\n")
 
 
+# 11-01: torch.compile reads a threading.local's attribute as its CLASS default, not the calling thread's value (CPU
+# probe: compiled "on" == eager OFF). The lanes' LoRA state (cmd_gen's LoraState) is per thread, so on card A every
+# compiled block ran with its runtime LoRAs OFF since --compile became the default (10-31, PR #86): stage 2 of each
+# talk/action clip without the distilled LoRA on blocks < split. The compiled blocks now read a plain per-card gate,
+# copied from the lane's state under that card's lock right before the lane launches its blocks (CARD_LOCKS:
+# one lane's block run at a time per card); the eager non-block Linears keep the lane state itself.
+BLOCK_GATES = {i: types.SimpleNamespace(on=False, scales=None, unit=False) for i in range(8)}
+
+
+def gate_from(st, card: int) -> None:
+    """Card `card`'s compiled blocks take the lane state's LoRA switch and strength (call under CARD_LOCKS[card])."""
+    if st is None:
+        return
+    g = BLOCK_GATES[card]
+    g.on, g.scales, g.unit = bool(st.on), getattr(st, "scales", None), bool(getattr(st, "unit", False))
+
+
 def install_pp_forward(ltx, split, pp, get_state):
     """Process A side: blocks < split here (cuda:0), then hand the activations to process B and wait."""
     from ltx_core.guidance.perturbations import PerturbationType as P
@@ -790,6 +808,7 @@ def install_pp_forward(ltx, split, pp, get_state):
         hlog(getattr(st, "job", st.name), st.dcalls, "in", video)
         t0 = time.time()
         with CARD_LOCKS[0]:  # launch the whole front run at once (no op interleaving between lanes)
+            gate_from(st, 0)
             for i in range(split):
                 if video is not None:
                     video = ltx.block_input_processor(video, perturbations, i, self_attn_type=P.SKIP_VIDEO_SELF_ATTN,
@@ -1000,6 +1019,7 @@ def install_split_forward(ltx, devs, get_state=None):
             if st is not None and ri == 1:
                 hlog(getattr(st, "job", st.name), st.dcalls, "handoff", video)
             with CARD_LOCKS[d.index]:
+                gate_from(st, d.index)
                 for i in range(a, b):
                     block = blocks[i]
                     if video is not None:
@@ -1172,7 +1192,10 @@ def _scaled_b(B, st, dev_i):
     guarded constant: switching routes recompiles nothing. bf16 B x fp32 scalar rounds once to bf16 - the same bits
     as the old pre-scaled B (B_fp32 * s -> bf16). No scales (IC LoRAs, a quiet-only hold) = B as attached."""
     sc = getattr(st, "scales", None)
-    return B if sc is None else B * sc[dev_i]
+    # strength 1.0: B as attached, NO op - the quiet-only hold's exact graph (11-01 A/B: B x tensor(1.0), exact in
+    # value, still changed the compiled graph's kernels - quiet clips 26-28 dB off the separate hold). A bool guard:
+    # one more variant per on-state, compiled once
+    return B if sc is None or getattr(st, "unit", False) else B * sc[dev_i]
 
 
 _SCALES = {}
@@ -1184,7 +1207,10 @@ def scales_for(v: float) -> list:
     if k not in _SCALES:
         devs = ([torch.device("cuda", i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available()
                 else []) or [torch.device("cpu")]
-        _SCALES[k] = [torch.tensor(k, dtype=torch.float32, device=d) for d in devs]
+        # never an inference tensor (11-01 A/B: the 1.0 list first made inside the hold's inference_mode had another
+        # dispatch-key set than the 0.8 one made at load - a guard failure, card B recompiled 3 -> 7 graphs)
+        with torch.inference_mode(False):
+            _SCALES[k] = [torch.tensor(k, dtype=torch.float32, device=d) for d in devs]
     return _SCALES[k]
 
 
@@ -1207,7 +1233,7 @@ def _lora_forward(m):
     return lst
 
 
-def attach_runtime_lora(ltx, path, strength, state):
+def attach_runtime_lora(ltx, path, strength, state, block_gate: bool = False):
     """Runtime LoRA (see _lora_forward): adds strength * B A to each target Linear, on that Linear's card.
     One resident fp8 DiT serves both the LoRA stage (state.on=True) and the bare stage.
     Streams: each A/B pair goes to its card as soon as both halves are read (no full LoRA in RAM)."""
@@ -1232,7 +1258,9 @@ def attach_runtime_lora(ltx, path, strength, state):
             B = (f.get_tensor(keys["B"]).to(dev, torch.float32) * strength).to(torch.bfloat16)
             nbytes += A.nbytes + B.nbytes
 
-            _lora_forward(m).append((A, B, state))
+            # a block's Linear (compiled) reads its card's gate, synced from the lane state (see BLOCK_GATES)
+            st_ = BLOCK_GATES[dev.index or 0] if block_gate and mod_name.startswith("transformer_blocks.") else state
+            _lora_forward(m).append((A, B, st_))
             n += 1
     log(f"runtime LoRA {Path(path).name} x{strength}: {n} linears hooked, {nbytes / 2**20:.0f} MiB, "
         f"missing {len(missing)} {missing[:5]}, unpaired {len(pend)}")
@@ -1345,8 +1373,10 @@ def cmd_gen(args, jobs):
     def make_pipe(dev, kind=None):
         kind = kind or ("a2vid" if a2v else "ti2v" if ti2v else None)
         if kind == "distilled":         # over the two-stage hold's dev DiT (never built: the stage runs the shared one)
-            return DistilledPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=(), device=dev,
-                                     quantization=build_policy(DIT_DEV)), "stage"
+            dp = DistilledPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=(), device=dev,
+                                   quantization=build_policy(DIT_DEV))
+            log("distilled route: ancestral sampler:", dp.use_ancestral_sampler)
+            return dp, "stage"
         if kind == "ti2v":
             return TI2VidTwoStagesPipeline(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
                                            loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
@@ -1416,13 +1446,15 @@ def cmd_gen(args, jobs):
         always_on = False   # a distilled-route job: the distilled LoRA on in every stage
         scales = None       # the distilled LoRA's strength this job (scales_for); None = as attached
         scale_v = None      # the same as a number, for process B
+        unit = False        # strength 1.0: B as attached, no multiply (see _scaled_b)
 
     lstate = LoraState()
     if ic:
         for lp, ls in ic_loras(args):
-            attach_runtime_lora(ltx, lp, ls, lstate)
+            attach_runtime_lora(ltx, lp, ls, lstate, block_gate=True)
     if a2v or ti2v:                     # once at 1.0; each job sets its strength (lstate.scales)
-        attach_runtime_lora(ltx, DLORA, 1.0, lstate)
+        scales_for(args.dlora_strength), scales_for(args.quiet_dlora_strength)   # made before any inference_mode
+        attach_runtime_lora(ltx, DLORA, 1.0, lstate, block_gate=True)
     elif args.base == "dev":  # distilled behaviour = dev + distilled LoRA, always on
         attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
     if args.compile:
@@ -1553,7 +1585,7 @@ def cmd_gen(args, jobs):
         if two_stage:                       # the distilled LoRA (attached at 1.0): this job's strength, both cards
             lstate.scale_v = float(j.get("dlora_strength", args.quiet_dlora_strength) if kind == "distilled"
                                    else args.dlora_strength)
-            lstate.scales = scales_for(lstate.scale_v)
+            lstate.scales, lstate.unit = scales_for(lstate.scale_v), lstate.scale_v == 1.0
         mp4 = out_dir / f"{j['name']}.mp4"
         lstate.name = j.get("emb", j["name"])
         lstate.dcalls = 0
