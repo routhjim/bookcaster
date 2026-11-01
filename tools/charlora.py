@@ -178,10 +178,10 @@ class Char:
     def sheet(self, oid) -> Path | None:
         # 10-21 knight_forged_v2: the index pin came FIRST, and the index is written from this very call, so the
         # Knight's first (tunic) sheet stayed pinned after the look gained armour: model + LoRA in a tunic. A human's
-        # sheet is the one the CURRENT look draws; the pin only for a creature (its composite head sheet) or a gap.
+        # sheet is the one the CURRENT look draws; the pin only for a gap. 11-01: a creature too - Vorgrath's pinned
+        # composite (staging engine, 10-21) stood upright like a man, and every LoRA picture copied its body; the
+        # plan's own sheet of him, from his words ("standing on four legs"), is on four legs.
         a = (self.assets.get(oid) or {}).get("sheet")
-        if a and Path(a).exists() and self.kind != "human":
-            return Path(a)
         V, R = self.V, self.R                                # a plan that casts them (10-25: the Disciple is only in Acts 2)
         # ... under ANY spelling, its sheet named by the plan's own (10-27: look.json's first spelling "Doctor Watson",
         # the plan's "Dr. Watson": no plan matched, KeyError -> no sheet -> Watson's LoRA build failed)
