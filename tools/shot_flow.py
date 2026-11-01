@@ -1469,13 +1469,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if sum(len(m_["content"]) for m_ in talk_) > HISTORY_CHARS:
                 talk_[:] = talk_[-4:]   # too long (decode slows with context): go on from the last two passages
             turn = [{"role": "user", "content": q0.replace("{fix}", "")}]
-            for _ in range(3):
+            for try_ in range(3):
                 reply, cached = _converse(BC.LLM_URL, BC.LLM_MODEL, [{"role": "system", "content": system}] + talk_ +
                                           turn, max_tokens=5000 + 12000 * bool(DIRECT_EFFORT), effort=DIRECT_EFFORT)
                 log(f"  passage {pa:.1f} s: {cached} of the prompt's tokens cached")
                 a, faults, scr = process(reply)
                 if not faults:
                     break
+                log(f"  passage {pa:.1f} s: try {try_ + 1} broke {len(faults)} rule(s): {faults}")   # (11-01: which rules
                 turn += [{"role": "assistant", "content": reply or ""},
                          {"role": "user", "content": "Your last answer broke the rules: " + "; ".join(faults) +
                           ". Write it again, the whole passage."}]
