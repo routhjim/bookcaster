@@ -14,10 +14,15 @@ check("one gen call for action + talk with both route flags",
       'kind = "two_talk" if two and talk' in sf and '["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk)' in sf
       and 'gen("two", two,' not in sf and 'gen("talk", talk,' not in sf)
 check("the combined jobs file is written", '("two_talk_jobs", two + talk)' in sf)
-check("the runner builds both pipelines over one DiT in a mixed hold", "mixed = a2v and ti2v" in rn and
-      'def make_pipe(dev, kind=None)' in rn and '"ti2v": prepare(make_pipe(dev, "ti2v")[0], dev)' in rn)
+# (11-01: the mixed hold is any 2+ routes - quiet's "distilled" too; behaviour in ltx_runner/test_one_hold.py)
+check("the runner builds both pipelines over one DiT in a mixed hold", "mixed = len(routes) > 1" in rn and
+      'def make_pipe(dev, kind=None)' in rn and "else make_pipe(dev, k)[0], dev) for k in routes}" in rn)
 check("each job takes its route from its fields (talk has audio)",
-      'kind = "a2vid" if j.get("audio") else "ti2v"' in rn and "if j_a2v:" in rn and "elif j_ti2v:" in rn)
+      "kind = job_route(j, routes)" in rn and 'if j.get("audio") and "a2vid" in routes:' in rn
+      and "if j_a2v:" in rn and "elif j_ti2v:" in rn)
+check("11-01: quiet clips in the action/talk hold (one gen call, --with-distilled)",
+      'gen("hold" if held else kind, two + talk + held,' in sf and '"--with-distilled"' in sf
+      and '("hold_jobs", two + talk + quiet)' in sf)
 check("talk faults are counted defects, not retakes", "talk clip defect" in sf and '_t2", seed=RETAKE' in sf
       and sf.count('_t2", seed=RETAKE') == 1)
 check("10-28: quiet clips on the dev DiT + distilled LoRA (no distilled model, no distilled encode)",

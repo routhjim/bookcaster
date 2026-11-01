@@ -90,6 +90,8 @@ TALK_SHIFT_TREBLE = "highshelf=f=2000:g=-6"
 # every seam and an mp4 round trip per piece (sharpness 1.4-5x and drift from the key growing piece after piece)
 TALK_CHAIN_OVERLAP = 1
 QUIET_DLORA = 1.0                   # quiet: the distilled LoRA stands in for the whole distilled model
+ONE_HOLD = True                     # 11-01 user: quiet clips in the action/talk hold (runner --with-distilled), not a
+                                    # second hold that reloads the DiT; a quiet-only render keeps its own hold
 TALK_PRE = 12                       # frames of silence before a line (0.5 s): the mouth is live at the first word
 KEY_SEEDS, MORE_SEEDS = (7, 11), (13, 17, 23)
 STEPS = int(os.environ.get("SHOTS_STEPS", "20"))      # two-stage stage-1 steps (10-23 test: 20 = 30 by eye)
@@ -2773,7 +2775,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                         [L / "out" / f"{j['name']}.judged", L / "out" / f"{j['name']}.synced"]:
                     x.unlink(missing_ok=True)
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
-                  ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
+                  ("quiet_jobs", quiet), ("two_talk_jobs", two + talk), ("hold_jobs", two + talk + quiet)):
         (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
     from types import SimpleNamespace
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
@@ -2805,15 +2807,19 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     if two or talk:
         # 10-28 user: action and talk in ONE hold (the same dev DiT, loaded once). On the iGPU meanwhile: each action
         # take judged as it lands (10-24: a faulted one's retake joins the loaded runner's queue), and each talk shot
-        # measured by SyncNet and body-checked as it lands (a faulted one-piece talk shot retaken the same way)
+        # measured by SyncNet and body-checked as it lands (a faulted one-piece talk shot retaken the same way).
+        # 11-01 user: the quiet clips in the same hold (runner --with-distilled: the distilled route over the same
+        # dev DiT; a quiet-only hold had reloaded the DiT and re-warmed torch.compile, ~1.5 min a render), judged as
+        # they land by the same take judge, their retakes on the same queue
         more, done = L / "two_more.json", L / "two_more.done"
         more.write_text("[]")
         done.unlink(missing_ok=True)
         stop = threading.Event()
         ths = []
-        if two:
+        if two or (quiet and ONE_HOLD):
             ths.append(threading.Thread(target=_judge_as_they_land, daemon=True,
-                                        args=(L / "out", two, more, L / "two_more.adone", stop, log)))
+                                        args=(L / "out", two + (quiet if ONE_HOLD else []), more,
+                                              L / "two_more.adone", stop, log)))
         if talk:
             ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
                                         args=(book, R, L, talk, stop, log, True, more)))
@@ -2827,8 +2833,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         tc = threading.Thread(target=closer, daemon=True)
         tc.start()
         kind = "two_talk" if two and talk else "two" if two else "talk"
+        held = quiet if ONE_HOLD else []
         try:
-            gen(kind, two + talk, ["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk) +
+            gen("hold" if held else kind, two + talk + held, ["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk) +
+                (["--with-distilled", "--quiet-dlora-strength", str(QUIET_DLORA)] if held else []) +
                 ["--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
                 F._pp_split(sd, "a2vid" if talk else "ti2v", 25 if talk else 24))
         finally:
@@ -2838,7 +2846,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if talk:
             _stitch_talk(book, R, L, talk, log)             # what the thread didn't get to (cached: seconds)
             _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
-    if quiet:
+    if quiet and not (ONE_HOLD and (two or talk)):
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
         more, done = L / "quiet_more.json", L / "quiet_more.done"

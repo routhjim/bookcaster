@@ -531,8 +531,9 @@ def back_server(args, inq, outqs, ready, decout=None):
         if args.ic_lora:
             for lp, ls in ic_loras(args):
                 attach_runtime_lora(ltx, lp, ls, state)
-        if args.a2vid or args.ti2v:
-            attach_runtime_lora(ltx, DLORA, args.dlora_strength, state)
+        if args.a2vid or args.ti2v:      # once at 1.0; each DiT call's strength comes with it (A's lane state)
+            state.scales = scales_for(args.dlora_strength)
+            attach_runtime_lora(ltx, DLORA, 1.0, state)
         elif args.base == "dev":
             attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
         if args.compile:
@@ -613,9 +614,11 @@ def back_server(args, inq, outqs, ready, decout=None):
                     decq.put(msg)
                     del msg
                     continue
-                lane, video, audio, pert, on = msg
+                lane, video, audio, pert, on, sv = msg
                 t = time.time()
                 state.on = on
+                if sv is not None:
+                    state.scales = scales_for(sv)
                 if args.pp_pool:
                     video, audio, pert = (bpool.unpack(x, D0) for x in (video, audio, pert))
                 else:
@@ -802,9 +805,9 @@ def install_pp_forward(ltx, split, pp, get_state):
         tm_add("a_dit_s", t1 - t0)
         hlog(getattr(st, "job", st.name), st.dcalls, "handoff", video)
         if POOL is not None:
-            msg = (st.lane, *POOL.pack((video, audio, perturbations), f"a{st.lane}"), st.on)
-        else:
-            msg = (st.lane, to_shm(video), to_shm(audio), to_shm(perturbations), st.on)  # blocking D2H: card A idle for us
+            msg = (st.lane, *POOL.pack((video, audio, perturbations), f"a{st.lane}"), st.on, getattr(st, "scale_v", None))
+        else:                                                        # blocking D2H: card A idle for us
+            msg = (st.lane, to_shm(video), to_shm(audio), to_shm(perturbations), st.on, getattr(st, "scale_v", None))
         t2 = time.time()
         tm_add("a_copy_s", t2 - t1)
         A_OWNER.release()
@@ -1145,7 +1148,7 @@ def _lora_linear_forward(self, x):
     block). 10-31: on a big input the active LoRAs are FOLDED into the weight upcast from fp8 anyway (W + B A, one
     out x r x in GEMM) and one GEMM runs; the unfused x A^T B^T cost two thin rank-450 GEMMs over every token
     (11% of a stage-2 call at 12k tokens). Small inputs (rows below in*out/(in+out)) keep the unfused sum."""
-    on = [(A, B) for A, B, st in self._runtime_loras if st.on]
+    on = [(A, _scaled_b(B, st, self.weight.device.index or 0)) for A, B, st in self._runtime_loras if st.on]
     if not on:
         return self._base_forward(x)
     F_ = torch.nn.functional
@@ -1160,6 +1163,29 @@ def _lora_linear_forward(self, x):
     for A, B in on:
         w.addmm_(B.to(w.dtype), A.to(w.dtype))
     return F_.linear(x, w, None if self.bias is None else self.bias.to(x.dtype))
+
+
+def _scaled_b(B, st, dev_i):
+    """B times the state's runtime strength (11-01: one hold for every route - the distilled LoRA is attached ONCE at
+    1.0 and each job scales it: 0.8 in a two-stage clip's stage 2, 1.0 for every step of a quiet clip). st.scales is
+    a list of 0-d fp32 tensors, one per card (scales_for), so torch.compile takes the value as a graph input, not a
+    guarded constant: switching routes recompiles nothing. bf16 B x fp32 scalar rounds once to bf16 - the same bits
+    as the old pre-scaled B (B_fp32 * s -> bf16). No scales (IC LoRAs, a quiet-only hold) = B as attached."""
+    sc = getattr(st, "scales", None)
+    return B if sc is None else B * sc[dev_i]
+
+
+_SCALES = {}
+
+
+def scales_for(v: float) -> list:
+    """[0-d fp32 tensor v on each visible card] (cached: the same objects every time a route switches back)."""
+    k = float(v)
+    if k not in _SCALES:
+        devs = ([torch.device("cuda", i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available()
+                else []) or [torch.device("cpu")]
+        _SCALES[k] = [torch.tensor(k, dtype=torch.float32, device=d) for d in devs]
+    return _SCALES[k]
 
 
 _LORA_CLASSES = {}
@@ -1231,7 +1257,22 @@ def serialize_sdpa():
     LA.PytorchAttention._serialized = True
 
 
-ORDER_COST = {"a2vid": 1.0, "ti2v": 1.3}   # card time per frame vs talk (10-30 pp_timing: 1.30 vs 1.66 s/frame)
+ORDER_COST = {"a2vid": 1.0, "ti2v": 1.3,    # card time per frame vs talk (10-30 pp_timing: 1.30 vs 1.66 s/frame)
+              "distilled": 0.35}            # quiet: 8 steps, one pass (11-01 knight pp_timing: card 0.29 vs 1.02 s/frame,
+                                            # wall 0.64 vs 1.59; Speckled Band card 0.36 vs 0.69)
+
+
+def job_route(j: dict, routes, ti2v_default: bool = False) -> str:
+    """A job's route in a hold: a quiet job (shot_flow "route": "i2v") -> "distilled" (the dev DiT with the distilled
+    LoRA on for every step), one with audio -> "a2vid", else "ti2v"; within `routes` (the hold's pipelines) when
+    given, else as order_jobs estimates it."""
+    if j.get("route") == "i2v" and (routes is None or "distilled" in routes):
+        return "distilled"
+    if routes is None:
+        return "a2vid" if j.get("audio") else ("ti2v" if ti2v_default or j.get("neg_extra") is not None else "a2vid")
+    if j.get("audio") and "a2vid" in routes:
+        return "a2vid"
+    return "ti2v" if "ti2v" in routes else routes[0]
 
 
 def order_jobs(todo: list, ti2v_default: bool = False) -> list:
@@ -1241,8 +1282,7 @@ def order_jobs(todo: list, ti2v_default: bool = False) -> list:
     ~0.13 s/frame), and the hold ends on short clips instead of one long straggler. Order changes no output (each
     job has its own seed); a chained piece still waits for its source (lane_loop), retakes still join at the end."""
     def cost(j):
-        route = "a2vid" if j.get("audio") else ("ti2v" if ti2v_default or j.get("neg_extra") is not None else "a2vid")
-        return (j.get("frames") or 0) * ORDER_COST.get(route, 1.0)
+        return (j.get("frames") or 0) * ORDER_COST.get(job_route(j, None, ti2v_default), 1.0)
     return sorted(todo, key=lambda j: -cost(j))     # stable: equal costs keep the plan's order
 
 
@@ -1293,11 +1333,20 @@ def cmd_gen(args, jobs):
         dlora = LoraPathStrengthAndSDOps(DLORA, args.dlora_strength, LTXV_LORA_COMFY_RENAMING_MAP)
 
     # 10-28 user: action (--ti2v) and talk (--a2vid) in ONE hold - the same dev DiT loaded once, both pipelines built
-    # over it; each job takes the route its fields say (a talk job has "audio")
-    mixed = a2v and ti2v
+    # over it; each job takes the route its fields say (a talk job has "audio"). 11-01 user: quiet clips too
+    # (--with-distilled): the distilled pipeline over the same dev DiT, the distilled LoRA on for its every step at
+    # --quiet-dlora-strength (a quiet-only hold had reloaded the DiT and re-warmed torch.compile, ~1.5 min a render)
+    two_stage = a2v or ti2v
+    routes = [k for k, f in (("a2vid", a2v), ("ti2v", ti2v)) if f]
+    if two_stage and (args.with_distilled or any(j.get("route") == "i2v" for j in jobs)):
+        routes.append("distilled")
+    mixed = len(routes) > 1
 
     def make_pipe(dev, kind=None):
         kind = kind or ("a2vid" if a2v else "ti2v" if ti2v else None)
+        if kind == "distilled":         # over the two-stage hold's dev DiT (never built: the stage runs the shared one)
+            return DistilledPipeline(model_paths=paths, spatial_upsampler_path=UPS, loras=(), device=dev,
+                                     quantization=build_policy(DIT_DEV)), "stage"
         if kind == "ti2v":
             return TI2VidTwoStagesPipeline(model_paths=paths, distilled_lora=[dlora], spatial_upsampler_path=UPS,
                                            loras=[], device=dev, quantization=build_policy(DIT_DEV)), "stage_1"
@@ -1364,13 +1413,16 @@ def cmd_gen(args, jobs):
         lane = 0
         gate = None     # stage-1 DiT calls with control; later calls cut the reference tokens off
         n_ref = 0       # reference tokens appended after the noisy tokens (stage 1)
+        always_on = False   # a distilled-route job: the distilled LoRA on in every stage
+        scales = None       # the distilled LoRA's strength this job (scales_for); None = as attached
+        scale_v = None      # the same as a number, for process B
 
     lstate = LoraState()
     if ic:
         for lp, ls in ic_loras(args):
             attach_runtime_lora(ltx, lp, ls, lstate)
-    if a2v or ti2v:
-        attach_runtime_lora(ltx, DLORA, args.dlora_strength, lstate)
+    if a2v or ti2v:                     # once at 1.0; each job sets its strength (lstate.scales)
+        attach_runtime_lora(ltx, DLORA, 1.0, lstate)
     elif args.base == "dev":  # distilled behaviour = dev + distilled LoRA, always on
         attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
     if args.compile:
@@ -1428,11 +1480,13 @@ def cmd_gen(args, jobs):
             def _transformer_ctx(self, **kw):
                 lstate.calls = 0
                 lstate.stage_has_lora = bool(self._transformer_builder.loras)
-                lstate.on = lstate.stage_has_lora and lstate.job_has_control
+                lstate.on = lstate.always_on or (lstate.stage_has_lora and lstate.job_has_control)
                 log(f"[{dev}] stage ctx: LoRA {'ON' if lstate.on else 'off'}")
                 return nullcontext(model)
 
-        for attr in ([stage_attr, "stage_2"] if a2v or ti2v else [stage_attr]):
+        attrs = (["stage_1", "stage_2"] if hasattr(p, "stage_1") else
+                 ["_diffusion_stage"] if hasattr(p, "_diffusion_stage") else ["stage"])
+        for attr in attrs:
             st = getattr(p, attr)
             setattr(p, attr, SplitStage(st._transformer_builder, st._dtype, st._device,
                                         quantization=st._quantization, scale_factors=st.video_scale_factors))
@@ -1453,7 +1507,8 @@ def cmd_gen(args, jobs):
     def lane_pipes(dev, first=None):
         if not mixed:
             return prepare(first or make_pipe(dev)[0], dev)
-        return {"a2vid": prepare(first or make_pipe(dev, "a2vid")[0], dev), "ti2v": prepare(make_pipe(dev, "ti2v")[0], dev)}
+        k0 = "a2vid" if a2v else "ti2v"     # `first` (make_pipe(D0)) is that route's
+        return {k: prepare(first if (first is not None and k == k0) else make_pipe(dev, k)[0], dev) for k in routes}
 
     lanes = [(lane_pipes(D0, pipe), D0)]
     if args.lanes >= 2 and pp:
@@ -1487,11 +1542,18 @@ def cmd_gen(args, jobs):
 
     def run_job(p, dev, j):
         if isinstance(p, dict):             # mixed hold: the job's route
-            kind = "a2vid" if j.get("audio") else "ti2v"
+            kind = job_route(j, routes)
             p = p[kind]
         else:
             kind = "a2vid" if a2v else "ti2v" if ti2v else None
         j_a2v, j_ti2v = kind == "a2vid", kind == "ti2v"
+        lstate.always_on = kind == "distilled"
+        if kind == "distilled":
+            lstate.job_has_control = False
+        if two_stage:                       # the distilled LoRA (attached at 1.0): this job's strength, both cards
+            lstate.scale_v = float(j.get("dlora_strength", args.quiet_dlora_strength) if kind == "distilled"
+                                   else args.dlora_strength)
+            lstate.scales = scales_for(lstate.scale_v)
         mp4 = out_dir / f"{j['name']}.mp4"
         lstate.name = j.get("emb", j["name"])
         lstate.dcalls = 0
@@ -1812,6 +1874,10 @@ def main():
     ap.add_argument("--a2vid", action="store_true", help="A2Vid two-stage: dev DiT + CFG/STG stage 1, distilled LoRA stage 2")
     ap.add_argument("--ti2v", action="store_true", help="image-to-video two-stage: dev DiT + CFG/STG stage 1, distilled LoRA stage 2")
     ap.add_argument("--dlora-strength", type=float, default=0.8)
+    ap.add_argument("--with-distilled", action="store_true",
+                    help="with --ti2v/--a2vid: quiet jobs (route i2v) in the same hold, on the distilled route")
+    ap.add_argument("--quiet-dlora-strength", type=float, default=1.0,
+                    help="the distilled LoRA's strength on a quiet (distilled-route) job in a two-stage hold")
     ap.add_argument("--lanes", type=int, default=1, choices=[1, 2, 3],
                     help="jobs in flight: 2 = lane 2 on cuda:1 (no --pp); with --pp all lanes on card A (3 needs --pp)")
     ap.add_argument("--pp-shared-a", action="store_true",
