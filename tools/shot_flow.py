@@ -171,8 +171,9 @@ Rules:
   is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
   writing, a title or a caption: the video model can't draw letters.
 - "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
-  change over time is written as visible steps. Say what the hands hold. Call each one by a plain description (a tall
-  man in a dark frock coat), never by name. No magic words (magic, enchanted, spell), no camera directions, no
+  change over time is written as visible steps. Say what the hands hold. Call each person by their NAME (the film
+  turns each name into how they look and where they are in the picture), never "the man", "she" or "the other one"
+  when more than one person is in the shot. No magic words (magic, enchanted, spell), no camera directions, no
   written words or titles. At most 50 words.
 - "pose_end": each person's pose at the shot's END, one word each. A pose carries over from the end of the shot before and changes
   only in a shot whose action changes it (he is pulled to his feet: "pose" sitting, "pose_end" standing). Someone the
@@ -180,7 +181,7 @@ Rules:
 - "kind": "talk" (above), "action" when someone DOES something the passage tells: a hand reaches for or touches
   someone or something, a thing is picked up, bent, thrown, opened or turned, someone leans, rises, sits down, walks,
   runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
-  opening picture puts the people where it can start: one who touches another is within arm's reach of them.
+  opening picture has the people where it can start: in "people", one who touches another is "at" arm's reach of them.
 - "state_end": how things stand at the END of the passage: what each one holds, each one's posture and where they
   are, and any visible change to the place (a lamp lit, a door open, a letter on the table). Not their clothes: the
   wardrobe keeps those. Plain words, at most 80.
@@ -339,6 +340,16 @@ def pose_cat(text) -> str:
     return next((c for c, rx in POSE_CAT if rx.search(str(text or ""))), "")
 
 
+def on_side(who: list, w: str) -> str:
+    """" on the left" for one of the 2-3 people of a shot - the side the key draws them on (group_layout, `who` left to
+    right). 11-01: the video model read "The man grabs the poker" with Roylott and Holmes both in frock coats (the
+    director's "plain description" rule; 7 of 70 multi-person Speckled Band clips said only "the man") and nothing
+    told it which man was where; the side is what it can see."""
+    if len(who) < 2 or w not in who:
+        return ""
+    return " " + group_layout(len(who))[who.index(w)][1] if len(who) <= 3 else ""
+
+
 def _pose_hold(cx, s: dict) -> str:
     """' The man in a ragged brown tunic stays sitting on the ground throughout.' for each person whose held pose is not
     standing and does not change in this shot (the video model's words: a plain description, never a name)."""
@@ -346,7 +357,7 @@ def _pose_hold(cx, s: dict) -> str:
     for w, c in (s.get("pose_held") or {}).items():
         if c == "stand" or (s.get("pose_after") or {}).get(w, c) != c:
             continue
-        first = describe(RG.Book(cx.book), w, _shot_dress(cx, s))     # the one description (10-27 audit)
+        first = describe(RG.Book(cx.book), w, _shot_dress(cx, s)) + on_side(list(s.get("who") or []), w)
         out.append(f" {first[0].upper() + first[1:]} stays {POSE_WORDS[c]} throughout.")
     return "".join(out)
 
@@ -1332,9 +1343,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     pts = cut_points(book, stem, voices)    # sentence and word breaks: where a cut inside speech may fall (10-29)
     (sd / "audio").mkdir(parents=True, exist_ok=True)
 
-    def unname(txt, cast, dress):       # the video model reads looks, not names: the one description of each
-        for w in sorted(cast, key=len, reverse=True):
-            txt = re.sub(r"\b(" + "|".join(map(re.escape, tokens(w))) + r")\b", describe(RGB, w, dress), txt)
+    def unname(txt, cast, dress, who=()):   # the video model reads looks, not names: the one description of each,
+        for w in sorted(cast, key=len, reverse=True):      # and where they are in the picture (on_side)
+            txt = re.sub(r"\b(" + "|".join(map(re.escape, tokens(w))) + r")\b",
+                         (describe(RGB, w, dress) + on_side(list(who), w)).replace("\\", "\\\\"), txt)
         return txt
 
     def talk_moment(mid, who, t, d, creature=False):   # a talk moment for the line `who` speaks at t
@@ -1496,7 +1508,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 if isinstance(x, dict):
                     x["who"] = list(dict.fromkeys(w for w in (cast_of(v, cast) for v in (x.get("who") or [])) if w))
                     if x.get("action"):
-                        x["action"] = unname(str(x["action"]), cast, dress)
+                        x["action"] = unname(str(x["action"]), cast, dress, x["who"])
             a["shots"] = [x for x in a["shots"] if isinstance(x, dict)]
             faults = _shot_faults(a, cast, sec, quotes, RGB.places() + [home] + others) + _repeats(a, pics_before, pics_scene) + [
                 f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"

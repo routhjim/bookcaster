@@ -15,3 +15,10 @@ def test_told_lines_are_voice_over():
     t = S.RULE_TOLD.format(others="Helen's Bedroom")
     assert "NO talk shot" in t and "first" in t and "last" in t
     assert "talk shots stay with the teller" not in t
+
+
+def test_video_words_name_the_side():
+    assert S.on_side(["Doctor Grimesby Roylott", "Sherlock Holmes"], "Doctor Grimesby Roylott") == " on the left"
+    assert S.on_side(["A", "B", "C"], "B") == " in the centre"
+    assert S.on_side(["A"], "A") == "" and S.on_side(["A", "B"], "Z") == ""
+    assert "NAME" in S.SHOT_RULES and "never by name" not in S.SHOT_RULES
