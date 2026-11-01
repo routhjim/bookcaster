@@ -880,9 +880,13 @@ def _dress(book: Path, stem: str, mid: str, who: list) -> dict:
     tl = book / "work" / f"{stem}.timeline.json"
     if e is None or not tl.exists():
         return {}
-    starts = video.paragraph_times(video.paragraphs((book / "chapters" / f"{stem}.txt").read_text()),
-                                   json.loads(tl.read_text()))
+    paras = video.paragraphs((book / "chapters" / f"{stem}.txt").read_text())
+    starts = video.paragraph_times(paras, json.loads(tl.read_text()))
     para = video.para_at(starts, float(e["t"]))
+    # an outfit worn from where the story MAKES it is worn once it's done, as characters.outfit_at has it (11-01:
+    # Edric forged in his finished star-iron armour - the keys read the wardrobe row unshifted)
+    import characters as CH
+    plan = CH.made_outfits_shift(plan, paras)
     R = _reg(book)                              # a wardrobe row under any spelling of the person (10-27)
     return {w: d for w in who if (row := video.outfit(plan, w, para, R)) and (d := video.worn_only(row["dress"]))}
 
