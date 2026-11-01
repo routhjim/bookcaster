@@ -299,6 +299,9 @@ COVERS_FACE = re.compile(r"\b(helm|helmet|visor|mask|veil(?:ed)?)\b", re.I)
 UNCOVERED = re.compile(r"\b(off|removed|lifted|raised|without|thrown back)\b", re.I)
 
 
+MATCH_LIKE = 0.7
+
+
 def covers_face(dress: str) -> bool:
     """An outfit that hides the face (Edric's eye-slit helm, Helen's veil): no face to compare, so its pictures are
     judged on the outfit, not on likeness (11-01: the helm-on set kept 3, none with the helm as written)."""
@@ -891,7 +894,9 @@ def select(c: Char, cands: list, J: dict, a) -> list:
             lim = getattr(a, "min_like_mesh", a.min_like) if cd["src"] == "mesh" else a.min_like
             if (r.get("like") is None or r["like"] < lim) and not covered:     # a hidden face: judged on the outfit
                 why.append(f"like {r.get('like')}")
-            if not r.get("match"):
+            # the description check reads styling literally ("long dark hair swept back": Maren's loose hair, 64 of 82
+            # rejected at likeness 0.75-0.82, 11-01); age and beard have their own checks. A clear likeness overrules it
+            if not r.get("match") and (r.get("like") or 0) < MATCH_LIKE:
                 why.append("no match")
             if r.get("head_px", 0) < a.min_head_px and not covered:
                 why.append(f"head {r.get('head_px')} px")
