@@ -691,8 +691,8 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict, q: Path | None = Non
         if c.beard is not None and hb:
             r["beard"] = _yes(S.ask(head, "Does this person have a beard, stubble or a moustache? Answer yes or no.", 3))
         worn = []
-        for oid, q in outfit_q.items():
-            if _yes(S.ask(person, f"Is this person wearing {q}? Answer yes or no.", 3)):
+        for oid, oq in outfit_q.items():      # (not "q": that is the shared queue dir - 11-01 Edric's build died)
+            if _yes(S.ask(person, f"Is this person wearing {oq}? Answer yes or no.", 3)):
                 worn.append(oid)
         r["outfits"] = worn
         J[cd["id"]] = r
