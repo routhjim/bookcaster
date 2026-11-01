@@ -293,6 +293,16 @@ POSE_SKIP = ("lying", "sleeping", "falling", "rolling", "crawling", "carried", "
 LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the right", "soft overcast daylight",
           "cold blue moonlight", "candlelight from below", "strong rim light from behind",
           "dim lantern light", "bright midday sun with hard shadows"]
+# a creature has no skeleton library: its poses in words (11-01: Vorgrath's 49 pictures were one pose - standing, wings
+# up, three-quarter - copied from his sheet). A four-legged body plan throughout; nothing upright on two legs
+CREATURE_POSES = ["walking forward on all four legs", "crouched low on all fours, ready to spring",
+                  "lying with its body curled around itself, head resting on its forelegs",
+                  "lunging forward with its jaws wide open", "breathing a stream of fire straight ahead",
+                  "roaring with its head raised and its jaws open", "head lowered close to the ground, staring ahead",
+                  "turning its head back over its shoulder", "wings spread wide, about to take off from all fours",
+                  "flying with its wings spread wide, legs tucked under its body",
+                  "seen from behind, its tail toward the viewer, head turned to one side",
+                  "standing still on all four legs, wings folded against its back"]
 VIEWS = ["three-quarter view facing left", "three-quarter view facing right", "seen in profile from the left",
          "seen in profile from the right", "front view", "looking down", "looking up", "seen from slightly above",
          "seen from a low angle"]
@@ -432,9 +442,13 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
             view = rng.choice(VIEWS)
             what = {"close": "a close-up of the head and neck", "half": "the head, neck and front of the body",
                     "full": "the whole body from head to tail"}[framing]
-            meta["framing"] = f"{what}, {view}"
-            job["prompt"] = (f"{c.name}, {what}, {view}. {c.name} is {c.desc}; exactly the head of the creature "
-                             f"in image 1 and the body of the creature in image 2. Only this one creature in the "
+            pose = rng.choice(CREATURE_POSES) if framing != "close" else ""
+            meta["framing"] = f"{what}, {view}" + (f", {pose}" if pose else "")
+            # the sheet gives its look, never its stance: "exactly the body of image 2" copied the sheet's pose
+            like = ("the head, scales, colours and wings of the creature in image 2, in a new pose" if pose else
+                    "the body of the creature in image 2")
+            job["prompt"] = (f"{c.name}, {what}, {view}" + (f", {pose}" if pose else "") + f". {c.name} is {c.desc}; "
+                             f"exactly the head of the creature in image 1 and {like}. Only this one creature in the "
                              f"picture. The scene is {setting}, {light}. {c.style} {c.period_s}No text, no lettering, no signature.")
             jobs.append((job, meta))
             continue
@@ -920,7 +934,8 @@ def cmd_dataset(a) -> int:
     gen = []
     if a.n_pose:
         gen += gen_jobs_pose(c, a.n_pose, main_oid, rng)
-    if a.n_mesh and (a.model or any(c.model(o) for o in c.outfits)):
+    # not a creature's (11-01: Vorgrath's rig was built from his old upright sheet; its 7 views stood him on two legs)
+    if a.n_mesh and c.kind == "human" and (a.model or any(c.model(o) for o in c.outfits)):
         gen += gen_jobs_mesh(c, a.model, a.motion, a.n_mesh, main_oid, rng, (a.strength_lo, a.strength_hi))
     gdir = c.out / "cand"
     for job, meta in gen:
