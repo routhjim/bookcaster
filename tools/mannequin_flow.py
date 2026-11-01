@@ -853,7 +853,11 @@ def _appearance(desc: str) -> str:
     in every key overrode "lying collapsed" - the slain dragon was drawn standing): what they look like, not how
     they stand; the shot says that."""
     parts = [x.strip() for x in re.split(r",", (desc or "").rstrip("."))]
-    keep = [x for x in parts if x and not POSTURE.search(x)]
+    # ... and a stance clause's body part stays (11-01: "wings folded" dropped whole: every Vorgrath key since 10-23
+    # was a wingless lizard, and his LoRA at 0.5 could not add what the words left out)
+    keep = [x if not POSTURE.search(x) else "great wings" if re.search(r"\bwings?\b", x, re.I)
+            else "a long tail" if re.search(r"\btail\b", x, re.I) else "" for x in parts if x]
+    keep = [x for x in keep if x]
     # ... but the BODY PLAN stays (10-23: with "on four legs" stripped, the fight keys drew the dragon upright on two
     # legs like a man): four-legged is what it is, not how it stands
     legs = re.search(r"\bon (four|all four|4) legs\b|\bon all fours\b", desc or "", re.I)
