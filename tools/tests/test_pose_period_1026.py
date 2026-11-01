@@ -62,7 +62,8 @@ with tempfile.TemporaryDirectory() as d:
     check("a seed with him standing fails (redrawn)", not SF._clean(dict(good, pose1="no"), k, 0))
 hold = SF._pose_hold(cx, out["m2"][0])
 check("clip prompt: the one description of him, held: 'The man in the ragged patched brown tunic stays sitting'",
-      hold == " The man in the ragged patched brown tunic stays sitting throughout.", hold)
+      re.fullmatch(r" The man in the ragged patched brown tunic( on the (left|right))? stays sitting throughout\.", hold),
+      hold)       # (11-01: with the side the key draws him on, in a two-person shot)
 check("clip prompt: nothing held in the shot that heals him", SF._pose_hold(cx, out["m4"][0]) == "")
 
 # --- posture out of the looks; the outfit checked in the key
