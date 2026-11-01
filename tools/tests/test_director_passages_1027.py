@@ -41,7 +41,7 @@ bad_talk = {"shots": [sh(0.0, "talk", speaker="Sherlock Holmes"), sh(4.0)]}
 check("a talk shot when its speaker isn't speaking: faulted",
       any("not speaking" in f for f in S._shot_faults(bad_talk, cast, 8.0, q)))
 long = {"shots": [sh(0.0), sh(1.5)]}
-check("a 8.5 s quiet shot: faulted", any("lasts" in f for f in S._shot_faults(long, cast, 10.0, q)))
+check("a 8.5 s quiet shot: faulted", any("other shots are" in f for f in S._shot_faults(long, cast, 10.0, q)))
 order = {"shots": [sh(0.0), sh(3.0), sh(2.0)]}
 check("starts out of order: faulted", any("starts" in f for f in S._shot_faults(order, cast, 8.0, q)))
 title = {"shots": [sh(0.0, who=[], picture="A title card reads 'The Speckled Band' in gold lettering.", pose={},
