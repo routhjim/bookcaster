@@ -1109,6 +1109,53 @@ def _no_place_words(text, places=()) -> str:
     return t
 
 
+def _mend(reply: str, faults: list, cast: list, ask, named_in) -> str | None:
+    """The director's answer with each sentence-level fault left after its retries mended by one short question
+    (11-01 user: "do that last, like an extra final retry step"): an effect with no source ("'fire' does not say where
+    it comes from": "where does the fire come from?") and a name in a setting (that one sentence rewritten without it;
+    the old last resort deleted the sentence - the wrist close-up's whole subject). -> the new reply, or None."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+        shots = [x for x in data["shots"] if isinstance(x, dict)]
+    except (ValueError, KeyError, TypeError):
+        return None
+    changed = False
+    for f in faults:
+        fire = re.match(r"shot (\d+): '([^']+)' does not say where it comes from", f)
+        name = re.match(r"shot (\d+)'s setting names (.+?): where people", f)
+        i = int((fire or name).group(1)) - 1 if (fire or name) else -1
+        if not 0 <= i < len(shots):
+            continue
+        x = shots[i]
+        if fire:
+            w = fire.group(2)
+            act = str(x.get("action") or "")
+            sent = next((z for z in re.split(r"(?<=[.;])\s+", act)
+                         if re.search(rf"\b{re.escape(w)}\b", z, re.I) and not re.search(r"\bfrom\b", z)), "")
+            if not sent:
+                continue
+            ans = str(ask(f'A shot of a film: "{sent}" Where does the {w} come from? Answer with a few words starting '
+                          f'with "from", like "from the fireplace". The answer only.') or "").strip().split("\n")[0]
+            ans = ans.strip(' "\'.').rstrip(".")
+            if ans.lower().startswith("from ") and len(ans) <= 60:
+                x["action"] = act.replace(sent, re.sub(rf"\b({re.escape(w)})\b", rf"\1 {ans}", sent, count=1, flags=re.I))
+                changed = True
+        else:
+            st = str(x.get("setting") or "")
+            for sent in [z for z in re.split(r"(?<=[.;])\s+", st) if named_in(z, cast)]:
+                ans = str(ask("Rewrite this sentence from a film shot's description of the scene so that it names nobody: "
+                              "call a person by a plain description (a woman in black, a tall man), never by name. Keep "
+                              f"everything else. The sentence only.\n\n{sent}") or "").strip().split("\n")[0].strip(' "')
+                if ans and not named_in(ans, cast) and len(ans) < 2 * len(sent) + 40:
+                    st = st.replace(sent, ans)
+                    changed = True
+            x["setting"] = st
+    if not changed:
+        return None
+    return reply[:m.start()] + json.dumps(data) + reply[m.end():]
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -1491,6 +1538,14 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 turn += [{"role": "assistant", "content": reply or ""},
                          {"role": "user", "content": "Your last answer broke the rules: " + "; ".join(faults) +
                           ". Write it again, the whole passage."}]
+            if faults:                  # 11-01 user: one sentence asked again, as an extra last step after the retries
+                r2 = _mend(reply, faults, cast, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
+                                                                     [{"role": "user", "content": q_}], max_tokens=400)[0], named_in)
+                if r2:
+                    a2, f2, s2 = process(r2)
+                    if len(f2) < len(faults):
+                        log(f"  passage {pa:.1f} s: mended {len(faults) - len(f2)} fault(s) one sentence at a time")
+                        a, faults, scr, reply = a2, f2, s2, r2
             if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
                 cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
                                           "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
