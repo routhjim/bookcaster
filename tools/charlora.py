@@ -152,7 +152,7 @@ class Char:
             self.beard = None
             # a creature's stance is not its look: "standing on four legs, tail extended, wings folded" went into
             # every pose prompt and every caption, and the LoRA drew that one stance for every prompt (11-01 Vorgrath)
-            self.desc = ", ".join(x for x in self.desc.split(", ") if not STANCE.search(x)) or self.desc
+            self.desc = drop_stance(self.desc)
 
     def text(self, oid) -> str:
         """The person as words: the usual look, or face + the outfit."""
@@ -314,6 +314,21 @@ LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the
           "dim lantern light", "bright midday sun with hard shadows"]
 STANCE = re.compile(r"\b(standing|sitting|seated|lying|crouch\w*|rearing|coiled|perched|on (?:all |its )?(?:four|two|hind) "
                     r"legs|on all fours|tail (?:extended|raised|curled)|wings? (?:folded|spread|raised|outstretched))\b", re.I)
+
+
+def drop_stance(desc: str) -> str:
+    """A creature's look without its stance; the body part stays (11-01: dropping "wings folded" whole left Vorgrath
+    wingless)."""
+    out = []
+    for x in desc.split(", "):
+        if STANCE.search(x):
+            x = ("great wings" if re.search(r"\bwings?\b", x, re.I) else
+                 "a long tail" if re.search(r"\btail\b", x, re.I) else "")
+        if x:
+            out.append(x)
+    return ", ".join(out) or desc
+
+
 # a creature has no skeleton library: its poses in words (11-01: Vorgrath's 49 pictures were one pose - standing, wings
 # up, three-quarter - copied from his sheet). A four-legged body plan throughout; nothing upright on two legs
 CREATURE_POSES = ["walking forward on all four legs", "crouched low on all fours, ready to spring",
