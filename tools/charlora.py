@@ -150,6 +150,9 @@ class Char:
                 self.assets.pop(oid)
         if self.kind != "human":
             self.beard = None
+            # a creature's stance is not its look: "standing on four legs, tail extended, wings folded" went into
+            # every pose prompt and every caption, and the LoRA drew that one stance for every prompt (11-01 Vorgrath)
+            self.desc = ", ".join(x for x in self.desc.split(", ") if not STANCE.search(x)) or self.desc
 
     def text(self, oid) -> str:
         """The person as words: the usual look, or face + the outfit."""
@@ -309,6 +312,8 @@ def covers_face(dress: str) -> bool:
 LIGHTS = ["lit by warm firelight from the left", "lit by warm firelight from the right", "soft overcast daylight",
           "cold blue moonlight", "candlelight from below", "strong rim light from behind",
           "dim lantern light", "bright midday sun with hard shadows"]
+STANCE = re.compile(r"\b(standing|sitting|seated|lying|crouch\w*|rearing|coiled|perched|on (?:all |its )?(?:four|two|hind) "
+                    r"legs|on all fours|tail (?:extended|raised|curled)|wings? (?:folded|spread|raised|outstretched))\b", re.I)
 # a creature has no skeleton library: its poses in words (11-01: Vorgrath's 49 pictures were one pose - standing, wings
 # up, three-quarter - copied from his sheet). A four-legged body plan throughout; nothing upright on two legs
 CREATURE_POSES = ["walking forward on all four legs", "crouched low on all fours, ready to spring",
@@ -467,11 +472,15 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
             pose = rng.choice(CREATURE_POSES) if framing != "close" else ""
             meta["framing"] = f"{what}, {view}" + (f", {pose}" if pose else "")
             meta["pose"] = pose
-            # the sheet gives its look, never its stance: "exactly the body of image 2" copied the sheet's pose
-            like = ("the head, scales, colours and wings of the creature in image 2, in a new pose" if pose else
-                    "the body of the creature in image 2")
-            job["prompt"] = (f"{c.name}, {what}, {view}" + (f", {pose}" if pose else "") + f". {c.name} is {c.desc}; "
-                             f"exactly the head of the creature in image 1 and {like}. Only this one creature in the "
+            # a posed picture is drawn from the WORDS alone: with the sheet as a reference all 39 of Vorgrath's copied
+            # its one stance (pose shown 12 of 27), with the head only the head was pasted frontally; words alone
+            # drew the pose asked 28 of 30, 38 of 40 over the likeness bar (11-01 test). Close-ups keep the head
+            if pose:
+                job["refs"] = []
+            ref = ("" if pose else "; exactly the head of the creature in image 1" +
+                   (" and the body of the creature in image 2" if len(refs) > 1 else ""))
+            job["prompt"] = (f"{c.name}, {what}, {view}" + (f", {pose}" if pose else "") + f". {c.name} is {c.desc}"
+                             f"{ref}. Only this one creature in the "
                              f"picture. The scene is {setting}, {light}. {c.style} {c.period_s}No text, no lettering, no signature.")
             jobs.append((job, meta))
             continue
