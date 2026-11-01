@@ -53,5 +53,22 @@ def test_fill_moments():
     assert sh[0]["moment"].startswith("Vorgrath's tail") and sh[1]["moment"] == "already here" and "moment" not in sh[2]
 
 
+
+
+def test_write_keys():
+    import json as _j
+    reply = _j.dumps({"shots": [{"kind": "action", "place": "The Burnt Mountain", "action": "Vorgrath's tail sweeps over Edric.",
+                                 "people": [{"name": "Vorgrath", "holds": ""}, {"name": "Edric", "holds": "sword"}]},
+                                {"kind": "talk", "speaker": "Edric"}]})
+    asked = []
+    r, n = F._write_keys(reply, lambda q: asked.append(q) or "Close shot, low angle. Vorgrath's tail sweeps in low as Edric rolls.",
+                         lambda w: "a dragon" if w == "Vorgrath" else "a man")
+    assert n == 1 and "Edric (a man, holds sword)" in asked[0] and "never wide" in asked[0]
+    sh = _j.loads(r)["shots"]
+    assert sh[0]["keyshot"].startswith("Close shot") and "keyshot" not in sh[1]
+    s = {"kind": "action", "keyshot": "Close shot. X.", "moment": "m"}
+    assert F.moment(s) == "Close shot. X"
+
+
 if __name__ == "__main__":
-    test_moment_only_for_action(); test_key_prompt_uses_moment(); test_describe_lone_adjective(); test_fill_moments(); print("ok")
+    test_moment_only_for_action(); test_key_prompt_uses_moment(); test_describe_lone_adjective(); test_fill_moments(); test_write_keys(); print("ok")

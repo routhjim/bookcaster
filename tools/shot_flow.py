@@ -462,7 +462,9 @@ def moment(s: dict) -> str:
     action - the layout template, "X stands on the left, facing Y" - and LTX had 2-5 s to invent a tail sweep or a
     poker bending from it; of 25 rendered action clips, the clear ones were those whose key already had the motion
     under way). "" for any other shot: talk and quiet keep the layout."""
-    return str(s.get("moment") or "").strip().rstrip(".") if s.get("kind") == "action" else ""
+    if s.get("kind") != "action":
+        return ""
+    return str(s.get("keyshot") or s.get("moment") or "").strip().rstrip(".")
 
 
 def closeup(s: dict) -> bool:
@@ -1221,6 +1223,48 @@ def _fill_moments(reply: str, ask) -> tuple:
     return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
 
 
+KEY_ASK = """You write the opening picture of one shot of a film, for an image model.
+The shot, in {place}. People in it: {people}. What happens: "{action}"{moment}
+Write ONE paragraph, at most 90 words:
+- Start with the camera: "Close shot" or "Medium shot" (never wide), and an angle when it helps (low angle, from above,
+  over the shoulder). Hands working a thing: close on the hands and the thing.
+- The instant the action BEGINS, the movement already under way, never the calm before it: each body's position and
+  motion, what each one holds in which hand, where any fire, light, blow or spark comes from.
+- Call each person by name; name the parts that matter (a dragon's wings, tail, claws; a blade; a hammer's head).
+- No clothes, faces or room (those are added), no sounds, no words or letters.
+The paragraph only."""
+
+
+def _write_keys(reply: str, ask, kind_of) -> tuple:
+    """Each action shot's opening picture written as its own small task, one shot at a time (11-01: the five fight keys
+    written by hand - the moment first, close and low, both in one space, each one's blade and wings named, ~150 words,
+    no place picture - against the director's answer's moments inside a 300-word layout prompt). The director keeps the
+    beats, cuts and who; this is only the picture. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+        shots = [x for x in data["shots"] if isinstance(x, dict)]
+    except (ValueError, KeyError, TypeError):
+        return None, 0
+    n = 0
+    for x in shots:
+        if x.get("kind") != "action" or str(x.get("keyshot") or "").strip() or not str(x.get("action") or "").strip():
+            continue
+        ppl = [p_ for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
+        who = "; ".join(f"{p_['name']} ({kind_of(p_['name'])}" + (f", holds {p_['holds']}" if str(p_.get('holds') or '')
+                        .strip().lower() not in ("", "nothing", "none") else "") + ")" for p_ in ppl) or "nobody"
+        mo = str(x.get("moment") or "").strip()
+        ans = str(ask(KEY_ASK.format(place=x.get("place") or "the scene", people=who, action=x["action"],
+                                     moment=f'\nIts first instant: "{mo}"' if mo else "")) or "").strip()
+        ans = " ".join(ans.split()).strip(' "\'')
+        if 40 <= len(ans) <= 900:
+            x["keyshot"] = ans
+            n += 1
+    if not n:
+        return None, 0
+    return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -1623,6 +1667,17 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 if len(f3) <= len(faults):
                     log(f"  passage {pa:.1f} s: {nm} action shot(s) given their moment one question each")
                     a, faults, scr, reply = a3, f3, s3, r3
+            def kind_of(w_):
+                lk_ = (RGB.look(RGB.person(w_) or w_) or "").lower()
+                return next((f"a {z}" for z in ("dragon", "woman", "girl", "boy", "man", "horse", "creature")
+                             if re.search(rf"\b{z}\b", lk_)), "a person")
+            r4, nk = _write_keys(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
+                                                             [{"role": "user", "content": q_}], max_tokens=400)[0], kind_of)
+            if r4:
+                a4, f4, s4 = process(r4)
+                if len(f4) <= len(faults):
+                    log(f"  passage {pa:.1f} s: {nk} action key(s) written one shot at a time")
+                    a, faults, scr, reply = a4, f4, s4, r4
             if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
                 cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
                                           "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
@@ -2258,6 +2313,28 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
     looks = {w: no_pose(MF._appearance(R_.look(w))) for w in s["who"]}      # of the looks, art_style.txt only)
     style = _key_style(R_.picture_style())     # the picture's style (10-27: realistic unless `bookcaster art`)
     dress = MF._dress(book, stem, mid, s["who"])
+    if s.get("kind") == "action" and str(s.get("keyshot") or "").strip():
+        # the written picture leads; each one in a line (face + clothes, nothing carried stripped: the paragraph says
+        # what is held); one line of the place; ~150 words (11-01: the hand-written fight keys; the layout prompt was
+        # ~300 words of wardrobe, room and "fills the whole picture" around a one-line moment)
+        ids = []
+        for w in s["who"]:
+            lk = looks.get(w, "")
+            parts = [z.strip() for z in re.split(r",", re.split(r",?\s*\bwearing\b", lk)[0])
+                     if z.strip() and z.strip().lower() != "no clothing"]
+            if not re.search(r"\b(dragon|creature|beast|wyrm|horse|wolf)\b", lk, re.I):
+                parts = parts[:4]       # a person: age, face, hair; a creature keeps its wings and tail
+            cl = garments(dress.get(w) or clothes_of(lk))
+            cl = ", ".join(z.strip() for z in cl.split(",")[:2]).strip()
+            ids.append(f"{MF._lora(book, w)[1] or ''} {w}: {', '.join(parts)}{', wearing ' + cl if cl else ''}".strip())
+        room = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(s.get("room") or ""), flags=re.I)
+        room1 = (re.split(r"(?<=[.;])\s+", room) or [""])[0].rstrip(".")
+        place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
+        pic = str(s["keyshot"]).strip().rstrip(".")
+        for k_, v_ in GLOSS.items():
+            pic = re.sub(k_, v_, pic, count=1, flags=re.I)
+        return (f"{pic}. {'. '.join(ids)}. In {place}{': ' + room1 if room1 else ''}. "
+                f"{MF.period_line(book)} {style} No text.").replace("..", ".").replace("  ", " ")
     people = []
     for w in s["who"]:
         lk = looks.get(w, "")
@@ -2450,7 +2527,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         loras = [[R_.lora(w)[0], min(lw, CREATURE_LORA) if w in crs else lw, bx]
                  for w, bx in zip(s["who"], boxes) if w != s.get("ots")]
         p = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s)
-        hero = None if closeup(s) else heroes.get(s.get("place") or None)
+        # an action key written as its own picture takes no place picture: the image model copies a reference's
+        # layout (11-01: every fight key was the hero's wide cave view with the two pasted in; Vorgrath's sheet pose 39/39)
+        hero = None if closeup(s) or s.get("keyshot") else heroes.get(s.get("place") or None)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
         if (d / "key.sig").exists() and (d / "key.sig").read_text() != sig:
