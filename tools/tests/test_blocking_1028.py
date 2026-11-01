@@ -104,7 +104,7 @@ check("too many moves for the time: the director is told to simplify, not to spl
 sf = S._shot_faults({"shots": [{"start": 0.0, "kind": "quiet", "picture": "x", "action": "He looks up."},
                                {"start": 1.6, "kind": "quiet", "picture": "x", "action": "He looks down."},
                                {"start": 4.0, "kind": "quiet", "picture": "x", "action": "He nods."}]}, [], 7.0, [])
-check("a 1.6 s action shot is a sliver (2 to 5 s)", any("lasts 1.6 s" in f for f in sf), sf)
+check("a 1.6 s action shot is a sliver (2 to 5 s)", any("(1.6 s)" in f for f in sf), sf)
 bl = ("Helen Stoner seated centre-left by the fire; Sherlock Holmes standing centre-right, facing her; Doctor Watson "
       "seated on the right, slightly behind Holmes.")
 sd_ = S._blocking_sides(bl, ["Helen Stoner", "Sherlock Holmes", "Doctor Watson"])

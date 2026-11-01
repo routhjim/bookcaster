@@ -1109,6 +1109,16 @@ def _no_place_words(text, places=()) -> str:
     return t
 
 
+def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
+    """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
+    work out which start to move, and length was 12 of the 26 faults still there after three tries."""
+    if d > SHOT_MAX:
+        lo, hi = a_ + SHOT_MIN, b - SHOT_MIN
+        add = f"start another shot between {lo:.1f} and {hi:.1f} s" if hi >= lo else f"start another shot near {(a_ + b) / 2:.1f} s"
+        return add + (f", or start shot {i + 1} earlier" if i < n else "")
+    return "start it earlier" + (f", or drop it and let shot {i - 1} run on" if i > 1 else "")
+
+
 def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> list:
     """The director's passage answer against the rules: starts in order, lengths, talk shots on their own speaker's
     line, and the one-shot checks (_faults) on the rest."""
@@ -1137,7 +1147,8 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> lis
                 out.append(f"shot {i} is a talk shot of {d:.1f} s: at most 8 (cut to the listener and back)")
         else:
             if d > SHOT_MAX + 0.6 or (d < SHOT_MIN - 0.2 and b < sec):     # (10-28: 1.5 s slivers passed at - 0.6)
-                out.append(f"shot {i} lasts {d:.1f} s: other shots are {SHOT_MIN:.0f} to {SHOT_MAX:.0f} s")
+                out.append(f"shot {i} runs {a_:.1f}-{b:.1f} s ({d:.1f} s): other shots are {SHOT_MIN:.0f} to "
+                           f"{SHOT_MAX:.0f} s. " + _length_hint(i, a_, b, d, len(shots)))
             rest.append(dict(s, dur=d))
     if rest:
         out += [f for f in _faults({"shots": rest}, cast, sum(r["dur"] for r in rest)) if not f.startswith("the lengths")
