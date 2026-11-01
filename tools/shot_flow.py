@@ -426,7 +426,9 @@ def carry_poses(es: list, out: dict, cuts: tuple = ()) -> None:
 
 # words the image model draws as something else (10-23: "bellows" = a bell, twice)
 GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, joined by pleated leather sides, a short "
-                          "iron nozzle pointing into the fire)"}
+                          "iron nozzle pointing into the fire)",
+         # 10-31: Roylott's "metal poker" was a thin cane that flexed like a whip when he bent it
+         r"\bpoker\b": "poker (a heavy black iron fireplace rod, thick as a thumb, with a hooked tip)"}
 # a four-legged creature's body plan in the picture (10-23 shots keys: the dragon stood upright like a seahorse in most
 # fight keys, its LoRA at 0.8 full frame; at 0.63 in a side box it crouched on all fours) + its LoRA lighter
 FOUR_LEGS = ("its body long and horizontal like a giant lizard's, all four feet on the ground, never upright on its "
@@ -928,6 +930,20 @@ TAG_WORDS = 8                       # a narration entry this short between two l
 SEAT_NEAR = re.compile(r"\s+(?:beside|by|next to|near|close to|at the (?:foot|side|head) of|in front of)\s+(?:the|his|her|a)\s+"
                        r"(?:[\w-]+\s+){0,2}?(?:chairs?|armchairs?|sofas?|settees?|couch|beds?|bench|stools?)\b", re.I)
 SEAT_WORD = re.compile(r"\b(chairs?|armchairs?|sofas?|settees?|couch\w*|beds?|bench\w*|stools?|seats?)\b", re.I)
+
+
+def _no_seats(sentence: str) -> str:
+    """A room sentence without its seats, item by item (a close-up's glimpse of the room: a chair behind the face sat
+    the speaker down). 10-31: whole sentences went, and "a Victorian study with a fireplace, a desk, a leather
+    armchair, and a window overlooking London" took the fireplace and the London window with its armchair: Roylott's
+    close-up got a wooden mantel and a window onto fields."""
+    if not SEAT_WORD.search(sentence):
+        return sentence
+    end = "." if sentence.rstrip().endswith(".") else ""
+    keep = [p for p in re.split(r",\s*", sentence.rstrip().rstrip(".;")) if not SEAT_WORD.search(p)]
+    return (", ".join(keep) + end) if keep and keep[0] == sentence.split(",")[0] else ""
+
+
 SIDE_WORDS = (("far left", 0.0), ("centre-left", 1.5), ("center-left", 1.5), ("left", 1.0), ("far right", 4.0),
               ("centre-right", 2.5), ("center-right", 2.5), ("right", 3.0), ("centre", 2.0), ("center", 2.0),
               ("middle", 2.0))
@@ -2131,7 +2147,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
     if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
         people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
-        bits = [z for z in re.split(r"(?<=[.;])\s+", room) if z and not SEAT_WORD.search(z)][:2]   # (10-28: the
+        bits = [z for z in (_no_seats(z) for z in re.split(r"(?<=[.;])\s+", room)) if z][:2]   # (10-28: the
         cont, setting = "", ((f" Behind the face, softly out of focus, a glimpse of {place}"   # window showed fields:
                               + (f": {' '.join(bits).rstrip('.')}" if bits else "") + ".")   # the set's own room now,
                              if place else "")                                            # seats left out)
