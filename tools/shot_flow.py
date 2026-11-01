@@ -177,8 +177,10 @@ Rules:
 - "pose_end": each person's pose at the shot's END, one word each. A pose carries over from the end of the shot before and changes
   only in a shot whose action changes it (he is pulled to his feet: "pose" sitting, "pose_end" standing). Someone the
   narration says cannot stand or walk stays sitting or lying in every shot until the narration changes that.
-- "kind": "talk" (above), "action" when a body or object moves with force (a strike, a fall, a lunge, a hammer blow),
-  else "quiet" (breathing, looking, a gesture, a few steps).
+- "kind": "talk" (above), "action" when someone DOES something the passage tells: a hand reaches for or touches
+  someone or something, a thing is picked up, bent, thrown, opened or turned, someone leans, rises, sits down, walks,
+  runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
+  opening picture puts the people where it can start: one who touches another is within arm's reach of them.
 - "state_end": how things stand at the END of the passage: what each one holds, each one's posture and where they
   are, and any visible change to the place (a lamp lit, a door open, a letter on the table). Not their clothes: the
   wardrobe keeps those. Plain words, at most 80.
@@ -198,10 +200,12 @@ About {nmin} to {nmax} shots. Places: {places}. Names: {names}.
 {extra}{fix}"""
 # the rules for what only some passages have, given only when the passage has it (10-27: forge, dragon and
 # tongues-of-fire rules were a third of every Speckled Band prompt)
-RULE_TOLD = ("Other places in this passage: {others}. When its words tell of another time or place (someone recounting "
-             "what happened, a memory), the non-talk shots may show those events there, with only the people the words "
-             "describe, while the talk shots stay with the teller where the people are now. When the people of the story "
-             "really go there, they are there.\n")
+RULE_TOLD = ("Other places in this passage: {others}. While someone TELLS of another time or place (recounting what "
+             "happened, a memory), the shots show what they tell, there, with only the people the words describe, and "
+             "the teller's voice plays over them: the teller's lines of the telling get NO talk shot, except the first "
+             "line of the telling, its last, and any line said to the listeners about now - those are talk shots of the "
+             "teller where the people are now. A line one of the people inside the telling says to another is a talk "
+             "shot there. When the people of the story really go there, they are there.\n")
 # 10-27 audit: only rules any book can need, each given only when its passage has it (the passing-effect rule made a
 # lit hearth a fault; the making rule fired on "made a remark"; both were one story's band-aids)
 RULE_EXTRA = [
