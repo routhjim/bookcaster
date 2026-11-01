@@ -38,5 +38,20 @@ def test_describe_lone_adjective():
     assert F.describe(RG.Book(BOOK), "Princess Maren").endswith("stained with ash")
 
 
+
+
+def test_fill_moments():
+    import json as _j
+    reply = _j.dumps({"shots": [{"kind": "action", "action": "Vorgrath's tail sweeps over Edric.",
+                                 "people": [{"name": "Vorgrath"}, {"name": "Edric"}]},
+                                {"kind": "action", "action": "x", "moment": "already here"},
+                                {"kind": "quiet", "action": "Edric breathes."}]})
+    asked = []
+    r, n = F._fill_moments(reply, lambda q: asked.append(q) or "Vorgrath's tail sweeps in low as Edric dives into a roll.")
+    assert n == 1 and len(asked) == 1 and "Vorgrath, Edric" in asked[0]
+    sh = _j.loads(r)["shots"]
+    assert sh[0]["moment"].startswith("Vorgrath's tail") and sh[1]["moment"] == "already here" and "moment" not in sh[2]
+
+
 if __name__ == "__main__":
-    test_moment_only_for_action(); test_key_prompt_uses_moment(); test_describe_lone_adjective(); print("ok")
+    test_moment_only_for_action(); test_key_prompt_uses_moment(); test_describe_lone_adjective(); test_fill_moments(); print("ok")

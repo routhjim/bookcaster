@@ -1189,6 +1189,38 @@ def _mend(reply: str, faults: list, cast: list, ask, named_in) -> str | None:
     return reply[:m.start()] + json.dumps(data) + reply[m.end():]
 
 
+MOMENT_ASK = ('A shot of a film{who}. What happens in it: "{act}"\nWrite the picture at the instant this action BEGINS, '
+              'the movement already under way (not the calm before it): who is where, how each body moves, what each '
+              'one holds, where any fire, light or blow comes from. Call each one by name ({names}). One sentence, at '
+              'most 40 words, the sentence only.')
+
+
+def _fill_moments(reply: str, ask) -> tuple:
+    """Each action shot the director left without a "moment" gets one, by one question about that shot (11-01: a re-ask
+    of the fight passage wrote no moments at all, and every key fell back to the standoff layout without a word).
+    -> (the new reply or None, how many were filled)."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+        shots = [x for x in data["shots"] if isinstance(x, dict)]
+    except (ValueError, KeyError, TypeError):
+        return None, 0
+    n = 0
+    for x in shots:
+        if x.get("kind") != "action" or str(x.get("moment") or "").strip() or not str(x.get("action") or "").strip():
+            continue
+        names = [str(p_.get("name")) for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
+        ans = str(ask(MOMENT_ASK.format(who=f" with {', '.join(names)}" if names else "", act=x["action"],
+                                        names=", ".join(names) or "the people in it")) or "").strip().split("\n")[0]
+        ans = ans.strip(' "\'')
+        if 20 <= len(ans) <= 320:
+            x["moment"] = ans
+            n += 1
+    if not n:
+        return None, 0
+    return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -1584,6 +1616,13 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     if len(f2) < len(faults):
                         log(f"  passage {pa:.1f} s: mended {len(faults) - len(f2)} fault(s) one sentence at a time")
                         a, faults, scr, reply = a2, f2, s2, r2
+            r3, nm = _fill_moments(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
+                                                                 [{"role": "user", "content": q_}], max_tokens=300)[0])
+            if r3:
+                a3, f3, s3 = process(r3)
+                if len(f3) <= len(faults):
+                    log(f"  passage {pa:.1f} s: {nm} action shot(s) given their moment one question each")
+                    a, faults, scr, reply = a3, f3, s3, r3
             if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
                 cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
                                           "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
