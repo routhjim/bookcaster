@@ -457,6 +457,38 @@ GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, jo
 FOUR_LEGS = ("its body long and horizontal like a giant lizard's, all four feet on the ground, never upright on its "
              "hind legs")
 CREATURE_LORA = 0.5
+CROP_OFF = os.environ.get("BOOKCASTER_SET_CROP", "1") == "0"
+CROP_W = {"wide": 0.0, "medium": 0.6, "close": 0.4}      # a crop's share of the place picture's width by framing
+
+
+def _set_crop(hero, d: Path, s: dict):
+    """The part of the place picture behind an action shot, at the shot's scale (11-01 user: "a zoomed in portion of
+    the set for the zoomed in key frames"): the whole place picture forced its wide view on every fight key, no place
+    picture let the forge's hood, window and anvil change from shot to shot. Centred on where the people stand (their
+    sides), a framing-sized cut at the key's aspect; wide shots and shots with no place picture take none.
+    -> the crop's path (written once, so its age never makes the keys look stale), or None."""
+    if not hero or not Path(hero).exists():
+        return None
+    f = CROP_W.get(str(s.get("framing") or "medium"), 0.6)
+    if not f:
+        return None
+    n = len(s.get("who") or []) or 1
+    lay = group_layout(n)
+    cx = sum((b[0] + b[2]) / 2 for b, _ in lay) / len(lay) if n > 1 else 0.5
+    out = d / f"set_crop_{int(f * 100)}_{int(cx * 100)}.png"
+    if out.exists():
+        return out
+    from PIL import Image
+    im = Image.open(hero).convert("RGB")
+    W, H = im.size
+    cw = int(W * f)
+    ch = min(H, int(cw * 640 / 1152))
+    x0 = int(min(max(cx * W - cw / 2, 0), W - cw))
+    y0 = int(min(max(0.58 * H - ch / 2, 0), H - ch))          # people stand in the lower middle of a set
+    im.crop((x0, y0, x0 + cw, y0 + ch)).resize((1152, 640), Image.LANCZOS).save(out)
+    return out
+
+
 def moment(s: dict) -> str:
     """An action shot's key moment as the director wrote it (11-01: every fight key was the standoff BEFORE the
     action - the layout template, "X stands on the left, facing Y" - and LTX had 2-5 s to invent a tail sweep or a
@@ -2538,6 +2570,8 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         # an action key written as its own picture takes no place picture: the image model copies a reference's
         # layout (11-01: every fight key was the hero's wide cave view with the two pasted in; Vorgrath's sheet pose 39/39)
         hero = None if closeup(s) or s.get("keyshot") else heroes.get(s.get("place") or None)
+        if s.get("keyshot") and not CROP_OFF:   # ... but a CUT of the set at the shot's scale: the same room behind them
+            hero = _set_crop(heroes.get(s.get("place") or None), d, s)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
         if (d / "key.sig").exists() and (d / "key.sig").read_text() != sig:
