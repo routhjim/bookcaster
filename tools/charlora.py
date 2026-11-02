@@ -108,7 +108,10 @@ class Char:
         # CHARLORA_OUT: a test build writes beside, not over, the book's (both of its processes see the env)
         self.out = (Path(os.environ["CHARLORA_OUT"]) if os.environ.get("CHARLORA_OUT") else self.vdir / "charlora") / self.slug
         self.refs_dir = self.vdir / "refs"
-        self.chapters = sorted(p for p in self.vdir.iterdir() if (p / "plan.json").exists())
+        # chapter folders only ("01_chapter_1"): 11-02 a backup "old-1025-preswap" with its plan.json was read as a
+        # chapter, its stale wardrobe row ("No longer visible") had no sheet and Acts 1 failed "no LoRA: Jesus"
+        self.chapters = sorted(p for p in self.vdir.iterdir()
+                               if re.match(r"\d{2}_", p.name) and (p / "plan.json").exists())
         self.plans = {c.name: json.loads((c / "plan.json").read_text()) for c in self.chapters}
         # the book's one style (registry: art_style.txt > a chapter's style.txt > the default), as the sheets are drawn
         # and the keys are prompted: their names hash it (10-27: the first chapter's style.txt only, '' without one)

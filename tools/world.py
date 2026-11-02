@@ -1272,7 +1272,7 @@ def cmd_build_book(a) -> None:
         dm = re.match(r"\s*(inside|outside)\s*:", e["description"] or "", re.I)
         if dm:
             kind = "interior" if dm.group(1).lower() == "inside" else "exterior"
-        sides = {sc.get("side") for pj in vid.glob("*/plan.json")
+        sides = {sc.get("side") for pj in vid.glob("[0-9][0-9]_*/plan.json")
                  for sc in (json.loads(pj.read_text()).get("scenes") or []) if sc.get("where") == where}
         if len(sides) == 1 and next(iter(sides)) in ("inside", "outside"):
             kind = "interior" if next(iter(sides)) == "inside" else "exterior"
