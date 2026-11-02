@@ -79,5 +79,13 @@ want = video.ref_path(vd / "refs", "Disciple", video.ref_prompts(json.loads((vd 
 want.write_bytes(b"new")
 check(c.sheet(None) == want, "sheet: the current look's sheet, from the chapter that casts them", c.sheet(None))
 
+# 11-02: a backup folder holding an old plan.json is no chapter (its stale outfit had no sheet: "no LoRA: Jesus")
+(vd / "old-1025-preswap").mkdir(exist_ok=True)
+(vd / "old-1025-preswap" / "plan.json").write_text(json.dumps({"look": {"characters": {"Disciple": {}}}, "wardrobe": {
+    "Disciple": [{"from": 3, "id": "gone", "dress": "a long grey travelling cloak"}]}}))
+c = charlora.Char(str(book), "Disciple")
+check([x.name for x in c.chapters] == ["01_chapter_1", "02_chapter_2"] and "gone" not in c.outfits,
+      "chapters: chapter folders only, a backup's plan is not read", [x.name for x in c.chapters])
+
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
