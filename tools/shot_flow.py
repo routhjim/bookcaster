@@ -182,10 +182,18 @@ Rules:
   someone or something, a thing is picked up, bent, thrown, opened or turned, someone leans, rises, sits down, walks,
   runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
   opening picture has the people where it can start: in "people", one who touches another is "at" arm's reach of them.
+- ACTION SHOTS also give "moment": one sentence, the picture at the instant the action BEGINS, the movement already
+  under way - not the calm before it: "Vorgrath's spiked tail sweeps in low from the left as Edric throws himself
+  into a roll beneath it, sword in hand"; "Roylott's hands close on the poker, the iron starting to curve". Name each
+  one; say what each holds and where any fire, light or blow comes from; someone sitting or lying stays so. Frame an
+  action "medium" or "close", "wide" only to show where everyone is.
+- HANDS ON A THING: when hands change a thing (bend, break, open, pour, write, strike metal, take a pulse), its
+  shot is "close" on the hands and the thing as the change starts; the next shot, wider, shows what it did (the bent
+  poker in his hand, the open box).
 - "state_end": how things stand at the END of the passage: what each one holds, each one's posture and where they
   are, and any visible change to the place (a lamp lit, a door open, a letter on the table). Not their clothes: the
   wardrobe keeps those. Plain words, at most 80.
-Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": ""}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
+Reply to each passage with JSON only: {{"state_end": "...", "shots": [{{"start": 0.0, "kind": "quiet", "place": "...", "framing": "...", "people": [{{"name": "...", "side": "left", "pose": "sitting", "at": "...", "facing": "...", "holds": ""}}], "setting": "...", "action": "...", "pose_end": {{"<name>": "sitting"}}}}, {{"start": 2.9, "kind": "action", "place": "...", "framing": "close", "people": [...], "setting": "...", "moment": "...", "action": "...", "pose_end": {{...}}}}, {{"start": 4.2, "kind": "talk", "speaker": "...", "listener": "...", "framing": "two"}}]}}"""
 PASSAGE_ASK = """{scene}
 The story just before: {before}
 THE PASSAGE ({sec:.1f} seconds). Each line: [seconds from the passage's start] who: the words. Spoken lines say
@@ -449,6 +457,48 @@ GLOSS = {r"\bbellows\b": "bellows (two flat wooden boards hinged at the back, jo
 FOUR_LEGS = ("its body long and horizontal like a giant lizard's, all four feet on the ground, never upright on its "
              "hind legs")
 CREATURE_LORA = 0.5
+CROP_OFF = os.environ.get("BOOKCASTER_SET_CROP", "1") == "0"
+CROP_W = {"wide": 0.0, "medium": 0.6, "close": 0.4}      # a crop's share of the place picture's width by framing
+
+
+def _set_crop(hero, d: Path, s: dict):
+    """The part of the place picture behind an action shot, at the shot's scale (11-01 user: "a zoomed in portion of
+    the set for the zoomed in key frames"): the whole place picture forced its wide view on every fight key, no place
+    picture let the forge's hood, window and anvil change from shot to shot. Centred on where the people stand (their
+    sides), a framing-sized cut at the key's aspect; wide shots and shots with no place picture take none.
+    -> the crop's path (written once, so its age never makes the keys look stale), or None."""
+    if not hero or not Path(hero).exists():
+        return None
+    f = CROP_W.get(str(s.get("framing") or "medium"), 0.6)
+    if not f:
+        return None
+    n = len(s.get("who") or []) or 1
+    lay = group_layout(n)
+    cx = sum((b[0] + b[2]) / 2 for b, _ in lay) / len(lay) if n > 1 else 0.5
+    out = d / f"set_crop_{int(f * 100)}_{int(cx * 100)}.png"
+    if out.exists():
+        return out
+    from PIL import Image
+    im = Image.open(hero).convert("RGB")
+    W, H = im.size
+    cw = int(W * f)
+    ch = min(H, int(cw * 640 / 1152))
+    x0 = int(min(max(cx * W - cw / 2, 0), W - cw))
+    y0 = int(min(max(0.58 * H - ch / 2, 0), H - ch))          # people stand in the lower middle of a set
+    im.crop((x0, y0, x0 + cw, y0 + ch)).resize((1152, 640), Image.LANCZOS).save(out)
+    return out
+
+
+def moment(s: dict) -> str:
+    """An action shot's key moment as the director wrote it (11-01: every fight key was the standoff BEFORE the
+    action - the layout template, "X stands on the left, facing Y" - and LTX had 2-5 s to invent a tail sweep or a
+    poker bending from it; of 25 rendered action clips, the clear ones were those whose key already had the motion
+    under way). "" for any other shot: talk and quiet keep the layout."""
+    if s.get("kind") != "action":
+        return ""
+    return str(s.get("keyshot") or s.get("moment") or "").strip().rstrip(".")
+
+
 def closeup(s: dict) -> bool:
     """A one-person talk shot, or a close shot of one where others are in the scene: a true close-up (its key drops
     the wide room reference and the posture). 10-29: Holmes's close shots (743, 834) were drawn on the whole bedroom,
@@ -1064,7 +1114,13 @@ def describe(R_, w: str, dress: dict | None = None) -> str:
     sources). Their clothes now (the wardrobe), else their look's; carried things left out."""
     lk = MF._appearance(R_.look(w) or "")
     noun = (re.search(r"\b(man|woman|boy|girl|creature|dragon|horse|dog|wolf|beast)\b", lk, re.I) or [None, "figure"])[1]
-    cl = garments(uncarried((dress or {}).get(w) or clothes_of(lk))).split(",")[0].strip()
+    parts = [x.strip() for x in garments(uncarried((dress or {}).get(w) or clothes_of(lk))).split(",")]
+    cl = parts[0]
+    for x in parts[1:]:                 # a lone adjective is not the garment (11-01: "Dull, unpolished star-iron armour"
+        if len(cl.split()) > 2:         # gave every knight clip "the man in the dull")
+            break
+        cl = f"{cl} {x}"
+    cl = re.split(r"\s+(?:consisting of|including|worn over)\b", cl, 1)[0].strip()
     cl = re.sub(r"^(?:(?:a|an|the|his|her|their|its)\s+)?(?:usual\s+)?", "", cl, flags=re.I)   # (10-27: "in the her usual")
     return f"the {noun.lower()} in the {cl[0].lower() + cl[1:]}" if cl else f"the {noun.lower()}"
 
@@ -1165,6 +1221,101 @@ def _mend(reply: str, faults: list, cast: list, ask, named_in) -> str | None:
     if not changed:
         return None
     return reply[:m.start()] + json.dumps(data) + reply[m.end():]
+
+
+MOMENT_ASK = ('A shot of a film{who}. What happens in it: "{act}"\nWrite the picture at the instant this action BEGINS, '
+              'the movement already under way (not the calm before it): the one doing it, the body part and the thing '
+              'it touches. Call each one by name ({names}). Only the people and things in the action: no one and '
+              'nothing else, no light, fire or sparks it does not name. One sentence, at most 25 words, the sentence only.')
+
+
+def _fill_moments(reply: str, ask) -> tuple:
+    """Each action shot the director left without a "moment" gets one, by one question about that shot (11-01: a re-ask
+    of the fight passage wrote no moments at all, and every key fell back to the standoff layout without a word).
+    -> (the new reply or None, how many were filled)."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+        shots = [x for x in data["shots"] if isinstance(x, dict)]
+    except (ValueError, KeyError, TypeError):
+        return None, 0
+    n = 0
+    for x in shots:
+        if x.get("kind") != "action" or str(x.get("moment") or "").strip() or not str(x.get("action") or "").strip():
+            continue
+        names = [str(p_.get("name")) for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
+        ans = str(ask(MOMENT_ASK.format(who=f" with {', '.join(names)}" if names else "", act=x["action"],
+                                        names=", ".join(names) or "the people in it")) or "").strip().split("\n")[0]
+        ans = ans.strip(' "\'')
+        if 20 <= len(ans) <= 320:
+            x["moment"] = ans
+            n += 1
+    if not n:
+        return None, 0
+    return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
+
+
+KEY_KIND_ASK = """One shot of a film: "{action}"
+Which kind of shot is it? fight: bodies or a creature attacking, striking, dodging, grappling. craft: hands working a
+thing with a tool or by force - hammering, bending, folding, cutting, pumping bellows, writing. other: anything else -
+walking, turning, lifting, falling, looking. One word: fight, craft or other."""
+
+KEY_BASE = """Write the opening picture of one shot of a film, as one or two plain sentences for a painter.
+The shot: "{action}"
+The director's picture of its first instant: "{moment}"
+In the shot, and nobody else: {people}. The place: {place}.
+{kind_rules}
+For all: keep the director's action and its things exactly; name each one in the shot once, a creature with what it is.
+Nothing that is not in the shot or the director's picture: no other people, animals, tools or things, no fire, light
+or sparks it does not have. No stage words (upstage, downstage, centre), no camera words, no sounds, no reactions.
+At most 40 words. The sentences only."""
+
+KEY_KIND = {
+    "fight": """A fight: the instant the blow or move is under way, not the stance before it - what strikes (a claw,
+a tail, a blade, a fist) in mid-swing and where it is headed, and the other body already answering it. Both bodies
+close together in the picture.""",
+    "craft": """Work with the hands: the hands, the tool and the thing being worked, as the work starts, all three in
+the picture. Anyone else in the shot stays where and as they are placed (sitting stays sitting) and only watches:
+one short clause each.""",
+    "other": """The one doing the action, caught as the movement starts. Anyone else in the shot stays where and as
+they are placed and only watches: one short clause each.""",
+}
+
+
+def _write_keys(reply: str, ask, kind_of) -> tuple:
+    """Each action shot's opening picture, written by the language model with a prompt for its kind of action (11-01:
+    one prompt for every kind failed both ways - a 90-word paragraph put the watching Hulda on the anvil and gave
+    Holmes a cane; a 35-word "everyone stays as placed" rewrite copied the placements, "Vorgrath stands upstage-centre,
+    claws raised", drawn as a man with every blow lost. User: a fight, work with the hands and the rest want different
+    pictures; the model with different prompts, not code). The kind is one question; the director's moment is the
+    seed. Shots that already have a keyshot are kept. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        data = json.loads(m.group(0)) if m else None
+        shots = [x for x in data["shots"] if isinstance(x, dict)]
+    except (ValueError, KeyError, TypeError):
+        return None, 0
+    n = 0
+    for x in shots:
+        mo = " ".join(str(x.get("moment") or "").split()).strip(' "\'')
+        if x.get("kind") != "action" or str(x.get("keyshot") or "").strip() or len(mo) < 12 or mo.lower() == "none":
+            continue
+        kd = str(ask(KEY_KIND_ASK.format(action=x.get("action") or mo)) or "").strip().lower()
+        kd = next((z for z in KEY_KIND if z in kd), "other")
+        ppl = [p_ for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
+        who = "; ".join(f"{p_['name']} ({kind_of(p_['name'])}), {p_.get('pose') or 'standing'}"
+                        + (f" {p_['at']}" if str(p_.get("at") or "").strip() else "") for p_ in ppl) or "nobody"
+        ans = str(ask(KEY_BASE.format(action=x.get("action") or mo, moment=mo, people=who,
+                                      place=re.sub(r"\s*\((inside|outside)\)$", "", x.get("place") or "the scene"),
+                                      kind_rules=KEY_KIND[kd])) or "").strip()
+        ans = " ".join(ans.split()).strip(' "\'')
+        if 20 <= len(ans) <= 400:
+            fr = {"close": "Close shot. ", "wide": "Wide shot. ", "medium": "Medium shot. "}.get(str(x.get("framing")), "")
+            x["keyshot"], x["key_kind"] = fr + ans, kd
+            n += 1
+    if not n:
+        return None, 0
+    return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
 
 
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
@@ -1565,6 +1716,35 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
                 cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
                                           "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
+        # the moments and the action keys run on a cached answer too (11-01: written after the cache, they never
+        # reached cached passages): only the shots still missing one ask; the passage is saved again when one did
+        if any(x.get("kind") == "action" and not str(x.get("keyshot") or "").strip()
+               for x in a.get("shots") or [] if isinstance(x, dict)):
+            if not animate_up:
+                animate.igpu("strata", log)
+                animate_up = True
+            before = reply
+            r3, nm = _fill_moments(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
+                                                                 [{"role": "user", "content": q_}], max_tokens=300)[0])
+            if r3:
+                a3, f3, s3 = process(r3)
+                if len(f3) <= len(faults):
+                    log(f"  passage {pa:.1f} s: {nm} action shot(s) given their moment one question each")
+                    a, faults, scr, reply = a3, f3, s3, r3
+            def kind_of(w_):
+                lk_ = (RGB.look(RGB.person(w_) or w_) or "").lower()
+                return next((f"a {z}" for z in ("dragon", "woman", "girl", "boy", "man", "horse", "creature")
+                             if re.search(rf"\b{z}\b", lk_)), "a person")
+            r4, nk = _write_keys(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
+                                                             [{"role": "user", "content": q_}], max_tokens=300)[0], kind_of)
+            if r4:
+                a4, f4, s4 = process(r4)
+                if len(f4) <= len(faults):
+                    log(f"  passage {pa:.1f} s: {nk} action key(s) written, a prompt for each kind")
+                    a, faults, scr, reply = a4, f4, s4, r4
+            if reply != before and a.get("shots"):
+                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,
+                                          "ask": {"system": system, "q": q0}}, indent=1))
         if faults:
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: the director's shots still break the rules: {faults}")
             for x in a.get("shots") or []:      # what would contradict "people" in the picture leaves the setting
@@ -2197,6 +2377,28 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
     looks = {w: no_pose(MF._appearance(R_.look(w))) for w in s["who"]}      # of the looks, art_style.txt only)
     style = _key_style(R_.picture_style())     # the picture's style (10-27: realistic unless `bookcaster art`)
     dress = MF._dress(book, stem, mid, s["who"])
+    if s.get("kind") == "action" and str(s.get("keyshot") or "").strip():
+        # the written picture leads; each one in a line (face + clothes, nothing carried stripped: the paragraph says
+        # what is held); one line of the place; ~150 words (11-01: the hand-written fight keys; the layout prompt was
+        # ~300 words of wardrobe, room and "fills the whole picture" around a one-line moment)
+        ids = []
+        for w in s["who"]:
+            lk = looks.get(w, "")
+            parts = [z.strip() for z in re.split(r",", re.split(r",?\s*\bwearing\b", lk)[0])
+                     if z.strip() and z.strip().lower() != "no clothing"]
+            if not re.search(r"\b(dragon|creature|beast|wyrm|horse|wolf)\b", lk, re.I):
+                parts = parts[:4]       # a person: age, face, hair; a creature keeps its wings and tail
+            cl = garments(dress.get(w) or clothes_of(lk))
+            cl = ", ".join(z.strip() for z in cl.split(",")[:2]).strip()
+            ids.append(f"{MF._lora(book, w)[1] or ''} {w}: {', '.join(parts)}{', wearing ' + cl if cl else ''}".strip())
+        room = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(s.get("room") or ""), flags=re.I)
+        room1 = (re.split(r"(?<=[.;])\s+", room) or [""])[0].rstrip(".")
+        place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
+        pic = str(s["keyshot"]).strip().rstrip(".")
+        for k_, v_ in GLOSS.items():
+            pic = re.sub(k_, v_, pic, count=1, flags=re.I)
+        return (f"{pic}. {'. '.join(ids)}. In {place}{': ' + room1 if room1 else ''}. "
+                f"{MF.period_line(book)} {style} No text.").replace("..", ".").replace("  ", " ")
     people = []
     for w in s["who"]:
         lk = looks.get(w, "")
@@ -2204,8 +2406,11 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
             lk = re.split(r",?\s*\bwearing\b", lk)[0] + ", wearing " + dress[w]
         lk = uncarried(lk, s.get("picture", ""))
         lay = group_layout(len(s["who"]))
-        side = f" {lay[s['who'].index(w)][1]}" if len(s["who"]) > 1 else ""
-        legs = ", " + FOUR_LEGS if "four-legged" in lk and not MF.DOWN.search(s["picture"]) else ""
+        side = f" {lay[s['who'].index(w)][1]}" if len(s["who"]) > 1 and not moment(s) else ""
+        legs = ", " + FOUR_LEGS if "four-legged" in lk and not MF.DOWN.search(s["picture"]) and not moment(s) else ""
+        if moment(s):                   # the moment says where each one is and how they move: the look only
+            people.append(f"{MF._lora(book, w)[1] or ''} {w}: {lk.rstrip('.')}".strip())
+            continue
         if w == s.get("ots"):           # over the shoulder: the back of the head, out of focus
             hair = next((x.strip() for x in re.split(r",|;", lk) if re.search(r"\bhair\b", x, re.I)), "")
             cl = garments(uncarried(dress.get(w) or clothes_of(lk)))
@@ -2216,8 +2421,8 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
         people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}{', ' + pz if pz else ''}"
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
-    pic = figurative(s["picture"])
-    if not legacy:
+    pic = figurative(moment(s) or s["picture"])
+    if not legacy and not moment(s):
         pic = _two_shot_posed(s, pic)
     if s.get("tight") and set((s.get("pose") or {}).values()) == {"standing"}:
         # 10-29: "Holmes stands beside the bed" in a close shot drew an empty bed behind him (743, 834: all 5 seeds
@@ -2232,7 +2437,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
     crowd = (f" In the background, small and still: {s['crowd'].rstrip('.')}." if s.get("crowd") else "")
     cont = crowd + (f" The room: {room.rstrip('.')}." if room else "") + \
            (f" As it is now: {s['now'].rstrip('.')}." if s.get("now") else "")
-    if closeup(s):                      # 10-27: three close-ups came out medium shots beside an empty bed
+    if closeup(s) and not moment(s):    # 10-27: three close-ups came out medium shots beside an empty bed
         people = [re.sub(r", (standing|sitting|lying down|kneeling|crouching low)(?=[,:])", "", x) for x in people]
         bits = [z for z in (_no_seats(z) for z in re.split(r"(?<=[.;])\s+", room)) if z][:2]   # (10-28: the
         cont, setting = "", ((f" Behind the face, softly out of focus, a glimpse of {place}"   # window showed fields:
@@ -2330,7 +2535,7 @@ def _key_questions(cx, s: dict) -> tuple:
         cl = clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0) or lk)
         if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
             q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {garments(cl)}?"   # (10-27: cut at 14 words)
-        pz = (s.get("pose_held") or {}).get(w, "")
+        pz = "" if moment(s) else (s.get("pose_held") or {}).get(w, "")   # (a roll, a lunge: not a held pose)
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
         elif first and pz == "stand" and closeup(s):       # (10-28: close-ups of a standing Holmes read as seated;
@@ -2338,7 +2543,7 @@ def _key_questions(cx, s: dict) -> tuple:
             # "does he look like he is standing" can't be seen in a head-and-shoulders picture: "No" for every seed;
             # 10-30: "a bed right behind or under him" failed all 10 seeds of Holmes standing BESIDE Watson's bed -
             # on 45 close-ups this asks right for 43 (seated 22/22, standing 21/23) vs 31 before)
-        if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]):
+        if "four-legged" in MF._appearance(lk) and not MF.DOWN.search(s["picture"]) and not moment(s):
             q[f"legs{i}"] = (f"Answer yes or no: is the {'dragon' if 'dragon' in lk else 'creature'}'s body "
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
                              f"on its hind legs)?")
@@ -2376,6 +2581,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         d.mkdir(parents=True, exist_ok=True)
         lw = LORA_W.get(len(s["who"]), min(LORA_W.values()))
         boxes = [b for b, _ in group_layout(len(s["who"]))]
+        if moment(s) and len(boxes) <= 2:   # a moment shares the space (the tail over him, a hand on a wrist): each
+            boxes = [[0.0, 0.0, 1.0, 1.0]] * len(boxes)   # LoRA on the whole frame (11-01: 10 fight keys, no bleed;
+            # with three - Roylott, Holmes, Watson - two came out the same face: three keep their boxes)
         crs = _cast(book, stem, {"id": s["id"].rsplit("_s", 1)[0], "who": s["who"]})[1]
         R_ = RG.Book(book)
         miss = [w for w in s["who"] if w != s.get("ots") and not R_.lora(w)[0]]
@@ -2384,7 +2592,11 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         loras = [[R_.lora(w)[0], min(lw, CREATURE_LORA) if w in crs else lw, bx]
                  for w, bx in zip(s["who"], boxes) if w != s.get("ots")]
         p = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s)
-        hero = None if closeup(s) else heroes.get(s.get("place") or None)
+        # an action key written as its own picture takes no place picture: the image model copies a reference's
+        # layout (11-01: every fight key was the hero's wide cave view with the two pasted in; Vorgrath's sheet pose 39/39)
+        hero = None if closeup(s) or s.get("keyshot") else heroes.get(s.get("place") or None)
+        if s.get("keyshot") and not CROP_OFF:   # ... but a CUT of the set at the shot's scale: the same room behind them
+            hero = _set_crop(heroes.get(s.get("place") or None), d, s)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
         if (d / "key.sig").exists() and (d / "key.sig").read_text() != sig:
