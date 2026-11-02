@@ -2248,11 +2248,19 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
                 "crouch": "crouching low"}.get(next(iter(held)) if len(held) == 1 else "")
         if word:
             pic = re.sub(r"^(a close-up of .+? alone)(:)", rf"\1, {word}\2", pic, count=1)
+        # the wall/curtains/chair-back lines are a ROOM's (10-29: Baker Street); outdoors they split the picture in
+        # two - a gothic window beside the ash mountain behind Edric, an armchair under Maren on the rock ledge
+        # (11-01: 30 of the knight's 55 one-person close-ups were outdoors)
+        out_ = bool(re.search(r"^\s*outside\b", str(s.get("room") or ""), re.I) or
+                    re.search(r"\(outside\)$", str(s.get("place") or ""), re.I))
         if held == {"stand"}:
-            setting += (" Standing upright, seen from the chest up; behind the shoulders only the bare wall, curtains "
+            setting += (f" Standing upright, seen from the chest up; behind the shoulders only the open land and sky of "
+                        f"{place or 'the place'}, at standing height." if out_ else
+                        " Standing upright, seen from the chest up; behind the shoulders only the bare wall, curtains "
                         "and window, at standing height.")
         elif held == {"sit"}:
-            setting += " Seated: the top of a chair back behind the shoulders."
+            setting += (" Seated low, the ground and the sky behind the shoulders." if out_ else
+                        " Seated: the top of a chair back behind the shoulders.")
     else:
         setting = SETTING.format(place=place) if place else ""
     return (f"{str(s.get('framing') or 'medium').capitalize()} shot{' in ' + place if place else ''}. {pic}. "
