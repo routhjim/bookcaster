@@ -56,16 +56,28 @@ def test_fill_moments():
 
 
 def test_write_keys():
+    """one question for the kind, then the prompt for that kind, seeded by the moment; a shot with a keyshot is kept"""
     import json as _j
     reply = _j.dumps({"shots": [{"kind": "action", "place": "The Burnt Mountain", "action": "Vorgrath's tail sweeps over Edric.",
-                                 "people": [{"name": "Vorgrath", "holds": ""}, {"name": "Edric", "holds": "sword"}]},
+                                 "framing": "close", "moment": "Vorgrath's tail sweeps in low as Edric dives into a roll.",
+                                 "people": [{"name": "Vorgrath", "pose": "standing"}, {"name": "Edric", "pose": "standing", "at": "downstage-centre"}]},
+                                {"kind": "action", "action": "Hulda sits.", "moment": "Hulda sits down on the stool.", "keyshot": "kept"},
                                 {"kind": "talk", "speaker": "Edric"}]})
     asked = []
-    r, n = F._write_keys(reply, lambda q: asked.append(q) or "Close shot, low angle. Vorgrath's tail sweeps in low as Edric rolls.",
-                         lambda w: "a dragon" if w == "Vorgrath" else "a man")
-    assert n == 1 and "Edric (a man), standing, holding sword" in asked[0] and "only watches" in asked[0]
+    def ask(q):
+        asked.append(q)
+        return "fight" if len(asked) == 1 else "Vorgrath the dragon's spiked tail sweeps low over Edric as he throws himself into a roll."
+    r, n = F._write_keys(reply, ask, lambda w: "a dragon" if w == "Vorgrath" else "a man")
+    assert n == 1 and len(asked) == 2 and "fight, craft or other" in asked[0]
+    assert "Vorgrath (a dragon), standing" in asked[1] and "Both bodies" in asked[1] and "Vorgrath's tail sweeps in low" in asked[1]
     sh = _j.loads(r)["shots"]
-    assert sh[0]["keyshot"].startswith("Close shot") and "keyshot" not in sh[1]
+    assert sh[0]["keyshot"].startswith("Close shot. Vorgrath the dragon") and sh[0]["key_kind"] == "fight"
+    assert sh[1]["keyshot"] == "kept" and "keyshot" not in sh[2]
+    asked.clear()
+    craft = _j.dumps({"shots": [{"kind": "action", "action": "Edric hammers the bar.", "moment": "Edric raises the hammer over the bar.",
+                                 "people": [{"name": "Edric"}, {"name": "Hulda", "pose": "sitting", "at": "on a stool"}]}]})
+    F._write_keys(craft, lambda q: asked.append(q) or ("craft" if len(asked) == 1 else "Edric raises the hammer over the glowing bar; Hulda sits on her stool, watching."), lambda w: "a man")
+    assert "sitting stays sitting" in asked[1] and "Hulda (a man), sitting on a stool" in asked[1]
     s = {"kind": "action", "keyshot": "Close shot. X.", "moment": "m"}
     assert F.moment(s) == "Close shot. X"
 

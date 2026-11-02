@@ -1224,9 +1224,9 @@ def _mend(reply: str, faults: list, cast: list, ask, named_in) -> str | None:
 
 
 MOMENT_ASK = ('A shot of a film{who}. What happens in it: "{act}"\nWrite the picture at the instant this action BEGINS, '
-              'the movement already under way (not the calm before it): who is where, how each body moves, what each '
-              'one holds, where any fire, light or blow comes from. Call each one by name ({names}). One sentence, at '
-              'most 40 words, the sentence only.')
+              'the movement already under way (not the calm before it): the one doing it, the body part and the thing '
+              'it touches. Call each one by name ({names}). Only the people and things in the action: no one and '
+              'nothing else, no light, fire or sparks it does not name. One sentence, at most 25 words, the sentence only.')
 
 
 def _fill_moments(reply: str, ask) -> tuple:
@@ -1255,49 +1255,63 @@ def _fill_moments(reply: str, ask) -> tuple:
     return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
 
 
-KEY_ASK = """Describe the opening picture of one shot of a film in one or two plain sentences, like the title of a
-painting: who is doing what, where. The shot is in {place}. The people and where the director put them: {people}.
-What happens in the shot: "{action}"{prev}
-Rules: say what the one doing the action is doing at its start, as a still pose (the hammer raised over the glowing
-bar, his hands closing on the poker); everyone else stays as placed and only watches. Name each person. Only things
-the shot or the people already have; no extra props, no reactions, no camera words, no words about speed or motion
-blur, no sounds. At most 35 words. The sentences only."""
+KEY_KIND_ASK = """One shot of a film: "{action}"
+Which kind of shot is it? fight: bodies or a creature attacking, striking, dodging, grappling. craft: hands working a
+thing with a tool or by force - hammering, bending, folding, cutting, pumping bellows, writing. other: anything else -
+walking, turning, lifting, falling, looking. One word: fight, craft or other."""
+
+KEY_BASE = """Write the opening picture of one shot of a film, as one or two plain sentences for a painter.
+The shot: "{action}"
+The director's picture of its first instant: "{moment}"
+In the shot, and nobody else: {people}. The place: {place}.
+{kind_rules}
+For all: keep the director's action and its things exactly; name each one in the shot once, a creature with what it is.
+Nothing that is not in the shot or the director's picture: no other people, animals, tools or things, no fire, light
+or sparks it does not have. No stage words (upstage, downstage, centre), no camera words, no sounds, no reactions.
+At most 40 words. The sentences only."""
+
+KEY_KIND = {
+    "fight": """A fight: the instant the blow or move is under way, not the stance before it - what strikes (a claw,
+a tail, a blade, a fist) in mid-swing and where it is headed, and the other body already answering it. Both bodies
+close together in the picture.""",
+    "craft": """Work with the hands: the hands, the tool and the thing being worked, as the work starts, all three in
+the picture. Anyone else in the shot stays where and as they are placed (sitting stays sitting) and only watches:
+one short clause each.""",
+    "other": """The one doing the action, caught as the movement starts. Anyone else in the shot stays where and as
+they are placed and only watches: one short clause each.""",
+}
 
 
 def _write_keys(reply: str, ask, kind_of) -> tuple:
-    """Each action shot's opening picture as one or two plain sentences, one shot at a time (11-01: the forge was
-    best when LTX got a simple clear picture - "a medieval smith hammering at a forge" - and let go; a 90-word
-    'close, low angle, knuckles white, blurring' paragraph per shot moved the watching Hulda onto the anvil,
-    gave Holmes a cane, and came out word for word the same for shots with the same action). The director keeps
-    the beats, cuts and who. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
+    """Each action shot's opening picture, written by the language model with a prompt for its kind of action (11-01:
+    one prompt for every kind failed both ways - a 90-word paragraph put the watching Hulda on the anvil and gave
+    Holmes a cane; a 35-word "everyone stays as placed" rewrite copied the placements, "Vorgrath stands upstage-centre,
+    claws raised", drawn as a man with every blow lost. User: a fight, work with the hands and the rest want different
+    pictures; the model with different prompts, not code). The kind is one question; the director's moment is the
+    seed. Shots that already have a keyshot are kept. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
     m = re.search(r"\{.*\}", reply or "", re.S)
     try:
         data = json.loads(m.group(0)) if m else None
         shots = [x for x in data["shots"] if isinstance(x, dict)]
     except (ValueError, KeyError, TypeError):
         return None, 0
-    n, prev = 0, ""
+    n = 0
     for x in shots:
-        if x.get("kind") != "action" or not str(x.get("action") or "").strip():
-            prev = ""
+        mo = " ".join(str(x.get("moment") or "").split()).strip(' "\'')
+        if x.get("kind") != "action" or str(x.get("keyshot") or "").strip() or len(mo) < 12 or mo.lower() == "none":
             continue
-        if str(x.get("keyshot") or "").strip():
-            prev = x["keyshot"]
-            continue
+        kd = str(ask(KEY_KIND_ASK.format(action=x.get("action") or mo)) or "").strip().lower()
+        kd = next((z for z in KEY_KIND if z in kd), "other")
         ppl = [p_ for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
-        def one(p_):
-            hold = str(p_.get("holds") or "").strip()
-            return (f"{p_['name']} ({kind_of(p_['name'])}), {p_.get('pose') or 'standing'}"
-                    + (f" {p_['at']}" if str(p_.get("at") or "").strip() else "")
-                    + (f", holding {hold}" if hold.lower() not in ("", "nothing", "none") else ""))
-        who = "; ".join(one(p_) for p_ in ppl) or "nobody"
-        pv = f'\nThe picture before it was: "{prev}" - show a different moment and view.' if prev else ""
-        ans = str(ask(KEY_ASK.format(place=x.get("place") or "the scene", people=who, action=x["action"], prev=pv))
-                  or "").strip()
+        who = "; ".join(f"{p_['name']} ({kind_of(p_['name'])}), {p_.get('pose') or 'standing'}"
+                        + (f" {p_['at']}" if str(p_.get("at") or "").strip() else "") for p_ in ppl) or "nobody"
+        ans = str(ask(KEY_BASE.format(action=x.get("action") or mo, moment=mo, people=who,
+                                      place=re.sub(r"\s*\((inside|outside)\)$", "", x.get("place") or "the scene"),
+                                      kind_rules=KEY_KIND[kd])) or "").strip()
         ans = " ".join(ans.split()).strip(' "\'')
         if 20 <= len(ans) <= 400:
-            x["keyshot"] = ans
-            prev = ans
+            fr = {"close": "Close shot. ", "wide": "Wide shot. ", "medium": "Medium shot. "}.get(str(x.get("framing")), "")
+            x["keyshot"], x["key_kind"] = fr + ans, kd
             n += 1
     if not n:
         return None, 0
@@ -1699,6 +1713,17 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     if len(f2) < len(faults):
                         log(f"  passage {pa:.1f} s: mended {len(faults) - len(f2)} fault(s) one sentence at a time")
                         a, faults, scr, reply = a2, f2, s2, r2
+            if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
+                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
+                                          "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
+        # the moments and the action keys run on a cached answer too (11-01: written after the cache, they never
+        # reached cached passages): only the shots still missing one ask; the passage is saved again when one did
+        if any(x.get("kind") == "action" and not str(x.get("keyshot") or "").strip()
+               for x in a.get("shots") or [] if isinstance(x, dict)):
+            if not animate_up:
+                animate.igpu("strata", log)
+                animate_up = True
+            before = reply
             r3, nm = _fill_moments(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
                                                                  [{"role": "user", "content": q_}], max_tokens=300)[0])
             if r3:
@@ -1711,15 +1736,15 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 return next((f"a {z}" for z in ("dragon", "woman", "girl", "boy", "man", "horse", "creature")
                              if re.search(rf"\b{z}\b", lk_)), "a person")
             r4, nk = _write_keys(reply, lambda q_: _converse(BC.LLM_URL, BC.LLM_MODEL,
-                                                             [{"role": "user", "content": q_}], max_tokens=400)[0], kind_of)
+                                                             [{"role": "user", "content": q_}], max_tokens=300)[0], kind_of)
             if r4:
                 a4, f4, s4 = process(r4)
                 if len(f4) <= len(faults):
-                    log(f"  passage {pa:.1f} s: {nk} action key(s) written one shot at a time")
+                    log(f"  passage {pa:.1f} s: {nk} action key(s) written, a prompt for each kind")
                     a, faults, scr, reply = a4, f4, s4, r4
-            if a.get("shots"):          # kept with its own key, faults and all (10-27 audit: a faulted passage was
-                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,   # re-asked every run)
-                                          "ask": {"system": system, "q": q0}}, indent=1))   # (what a miss changed)
+            if reply != before and a.get("shots"):
+                cp.write_text(json.dumps({"k": k, "reply": reply, "faults": faults,
+                                          "ask": {"system": system, "q": q0}}, indent=1))
         if faults:
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: the director's shots still break the rules: {faults}")
             for x in a.get("shots") or []:      # what would contradict "people" in the picture leaves the setting
