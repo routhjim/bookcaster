@@ -48,6 +48,9 @@ DUPE_TAKES = 3
 # 10-30 user ("re-roll the seed and keep the take with the best SyncNet" - "yeah we should do that"): a one-piece talk
 # shot under TALK_SYNC_BAR is rendered again with a new seed (queued on the loaded model as it lands), up to TALK_TAKES
 # takes in all; the best-scoring take is kept. (Holmes, voice lifted: 001659 scored 1.0 on one seed, 6.7 on the next)
+# 11-02 (user: "that seems like an oversight on the retakes"): a long line rendered in chained pieces is scored by its
+# WORST piece and retaken whole (each piece starts on the last frame of the one before). Acts 3: two of three pieced
+# lines read 6.6 and 9.4 joined while a piece read 1.2 and another was noise with no face; neither was taken again.
 TALK_SYNC_BAR = 5.0
 TALK_TAKES = 3
 _MORE_LOCK = threading.Lock()           # the take judge and the lip-sync checker both append to the runner's queue
@@ -3111,11 +3114,19 @@ def _sync_conf(L: Path, name: str) -> float:
         return 0.0
 
 
-def _keep_best_talk(L: Path, n: str, k: int, log) -> None:
+def _talk_score(L: Path, name: str, pieces: int = 1) -> float:
+    """A talk take's lip-sync score: SyncNet's confidence, or for a line in pieces its worst piece's (a piece with no
+    face found scores 0) - the joined clip's one reading took its best stretch and hid a bad piece."""
+    if pieces > 1:
+        return min(_sync_conf(L, f"{name}_c{i}") for i in range(pieces))
+    return _sync_conf(L, name)
+
+
+def _keep_best_talk(L: Path, n: str, k: int, log, pieces: int = 1) -> None:
     """Of shot n's k talk takes (<n>.mp4, <n>_t2.mp4, ...) the best SyncNet becomes <n>.mp4, its sync record with it
     (a tie keeps the earlier). The job file stays the shot's own, so the next run finds the clip current."""
     names = [n] + [f"{n}_t{i}" for i in range(2, k + 1)]
-    cs = [_sync_conf(L, x) for x in names]
+    cs = [_talk_score(L, x, pieces) for x in names]
     best = max(range(len(names)), key=lambda i: (cs[i], -i))
     if best:
         for ext in (".mp4", ".sync.json"):
@@ -3414,25 +3425,36 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     there, joined first) is measured by SyncNet on the iGPU at once, so nothing waits for it after the render; and
     body-checked like action and quiet clips (10-28 user: talk clips had no clip check) - a fault is a counted defect
     (a job problem) to remove at its cause, not a retake (lean: fewer defects, not more catching). With `more`
-    (10-30 user): a one-piece shot under TALK_SYNC_BAR is taken again with a new seed, up to TALK_TAKES takes, and
-    the best kept (_keep_best_talk)."""
+    (10-30 user): a shot under TALK_SYNC_BAR is taken again with a new seed, up to TALK_TAKES takes, and the best
+    kept (_keep_best_talk); a line in pieces by its worst piece, all its pieces again (11-02)."""
     shots, takes = {}, {}               # takes: take name -> (shot, take number)
     for j in talk:
         shots.setdefault(j["name"].rsplit("_c", 1)[0] if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1
                          else j["name"], []).append(j)
     left = dict(shots)
 
+    def measure(n: str, js: list) -> None:     # a take's clip, and each piece of a line in pieces
+        _sync_offsets(book, L, [n] + ([j["name"] for j in js] if len(js) > 1 else []), log, quiet=True)
+
     def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
-        j = shots[n][0]
-        c = _sync_conf(L, n if k == 1 else f"{n}_t{k}")
-        if not more or len(shots[n]) > 1 or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
+        js = sorted(shots[n], key=lambda j: (j.get("chunk") or [0])[0])
+        c = _talk_score(L, n if k == 1 else f"{n}_t{k}", len(js))
+        if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
                 (k == 1 and (L / "out" / f"{n}.synced").exists()):
             return False
-        nx = dict(j, name=f"{n}_t{k + 1}", seed=j["seed"] + 7919 * k)
-        _queue_more(more, nx)
-        left[nx["name"]] = [nx]
-        takes[nx["name"]] = (n, k + 1)
-        log(f"{n}: lip sync {c:.1f} < {TALK_SYNC_BAR}: take {k + 1} (new seed, queued on the loaded model)")
+        tn = f"{n}_t{k + 1}"
+        if len(js) == 1:
+            nx = [dict(js[0], name=tn, seed=js[0]["seed"] + 7919 * k)]
+        else:                           # every piece again, each chained to the take's own piece before it
+            nx = [dict(j, name=f"{tn}_c{j['chunk'][0]}", seed=j["seed"] + 7919 * k, line=tn,
+                       **({"chain_from": f"{tn}_c{j['chain_from'].rsplit('_c', 1)[1]}"} if j.get("chain_from") else {}))
+                  for j in js]
+        for x in nx:
+            _queue_more(more, x)
+        left[tn] = nx
+        takes[tn] = (n, k + 1)
+        log(f"{n}: lip sync {c:.1f} < {TALK_SYNC_BAR}{f' (worst of {len(js)} pieces)' if len(js) > 1 else ''}: "
+            f"take {k + 1} (new seed, queued on the loaded model)")
         return True
     try:
         while left and not stop.is_set():
@@ -3441,16 +3463,18 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
                 time.sleep(10)
                 continue
             for n in ready:
-                left.pop(n)
+                js = left.pop(n)
                 if n in takes:          # a lip-sync retake landed: measured, then again or the best kept
                     s_, k = takes[n]
-                    _sync_offsets(book, L, [n], log, quiet=True)
+                    if len(js) > 1:
+                        _stitch_talk(book, R, L, js, log, only={n}, quiet=True, jobs_file="talk_takes.json")
+                    measure(n, js)
                     if not again(s_, k):
-                        _keep_best_talk(L, s_, k, log)
+                        _keep_best_talk(L, s_, k, log, len(shots[s_]))
                     continue
                 if len(shots[n]) > 1:
                     _stitch_talk(book, R, L, talk, log, only={n}, quiet=True)
-                _sync_offsets(book, L, [n], log, quiet=True)
+                measure(n, shots[n])
                 if (L / "out" / f"{n}.mp4").exists():
                     again(n, 1)
                 c = L / "out" / f"{n}.mp4"
@@ -3464,7 +3488,8 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
         log(f"lip sync as clips land stopped: {e!r}")
 
 
-def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None = None, quiet: bool = False) -> None:
+def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None = None, quiet: bool = False,
+                 jobs_file: str = "talk_jobs.json") -> None:
     """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
     line was stitched all night, and yesterday's joins of other words were assembled). A join older than any of its
     pieces is dropped and made again; one made from tonight's pieces stays (lines are joined as their pieces land,
@@ -3486,7 +3511,9 @@ def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None
     if not todo:
         return
     lines = ",".join(sorted({pieces[n][0]["line"] for n in todo}))
-    r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), "talk_jobs.json", "out", lines],
+    if jobs_file != "talk_jobs.json":   # a retake's pieces (not in the render's job list): their own list
+        (L / jobs_file).write_text(json.dumps([j for n in todo for j in pieces[n]], indent=1))
+    r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), jobs_file, "out", lines],
                        cwd=str(L), capture_output=True, text=True)
     names = todo
     bad = [n for n in names if not (L / "out" / f"{n}.mp4").exists()]
