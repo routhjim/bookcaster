@@ -2517,8 +2517,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         d.mkdir(parents=True, exist_ok=True)
         lw = LORA_W.get(len(s["who"]), min(LORA_W.values()))
         boxes = [b for b, _ in group_layout(len(s["who"]))]
-        if moment(s):                   # a moment shares the space (the tail over him, a hand on a wrist): each LoRA
-            boxes = [[0.0, 0.0, 1.0, 1.0]] * len(boxes)   # on the whole frame (11-01: 10 fight keys, no bleed)
+        if moment(s) and len(boxes) <= 2:   # a moment shares the space (the tail over him, a hand on a wrist): each
+            boxes = [[0.0, 0.0, 1.0, 1.0]] * len(boxes)   # LoRA on the whole frame (11-01: 10 fight keys, no bleed;
+            # with three - Roylott, Holmes, Watson - two came out the same face: three keep their boxes)
         crs = _cast(book, stem, {"id": s["id"].rsplit("_s", 1)[0], "who": s["who"]})[1]
         R_ = RG.Book(book)
         miss = [w for w in s["who"] if w != s.get("ots") and not R_.lora(w)[0]]
