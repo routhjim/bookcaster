@@ -63,7 +63,7 @@ def test_write_keys():
     asked = []
     r, n = F._write_keys(reply, lambda q: asked.append(q) or "Close shot, low angle. Vorgrath's tail sweeps in low as Edric rolls.",
                          lambda w: "a dragon" if w == "Vorgrath" else "a man")
-    assert n == 1 and "Edric (a man, holds sword)" in asked[0] and "never wide" in asked[0]
+    assert n == 1 and "Edric (a man), standing, holding sword" in asked[0] and "only watches" in asked[0]
     sh = _j.loads(r)["shots"]
     assert sh[0]["keyshot"].startswith("Close shot") and "keyshot" not in sh[1]
     s = {"kind": "action", "keyshot": "Close shot. X.", "moment": "m"}

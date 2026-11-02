@@ -1223,42 +1223,49 @@ def _fill_moments(reply: str, ask) -> tuple:
     return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
 
 
-KEY_ASK = """You write the opening picture of one shot of a film, for an image model.
-The shot, in {place}. People in it: {people}. What happens: "{action}"{moment}
-Write ONE paragraph, at most 90 words:
-- Start with the camera: "Close shot" or "Medium shot" (never wide), and an angle when it helps (low angle, from above,
-  over the shoulder). Hands working a thing: close on the hands and the thing.
-- The instant the action BEGINS, the movement already under way, never the calm before it: each body's position and
-  motion, what each one holds in which hand, where any fire, light, blow or spark comes from.
-- Call each person by name; name the parts that matter (a dragon's wings, tail, claws; a blade; a hammer's head).
-- No clothes, faces or room (those are added), no sounds, no words or letters.
-The paragraph only."""
+KEY_ASK = """Describe the opening picture of one shot of a film in one or two plain sentences, like the title of a
+painting: who is doing what, where. The shot is in {place}. The people and where the director put them: {people}.
+What happens in the shot: "{action}"{prev}
+Rules: say what the one doing the action is doing at its start, as a still pose (the hammer raised over the glowing
+bar, his hands closing on the poker); everyone else stays as placed and only watches. Name each person. Only things
+the shot or the people already have; no extra props, no reactions, no camera words, no words about speed or motion
+blur, no sounds. At most 35 words. The sentences only."""
 
 
 def _write_keys(reply: str, ask, kind_of) -> tuple:
-    """Each action shot's opening picture written as its own small task, one shot at a time (11-01: the five fight keys
-    written by hand - the moment first, close and low, both in one space, each one's blade and wings named, ~150 words,
-    no place picture - against the director's answer's moments inside a 300-word layout prompt). The director keeps the
-    beats, cuts and who; this is only the picture. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
+    """Each action shot's opening picture as one or two plain sentences, one shot at a time (11-01: the forge was
+    best when LTX got a simple clear picture - "a medieval smith hammering at a forge" - and let go; a 90-word
+    'close, low angle, knuckles white, blurring' paragraph per shot moved the watching Hulda onto the anvil,
+    gave Holmes a cane, and came out word for word the same for shots with the same action). The director keeps
+    the beats, cuts and who. kind_of(name) -> "a dragon", "a man", ... -> (reply or None, n)."""
     m = re.search(r"\{.*\}", reply or "", re.S)
     try:
         data = json.loads(m.group(0)) if m else None
         shots = [x for x in data["shots"] if isinstance(x, dict)]
     except (ValueError, KeyError, TypeError):
         return None, 0
-    n = 0
+    n, prev = 0, ""
     for x in shots:
-        if x.get("kind") != "action" or str(x.get("keyshot") or "").strip() or not str(x.get("action") or "").strip():
+        if x.get("kind") != "action" or not str(x.get("action") or "").strip():
+            prev = ""
+            continue
+        if str(x.get("keyshot") or "").strip():
+            prev = x["keyshot"]
             continue
         ppl = [p_ for p_ in x.get("people") or [] if isinstance(p_, dict) and p_.get("name")]
-        who = "; ".join(f"{p_['name']} ({kind_of(p_['name'])}" + (f", holds {p_['holds']}" if str(p_.get('holds') or '')
-                        .strip().lower() not in ("", "nothing", "none") else "") + ")" for p_ in ppl) or "nobody"
-        mo = str(x.get("moment") or "").strip()
-        ans = str(ask(KEY_ASK.format(place=x.get("place") or "the scene", people=who, action=x["action"],
-                                     moment=f'\nIts first instant: "{mo}"' if mo else "")) or "").strip()
+        def one(p_):
+            hold = str(p_.get("holds") or "").strip()
+            return (f"{p_['name']} ({kind_of(p_['name'])}), {p_.get('pose') or 'standing'}"
+                    + (f" {p_['at']}" if str(p_.get("at") or "").strip() else "")
+                    + (f", holding {hold}" if hold.lower() not in ("", "nothing", "none") else ""))
+        who = "; ".join(one(p_) for p_ in ppl) or "nobody"
+        pv = f'\nThe picture before it was: "{prev}" - show a different moment and view.' if prev else ""
+        ans = str(ask(KEY_ASK.format(place=x.get("place") or "the scene", people=who, action=x["action"], prev=pv))
+                  or "").strip()
         ans = " ".join(ans.split()).strip(' "\'')
-        if 40 <= len(ans) <= 900:
+        if 20 <= len(ans) <= 400:
             x["keyshot"] = ans
+            prev = ans
             n += 1
     if not n:
         return None, 0
