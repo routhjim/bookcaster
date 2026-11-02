@@ -30,7 +30,8 @@ check("a one-piece clip is measured as it lands", ("sync", ("talk-1_s0",)) in ca
 (L / "out" / "talk-2_s0_c0.mp4").write_text("x"); time.sleep(0.3)
 check("a line with a piece still rendering waits", not any(c[1] == ("talk-2_s0",) for c in calls), calls)
 (L / "out" / "talk-2_s0_c1.mp4").write_text("x"); time.sleep(0.3)
-check("its last piece landed: joined, then measured", calls[-2:] == [("stitch", ("talk-2_s0",)), ("sync", ("talk-2_s0",))],
+check("its last piece landed: joined, then measured with each piece (11-02)",
+      calls[-2:] == [("stitch", ("talk-2_s0",)), ("sync", ("talk-2_s0", "talk-2_s0_c0", "talk-2_s0_c1"))],
       calls)
 stop.set(); th.join(5)
 check("the watcher ends when the render does", not th.is_alive())
