@@ -593,11 +593,8 @@ def back_server(args, inq, outqs, ready, decout=None):
                 msg = inq.get()
                 if msg is None:
                     break
-                # inline: card B also does one job at a time. 11-02: a lane's own decode too ("decode" = a chained
-                # talk piece with seam retries, which skips the pair scheduler); on the decoder thread it ran on its
-                # own stream DURING the other lane's back-half DiT on this card.
-                if ATOMIC and msg[0] in ("pairdec", "decode"):
-                    kind, key, latent, tiling, dt, gstate = msg
+                if msg[0] == "pairdec" and ATOMIC:       # inline: card B also does one job at a time
+                    _, jid, latent, tiling, dt, gstate = msg
                     t = time.time()
                     g = None
                     if gstate is not None:
@@ -608,12 +605,8 @@ def back_server(args, inq, outqs, ready, decout=None):
                     torch.cuda.current_stream().synchronize()
                     out = to_shm(fr)
                     busy[0] += time.time() - t
-                    if kind == "pairdec":
-                        tl("B", -1, "decode", t, time.time())
-                        decout.put((key, out, time.time() - t))
-                    else:
-                        tl("B", key, "decode", t, time.time())
-                        outqs[key].put((out, time.time() - t))
+                    tl("B", -1, "decode", t, time.time())
+                    decout.put((jid, out, time.time() - t))
                     del latent, fr, out, msg
                     continue
                 if msg[0] in ("decode", "pairdec"):
