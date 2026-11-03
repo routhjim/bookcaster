@@ -18,7 +18,7 @@ import sys
 import threading
 import types
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 os.environ.setdefault("PYTORCH_HIP_ALLOC_CONF", "expandable_segments:True")
@@ -777,6 +777,84 @@ def tl(card, lane, kind, t0, t1):
             fh.write(json.dumps([card, lane, kind, round(t0, 4), round(t1, 4)]) + "\n")
 
 
+# 11-03 (user): a clip's start-up work never overlaps a decode on its card. Upstream's ImageConditioner /
+# AudioConditioner / VideoUpsampler build their encoder on the card for EVERY call and free it with a TRIM (device sync
+# + empty_cache + pinned-host flush), outside CARD_LOCKS: under --pp-shared-a that ran beside the other lane's parked
+# decode on card A, and ~1 in 100 clips came out noise (latent already bad on card A; 4-clip replay repro 11-02/03).
+# Now ONE resident copy of each encoder and of the upsampler per card, shared by every lane and pipeline, built once,
+# each call run under the card's lock with a sync inside (like PairSched.decode_a). The upsampler keeps only the VAE's
+# per-channel statistics, not a second encoder. LTX_SHARED_PREP=0 = the upstream per-call path.
+SHARED_PREP = os.environ.get("LTX_SHARED_PREP", "1") != "0"
+_PREP, _PREP_LK = {}, threading.Lock()
+
+
+def _resident(key, build):
+    with _PREP_LK:
+        if key not in _PREP:
+            t = time.time()
+            _PREP[key] = build()
+            log(f"prep: {key[0]} resident on {key[1]} in {time.time() - t:.1f}s;", vram())
+        return _PREP[key]
+
+
+@contextmanager
+def _on_card(dev, kind, lane):
+    """Run prep work on `dev` under its card lock (never beside a decode there); timed into pp_timing + timeline."""
+    t0 = time.time()
+    with CARD_LOCKS[dev.index], torch.inference_mode():
+        t1 = time.time()
+        yield
+        torch.cuda.current_stream(dev).synchronize()
+    t2 = time.time()
+    tm_add(f"prep_{kind}_s", t2 - t1)
+    tm_add("prep_lockwait_s", t1 - t0)
+    tl("A" if dev.index == 0 else "B", lane, kind, t1, t2)
+
+
+class SharedConditioner:
+    """ImageConditioner / AudioConditioner with the card's shared resident encoder (no per-call build, no TRIM)."""
+
+    def __init__(self, block, kind, get_lane):
+        self.block, self.kind, self.get_lane = block, kind, get_lane
+        self.dev = torch.device(block._device)
+        b, dt = block._encoder_builder, block._dtype
+        self.enc = _resident((kind, self.dev), lambda: b.build(device=self.dev, dtype=dt).eval())
+
+    def __getattr__(self, k):          # load_conditionings, default_image_crf, resolve_crf, ...
+        return getattr(self.block, k)
+
+    def __call__(self, fn):
+        with _on_card(self.dev, self.kind, self.get_lane()):
+            return fn(self.enc)
+
+
+class SharedUpsampler:
+    """VideoUpsampler with the card's shared resident x2 upsampler + the VAE per-channel statistics it normalises with."""
+
+    def __init__(self, block, get_lane):
+        self.block, self.get_lane = block, get_lane
+        self.dev = torch.device(block._device)
+        dt = block._dtype
+
+        def stats():
+            enc = _PREP.get(("image-enc", self.dev))
+            if enc is None:            # no resident image encoder: build one on the CPU just for its statistics
+                enc = block._encoder_builder.build(device=torch.device("cpu"), dtype=dt)
+            return types.SimpleNamespace(per_channel_statistics=enc.per_channel_statistics.to(self.dev))
+
+        self.vstats = _resident(("vae-stats", self.dev), stats)
+        self.ups = _resident(("upsampler", self.dev),
+                             lambda: block._upsampler_builder.build(device=self.dev, dtype=dt).eval())
+
+    def __getattr__(self, k):
+        return getattr(self.block, k)
+
+    def __call__(self, latent):
+        from ltx_core.model.upsampler import upsample_video
+        with _on_card(self.dev, "upsample", self.get_lane()):
+            return upsample_video(latent=latent, video_encoder=self.vstats, upsampler=self.ups)
+
+
 def install_pp_forward(ltx, split, pp, get_state):
     """Process A side: blocks < split here (cuda:0), then hand the activations to process B and wait."""
     from ltx_core.guidance.perturbations import PerturbationType as P
@@ -1446,6 +1524,13 @@ def cmd_gen(args, jobs):
             return out
 
         p.prompt_encoder = fake_encoder
+        if SHARED_PREP:   # image encoder first: the upsampler reuses its per-channel statistics
+            lane = lambda: lstate.lane  # noqa: E731
+            for attr, kind in (("image_conditioner", "image-enc"), ("audio_conditioner", "audio-enc")):
+                if hasattr(p, attr):
+                    setattr(p, attr, SharedConditioner(getattr(p, attr), kind, lane))
+            if hasattr(p, "upsampler"):
+                p.upsampler = SharedUpsampler(p.upsampler, lane)
         if pp and (args.decode_b or args.decode_pair) and hasattr(p, "video_decoder"):
             p.video_decoder = RemoteDecoder(p.video_decoder, pp, lambda: lstate)
         return p
