@@ -988,22 +988,6 @@ class RemoteDecoder:
             torch.cuda.current_stream().synchronize()
             st.defer(latent.to(dtype=dt).cpu(), tiling_config, dt, generator.get_state() if generator is not None else None)
             raise DeferredDecode()
-        if PAIR is not None:
-            # 11-02 user: card B decodes only when 2 or more decodes are ready (the pair scheduler). A decode that
-            # can't be parked (a chained talk piece with seam retries needs its frames now) runs on card A, as one
-            # atomic job there, with the pair scheduler's decoder.
-            t0 = time.time()
-            with (CARD_LOCKS[0] if ATOMIC else nullcontext()), torch.inference_mode():
-                g = None
-                if generator is not None:
-                    g = torch.Generator(device=D0)
-                    g.set_state(generator.get_state())
-                fr = list(PAIR.deca.decode_video(latent.to(D0, dtype=dt), tiling_config, g))
-                fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                torch.cuda.current_stream().synchronize()
-            tl("A", st.lane, "decode", t0, time.time())
-            tm_add("a_decode_s", time.time() - t0)
-            return iter([fr.to(latent.device)])
         t0 = time.time()
         msg = ("decode", st.lane, to_shm(latent.to(dtype=dt)), tiling_config, dt,
                generator.get_state() if generator is not None else None)
