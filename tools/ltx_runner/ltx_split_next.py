@@ -588,9 +588,31 @@ def back_server(args, inq, outqs, ready, decout=None):
                     del latent, fr, out, m
         dthr = threading.Thread(target=decoder, daemon=True)
         dthr.start()
+        import collections
+        held = collections.deque()      # messages already taken off inq, in arrival order
+
+        def next_msg():
+            """11-02 user: a decode goes before a waiting DiT call. Everything queued is taken off inq; with ATOMIC the
+            oldest decode among it runs first, and the DiT calls keep their own order behind it."""
+            if not held:
+                held.append(inq.get())
+            while True:
+                try:
+                    held.append(inq.get_nowait())
+                except queue.Empty:
+                    break
+            if ATOMIC:
+                for i, m in enumerate(held):
+                    if m is None:
+                        break
+                    if m[0] in ("pairdec", "decode"):
+                        del held[i]
+                        return m
+            return held.popleft()
+
         with torch.inference_mode():
             while True:
-                msg = inq.get()
+                msg = next_msg()
                 if msg is None:
                     break
                 # inline: card B also does one job at a time. 11-02: a lane's own decode too ("decode" = a chained
