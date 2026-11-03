@@ -899,6 +899,30 @@ class PairSched:
         with self.lk:
             return self.parked.pop(0) if self.parked else None
 
+    alive = 0       # lanes still in their loop (set before they start; each lane's exit lowers it)
+
+    def wait_own(self, ev, lane):
+        """A lane whose own decode is parked waits here, off card A, and keeps the pairing going itself (with both
+        lanes waiting nobody else would): card B takes the oldest when it is free and >= 2 are parked; card A
+        decodes (on this thread) while card B decodes. If no other lane is left to park a second, the last one goes
+        to whichever card is free, as at the end of a hold."""
+        n_err = len(self.err)
+        while not ev.wait(0.2):
+            if len(self.err) > n_err:
+                raise RuntimeError("parked decode failed") from self.err[-1]
+            go = it = None
+            with self.lk:
+                if not self.b_busy and len(self.parked) >= 2:
+                    go, it = "B", self.parked.pop(0)
+                elif self.b_busy and self.parked:
+                    go, it = "A", self.parked.pop(0)
+                elif self.parked and self.alive <= 1:
+                    go, it = ("A" if self.b_busy else "B"), self.parked.pop(0)
+            if go == "B":
+                self.to_b(it)
+            elif go == "A":
+                self.decode_a(it, lane)
+
     def to_b(self, item):
         with self.lk:
             self.b_busy = True
@@ -989,21 +1013,28 @@ class RemoteDecoder:
             st.defer(latent.to(dtype=dt).cpu(), tiling_config, dt, generator.get_state() if generator is not None else None)
             raise DeferredDecode()
         if PAIR is not None:
-            # 11-02 user: card B decodes only when 2 or more decodes are ready (the pair scheduler). A decode that
-            # can't be parked (a chained talk piece with seam retries needs its frames now) runs on card A, as one
-            # atomic job there, with the pair scheduler's decoder.
+            # 11-02 user: decode and render never overlap on a card; card B decodes only when 2 or more decodes are
+            # ready, card A only while card B decodes, and a chained render waits. A decode that can't be deferred
+            # (a chained talk piece with seam retries needs its frames now) is parked like any other and this lane
+            # waits for it, off card A.
+            dev = latent.device
+            torch.cuda.current_stream().synchronize()
+            box, ev = {}, threading.Event()
+
+            def fin(fr, sec, card):
+                box.update(fr=fr, sec=sec, card=card)
+                ev.set()
             t0 = time.time()
-            with (CARD_LOCKS[0] if ATOMIC else nullcontext()), torch.inference_mode():
-                g = None
-                if generator is not None:
-                    g = torch.Generator(device=D0)
-                    g.set_state(generator.get_state())
-                fr = list(PAIR.deca.decode_video(latent.to(D0, dtype=dt), tiling_config, g))
-                fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                torch.cuda.current_stream().synchronize()
-            tl("A", st.lane, "decode", t0, time.time())
-            tm_add("a_decode_s", time.time() - t0)
-            return iter([fr.to(latent.device)])
+            PAIR.park((latent.to(dtype=dt).cpu(), tiling_config, dt,
+                       generator.get_state() if generator is not None else None, fin))
+            A_OWNER.release()
+            try:
+                PAIR.wait_own(ev, st.lane)
+            finally:
+                A_OWNER.acquire()
+            tm_add("b_decode_s" if box["card"] == "B" else "a_decode_s", box["sec"])
+            tm_add("decode_wait_s", time.time() - t0)
+            return iter([box["fr"].to(dev)])
         t0 = time.time()
         msg = ("decode", st.lane, to_shm(latent.to(dtype=dt)), tiling_config, dt,
                generator.get_state() if generator is not None else None)
@@ -1733,7 +1764,16 @@ def cmd_gen(args, jobs):
 
     for d in range(torch.cuda.device_count()):
         torch.cuda.reset_peak_memory_stats(d)
-    threads = [threading.Thread(target=lane, args=lp) for lp in lanes]
+    def lane_run(*lp):
+        try:
+            lane(*lp)
+        finally:
+            if PAIR is not None:
+                with PAIR.lk:
+                    PAIR.alive -= 1
+    if PAIR is not None:
+        PAIR.alive = len(lanes)
+    threads = [threading.Thread(target=lane_run, args=lp) for lp in lanes]
     for th in threads:
         th.start()
     for th in threads:
