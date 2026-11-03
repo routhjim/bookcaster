@@ -588,38 +588,13 @@ def back_server(args, inq, outqs, ready, decout=None):
                     del latent, fr, out, m
         dthr = threading.Thread(target=decoder, daemon=True)
         dthr.start()
-        import collections
-        held = collections.deque()      # messages already taken off inq, in arrival order
-
-        def next_msg():
-            """11-02 user: a decode goes before a waiting DiT call. Everything queued is taken off inq; with ATOMIC the
-            oldest decode among it runs first, and the DiT calls keep their own order behind it."""
-            if not held:
-                held.append(inq.get())
-            while True:
-                try:
-                    held.append(inq.get_nowait())
-                except queue.Empty:
-                    break
-            if ATOMIC:
-                for i, m in enumerate(held):
-                    if m is None:
-                        break
-                    if m[0] in ("pairdec", "decode"):
-                        del held[i]
-                        return m
-            return held.popleft()
-
         with torch.inference_mode():
             while True:
-                msg = next_msg()
+                msg = inq.get()
                 if msg is None:
                     break
-                # inline: card B also does one job at a time. 11-02: a lane's own decode too ("decode" = a chained
-                # talk piece with seam retries, which skips the pair scheduler); on the decoder thread it ran on its
-                # own stream DURING the other lane's back-half DiT on this card.
-                if ATOMIC and msg[0] in ("pairdec", "decode"):
-                    kind, key, latent, tiling, dt, gstate = msg
+                if msg[0] == "pairdec" and ATOMIC:       # inline: card B also does one job at a time
+                    _, jid, latent, tiling, dt, gstate = msg
                     t = time.time()
                     g = None
                     if gstate is not None:
@@ -630,12 +605,8 @@ def back_server(args, inq, outqs, ready, decout=None):
                     torch.cuda.current_stream().synchronize()
                     out = to_shm(fr)
                     busy[0] += time.time() - t
-                    if kind == "pairdec":
-                        tl("B", -1, "decode", t, time.time())
-                        decout.put((key, out, time.time() - t))
-                    else:
-                        tl("B", key, "decode", t, time.time())
-                        outqs[key].put((out, time.time() - t))
+                    tl("B", -1, "decode", t, time.time())
+                    decout.put((jid, out, time.time() - t))
                     del latent, fr, out, msg
                     continue
                 if msg[0] in ("decode", "pairdec"):
@@ -899,30 +870,6 @@ class PairSched:
         with self.lk:
             return self.parked.pop(0) if self.parked else None
 
-    alive = 0       # lanes still in their loop (set before they start; each lane's exit lowers it)
-
-    def wait_own(self, ev, lane):
-        """A lane whose own decode is parked waits here, off card A, and keeps the pairing going itself (with both
-        lanes waiting nobody else would): card B takes the oldest when it is free and >= 2 are parked; card A
-        decodes (on this thread) while card B decodes. If no other lane is left to park a second, the last one goes
-        to whichever card is free, as at the end of a hold."""
-        n_err = len(self.err)
-        while not ev.wait(0.2):
-            if len(self.err) > n_err:
-                raise RuntimeError("parked decode failed") from self.err[-1]
-            go = it = None
-            with self.lk:
-                if not self.b_busy and len(self.parked) >= 2:
-                    go, it = "B", self.parked.pop(0)
-                elif self.b_busy and self.parked:
-                    go, it = "A", self.parked.pop(0)
-                elif self.parked and self.alive <= 1:
-                    go, it = ("A" if self.b_busy else "B"), self.parked.pop(0)
-            if go == "B":
-                self.to_b(it)
-            elif go == "A":
-                self.decode_a(it, lane)
-
     def to_b(self, item):
         with self.lk:
             self.b_busy = True
@@ -1012,29 +959,6 @@ class RemoteDecoder:
             torch.cuda.current_stream().synchronize()
             st.defer(latent.to(dtype=dt).cpu(), tiling_config, dt, generator.get_state() if generator is not None else None)
             raise DeferredDecode()
-        if PAIR is not None:
-            # 11-02 user: decode and render never overlap on a card; card B decodes only when 2 or more decodes are
-            # ready, card A only while card B decodes, and a chained render waits. A decode that can't be deferred
-            # (a chained talk piece with seam retries needs its frames now) is parked like any other and this lane
-            # waits for it, off card A.
-            dev = latent.device
-            torch.cuda.current_stream().synchronize()
-            box, ev = {}, threading.Event()
-
-            def fin(fr, sec, card):
-                box.update(fr=fr, sec=sec, card=card)
-                ev.set()
-            t0 = time.time()
-            PAIR.park((latent.to(dtype=dt).cpu(), tiling_config, dt,
-                       generator.get_state() if generator is not None else None, fin))
-            A_OWNER.release()
-            try:
-                PAIR.wait_own(ev, st.lane)
-            finally:
-                A_OWNER.acquire()
-            tm_add("b_decode_s" if box["card"] == "B" else "a_decode_s", box["sec"])
-            tm_add("decode_wait_s", time.time() - t0)
-            return iter([box["fr"].to(dev)])
         t0 = time.time()
         msg = ("decode", st.lane, to_shm(latent.to(dtype=dt)), tiling_config, dt,
                generator.get_state() if generator is not None else None)
@@ -1764,16 +1688,7 @@ def cmd_gen(args, jobs):
 
     for d in range(torch.cuda.device_count()):
         torch.cuda.reset_peak_memory_stats(d)
-    def lane_run(*lp):
-        try:
-            lane(*lp)
-        finally:
-            if PAIR is not None:
-                with PAIR.lk:
-                    PAIR.alive -= 1
-    if PAIR is not None:
-        PAIR.alive = len(lanes)
-    threads = [threading.Thread(target=lane_run, args=lp) for lp in lanes]
+    threads = [threading.Thread(target=lane, args=lp) for lp in lanes]
     for th in threads:
         th.start()
     for th in threads:
