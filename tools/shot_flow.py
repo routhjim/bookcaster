@@ -377,11 +377,12 @@ ONLY_HERE = " Only the {n} already in the picture {be} ever in it: nobody else c
 GROUP_OFF = re.compile(r"\b(?:the|two|both)\s+(?:other\s+)?(?:men|women|people|others|visitors|gentlemen|ladies)\b", re.I)
 
 
-def _offscreen(cx, s: dict, text: str) -> str:
+def _offscreen(cx, s: dict, text: str, only: bool = True) -> str:
     """10-30: a quiet shot of one person whose action named another ("watches the man in the white nightshirt", "as
     the men approach") made LTX walk that one in - a second Holmes, Watson or Helen; and "leans forward" over "stays
     sitting" drew two Watsons. Whoever is not in the picture is "someone out of the picture", and the prompt says
-    nobody else comes in."""
+    nobody else comes in. 11-04 (CHANGES #29): `only=False` (the action call) leaves that last line out - in the kill
+    shot it drew walk-ins (P26: 5 of 6 clips with it, 1 of 6 without); quiet and the retake keep it."""
     who = s.get("who") or []
     if s.get("crowd") or not who:
         return text
@@ -398,6 +399,8 @@ def _offscreen(cx, s: dict, text: str) -> str:
         text = re.sub(re.escape(d), "someone out of the picture", text, flags=re.I)
     text = GROUP_OFF.sub("people out of the picture", text)
     n = len(who)
+    if not only:
+        return text
     return text + ONLY_HERE.format(n="one person" if n == 1 else f"{n} people", be="is" if n == 1 else "are")
 
 
@@ -2948,7 +2951,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
         elif s["kind"] == "action":
-            act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
+            act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             hd = None
