@@ -573,41 +573,31 @@ def back_server(args, inq, outqs, ready, decout=None):
         import queue
         decq = queue.Queue()
 
+        def do_dec(m):
+            """One decode on card B: 'pairdec' (a parked clip, frames to the collector on A) or 'decode' (a lane's)."""
+            kind, key, latent, tiling, dt, gstate = m
+            t = time.time()
+            g = None
+            if gstate is not None:
+                g = torch.Generator(device=D0)
+                g.set_state(gstate)
+            lat = latent.to(D0, dtype=dt)
+            fr = list(dec.decode_video(lat, tiling, g))
+            fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+            torch.cuda.current_stream().synchronize()
+            out = to_shm(fr)
+            busy[0] += time.time() - t
+            tl("B", -1 if kind == "pairdec" else key, "decode", t, time.time())
+            (decout if kind == "pairdec" else outqs[key]).put((key, out, time.time() - t) if kind == "pairdec"
+                                                              else (out, time.time() - t))
+
         def decoder():
-            """(10-31) Decodes on their own thread + stream: the other lane's DiT calls no longer queue behind a
-            ~14 s decode (FIFO head-of-line block = the main idle on both cards)."""
+            """(10-31) LTX_ATOMIC=0 only: decodes on their own thread + stream. Default (11-03, user): card B does one
+            thing at a time, every decode inline on the serving thread."""
             with torch.inference_mode(), torch.cuda.stream(torch.cuda.Stream(D0)):
                 while (m := decq.get()) is not None:
-                    if m[0] == "pairdec":     # --decode-pair: a parked clip's decode; frames to the collector on A
-                        _, jid, latent, tiling, dt, gstate = m
-                        t = time.time()
-                        g = None
-                        if gstate is not None:
-                            g = torch.Generator(device=D0)
-                            g.set_state(gstate)
-                        fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
-                        fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                        torch.cuda.current_stream().synchronize()
-                        out = to_shm(fr)
-                        busy[0] += time.time() - t
-                        tl("B", -1, "decode", t, time.time())
-                        decout.put((jid, out, time.time() - t))
-                        del latent, fr, out, m
-                        continue
-                    _, lane, latent, tiling, dt, gstate = m
-                    t = time.time()
-                    g = None
-                    if gstate is not None:
-                        g = torch.Generator(device=D0)
-                        g.set_state(gstate)
-                    fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
-                    fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                    torch.cuda.current_stream().synchronize()
-                    out = to_shm(fr)
-                    busy[0] += time.time() - t
-                    tl("B", lane, "decode", t, time.time())
-                    outqs[lane].put((out, time.time() - t))
-                    del latent, fr, out, m
+                    do_dec(m)
+                    del m
         dthr = threading.Thread(target=decoder, daemon=True)
         dthr.start()
         with torch.inference_mode():
@@ -615,24 +605,8 @@ def back_server(args, inq, outqs, ready, decout=None):
                 msg = inq.get()
                 if msg is None:
                     break
-                if msg[0] == "pairdec" and ATOMIC:       # inline: card B also does one job at a time
-                    _, jid, latent, tiling, dt, gstate = msg
-                    t = time.time()
-                    g = None
-                    if gstate is not None:
-                        g = torch.Generator(device=D0)
-                        g.set_state(gstate)
-                    fr = list(dec.decode_video(latent.to(D0, dtype=dt), tiling, g))
-                    fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
-                    torch.cuda.current_stream().synchronize()
-                    out = to_shm(fr)
-                    busy[0] += time.time() - t
-                    tl("B", -1, "decode", t, time.time())
-                    decout.put((jid, out, time.time() - t))
-                    del latent, fr, out, msg
-                    continue
                 if msg[0] in ("decode", "pairdec"):
-                    decq.put(msg)
+                    do_dec(msg) if ATOMIC else decq.put(msg)    # 11-03: inline = card B one thing at a time
                     del msg
                     continue
                 lane, video, audio, pert, on = msg
@@ -747,7 +721,7 @@ def cmd_encode(args, jobs):
 
 
 # ---------------------------------------------------------------- gen
-CARD_LOCKS = {0: threading.Lock(), 1: threading.Lock()}
+CARD_LOCKS = {0: threading.RLock(), 1: threading.RLock()}   # reentrant: a lane owning card A nests the front/decode/prep locks
 # --pp: ONE lane at a time owns card A (process A's cuda:0). A lane gives the card up only while its activations are
 # in process B (after a synchronous D2H), and takes it back when B's answer arrives. So card A never runs two
 # lanes' kernels concurrently (bitwise-reproducible), while B's half of lane X overlaps A's work for lane Y.
@@ -783,6 +757,31 @@ class _SharedOwner(_TimedLock):
 
     def release(self):
         pass
+
+
+class _CardOwner(_TimedLock):
+    """11-03 (user): EVERYTHING on card A runs inside its atomic lock. A lane owns card A (= CARD_LOCKS[0], reentrant,
+    so the front run / decode / prep locks nest inside) for its whole job, and lets go only while it waits on card B
+    (install_pp_forward, RemoteDecoder). Replaces _SharedOwner's no-op: under it a lane's per-step glue on card A
+    (copy-back from B, output head, scheduler/guidance math, conditionings, embeddings, stage changes) ran unlocked
+    beside the other lanes' card-A work - 1/9 clips noise at 2 lanes, 4/9 bad at 3 (9-clip Acts replay, 11-03)."""
+
+    def __init__(self):
+        super().__init__()
+        self._l, self._d = CARD_LOCKS[0], threading.local()
+
+    def acquire(self):
+        self._l.acquire()
+        n = getattr(self._d, "n", 0)
+        self._d.n = n + 1
+        if n == 0:
+            self._t = time.time()
+
+    def release(self):
+        self._d.n -= 1
+        if self._d.n == 0:
+            self.held += time.time() - self._t
+        self._l.release()
 
 
 A_OWNER = _TimedLock()
@@ -1006,6 +1005,7 @@ class PairSched:
                     g.set_state(gstate)
                 fr = list(self.deca.decode_video(latent.to(D0, dtype=dt), tiling, g))
                 fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
+                fr = fr.cpu()       # 11-03: off the card inside the lock (finish_job's mp4/png work is CPU-only)
                 torch.cuda.current_stream().synchronize()
             tl("A", lane, "decode", t, time.time())
             fin(fr, time.time() - t, "A")
@@ -1420,8 +1420,11 @@ def cmd_gen(args, jobs):
     split = args.split
     pp = None
     global A_OWNER, POOL, PAIR
-    if args.pp and args.pp_shared_a:
+    if args.pp and ATOMIC:
+        A_OWNER = _CardOwner()       # 11-03: all card-A work of a lane inside the card lock (LTX_ATOMIC=0 = old)
+    elif args.pp and args.pp_shared_a:
         A_OWNER = _SharedOwner()
+    if args.pp and args.pp_shared_a:
         args.pp_streams = True       # lanes must not share one stream once they overlap on card A
     if args.pp:
         import torch.multiprocessing as tmp
@@ -1808,6 +1811,12 @@ def cmd_gen(args, jobs):
     if args.compile:
         log("[A]", compile_stats())
     log(f"done {n} jobs in {wall:.1f}s wall ({60 * n / max(wall, 1e-9):.2f} jobs/min, lanes={len(lanes)}); peak", vram())
+    try:   # 11-03: allocator pressure on card A (retries = cache flushes = device-wide stalls)
+        ms = torch.cuda.memory_stats(0)
+        log("allocstats cuda:0 retries", ms.get("num_alloc_retries"), "ooms", ms.get("num_ooms"),
+            "reserved peak %.1f GiB" % (ms.get("reserved_bytes.all.peak", 0) / 2**30))
+    except Exception as e:  # noqa: BLE001
+        log("allocstats failed", e)
     log(json.dumps(timings, indent=1))
     if pp:
         pp["inq"].put(None)
