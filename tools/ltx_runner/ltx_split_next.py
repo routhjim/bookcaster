@@ -944,6 +944,8 @@ PAIR = None     # --decode-pair scheduler
 # the lanes' kernels interleave on card A. Atomic, the two lanes fall into alternating by themselves, so the lane
 # stagger is 0. 7 talk clips (paired decode, split 24): 422 -> 386.5 s; output identical to non-atomic.
 ATOMIC = os.environ.get("LTX_ATOMIC", "1") != "0"
+FLUSH_LANE_STREAM = os.environ.get("LTX_FLUSH_LANE_STREAM", "1") != "0"
+A_ONE_STREAM = os.environ.get("LTX_A_ONE_STREAM", "1") != "0"   # 11-04: all card-A lanes on one stream (needs the card lock)   # 11-04: 0 = old (flush decodes on the default stream)
 
 
 class PairSched:
@@ -962,8 +964,15 @@ class PairSched:
         threading.Thread(target=self.collect, daemon=True).start()
 
     def park(self, item):
+        """11-04: remember the lane stream that made the latent (+ an event at its end). A card-A decode of it runs on
+        that stream: the end-of-hold flush used to decode on the main thread's default stream, whose allocator pool
+        cannot reuse the lanes' freed blocks, so at ~23.5 GiB reserved it forced an allocator retry (memory back to the
+        driver) mid-decode - the card-A corruption trigger (loop P3/P14/P16: 3/16 flush decodes bad, 0/138 others)."""
+        s = torch.cuda.current_stream(D0)
+        ev = torch.cuda.Event()
+        ev.record(s)
         with self.lk:
-            self.parked.append(item)
+            self.parked.append((*item, s, ev))
 
     def take(self):
         with self.lk:
@@ -975,7 +984,8 @@ class PairSched:
             self.n += 1
             self.on_b[self.n] = item[4]
             jid = self.n
-        latent, tiling, dt, gstate, _ = item
+        latent, tiling, dt, gstate = item[:4]
+        item[6].synchronize()     # the latent is complete before process B reads it
         self.pp["inq"].put(("pairdec", jid, latent, tiling, dt, gstate))
 
     def after_b(self):
@@ -995,10 +1005,14 @@ class PairSched:
         self.decode_a(it, lane)
 
     def decode_a(self, item, lane):
-        latent, tiling, dt, gstate, fin = item
+        latent, tiling, dt, gstate, fin, s, ev = item
         t = time.time()
         try:
-            with (CARD_LOCKS[0] if ATOMIC else nullcontext()), torch.inference_mode():
+            # flush (lane -1, main thread): decode on the latent's own lane stream, not the default stream (see park)
+            with (CARD_LOCKS[0] if ATOMIC else nullcontext()), torch.inference_mode(), \
+                    (torch.cuda.stream(s) if lane == -1 and FLUSH_LANE_STREAM else nullcontext()):
+                torch.cuda.current_stream().wait_event(ev)
+                r0 = torch.cuda.memory_stats(D0).get("num_alloc_retries", 0)
                 g = None
                 if gstate is not None:
                     g = torch.Generator(device=D0)
@@ -1007,6 +1021,9 @@ class PairSched:
                 fr = fr[0] if len(fr) == 1 else torch.cat(fr, 0)
                 fr = fr.cpu()       # 11-03: off the card inside the lock (finish_job's mp4/png work is CPU-only)
                 torch.cuda.current_stream().synchronize()
+                retries = torch.cuda.memory_stats(D0).get("num_alloc_retries", 0) - r0
+            log(f"[A] decode lane {lane}: {time.time() - t:.1f}s, allocator retries {retries}"
+                + ("  <- RETRY DURING A CARD-A DECODE" if retries else ""))
             tl("A", lane, "decode", t, time.time())
             fin(fr, time.time() - t, "A")
         except BaseException as e:  # noqa: BLE001
@@ -1425,7 +1442,10 @@ def cmd_gen(args, jobs):
     elif args.pp and args.pp_shared_a:
         A_OWNER = _SharedOwner()
     if args.pp and args.pp_shared_a:
-        args.pp_streams = True       # lanes must not share one stream once they overlap on card A
+        # lanes must not share one stream once they overlap on card A. 11-04: under the full card lock they never
+        # overlap, so card A runs every lane on ONE stream (one allocator pool): per-lane streams stranded freed blocks
+        # in each lane's pool and forced allocator retries mid-decode at ~23.6 GiB reserved. LTX_A_ONE_STREAM=0 = old.
+        args.pp_streams = not (ATOMIC and A_ONE_STREAM)
     if args.pp:
         import torch.multiprocessing as tmp
         ctx = tmp.get_context("spawn")
