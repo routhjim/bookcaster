@@ -559,6 +559,8 @@ def back_server(args, inq, outqs, ready, decout=None):
             attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
         if args.compile:
             compile_blocks(ltx)
+        else:
+            install_eager_fuse(ltx)
         nb = len(ltx.transformer_blocks)
         dec = None
         if args.decode_b or args.decode_pair:   # (10-24) clip decodes here too (10-31: --decode-pair, see PairSched)
@@ -1273,7 +1275,7 @@ def _lora_linear_forward(self, x):
             out = out + F_.linear(F_.linear(x.to(A.dtype), A), B).to(out.dtype)
         return out
     # a weight already in x's dtype: .to() returns the parameter itself, so copy it (never fold into the parameter)
-    w = self.weight.clone() if self.weight.dtype == x.dtype else self.weight.to(x.dtype)
+    w = self.weight.clone() if self.weight.dtype == x.dtype else _UPCAST(self.weight, x.dtype)
     for A, B in on:
         w.addmm_(B.to(w.dtype), A.to(w.dtype))
     return F_.linear(x, w, None if self.bias is None else self.bias.to(x.dtype))
@@ -1498,6 +1500,8 @@ def cmd_gen(args, jobs):
         attach_runtime_lora(ltx, DLORA, args.dlora_strength, types.SimpleNamespace(on=True))
     if args.compile:
         compile_blocks(ltx)
+    else:
+        install_eager_fuse(ltx)
     install_cfg_cut()
     if pp and args.decode_pair:
         PAIR = PairSched(pp)
@@ -1877,6 +1881,31 @@ def install_cfg_cut():
             return _oc(self, transformer, video_state, audio_state, sigmas, step_index)
         C.__call__ = call
     DN._cfg_cut = True
+
+
+_UPCAST = torch.Tensor.to      # LoRA fold's fp8 -> bf16 weight cast; install_eager_fuse swaps in the Triton cast
+
+
+def install_eager_fuse(ltx):
+    """11-04: eager runs (no --compile) get eager_fuse's Triton kernels: fused split RoPE, AdaLN modulate, gated
+    residuals, compact-table AdaLN values, text cross-attention affine, vectorized fp8 weight upcast. Every one
+    reproduces eager's bf16 rounding (block outputs bit-identical to plain eager on real inputs). Block 0 on real
+    inputs: 76% of compile's per-call gain with no compile start-up (80% with the norm fusion, on by default, within one
+    bf16 step of eager). 9-clip replay: 374.5 s v compiled 446.0 s. LTX_EAGER_FUSE=0 = plain eager."""
+    global _UPCAST
+    if os.environ.get("LTX_EAGER_FUSE", "1") == "0":
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import eager_fuse as EF
+    EF.install_rope()
+    EF.install_block(log)
+    EF.install_ada(log)
+    EF.install_more(log)
+    EF.install_cast(ltx, log)
+    if os.environ.get("LTX_EAGER_FUSE_NORM", "1") != "0":
+        EF.install_norm(log)
+    _UPCAST = EF.fp8_upcast
+    log("eager_fuse: on (LTX_EAGER_FUSE=0 = plain eager)")
 
 
 def compile_blocks(ltx):

@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as td:
     for f in ("--pp", "--lanes", "--pp-shared-a", "--stagger", "--pp-pool", "--fa-amd", "--blaslt", "--decode-b", "--split"):
         check(f"quiet gets {f}", f in q, q)
     check("3 lanes by default (11-03: full card lock, 0/9 bad, -13% wall)", q[q.index("--lanes") + 1] == "3", q)
+    check("no --compile by default (11-04: eager + eager_fuse is faster)", "--compile" not in q, q)
     check("quiet split from the NEWEST chapter (counts card-B decode)", int(q[q.index("--split") + 1]) > 8, q)
     check("quiet stagger = half its clip time from the newest chapter (wall 40 s -> 20)",
           q[q.index("--stagger") + 1] == "20", q)
