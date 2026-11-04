@@ -41,6 +41,28 @@ raise_nofile()
 import safetensors  # noqa: E402
 import torch  # noqa: E402
 
+
+def _fused_vae_conv():
+    """11-03: every LTX video decoder built from here on runs its 3x3x3 convs through vae_conv3d's fused Triton
+    implicit-GEMM kernel instead of slow_conv_dilated3d (MIOpen off). Decode 21.0 -> 9.5 s at 177 frames, peak
+    3.87 -> 1.99 GiB, closer to an fp32 decode (no 2 GiB im2col scratch allocated ~1900x per decode). Hooked on the
+    memory-efficient-decode module op, which every ConvVideoDecoder build goes through. LTX_VAE_FUSED_CONV=0 = off."""
+    if os.environ.get("LTX_VAE_FUSED_CONV", "1") == "0":
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import vae_conv3d
+    import ltx_pipelines.utils.blocks.video_decoder as vdm
+    op = vdm.MEMORY_EFFICIENT_DECODE
+
+    def mutate(m):
+        m = op.mutator(m)
+        vae_conv3d.install(m)
+        return m
+    vdm.MEMORY_EFFICIENT_DECODE = op._replace(name=op.name + "+fused_conv3d", mutator=mutate)
+
+
+_fused_vae_conv()
+
 M = Path.home() / "models" / "ltx-2.5"
 # 10-28: the weights every hold loads are on the internal NVMe (~4 GB/s; the USB root disk reads 0.7 GB/s, and the
 # 75 s front/back load was mostly that read + the bf16->fp8 cast). The dev DiT there is pre-cast: the loader's own
