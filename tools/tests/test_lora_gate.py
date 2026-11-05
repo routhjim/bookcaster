@@ -61,7 +61,9 @@ with tempfile.TemporaryDirectory() as td:
     cards = sorted({c[c.index("--card") + 1] for c in calls})
     check("one character per card, in parallel, under the card's flock",
           len(set(cards)) == 2 and all(c[0] == "flock" and f"/tmp/gpu-{c[c.index('--card') + 1]}.lock" in c for c in calls), str(cards))
-    check("still-missing cast is shouted", left == [ln for ln in F.lora_lines(book)] and any("Wyrm" in ln for ln in left))
+    # (11-05: a creature's failed LoRA no longer stops the run - only a person's is in what is left)
+    check("still-missing cast is shouted; a creature's is not a stop",
+          any("Wyrm" in ln for ln in F.lora_lines(book)) and not any("Wyrm" in ln for ln in left), (left, F.lora_lines(book)))
 
     calls.clear()
     F.run = lambda cmd, *a, **k: (calls.append(cmd), 0)[1]
