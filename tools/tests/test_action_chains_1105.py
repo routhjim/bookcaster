@@ -210,6 +210,12 @@ with tempfile.TemporaryDirectory() as td:
                              text=True).stdout.strip() or 0) if joined.exists() else 0
     check("joined: 2 lines = 193 frames (the overlap frame dropped)", st["done"] and nfr == S.chain_frames(2) == 193,
           (st["done"], nfr))
+    import os
+    os.utime(key, (time.time() + 5, time.time() + 5))       # a new key: the chain starts again
+    st = S._chain_state(L, shot, key)
+    check("a new key: takes, joined clip and the old review cards set aside (no old choice answers a new card)",
+          not st["done"] and not joined.exists() and not (sd / "review" / shot["id"]).exists()
+          and any(p.name.startswith(shot["id"] + ".old-") for p in (sd / "review").iterdir()), st)
 
 # the narration gap
 pauses = [{"t": 10.0, "g": 2.5, "shot": "a"}]

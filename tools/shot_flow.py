@@ -3538,6 +3538,9 @@ def _chain_state(L: Path, s: dict, key: Path) -> dict:
         for x in (L / "out").glob(f"{s['id']}_x*"):
             x.unlink()
         (L / "out" / f"{s['id']}.mp4").unlink(missing_ok=True)
+        rv = L.parent / "review" / s["id"]      # (11-05: an old choice.json answered the new takes' card)
+        if rv.exists():
+            os.replace(rv, rv.with_name(f"{s['id']}.old-{time.strftime('%m%d-%H%M%S')}"))
         st = {"sig": sig, "id": s["id"], "director_lines": lines, "lines": list(lines), "ver": [0] * len(lines),
               "picks": [None] * len(lines), "judge": {}, "done": False, "people": len(s.get("who") or []) or None,
               "key": str(key)}
