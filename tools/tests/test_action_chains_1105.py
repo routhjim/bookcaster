@@ -70,13 +70,29 @@ with tempfile.TemporaryDirectory() as td:
     S.ask_chains(q0, shots, cast, named_in, looks, ask, cache, log=lambda m: None)
     check("ask: cached by its message", len(calls) == 2, len(calls))
 
-out = S.chain_shots(shots, kept, cast, [], {}, None)
-c = [x for x in out if x.get("chain")]
-check("chain shot: the two replaced shots are one", len(out) == 3 and len(c) == 1, [x.get("kind") for x in out])
-check("chain shot: head = the first replaced row (who, picture), keyshot from it, the old moment gone",
-      c[0]["who"] == ["Edric", "Vorgrath"] and c[0]["keyshot"] == shots[1]["picture"] and c[0]["start"] == 3.0, c[0])
-check("chain shot: the pose it leaves = the last replaced shot's", c[0]["pose_end"] == {"Edric": "lying"})
-check("quiet and talk shots unchanged", out[0] is shots[0] and out[2] is shots[3])
+heads = S.chain_heads(shots, kept, cast, [], {}, None)
+check("chain head: one per chain, over its replaced shots", len(heads) == 1 and heads[0][0] == [2, 3], heads)
+h = heads[0][1]
+check("chain head: the first replaced row (who, picture), keyshot from it, the old moment gone",
+      h["who"] == ["Edric", "Vorgrath"] and h["keyshot"] == shots[1]["picture"] and "moment" not in h
+      and h["chain"]["lines"][0].startswith("the man in armour runs"), h)
+check("chain head: the pose it leaves = the last replaced shot's", h["pose_end"] == {"Edric": "lying"})
+# the collapse after the set sheets: only the moments cut from the tagged shots (a split quiet piece too)
+tag = {"key": "1:0", "shot": h}
+es = [{"id": "m0", "t": 0.0, "dur": 3.0}, {"id": "m1", "t": 3.0, "dur": 2.0}, {"id": "m2", "t": 5.0, "dur": 2.0},
+      {"id": "m3", "t": 7.0, "dur": 2.0}, {"id": "m4", "t": 9.0, "dur": 2.0}]
+by = {"m0": [{"id": "m0_s0", "kind": "quiet", "place": "cave"}],
+      "m1": [{"id": "m1_s0", "kind": "action", "place": "cave", "_chain": tag}],
+      "m2": [{"id": "m2_s0", "kind": "action", "place": "cave", "_chain": tag}],
+      "m3": [{"id": "m3_s0", "kind": "action", "place": "cave", "_chain": tag}],
+      "m4": [{"id": "m4_s0", "kind": "talk", "place": "cave"}]}
+keep = {k: json.dumps(by[k]) for k in ("m0", "m4")}
+es2 = S.apply_chains(es, by, log=lambda m: None)
+check("collapse: the tagged moments are one chain moment (the first id, their whole time), the others untouched",
+      [e["id"] for e in es2] == ["m0", "m1", "m4"] and es2[1]["dur"] == 6.0 and by["m1"][0]["chain"]
+      and by["m1"][0]["dur"] == 6.0 and by["m1"][0]["id"] == "m1_s0" and "m2" not in by and "m3" not in by
+      and all(json.dumps(by[k]) == v for k, v in keep.items()), (es2, by))
+check("collapse: no tag left", not any("_chain" in x for v in by.values() for x in v))
 
 # the head key: the looks of the things, the gloss for the same word skipped
 BOOK = Path.home() / "audiobooks" / "knight_forged_v3"         # (read only)
@@ -216,11 +232,15 @@ check("break: none after -> the stretch's end", S.pause_point(2.0, 10.0, [], q, 
 es = [{"id": "c", "t": 2.0, "dur": 4.0}, {"id": "x", "t": 6.0, "dur": 3.0}, {"id": "y", "t": 9.0, "dur": 4.0}]
 by = {"c": [{"id": "c_s0", "dur": 4.0, "chain": {}}], "x": [{"id": "x_s0", "dur": 3.0, "kind": "quiet"}],
       "y": [{"id": "y_s0", "dur": 4.0, "kind": "quiet"}]}
-pz = [{"t": 9.0, "g": 1.042, "shot": "c_s0", "absorb": ["x"]}]   # break at 9 (after the slot's end at 6): 8.042 s chain
+pz = [{"t": 9.0, "t_pic": 6.0, "g": 4.042, "shot": "c_s0"}]   # the slot ends at 6 inside a line; its break at 9
 S.apply_pauses(es, by, pz)
-check("past the slot: the chain plays on over the moments up to the break (dropped), never cut: its full length",
-      [e["id"] for e in es] == ["c", "y"] and "x" not in by and abs(by["c"][0]["dur"] - 8.042) < 1e-6
-      and abs(S._spans(es)["c"] - 8.042) < 1e-6 and abs(es[1]["t"] - 10.042) < 1e-6, (es, by))
+check("past the slot: the chain plays its full length, never cut; nothing dropped: the later moments keep their "
+      "shots, moved on by the pause",
+      [e["id"] for e in es] == ["c", "x", "y"] and set(by) == {"c", "x", "y"} and abs(by["c"][0]["dur"] - 8.042) < 1e-6
+      and abs(S._spans(es)["c"] - 8.042) < 1e-6 and abs(es[1]["t"] - 10.042) < 1e-6 and abs(es[2]["t"] - 13.042) < 1e-6
+      and by["x"][0]["dur"] == 3.0, (es, by))
+check("past the slot: the narration (audio map) waits at the break, the pictures at the slot's end",
+      S.pause_map(7.0, pz) == 7.0 and S.pause_map(9.0, pz) == 13.042 and S.pause_map(7.0, pz, "t_pic") == 11.042)
 with tempfile.TemporaryDirectory() as td:
     src = Path(td) / "v.wav"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:r=16000:d=20", str(src)], check=True)

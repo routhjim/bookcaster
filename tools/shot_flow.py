@@ -1497,24 +1497,16 @@ def ask_chains(q0: str, shots: list, cast: list, named_in, looks: dict, ask, cac
     return kept
 
 
-def chain_shots(shots: list, chains: list, cast: list, crs: list, sides: dict, resolve) -> list:
-    """The passage's shots with each chain's replaced shots made ONE action shot: its head = the first replaced
-    shot's staging row composed (or the chain's mended `head`, composed the same way), `who` from that row only, the
-    key from that picture (keyshot) with the things' looks; dialogue and quiet shots as they were."""
-    first = {}
+def chain_heads(shots: list, chains: list, cast: list, crs: list, sides: dict, resolve) -> list:
+    """Each chain's head shot: the first replaced shot's staging row composed (or the chain's mended `head`, composed
+    the same way), `who` from that row only, the key from that picture (keyshot) with the things' looks.
+    -> [(the replaced shot numbers, the head shot)]."""
+    out = []
     for c in chains:
         sh = [x for x in c["shots"] if 1 <= x <= len(shots)]
-        if sh:
-            first[sh[0]] = (c, sh)
-    gone = {x for c, sh in first.values() for x in sh[1:]}
-    out = []
-    for n, x in enumerate(shots, 1):
-        if n in gone:
+        if not sh:
             continue
-        if n not in first:
-            out.append(x)
-            continue
-        c, sh = first[n]
+        x = shots[sh[0] - 1]
         hd = c.get("head") if isinstance(c.get("head"), dict) and c.get("head") else None
         if hd:
             row = {k_: v_ for k_, v_ in x.items() if k_ not in ("people", "setting", "who", "pose", "placed", "pose_end",
@@ -1523,15 +1515,51 @@ def chain_shots(shots: list, chains: list, cast: list, crs: list, sides: dict, r
             comp = compose(row, cast, crs, dict(sides), resolve, None)
         else:
             comp = dict(x)
-        for k_ in ("moment", "keyshot", "key_kind"):
+        for k_ in ("moment", "keyshot", "key_kind", "_chain", "start", "speaker", "listener"):
             comp.pop(k_, None)
         lines = [str(l).strip() for l in c["lines"]]
         th = {k_: v_ for k_, v_ in (c.get("things") or {}).items() if str(k_).strip() and str(v_).strip()}
         comp.update(kind="action", keyshot=comp["picture"], action=lines[0], things=th,
                     chain={"lines": lines, "shots": sh, "head_amended": bool(hd)},
-                    pose_end=shots[sh[-1] - 1].get("pose_end") or comp.get("pose_end"),
-                    _replaced=[shots[i - 1] for i in sh])        # (direct() carries on from these, then drops it)
-        out.append(comp)
+                    pose_end=shots[sh[-1] - 1].get("pose_end") or comp.get("pose_end"))
+        out.append((sh, comp))
+    return out
+
+
+def apply_chains(es: list, by: dict, log=print) -> list:
+    """After the set sheets (11-05: everything the director planned outside a chain stays exactly as it planned it,
+    set sheets and later passages included): the moments cut from one chain's replaced shots - and only those, every
+    moment carrying that chain's tag - become ONE moment with the chain's head shot, from the first one's start to
+    the next moment's start. The first moment's id is kept (its set sheet). -> the moments; `by` changed in place."""
+    out, done, i = [], set(), 0
+    sp = _spans(es)
+    while i < len(es):
+        e = es[i]
+        tag = ((by.get(e["id"]) or [{}])[0]).get("_chain")
+        if not tag or tag["key"] in done:
+            out.append(e)
+            i += 1
+            continue
+        j = i
+        while j < len(es) and (((by.get(es[j]["id"]) or [{}])[0]).get("_chain") or {}).get("key") == tag["key"]:
+            j += 1
+        grp = es[i:j]
+        d = sum(sp[x["id"]] for x in grp)
+        s0 = by[e["id"]][0]
+        cs = dict(tag["shot"])
+        cs.update(id=s0["id"], dur=d, place=s0.get("place"), kind="action",
+                  framing=cs.get("framing") if cs.get("framing") in ("wide", "medium", "close") else "medium")
+        for x in grp[1:]:
+            by.pop(x["id"], None)
+        by[e["id"]] = [cs]
+        out.append(dict(e, kind="action", dur=d, who=cs.get("who") or []))
+        done.add(tag["key"])
+        log(f"{cs['id']} ({d:.1f} s): chain of {len(cs['chain']['lines'])} line(s) over {len(grp)} moment(s) of the "
+            f"director's shots {cs['chain']['shots']}")
+        i = j
+    for v in by.values():
+        for x in v:
+            x.pop("_chain", None)
     return out
 
 
@@ -1986,10 +2014,12 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=1500)[0]
             chs = ask_chains(q0, a["shots"], cast, named_in, {w: describe(RGB, w, dress) for w in cast}, ask_,
                              sd / "passages" / f"p{mid_t:06d}.chains.json", log)
-            if chs:
-                a["shots"] = chain_shots(a["shots"], chs, cast, crs, screen, lambda v: cast_of(v, cast))
-                for c in chs:
-                    log(f"  passage {pa:.1f} s: chain over shots {c['shots']}: " + " | ".join(c["lines"]))
+            for j_, (nums, head) in enumerate(chain_heads(a["shots"], chs, cast, crs, screen,
+                                                          lambda v: cast_of(v, cast))):
+                tag = {"key": f"{mid_t}:{j_}", "shot": head}
+                for n_ in nums:         # (the cut below copies it onto every moment made from these shots)
+                    a["shots"][n_ - 1] = dict(a["shots"][n_ - 1], _chain=tag)
+                log(f"  passage {pa:.1f} s: chain over shots {nums}: " + " | ".join(head["chain"]["lines"]))
         shots = a.get("shots") or []
         if not shots:                   # nothing usable at all: said so, and the people here, still
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: no usable shots from the director (quiet shots instead)")
@@ -2004,8 +2034,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
             st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
         shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast), pts)
-        keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT
-                 or shots[i].get("chain")]
+        keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
         for x0, x, b in zip(shots, st, st[1:] + [sec]):
@@ -2027,7 +2056,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         # and a longer slot froze its last frame (1.4-3.5 s, five times in ten minutes): it is cut in even pieces
         cuts_ = [(p_, a_ + (b_ - a_) * j / k_, a_ + (b_ - a_) * (j + 1) / k_)
                  for p_, a_, b_ in cuts_
-                 for k_ in [1 if p_.get("kind") == "talk" or p_.get("chain") else max(1, math.ceil((b_ - a_) / (SHOT_MAX + 0.5)))]
+                 for k_ in [1 if p_.get("kind") == "talk" else max(1, math.ceil((b_ - a_) / (SHOT_MAX + 0.5)))]
                  for j in range(k_)]
 
         def held(w):                    # how someone is in the scene now: from the last shot that placed them
@@ -2038,7 +2067,6 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             return lp.get(w) in BED_POSE and bool(IN_BED.search(la.get(w, "")))
 
         sc_who = [w for w in (cast_of(v, cast) for v in sc_.get("who") or []) if w]   # everyone in the scene
-        chain_pics, chain_here = [], {}
         for x0, x, b in cuts_:
             t, d = pa + x, b - x
             if d < 0.4:
@@ -2167,36 +2195,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 where_of.update({w: place for w in sh.get("who") or []})
             elif place:
                 cut_where.update({w: place for w in sh.get("who") or []})
-            # a chain: what the director's own replaced shots would have left goes on to the next shots and passages
-            # (the last shot, the poses, who is where, the scene's pictures), so the director's later passages are
-            # asked exactly as before - a chain changes only its own stretch of the film
-            for r in sh.pop("_replaced", None) or []:
-                rp = next((w for w in [home] + others if RG.place_key(w) == RG.place_key(r.get("place"))), home)
-                rpic = r.get("picture", "")
-                if r.get("framing") == "close" and len(r.get("who") or []) == 1 and \
-                        len([w for w in sc_who if w not in crs]) > 1 and not rpic.startswith("a close view of"):
-                    rpic = f"a close view of {r['who'][0]}'s head and shoulders: " + rpic
-                prev_shot = dict(r, place=rp, picture=rpic)
-                chain_pics.append(rpic)
-                if rp == home:
-                    chain_here.setdefault(sh["id"], []).extend(r.get("who") or [])
-                lp, la = state_at(rp)
-                for pl in r.get("placed") or []:
-                    lp[pl["name"]] = pose_cat((r.get("pose_end") or {}).get(pl["name"])) or pl["pose"]
-                    if pl.get("at"):
-                        la[pl["name"]] = pl["at"]
-                if rp and (rp == home or not home):
-                    where_of.update({w: rp for w in r.get("who") or []})
-                elif rp:
-                    cut_where.update({w: rp for w in r.get("who") or []})
         pics_scene += [by[m_["id"]][0].get("picture", "") for m_ in new_es if float(m_["t"]) >= pa - 1e-6
-                       and by[m_["id"]][0].get("kind") != "talk" and not by[m_["id"]][0].get("chain")] + chain_pics
+                       and by[m_["id"]][0].get("kind") != "talk"]
         people_here = list(dict.fromkeys(people_here + [w for m_ in new_es if by.get(m_["id"]) and
-                                                         float(m_["t"]) >= pa for w in (
-                                                             chain_here.get(by[m_["id"]][0]["id"], [])
-                                                             if by[m_["id"]][0].get("chain") else
-                                                             by[m_["id"]][0]["who"]
-                                                             if by[m_["id"]][0].get("place") == home else [])]))
+                                                         by[m_["id"]][0].get("place") == home
+                                                         and float(m_["t"]) >= pa for w in by[m_["id"]][0]["who"]]))
         state = str(a.get("state_end") or state)[:600]
         for m_ in new_es:
             if float(m_["t"]) >= pa - 1e-6:
@@ -4269,10 +4272,12 @@ def pause_point(a: float, b: float, sents: list, quotes: list, end: float) -> fl
 
 
 def chain_pauses(book: Path, stem: str, es: list, by: dict, log=print) -> list:
-    """[{"t": the break (track s), "g": the pause (s), "shot": id, "absorb": [moment ids]}] for every chain whose clip
-    outlasts the narration up to its break. A break after the slot's end (the slot ends inside a line or a sentence)
-    stretches the chain over the moments up to it (they are dropped: the chain plays there); a talk moment is never
-    dropped - the chain then waits at its start."""
+    """[{"t": the narration's break (track s), "t_pic": the chain slot's end, "g": the pause, "shot": id}] for every
+    chain longer than its slot (its replaced shots' time). The chain plays its full length from its slot's start;
+    every moment after the slot keeps its shot, its picture moved on by g. The narration waits g at the break: in the
+    slot, or - the slot ends inside a spoken line or a sentence - after that line or sentence ends (then the moments
+    between the slot's end and the break show g after their words, never a talk moment: the break comes before
+    one)."""
     span = _spans(es)
     todo = [(i, e, s) for i, e in enumerate(es) for s in by.get(e["id"]) or [] if s.get("chain")]
     if not todo:
@@ -4283,56 +4288,44 @@ def chain_pauses(book: Path, stem: str, es: list, by: dict, log=print) -> list:
     quotes = [(float(x["t"]), float(y["t"])) for x, y in zip(tl, tl[1:] + [{"t": float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())}])
               if x.get("kind") == "quote" and x.get("speaker") not in (None, "", "narrator")]
     end = float(es[-1]["t"]) + float(span[es[-1]["id"]])
-    out, gone = [], set()
+    out = []
     for i, e, s in todo:
-        if e["id"] in gone:
-            continue
         a, d = float(e["t"]), float(span[e["id"]])
         b, T = a + d, chain_frames(len(s["chain"]["lines"])) / FPS
-        if T - d < 1.0 / FPS:
+        g = T - d
+        if g < 1.0 / FPS:
             continue
         p = pause_point(a, b, pts[0], quotes, end)
-        absorb = []
         for x in es[i + 1:]:
             if float(x["t"]) >= p - 1e-6:
                 break
             if any(z.get("kind") == "talk" for z in by.get(x["id"]) or []):
-                p = float(x["t"])
-                log(f"!!! {s['id']}: the break after the line is past a talk shot: the narration waits at its start")
+                p = float(x["t"])       # (a talk moment's start: a line's start, so never inside one)
                 break
-            absorb.append(x["id"])
-        gone.update(absorb)
-        g = max(0.0, T - (max(p, b) - a))
-        out.append({"t": round(p, 3), "g": round(g, 3), "shot": s["id"], "absorb": absorb})
+        out.append({"t": round(p, 3), "t_pic": round(b, 3), "g": round(g, 3), "shot": s["id"]})
         log(f"{s['id']}: the narration pauses {g:.2f} s at {p:.2f} s (slot {a:.2f}-{b:.2f} s, chain "
-            f"{chain_frames(len(s['chain']['lines']))} frames" + (f"; it plays on over {absorb}" if absorb else "") + ")")
+            f"{chain_frames(len(s['chain']['lines']))} frames)")
     return out
 
 
-def pause_map(t: float, pauses: list) -> float:
-    """A track second -> the paused video's second (a time at a break moves with what comes after it)."""
-    return t + sum(p["g"] for p in pauses or [] if t >= p["t"] - 1e-6)
+def pause_map(t: float, pauses: list, key: str = "t") -> float:
+    """A track second -> the paused video's second: the narration's (key "t", the break) or a picture's ("t_pic", the
+    chain slot's end); a time at the break moves with what comes after it."""
+    return t + sum(p["g"] for p in pauses or [] if t >= float(p.get(key, p["t"])) - 1e-6)
 
 
 def apply_pauses(es: list, by: dict, pauses: list) -> None:
-    """In place: the moments a chain plays on over dropped, the times through the map, each chain's moment and shot
-    as long as its clip."""
+    """In place: each chain's moment and shot as long as its clip; every moment after it moved on by its pause
+    (picture times). Nothing is dropped."""
     if not pauses:
         return
-    gone = {m for p in pauses for m in p.get("absorb") or []}
-    span = _spans(es)
-    t_of = {e["id"]: float(e["t"]) for e in es}
     of = {p["shot"]: p for p in pauses}
-    es[:] = [e for e in es if e["id"] not in gone]
-    for m in gone:
-        by.pop(m, None)
     for e in es:
         for s in by.get(e["id"]) or []:
             if s["id"] in of:
-                p = of[s["id"]]
-                d = max(p["t"], t_of[e["id"]] + span[e["id"]]) - t_of[e["id"]] + p["g"]
-                s["dur"] = e["dur"] = round(d, 4)
-        e["t"] = round(pause_map(float(e["t"]), pauses), 4)
+                s["dur"] = round(float(s["dur"]) + of[s["id"]]["g"], 4)
+                e["dur"] = round(float(e.get("dur") or 0) + of[s["id"]]["g"], 4)
+        e["t"] = round(pause_map(float(e["t"]), pauses, "t_pic"), 4)
 
 
 def _with_silence(src: Path, pauses: list, out: Path) -> Path:
@@ -4517,6 +4510,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
     sfx_plan(book, stem, log)                                 # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
+    es = apply_chains(es, by, log)                            # (after the sheets: they see the director's own shots)
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     shots = [s for e in es for s in by.get(e["id"], [])]
@@ -4537,7 +4531,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         if not shots:
             raise RuntimeError(f"the render window {render[0]:g}-{render[1]:g} s has no shots of the directed stretch")
     pauses = chain_pauses(book, stem, es, by, log)       # the narration's gaps for the chains (none: nothing moves)
-    if pauses:                                           # (before the keys: a moment a chain plays over is not drawn)
+    if pauses:                                           # (before the keys, so the plan saved has them)
         apply_pauses(es, by, pauses)
         shots = [s for e in es for s in by.get(e["id"], [])]
     _step(book, f"keyframes ({len(shots)} shots)")
