@@ -138,7 +138,9 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
         "role or era (habit, robe, wimple, cloak-and-hood) and don't make anyone look older "
         "than their age. Complexion in natural words (pale, sallow, ruddy, weathered), never "
         "a colour name like yellow or green.\n"
-        "- A place: its key features, as an empty establishing view.\n\n"
+        "- A place: its key features, as an empty establishing view.\n"
+        "\"characters\" holds only the people and creatures who appear; a place, a room or any other "
+        "location is never a character: it goes under \"places\" alone.\n\n"
         f"Then choose about {count} moments to illustrate, spread through the whole chapter "
         "(the first at P0 or close to it), each starting at the paragraph where it begins. "
         "Pick what a listener is picturing at that point: a face, an arrival, a room, a "
@@ -182,8 +184,9 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
     m = re.search(r"\{.*\}", reply, re.S)
     data = json.loads(m.group(0)) if m else {}
     look = data.get("look", {}) or {}
-    chars = look.get("characters") or {}
     places = look.get("places") or {}
+    chars = {k: v for k, v in (look.get("characters") or {}).items()     # (a place is never a character: 11-05)
+             if not _rg().place_named(k, v, places)}
     pics, last = [], -1
     for p in data.get("pictures", []):
         try:
@@ -659,6 +662,10 @@ def keep_looks(plan: dict, registry: Path) -> None:
     for kind in ("characters", "places", "props"):       # props: keyframes' objects (the safe, the band)
         reg.setdefault(kind, {})
         mine = plan["look"].setdefault(kind, {})
+        if kind == "characters":                         # a place is never stored as a character (11-05)
+            for name in [n for n, d in mine.items() if _rg().place_named(
+                    n, d, {**(plan["look"].get("places") or {}), **(reg.get("places") or {})})]:
+                mine.pop(name)
         for name in list(mine):
             key = registry_entry(reg, kind, name, R)
             if key is not None:
