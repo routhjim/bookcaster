@@ -11,7 +11,7 @@ def check(name, ok):
 sf = (HERE.parent / "shot_flow.py").read_text()
 rn = (HERE.parent / "ltx_runner" / "ltx_split_next.py").read_text()
 check("one gen call for action + talk with both route flags",
-      'kind = "two_talk" if two and talk' in sf and '["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk)' in sf
+      'kind = "two_talk" if h_two and h_talk' in sf and '["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk)' in sf
       and 'gen("two", two,' not in sf and 'gen("talk", talk,' not in sf)
 check("the combined jobs file is written", '("two_talk_jobs", two + talk)' in sf)
 check("the runner builds both pipelines over one DiT in a mixed hold", "mixed = a2v and ti2v" in rn and

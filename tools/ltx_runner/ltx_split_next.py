@@ -1362,7 +1362,8 @@ def order_jobs(todo: list, ti2v_default: bool = False) -> list:
     def cost(j):
         route = "a2vid" if j.get("audio") else ("ti2v" if ti2v_default or j.get("neg_extra") is not None else "a2vid")
         return (j.get("frames") or 0) * ORDER_COST.get(route, 1.0)
-    return sorted(todo, key=lambda j: -cost(j))     # stable: equal costs keep the plan's order
+    # 11-05: a job with "priority" (an action chain's line: the next line waits on its pick) goes first
+    return sorted(todo, key=lambda j: (-j.get("priority", 0), -cost(j)))     # stable: equal keep the plan's order
 
 
 def cmd_gen(args, jobs):
@@ -1751,6 +1752,7 @@ def cmd_gen(args, jobs):
             lane_loop(p, dev)
 
     running: set = set()
+    idle: dict = {"s": 0.0, "since": None, "gaps": []}
     queued = {j["name"] for j in todo}
 
     def more_jobs() -> bool:
@@ -1763,7 +1765,10 @@ def cmd_gen(args, jobs):
         new = [x for x in extra if x["name"] not in queued and not (out_dir / f"{x['name']}.mp4").exists()]
         for x in new:
             queued.add(x["name"])
-            todo.append(x)
+            if x.get("priority"):           # (an action chain's next line: ahead of the queued fill work)
+                todo.insert(next((i for i, y in enumerate(todo) if not y.get("priority")), len(todo)), x)
+            else:
+                todo.append(x)
         if new:
             log(f"{len(new)} more job(s) queued: {[x['name'] for x in new]}")
         return bool(new) or not Path(args.more_done).exists()
@@ -1792,6 +1797,14 @@ def cmd_gen(args, jobs):
                 else:
                     j = todo.pop(k)
                     running.add(j["name"])
+                # 11-05: the cards' idle time inside the hold - nothing in flight on any lane (a chain waiting on its
+                # pick, the queue dry): from when the last job finished to when the next one starts, logged at the end
+                if isinstance(j, dict) and idle["since"] is not None:
+                    idle["s"] += time.time() - idle["since"]
+                    idle["gaps"].append(round(time.time() - idle["since"], 1))
+                    idle["since"] = None
+                elif not isinstance(j, dict) and not running and idle["since"] is None and timings:
+                    idle["since"] = time.time()
             if j in (None, "wait") and PAIR is not None and (it := PAIR.take()) is not None:
                 PAIR.decode_a(it, lstate.lane)    # nothing runnable (e.g. a chained piece waits on a parked decode)
                 continue
@@ -1835,6 +1848,9 @@ def cmd_gen(args, jobs):
     if args.compile:
         log("[A]", compile_stats())
     log(f"done {n} jobs in {wall:.1f}s wall ({60 * n / max(wall, 1e-9):.2f} jobs/min, lanes={len(lanes)}); peak", vram())
+    log(f"cards idle inside the hold (nothing in flight, after the first clip): {idle['s']:.0f} s in "
+        f"{len(idle['gaps'])} gap(s) {idle['gaps'][:20]}"
+        + (f"; then {time.time() - idle['since']:.0f} s at the end" if idle['since'] is not None else ""))
     try:   # 11-03: allocator pressure on card A (retries = cache flushes = device-wide stalls)
         ms = torch.cuda.memory_stats(0)
         log("allocstats cuda:0 retries", ms.get("num_alloc_retries"), "ooms", ms.get("num_ooms"),
