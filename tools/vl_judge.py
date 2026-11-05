@@ -95,6 +95,21 @@ class Judge:
                                   max_new_tokens=max_new_tokens, do_sample=False, pad_token_id=pad)
         return {k: a.strip() for k, a in zip(ks, self.proc.batch_decode(out[:, ids.shape[1]:], skip_special_tokens=True))}
 
+    def ask_images(self, ims: list, question: str, max_new_tokens: int = 8, max_side: int = 1024) -> str:
+        """One question about SEVERAL pictures, each its own image in the one message at its own resolution (11-05
+        JT: three takes' sheets stacked into one picture reached the model at ~512x640, frames ~170x95 px)."""
+        out = []
+        for im in ims:
+            sc = max_side / max(im.size)
+            out.append(im.resize((max(28, round(im.width * sc)), max(28, round(im.height * sc)))) if sc < 1 else im)
+        msgs = [{"role": "user", "content": [{"type": "image", "image": im} for im in out] +
+                 [{"type": "text", "text": question}]}]
+        x = self.proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True, return_dict=True,
+                                          return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            o = self.m.generate(**x, max_new_tokens=max_new_tokens, do_sample=False)
+        return self.proc.batch_decode(o[:, x["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
+
     def box(self, im, what: str):
         """[x0, y0, x1, y1] in 0-1 of *what*, or None (Qwen3-VL grounding, 0-1000 coordinates)."""
         import re
@@ -127,6 +142,13 @@ def main() -> int:
         if not line.strip():
             continue
         q = json.loads(line)
+        if q.get("images"):             # several pictures, each question asked of all of them together
+            from PIL import Image
+            ims = [Image.open(p).convert("RGB") for p in q["images"]]
+            ans = {k: j.ask_images(ims, v, int(q.get("max_new_tokens", 8)), int(q.get("max_side", 1024)))
+                   for k, v in q["ask"].items()}
+            print(json.dumps({"id": q.get("id"), "answers": ans}), flush=True)
+            continue
         im = crop(q["image"], q.get("crop"))
         ans = j.ask_many(im, q["ask"], int(q.get("max_new_tokens", 8)))
         print(json.dumps({"id": q.get("id"), "answers": ans}), flush=True)

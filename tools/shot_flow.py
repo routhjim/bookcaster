@@ -1324,6 +1324,217 @@ def _write_keys(reply: str, ask, kind_of) -> tuple:
     return reply[:m.start()] + json.dumps(data) + reply[m.end():], n
 
 
+# 11-05 (loop P47/P48, user: "lock in the best known setup"): an action passage's continuous physical action is played
+# as a CHAIN of one-move clips, each starting on the last frame of the take picked before it. The chain ask (P47's C4,
+# one user message after the director's answer) writes the lines; its head key is the first replaced shot's own
+# staging row through compose() (G5 route a), with each thing's look (CHANGES 55, 56). Filled with str.replace (the
+# text has JSON braces). 11-05 user, on "runs forward" read as toward the camera: "the direction should be runs toward
+# the dragon" - the one rule added to C4, in general words
+CHAINS = os.environ.get("BOOKCASTER_CHAINS", "1") != "0"
+CHAIN_ASK = """You plan the ACTION CHAINS of one passage of a film made from a book. The passage, as the film's director was given it:
+
+{q0}
+
+The director has cut this passage into these shots (start in seconds from the passage's start, kind, who is in it):
+{shot_list}
+
+How the director staged the shots that are not talk (who is where, and the things set up for them):
+{staging}
+
+The look to call each one by in the lines:
+{looks}
+
+The video model makes each clip from ONE short line of words, starting from the last picture of the clip before it: it plays one move in a clip well and loses a second one, and a line whose move does not fit that last picture goes wrong. Wherever the passage tells one continuous physical action of more than one step (one move leading straight into the next, by the same bodies or things), write that action as a CHAIN:
+- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
+- A move that goes somewhere is told by where it goes relative to someone or something in the picture: toward, away from, past or around them. Never forward, back, left or right on their own: the video model reads those from the viewer.
+- "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
+- "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks, so that a painter draws the right object: its shape, material, size and colour in at most 12 plain words, without the book's name for it. Only things in the passage or the staging.
+- "shots": the numbers of the director's consecutive shots whose time this action covers. None of them is a talk shot. The chain takes their place. A cut to someone only watching, or to another place, is not part of a chain.
+- The video model reads each line alone and knows no names: call each one by the look given for them above, the same in every line. Never a name, never he, she, it or they, and never begin a line with his, her, its or their.
+- Only what the passage and the staging tell: no side, place or detail it does not give, and nothing from after it.
+- "from_last_shot": true only when the first line goes straight on from the director's last shot before this passage, with no cut in time; else false.
+A single move, talk and quiet moments are not chains. Reply with JSON only: {"chains": [{"lines": ["...", "..."], "head": {}, "things": {"<name of the thing>": "<how it looks>"}, "shots": [3, 4], "from_last_shot": false}]}, or {"chains": []} when there is none."""
+CHAIN_OPEN = re.compile(r"^(his|her|its|their)\b", re.I)
+CHAIN_PRON = re.compile(r"\b(he|she|it|they)\b", re.I)
+
+
+def _chain_message(q0: str, shots: list, looks: dict) -> str:
+    """The chain ask filled from the director's question (its shot count line left out) and its composed shots."""
+    q0b = "\n".join(x for x in q0.replace("{fix}", "").split("\n") if not re.fullmatch(r"About \d+ to \d+ shots\..*", x))
+
+    def names(x):
+        if x.get("kind") == "talk":
+            return str(x.get("speaker") or "").strip() or "nobody"
+        return ", ".join(str(p.get("name")) for p in x.get("people") or [] if isinstance(p, dict) and p.get("name"))
+
+    def prow(p_):
+        return (f"{p_.get('name')} ({p_.get('side')}, {p_.get('pose')}, {p_.get('at')}, facing {p_.get('facing')}, "
+                f"holds {p_.get('holds') or 'nothing'})")
+    sl = "\n".join(f"{n}. {float(x.get('start') or 0):.1f} s {x.get('kind')}: {names(x)}" for n, x in enumerate(shots, 1))
+    stg = "\n".join(f"{n}. " + "; ".join(prow(p_) for p_ in x.get("people") or [] if isinstance(p_, dict))
+                    + (f"; setting: {x.get('setting')}" if x.get("setting") else "")
+                    for n, x in enumerate(shots, 1) if x.get("kind") != "talk")
+    lk = "\n".join(f"{w} = {v}" for w, v in looks.items())
+    return CHAIN_ASK.replace("{shot_list}", sl).replace("{staging}", stg).replace("{looks}", lk).replace("{q0}", q0b)
+
+
+def _chain_faults(reply: str, shots: list, cast: list, named_in, looks: dict) -> tuple:
+    """P47's C4 format faults -> (all faults, per-chain faults, the chains or None)."""
+    m = re.search(r"\{.*\}", reply or "", re.S)
+    try:
+        d = json.loads(m.group(0)) if m else None
+    except ValueError:
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("chains"), list):
+        return ["the reply is not JSON with a \"chains\" list"], [], None
+
+    def looked(t):
+        return [w for w in cast if looks.get(w) and looks[w].lower() in str(t or "").lower()]
+    out, per, seen = [], [], {}
+    for j, c in enumerate(d["chains"], 1):
+        f = []
+        if not isinstance(c, dict):
+            f.append(f"chain {j} is not an object")
+            out += f
+            per.append(f)
+            continue
+        sh = c.get("shots")
+        mem = []
+        if not isinstance(sh, list) or not sh or not all(isinstance(x, int) for x in sh):
+            f.append(f"chain {j}: \"shots\" is not a list of shot numbers")
+        else:
+            if any(x < 1 or x > len(shots) for x in sh):
+                f.append(f"chain {j}: shots {sh} are out of range (1-{len(shots)})")
+            if sh != list(range(sh[0], sh[0] + len(sh))):
+                f.append(f"chain {j}: shots {sh} are not consecutive")
+            tk = [x for x in sh if 1 <= x <= len(shots) and str(shots[x - 1].get("kind")) == "talk"]
+            if tk:
+                f.append(f"chain {j}: shot(s) {tk} are talk shots")
+            ov = sorted({x for x in sh if x in seen})
+            if ov:
+                f.append(f"chain {j}: shot(s) {ov} are also in chain {seen[ov[0]]}")
+            for x in sh:
+                seen.setdefault(x, j)
+            mem = list(dict.fromkeys(w for x in sh if 1 <= x <= len(shots) for w in shots[x - 1].get("who") or []))
+        hd = c.get("head")
+        if hd not in (None, {}):
+            if not isinstance(hd, dict):
+                f.append(f"chain {j}: \"head\" is not an object")
+            else:
+                pp = hd.get("people")
+                if not isinstance(pp, list) or not all(isinstance(p_, dict) and all(isinstance(v_, str) for v_ in p_.values())
+                                                       for p_ in pp):
+                    f.append(f"chain {j}: \"head\" people must be a list of objects with string fields")
+                else:
+                    bad = [str(p_.get("name")) for p_ in pp if p_.get("name") not in cast]
+                    if bad:
+                        f.append(f"chain {j}: \"head\" people {', '.join(bad)} are not names from the cast "
+                                 f"({', '.join(cast)})")
+                if not isinstance(hd.get("setting", ""), str):
+                    f.append(f"chain {j}: \"head\" setting must be a string")
+                elif named_in(hd.get("setting") or "", cast) or looked(hd.get("setting")):
+                    f.append(f"chain {j}: \"head\" setting has a person in it: the setting holds things and light only")
+        th = c.get("things")
+        if th is not None:
+            if not isinstance(th, dict) or not all(isinstance(k_, str) and isinstance(v_, str) for k_, v_ in th.items()):
+                f.append(f"chain {j}: \"things\" must be an object of name to look")
+            else:
+                long_ = [k_ for k_, v_ in th.items() if len(v_.split()) > 16]
+                if long_:
+                    f.append(f"chain {j}: the look of {', '.join(long_)} is over 16 words (at most 12)")
+        ln = c.get("lines")
+        if not isinstance(ln, list) or not ln:
+            f.append(f"chain {j}: \"lines\" is empty")
+        else:
+            if len(ln) > 4:
+                f.append(f"chain {j} has {len(ln)} lines (at most 4)")
+            if len(ln) == 1:                    # (the ask's own rule: a single move is not a chain)
+                f.append(f"chain {j} has one line: a single move is not a chain, leave it out")
+            for i, l in enumerate(ln, 1):
+                if not isinstance(l, str):
+                    f.append(f"chain {j} line {i} is not a sentence")
+                    continue
+                if CHAIN_OPEN.match(l.strip()):
+                    f.append(f"chain {j} line {i} begins with {CHAIN_OPEN.match(l.strip()).group(0)}")
+                o_ = [w for w in cast if w not in mem and (w in named_in(l, cast) or w in looked(l))]
+                if o_ and mem:
+                    f.append(f"chain {j} line {i} has {', '.join(o_)}, who is not in the shots it takes the place of")
+                nm = named_in(l, cast)
+                if nm:
+                    f.append(f"chain {j} line {i} names {', '.join(nm)}")
+                pr = sorted({x.group(0) for x in CHAIN_PRON.finditer(l)})
+                if pr:
+                    f.append(f"chain {j} line {i} has the pronoun {', '.join(pr)}")
+                if len(l.split()) > 30:
+                    f.append(f"chain {j} line {i} has {len(l.split())} words (at most 25)")
+        out += f
+        per.append(f)
+    return out, per, d["chains"]
+
+
+def ask_chains(q0: str, shots: list, cast: list, named_in, looks: dict, ask, cache: Path, log=print) -> list:
+    """The chain ask for one passage (as P47 ran it: one re-ask on format faults; a chain still faulted is dropped,
+    every chain when the re-ask came back the same). Cached by the message in `cache`. -> the kept chains."""
+    msg = _chain_message(q0, shots, looks)
+    k = MF._h(msg + "|faults 2")                # (the fault rules are part of what was kept)
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    if got.get("k") == k and isinstance(got.get("chains"), list):
+        return got["chains"]
+    msgs = [{"role": "user", "content": msg}]
+    r = ask(msgs)
+    f1, per, ch = _chain_faults(r, shots, cast, named_in, looks)
+    calls = [{"reply": r, "faults": f1}]
+    if f1:
+        fix = "Your last answer broke the rules: " + "; ".join(f1) + ". Write it again, all the chains."
+        r2 = ask(msgs + [{"role": "assistant", "content": r}, {"role": "user", "content": fix}])
+        f2, per, ch = _chain_faults(r2, shots, cast, named_in, looks)
+        calls.append({"ask": fix, "reply": r2, "faults": f2, "same_reply": r2 == r})
+        if r2 == r:
+            ch = None
+    kept = [c for c, f in zip(ch or [], per) if not f and isinstance(c, dict)]
+    log(f"  chains: {len(kept)} kept of {len(ch or [])}" + (f" (faults: {calls[-1]['faults'][:3]})" if calls[-1]["faults"] else ""))
+    cache.write_text(json.dumps({"k": k, "message": msg, "calls": calls, "chains": kept}, indent=1))
+    return kept
+
+
+def chain_shots(shots: list, chains: list, cast: list, crs: list, sides: dict, resolve) -> list:
+    """The passage's shots with each chain's replaced shots made ONE action shot: its head = the first replaced
+    shot's staging row composed (or the chain's mended `head`, composed the same way), `who` from that row only, the
+    key from that picture (keyshot) with the things' looks; dialogue and quiet shots as they were."""
+    first = {}
+    for c in chains:
+        sh = [x for x in c["shots"] if 1 <= x <= len(shots)]
+        if sh:
+            first[sh[0]] = (c, sh)
+    gone = {x for c, sh in first.values() for x in sh[1:]}
+    out = []
+    for n, x in enumerate(shots, 1):
+        if n in gone:
+            continue
+        if n not in first:
+            out.append(x)
+            continue
+        c, sh = first[n]
+        hd = c.get("head") if isinstance(c.get("head"), dict) and c.get("head") else None
+        if hd:
+            row = {k_: v_ for k_, v_ in x.items() if k_ not in ("people", "setting", "who", "pose", "placed", "pose_end",
+                                                                  "picture")}
+            row.update(people=hd.get("people") or [], setting=hd.get("setting") or "")
+            comp = compose(row, cast, crs, dict(sides), resolve, None)
+        else:
+            comp = dict(x)
+        for k_ in ("moment", "keyshot", "key_kind"):
+            comp.pop(k_, None)
+        lines = [str(l).strip() for l in c["lines"]]
+        th = {k_: v_ for k_, v_ in (c.get("things") or {}).items() if str(k_).strip() and str(v_).strip()}
+        comp.update(kind="action", keyshot=comp["picture"], action=lines[0], things=th,
+                    chain={"lines": lines, "shots": sh, "head_amended": bool(hd)},
+                    pose_end=shots[sh[-1] - 1].get("pose_end") or comp.get("pose_end"),
+                    _replaced=[shots[i - 1] for i in sh])        # (direct() carries on from these, then drops it)
+        out.append(comp)
+    return out
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -1766,6 +1977,19 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         if a.get("shots"):               # the conversation goes on with this passage and its answer (the bad tries dropped)
             talk_ += [{"role": "user", "content": q0.replace("{fix}", "")},
                       {"role": "assistant", "content": reply or json.dumps(a)}]
+        if CHAINS and any(x.get("kind") == "action" for x in a.get("shots") or []):
+            def ask_(msgs):
+                nonlocal animate_up
+                if not animate_up:
+                    animate.igpu("strata", log)
+                    animate_up = True
+                return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=1500)[0]
+            chs = ask_chains(q0, a["shots"], cast, named_in, {w: describe(RGB, w, dress) for w in cast}, ask_,
+                             sd / "passages" / f"p{mid_t:06d}.chains.json", log)
+            if chs:
+                a["shots"] = chain_shots(a["shots"], chs, cast, crs, screen, lambda v: cast_of(v, cast))
+                for c in chs:
+                    log(f"  passage {pa:.1f} s: chain over shots {c['shots']}: " + " | ".join(c["lines"]))
         shots = a.get("shots") or []
         if not shots:                   # nothing usable at all: said so, and the people here, still
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: no usable shots from the director (quiet shots instead)")
@@ -1780,7 +2004,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
             st[i] = min(max(st[i], st[i - 1] + 1.0), sec - 0.5)
         shots, st = _talk_cuts(shots, st, sec, pa, spans, voices, lambda v: cast_of(v, cast), pts)
-        keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT]
+        keep_ = [i for i in range(len(st)) if i == 0 or (st[i + 1] if i + 1 < len(st) else sec) - st[i] >= SHOT_SHORT
+                 or shots[i].get("chain")]
         shots, st = [shots[i] for i in keep_], [st[i] for i in keep_]     # a too-short shot: the one before runs on
         cuts_ = []
         for x0, x, b in zip(shots, st, st[1:] + [sec]):
@@ -1802,7 +2027,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         # and a longer slot froze its last frame (1.4-3.5 s, five times in ten minutes): it is cut in even pieces
         cuts_ = [(p_, a_ + (b_ - a_) * j / k_, a_ + (b_ - a_) * (j + 1) / k_)
                  for p_, a_, b_ in cuts_
-                 for k_ in [1 if p_.get("kind") == "talk" else max(1, math.ceil((b_ - a_) / (SHOT_MAX + 0.5)))]
+                 for k_ in [1 if p_.get("kind") == "talk" or p_.get("chain") else max(1, math.ceil((b_ - a_) / (SHOT_MAX + 0.5)))]
                  for j in range(k_)]
 
         def held(w):                    # how someone is in the scene now: from the last shot that placed them
@@ -1813,6 +2038,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             return lp.get(w) in BED_POSE and bool(IN_BED.search(la.get(w, "")))
 
         sc_who = [w for w in (cast_of(v, cast) for v in sc_.get("who") or []) if w]   # everyone in the scene
+        chain_pics, chain_here = [], {}
         for x0, x, b in cuts_:
             t, d = pa + x, b - x
             if d < 0.4:
@@ -1941,11 +2167,36 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 where_of.update({w: place for w in sh.get("who") or []})
             elif place:
                 cut_where.update({w: place for w in sh.get("who") or []})
+            # a chain: what the director's own replaced shots would have left goes on to the next shots and passages
+            # (the last shot, the poses, who is where, the scene's pictures), so the director's later passages are
+            # asked exactly as before - a chain changes only its own stretch of the film
+            for r in sh.pop("_replaced", None) or []:
+                rp = next((w for w in [home] + others if RG.place_key(w) == RG.place_key(r.get("place"))), home)
+                rpic = r.get("picture", "")
+                if r.get("framing") == "close" and len(r.get("who") or []) == 1 and \
+                        len([w for w in sc_who if w not in crs]) > 1 and not rpic.startswith("a close view of"):
+                    rpic = f"a close view of {r['who'][0]}'s head and shoulders: " + rpic
+                prev_shot = dict(r, place=rp, picture=rpic)
+                chain_pics.append(rpic)
+                if rp == home:
+                    chain_here.setdefault(sh["id"], []).extend(r.get("who") or [])
+                lp, la = state_at(rp)
+                for pl in r.get("placed") or []:
+                    lp[pl["name"]] = pose_cat((r.get("pose_end") or {}).get(pl["name"])) or pl["pose"]
+                    if pl.get("at"):
+                        la[pl["name"]] = pl["at"]
+                if rp and (rp == home or not home):
+                    where_of.update({w: rp for w in r.get("who") or []})
+                elif rp:
+                    cut_where.update({w: rp for w in r.get("who") or []})
         pics_scene += [by[m_["id"]][0].get("picture", "") for m_ in new_es if float(m_["t"]) >= pa - 1e-6
-                       and by[m_["id"]][0].get("kind") != "talk"]
+                       and by[m_["id"]][0].get("kind") != "talk" and not by[m_["id"]][0].get("chain")] + chain_pics
         people_here = list(dict.fromkeys(people_here + [w for m_ in new_es if by.get(m_["id"]) and
-                                                         by[m_["id"]][0].get("place") == home
-                                                         and float(m_["t"]) >= pa for w in by[m_["id"]][0]["who"]]))
+                                                         float(m_["t"]) >= pa for w in (
+                                                             chain_here.get(by[m_["id"]][0]["id"], [])
+                                                             if by[m_["id"]][0].get("chain") else
+                                                             by[m_["id"]][0]["who"]
+                                                             if by[m_["id"]][0].get("place") == home else [])]))
         state = str(a.get("state_end") or state)[:600]
         for m_ in new_es:
             if float(m_["t"]) >= pa - 1e-6:
@@ -2401,8 +2652,12 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
         room1 = (re.split(r"(?<=[.;])\s+", room) or [""])[0].rstrip(".")
         place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
         pic = str(s["keyshot"]).strip().rstrip(".")
-        for k_, v_ in GLOSS.items():
-            pic = re.sub(k_, v_, pic, count=1, flags=re.I)
+        th = s.get("things") or {}          # a chain head: each thing's look from the chain ask (CHANGES 56), in
+        for k_, v_ in GLOSS.items():        # place of a hand-written gloss for the same word
+            if not any(re.search(k_, nm, re.I) for nm in th):
+                pic = re.sub(k_, v_, pic, count=1, flags=re.I)
+        for nm in sorted(th, key=len, reverse=True):
+            pic = re.sub(rf"\b{re.escape(nm)}\b(?!\s*\()", lambda m_, v=th[nm]: m_.group(0) + f" ({v})", pic, flags=re.I)
         return (f"{pic}. {'. '.join(ids)}. In {place}{': ' + room1 if room1 else ''}. "
                 f"{MF.period_line(book)} {style} No text.").replace("..", ".").replace("  ", " ")
     people = []
@@ -2902,7 +3157,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
              for k in {e.get("speaker") for e in es if e.get("speaker")}}
     for k, v in sorted(pitch.items()):
         log(f"voice {k}: pitch {v and round(v)} Hz -> LTX hears {drive_af(v).split(',')[0]}")
-    enc_dev, enc_dist, two, quiet, talk = [], [], [], [], []
+    enc_dev, enc_dist, two, quiet, talk, chains = [], [], [], [], [], []
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
         key = sd / mid / s["id"] / "key.png"
@@ -2950,6 +3205,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
+        elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
+            if not (retake and s["id"] not in retake):
+                _chain_state(L, s, key)
+                chains.append(s["id"])
         elif s["kind"] == "action":
             act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
@@ -2998,6 +3257,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, TALK_TAKES))] + \
                         [L / "out" / f"{j['name']}.judged", L / "out" / f"{j['name']}.synced"]:
                     x.unlink(missing_ok=True)
+    for sid in chains:                  # every chain line's words, known in advance: encoded with the rest
+        st = json.loads((L / "chains" / f"{sid}.json").read_text())
+        for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
+            e_ = _chain_emb(sid, t_)
+            enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
         (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
@@ -3028,21 +3292,67 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         R.encode_chunked(cxl, L / "enc_dev.json", "enc_dev", ["--dev"])
     if enc_dist:
         R.encode_chunked(cxl, L / "enc_dist.json", "enc_dist", [])
-    if two or talk:
+    def chain_firsts():
+        """Each unfinished chain's current line: its takes not made yet (their words encoded)."""
+        out = []
+        for sid in chains:
+            st = json.loads((L / "chains" / f"{sid}.json").read_text())
+            if st["done"]:
+                continue
+            k = next(i for i, p in enumerate(st["picks"], 1) if not p)
+            out += [j for j in _chain_jobs(st, k) if not (L / "out" / f"{j['name']}.mp4").exists()
+                    and (L / "emb" / f"{j['emb']}.pt").exists()]
+        return out
+    first = True
+    for rnd in range(4):                # 11-05: a chain line overridden in review needs its words encoded: another hold
+        firsts = []
+        if chains:
+            if not first:
+                enc_c = []
+                for sid in chains:
+                    st = json.loads((L / "chains" / f"{sid}.json").read_text())
+                    if not st["done"]:
+                        for t_ in st["lines"]:
+                            e_ = _chain_emb(sid, t_)
+                            enc_c += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
+                if enc_c:
+                    (L / "enc_chain.json").write_text(json.dumps(list({x["name"]: x for x in enc_c}.values()), indent=1))
+                    R.encode_chunked(cxl, L / "enc_chain.json", "enc_chain", ["--dev"])
+            for sid in chains:
+                st = json.loads((L / "chains" / f"{sid}.json").read_text())
+                if st.pop("blocked", None):
+                    _chain_save(L, st)
+            # what is rendered already (a resumed render): judged, picked, joined before the hold
+            _chains_as_they_land(sd, chains, None, set(), threading.Event(), log, REVIEW)
+            firsts = chain_firsts()
+        h_two, h_talk = (two, talk) if first else ([], [])
+        if not (h_two or h_talk or firsts):
+            if rnd == 3 or all(json.loads((L / "chains" / f"{sid}.json").read_text())["done"] for sid in chains):
+                break
+            # only review cards left (a resumed render): their answers, then the next round renders what they asked
+            _chains_as_they_land(sd, chains, None, set(), threading.Event(), log, REVIEW, True)
+            first = False
+            continue
         # 10-28 user: action and talk in ONE hold (the same dev DiT, loaded once). On the iGPU meanwhile: each action
         # take judged as it lands (10-24: a faulted one's retake joins the loaded runner's queue), and each talk shot
-        # measured by SyncNet and body-checked as it lands (a faulted one-piece talk shot retaken the same way)
+        # measured by SyncNet and body-checked as it lands (a faulted one-piece talk shot retaken the same way).
+        # 11-05 user: every action chain in this same hold, each advancing as soon as its pick lands, first in the
+        # queue; the talk and single action shots fill the cards meanwhile ("so the evaluation of which is best
+        # doesn't let the cards go idle")
         more, done = L / "two_more.json", L / "two_more.done"
         more.write_text("[]")
         done.unlink(missing_ok=True)
         stop = threading.Event()
         ths = []
-        if two:
+        if h_two:
             ths.append(threading.Thread(target=_judge_as_they_land, daemon=True,
-                                        args=(L / "out", two, more, L / "two_more.adone", stop, log)))
-        if talk:
+                                        args=(L / "out", h_two, more, L / "two_more.adone", stop, log)))
+        if h_talk:
             ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
-                                        args=(book, R, L, talk, stop, log, True, more)))
+                                        args=(book, R, L, h_talk, stop, log, True, more)))
+        if firsts:
+            ths.append(threading.Thread(target=_chains_as_they_land, daemon=True,
+                                        args=(sd, chains, more, {j["name"] for j in firsts}, stop, log, REVIEW)))
         for th in ths:
             th.start()
 
@@ -3052,18 +3362,25 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             done.write_text("done")
         tc = threading.Thread(target=closer, daemon=True)
         tc.start()
-        kind = "two_talk" if two and talk else "two" if two else "talk"
+        kind = "two_talk" if h_two and h_talk else "two" if h_two else "talk"
+        if firsts:
+            kind = "hold"
+            (L / "hold_jobs.json").write_text(json.dumps(firsts + h_two + h_talk, indent=1))
         try:
-            gen(kind, two + talk, ["--ti2v"] * bool(two) + ["--a2vid"] * bool(talk) +
+            gen(kind, firsts + h_two + h_talk, ["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk) +
                 ["--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
-                F._pp_split(sd, "a2vid" if talk else "ti2v", 25 if talk else 24))
+                F._pp_split(sd, "a2vid" if h_talk else "ti2v", 25 if h_talk else 24))
         finally:
             stop.set()
             for th in ths:
                 th.join(600)
-        if talk:
-            _stitch_talk(book, R, L, talk, log)             # what the thread didn't get to (cached: seconds)
-            _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in talk}), log)
+        if h_talk:
+            _stitch_talk(book, R, L, h_talk, log)             # what the thread didn't get to (cached: seconds)
+            _sync_offsets(book, L, sorted({j["name"].rsplit("_c", 1)[0] for j in h_talk}), log)
+        first = False
+    left_ = [sid for sid in chains if not json.loads((L / "chains" / f"{sid}.json").read_text())["done"]]
+    if left_:
+        log(f"!!! chains not finished: {left_} (their key is held)")
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
@@ -3182,6 +3499,281 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
         done.write_text("done")
 
 
+# ---- action chains: each line in CHAIN_TAKES seeds; the next line starts on the picked take's last frame (11-05)
+CHAIN_FRAMES = 97                       # every chain line is one 4 s clip (P48)
+CHAIN_SEEDS = (42, 1042, 2042)
+REVIEW = os.environ.get("BOOKCASTER_REVIEW", "off")       # off | agent | user (run(review=...) sets it)
+REVIEW_TIMEOUT = 600.0                  # a review card unanswered this long takes the judge's pick
+CHAIN_POLL = 3.0
+
+
+def chain_frames(n_lines: int) -> int:
+    """A chain's joined length: each line 97 frames, the first frame of every chained line dropped (overlap 1)."""
+    return n_lines * CHAIN_FRAMES - (n_lines - 1)
+
+
+def _chain_emb(sid: str, text: str) -> str:
+    return f"c_{sid}_{MF._h(text + MF.FIGHT_NEG)}"
+
+
+def _chain_take(sid: str, k: int, v: int, i: int) -> str:
+    """Line k (1-based), version v (an override's re-render), take i (0-2)."""
+    return f"{sid}_x{k}{f'v{v}' if v else ''}{'abc'[i]}"
+
+
+def _chain_state(L: Path, s: dict, key: Path) -> dict:
+    """A chain's progress (L/chains/<id>.json): its lines (an override replaces one), each line's version and pick.
+    Started again (its takes deleted) when the director's lines or the key changed."""
+    f = L / "chains" / f"{s['id']}.json"
+    f.parent.mkdir(exist_ok=True)
+    lines = list(s["chain"]["lines"])
+    sig = MF._h(json.dumps([lines, key.stat().st_mtime_ns if key.exists() else 0]))
+    st = json.loads(f.read_text()) if f.exists() else {}
+    if st.get("sig") != sig:
+        for x in (L / "out").glob(f"{s['id']}_x*"):
+            x.unlink()
+        (L / "out" / f"{s['id']}.mp4").unlink(missing_ok=True)
+        st = {"sig": sig, "id": s["id"], "director_lines": lines, "lines": list(lines), "ver": [0] * len(lines),
+              "picks": [None] * len(lines), "judge": {}, "done": False, "people": len(s.get("who") or []) or None,
+              "key": str(key)}
+        f.write_text(json.dumps(st, indent=1))
+    return st
+
+
+def _chain_save(L: Path, st: dict) -> None:
+    f = L / "chains" / f"{st['id']}.json"
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1))
+    os.replace(tmp, f)
+
+
+def _chain_jobs(st: dict, k: int) -> list:
+    """The CHAIN_TAKES jobs of line k (1-based) at its current version: line 1 from the key, the others from the
+    pick before (its last frame at full strength, overlap 1, no seam re-renders); first in the runner's queue."""
+    sid, v, text = st["id"], st["ver"][k - 1], st["lines"][k - 1]
+    out = []
+    for i, sd_ in enumerate(CHAIN_SEEDS):
+        j = {"name": _chain_take(sid, k, v, i), "emb": _chain_emb(sid, text), "prompt": text, "width": W, "height": H,
+             "fps": FPS, "seed": sd_ + shot_seed(sid) + 10 * k + 100 * v, "frames": CHAIN_FRAMES, "line": sid,
+             "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER,
+             "people": st.get("people"), "priority": 1}
+        if k == 1:
+            j["images"] = [{"path": st["key"], "frame": 0, "strength": 1.0}]
+        else:
+            j.update(chain_from=st["picks"][k - 2], chain_frame=CHAIN_FRAMES - 1, overlap=1, seam_tries=0,
+                     chain_strength=1.0, images=[])
+        out.append(j)
+    return out
+
+
+def _take_sheet(mp4: Path, out: Path) -> Path:
+    """Six frames of a take (10/30/50/70/85/97 %) in a 2x3 sheet, time order left to right, top to bottom (P48)."""
+    from PIL import Image
+    if out.exists() and out.stat().st_mtime >= mp4.stat().st_mtime:
+        return out
+    n = int(subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
+                            "stream=nb_read_frames", "-of", "csv=p=0", str(mp4)], capture_output=True, text=True).stdout
+            .strip() or 0)
+    idx = [min(max(n - 1, 0), round(f * (n - 1))) for f in (0.10, 0.30, 0.50, 0.70, 0.85, 0.97)]
+    tmp = out.with_name(out.stem + "_f")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(mp4), "-vf",
+                    "select='" + "+".join(f"eq(n\\,{i})" for i in idx) + "'", "-vsync", "vfr", f"{tmp}_%d.png"],
+                   check=True)
+    fr = [Path(f"{tmp}_{i + 1}.png") for i in range(len(idx))]
+    ims = [Image.open(f).convert("RGB") for f in fr if f.exists()]
+    w, h = ims[0].size
+    w2, h2 = w // 2, h // 2
+    sh = Image.new("RGB", (w2 * 3, h2 * 2))
+    for i, im in enumerate(ims):
+        sh.paste(im.resize((w2, h2)), ((i % 3) * w2, (i // 3) * h2))
+    sh.save(out, quality=90)
+    for f in fr:
+        f.unlink(missing_ok=True)
+    return out
+
+
+def _side_by_side(sheets: list, out: Path) -> Path:
+    """The takes' sheets side by side, labelled A / B / C above each (the review card's picture)."""
+    from PIL import Image, ImageDraw, ImageFont
+    ims = [Image.open(x).convert("RGB") for x in sheets]
+    w, h = ims[0].size
+    lab = 70
+    im = Image.new("RGB", (w * len(ims) + 20 * (len(ims) - 1), h + lab), "white")
+    d = ImageDraw.Draw(im)
+    try:
+        font = ImageFont.load_default(size=56)
+    except TypeError:
+        font = None
+    for i, x in enumerate(ims):
+        im.paste(x, (i * (w + 20), lab))
+        d.text((i * (w + 20) + w // 2 - 20, 5), "ABC"[i], fill="black", font=font)
+    im.save(out, quality=88)
+    return out
+
+
+CHAIN_PICK_ASK = ("These pictures are three takes of one video clip: take {A} is the first picture, take {B} the "
+                  "second, take {C} the third. Each picture is six frames of its take in time order, left to right, "
+                  "top to bottom. Which take best shows this happen: \"{line}\", with the same people and creatures "
+                  "as at its start still there, nobody extra, and nobody changed into someone or something else? "
+                  "Answer with one letter.")
+CHAIN_NEXT_ASK = ("These pictures are three takes of one video clip: take {A} is the first picture, take {B} the "
+                  "second, take {C} the third. Each picture is six frames of its take in time order, left to right, "
+                  "top to bottom. The next clip starts from the last frame of the chosen take and must show this: "
+                  "\"{line}\". Which take ends in the best picture to start it from? Answer with one letter.")
+
+
+def _judge_chain_line(st: dict, k: int, takes: list, J: Path, log) -> dict:
+    """The vision judge RANKS the three takes against each other and always returns one (11-05 user: "we really
+    only need the judge to pick the best or least bad of the 3"). Each take's sheet is its own picture at its own
+    resolution, shown in an order shuffled per line and mapped back (11-05 JT: the stacked picture reached the model
+    at ~512x640, and it answered B in 16 of 32 groups). -> {"pick": 0-2, "order", "answers", "sheets"}."""
+    import random
+    import characters as CH
+    sheets = [_take_sheet(t, J / f"{t.stem}_sheet.jpg") for t in takes]
+    order = list(range(len(takes)))
+    random.Random(f"{st['id']}|{k}|{st['ver'][k - 1]}").shuffle(order)       # shown position p = take order[p]
+    lab = dict(zip("ABC", "ABC"))
+    nxt = st["lines"][k] if k < len(st["lines"]) else None
+    ask = {"best": CHAIN_PICK_ASK.format(line=st["lines"][k - 1], **lab)}
+    if nxt:
+        ask["next"] = CHAIN_NEXT_ASK.format(line=nxt, **lab)
+    t0 = time.time()
+    a = CH.vl_ask([{"id": "pick", "images": [str(sheets[i]) for i in order], "ask": ask, "max_new_tokens": 4}]).get("pick") or {}
+
+    def letter(x):
+        m = re.search(r"\b([ABC])\b", str(x or "").upper())
+        return order["ABC".index(m.group(1))] if m else None
+    best, nx = letter(a.get("best")), letter(a.get("next"))
+    pick = best if best is not None else nx if nx is not None else 0
+    log(f"{st['id']} line {k}: judge picks take {'ABC'[pick]} (best {a.get('best')!r}, next {a.get('next')!r}, "
+        f"shown {''.join('ABC'[i] for i in order)}) in {time.time() - t0:.0f} s")
+    return {"pick": pick, "best": best, "next": nx, "order": order, "answers": a, "ask": ask,
+            "sheets": [str(x) for x in sheets], "fallback": best is None}
+
+
+def _join_chain(L: Path, st: dict, log) -> Path:
+    """The picked takes joined into the chain shot's clip (<id>.mp4): the first frame of each chained take dropped
+    (it is the overlap frame, the last frame of the take before)."""
+    clips = [L / "out" / f"{p}.mp4" for p in st["picks"]]
+    ins = sum([["-i", str(c)] for c in clips], [])
+    fl = ";".join(f"[{i}:v]{'trim=start_frame=1,' if i else ''}setpts=PTS-STARTPTS[v{i}]" for i in range(len(clips)))
+    fl += ";" + "".join(f"[v{i}]" for i in range(len(clips))) + f"concat=n={len(clips)}:v=1:a=0[out]"
+    out = L / "out" / f"{st['id']}.mp4"
+    part = out.with_name(out.stem + ".part.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *ins, "-filter_complex", fl, "-map", "[out]", "-an", "-c:v",
+                    "libopenh264", "-b:v", "8M", "-pix_fmt", "yuv420p", "-r", str(FPS), str(part)], check=True)
+    os.replace(part, out)
+    log(f"{st['id']}: chain of {len(clips)} line(s) joined ({', '.join(st['picks'])})")
+    return out
+
+
+def _chains_as_they_land(sd: Path, chains: list, more: Path | None, queued: set, stop, log, review: str = "off",
+                         wait_cards: bool = False) -> None:
+    """Every chain of the hold advances on its own: when a line's takes exist the judge ranks them (and, with
+    --review agent|user, a review card waits for its choice.json while the other chains and shots go on); the pick's
+    last frame starts the next line, queued first on the loaded model. Returns once every chain is joined or waits
+    for a new line's words to be encoded (an override: the next hold)."""
+    L = sd / "ltx"
+    J = L / "chain_judge"
+    J.mkdir(exist_ok=True)
+    R = sd / "review"
+    try:
+        while not stop.is_set():
+            live = 0
+            for sid in chains:
+                st = json.loads((L / "chains" / f"{sid}.json").read_text())
+                if st["done"] or st.get("blocked"):
+                    continue
+                live += 1
+                k = next(i for i, p in enumerate(st["picks"], 1) if not p)
+                v = st["ver"][k - 1]
+                names = [_chain_take(sid, k, v, i) for i in range(len(CHAIN_SEEDS))]
+                jobs = _chain_jobs(st, k)
+                for j in jobs:          # a take from another source (a re-pick upstream) is made again
+                    jf = L / "out" / f"{j['name']}.json"
+                    if jf.exists() and json.loads(jf.read_text()).get("chain_from") != j.get("chain_from"):
+                        for x in (jf, jf.with_suffix(".mp4")):
+                            x.unlink(missing_ok=True)
+                        queued.discard(j["name"])
+                if not all((L / "out" / f"{n}.mp4").exists() and (L / "out" / f"{n}.json").exists() for n in names):
+                    if more is None:            # (no hold: only what is rendered already)
+                        live -= 1
+                        continue
+                    if not all(n in queued for n in names):
+                        if not (L / "emb" / f"{jobs[0]['emb']}.pt").exists():
+                            st["blocked"] = "encode"
+                            log(f"{sid} line {k}: its new words wait for the next hold (encode)")
+                            _chain_save(L, st)
+                            continue
+                        for j in jobs:
+                            if j["name"] not in queued:
+                                _queue_more(more, j)
+                                queued.add(j["name"])
+                        log(f"{sid}: line {k} x{len(jobs)} queued (from {jobs[0].get('chain_from') or 'the key'})")
+                    continue
+                jk = f"{k}.{v}"
+                if jk not in st["judge"]:
+                    st["judge"][jk] = _judge_chain_line(st, k, [L / "out" / f"{n}.mp4" for n in names], J, log)
+                    _chain_save(L, st)
+                jd = st["judge"][jk]
+                pick, how = jd["pick"], "judge"
+                if review != "off":
+                    cd = R / sid / (f"{k}" if not v else f"{k}.{v}")
+                    cd.mkdir(parents=True, exist_ok=True)
+                    card, ch = cd / "card.json", cd / "choice.json"
+                    if not card.exists():
+                        sbs = _side_by_side(jd["sheets"], cd / "takes.jpg")
+                        card.write_text(json.dumps({
+                            "chain": sid, "line_no": k, "lines": st["lines"], "line": st["lines"][k - 1],
+                            "director_line": st["director_lines"][k - 1],
+                            "takes": {"ABC"[i]: str(L / "out" / f"{n}.mp4") for i, n in enumerate(names)},
+                            "sheet": str(sbs), "judge_pick": "ABC"[jd["pick"]], "review": review,
+                            "answer_with": str(ch), "answers": ['{"pick": "A|B|C"}', '{"accept": true}',
+                                                                '{"override": "<new line>"}'],
+                            "timeout_s": REVIEW_TIMEOUT, "at": time.time()}, indent=1))
+                        log(f"REVIEW card ready: {card} (judge picks {'ABC'[jd['pick']]}; answer in {ch} within "
+                            f"{REVIEW_TIMEOUT:.0f} s)")
+                    c_ = None
+                    if ch.exists():
+                        try:
+                            c_ = json.loads(ch.read_text())
+                        except ValueError:
+                            c_ = None           # (being written: the next poll)
+                    elif time.time() - json.loads(card.read_text())["at"] > REVIEW_TIMEOUT:
+                        c_ = {"timeout": True}
+                    if c_ is None:
+                        live -= more is None and not wait_cards     # (no hold: the card waits for the hold)
+                        continue
+                    rec = {"t": time.strftime("%F %T"), "chain": sid, "line_no": k, "ver": v,
+                           "director_line": st["director_lines"][k - 1], "line": st["lines"][k - 1],
+                           "judge_pick": "ABC"[jd["pick"]], "choice": c_, "review": review}
+                    with open(R / "log.jsonl", "a") as fh:
+                        fh.write(json.dumps(rec) + "\n")
+                    if isinstance(c_.get("override"), str) and c_["override"].strip():
+                        st["lines"][k - 1] = " ".join(c_["override"].split())
+                        st["ver"][k - 1] = v + 1
+                        _chain_save(L, st)
+                        log(f"{sid} line {k}: override -> {st['lines'][k - 1]!r} (3 new takes)")
+                        continue
+                    if str(c_.get("pick", "")).upper() in ("A", "B", "C"):
+                        pick, how = "ABC".index(str(c_["pick"]).upper()), review
+                    else:
+                        how = "timeout" if c_.get("timeout") else f"{review} accepted the judge"
+                st["picks"][k - 1] = names[pick]
+                st.setdefault("how", {})[jk] = how
+                log(f"{sid} line {k}: take {'ABC'[pick]} kept ({how})")
+                if all(st["picks"]):
+                    _join_chain(L, st, log)
+                    st["done"] = True
+                _chain_save(L, st)
+            if not live:
+                return
+            time.sleep(CHAIN_POLL)
+    except Exception as e:                  # noqa: BLE001  (said; the hold goes on, the next round resumes)
+        import traceback
+        log(f"!!! chains while rendering: {e!r} {traceback.format_exc()[-600:]}")
+
+
 def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     """Each action or quiet shot (quiet too since 10-26): its takes judged (melted / merged bodies, more people than
     the shot has); the take with the fewest faults becomes <id>.mp4 (a tie keeps the earlier), the others stay as
@@ -3192,7 +3784,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     out_ = shot_dir(book, stem) / "ltx" / "out"
     again = set()
     for s in shots:
-        if s["kind"] not in ("action", "quiet"):
+        if s["kind"] not in ("action", "quiet") or s.get("chain"):     # (a chain's clip is its joined picks)
             continue
         a = out_ / f"{s['id']}.mp4"
         if not a.exists() or (out_ / f"{s['id']}.judged").exists():
@@ -3611,7 +4203,7 @@ def snap_impacts(spots: list, spans: list, log=print) -> int:
     return n
 
 
-def effects_mix(book: Path, stem: str, mix: Path, spans: list, log=print) -> Path:
+def effects_mix(book: Path, stem: str, mix: Path, spans: list, log=print, pauses: list | None = None) -> Path:
     """The cut's sound: the chapter mix with its planned effects (cached by what goes in); the plain mix when there
     are none (said so)."""
     import fcntl
@@ -3632,10 +4224,17 @@ def effects_mix(book: Path, stem: str, mix: Path, spans: list, log=print) -> Pat
         _problem(book, log, f"no sound effects: {exc}")
         return mix
     on_words = spot_times(book, stem, plan["spots"], log)
+    if pauses:                                          # (the video's paused times: chain_pauses)
+        for sp in plan["spots"]:
+            for k_ in ("t", "t_end"):
+                if sp.get(k_) is not None:
+                    sp[k_] = round(pause_map(float(sp[k_]), pauses), 3)
+        for bd in plan["beds"]:
+            bd["t0"], bd["t1"] = pause_map(float(bd["t0"]), pauses), pause_map(float(bd["t1"]), pauses)
     snapped = snap_impacts(plan["spots"], spans, log)
     base = mix.with_name(mix.stem + ".nosfx" + mix.suffix)      # (`bookcaster sfx` mixed its own in: not twice)
     base = base if base.exists() else mix
-    voice = book / "work" / f"{stem}.mp3"
+    voice = voice_v(book, stem, pauses or [])
     bs = base.stat()
     k = hashlib.sha1(json.dumps([plan, str(base), bs.st_size, bs.st_mtime_ns], sort_keys=True).encode()).hexdigest()[:12]
     out = shot_dir(book, stem) / "audio" / f"fx_{k}.mp3"
@@ -3646,7 +4245,170 @@ def effects_mix(book: Path, stem: str, mix: Path, spans: list, log=print) -> Pat
     return out
 
 
-def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Path, log=print) -> Path:
+# ---- the narration gap (11-05, loop P48/audio_gap_proposal.md): an action chain plays n x 97 frames, longer than its
+# slot; the VIDEO's narration pauses at a sentence break while the chain plays on, never inside a spoken line, and a
+# chain is never cut to fit (11-05 user: "you don't cut to fit.. you wait at the end of the line"). One piecewise map
+# moves every time after the break (apply_pace's form); the audiobook's own mp3 and timeline are never touched.
+# Music: the score's cues are laid again on the paused voice, so the score runs on under the pause (ducking stops
+# there); a cue holding a pause is not recomposed yet (it is cut to its file's length, fading inside it). Sound
+# effects: their times through the same map.
+def pause_point(a: float, b: float, sents: list, quotes: list, end: float) -> float:
+    """Where the narration waits for a chain over the slot a-b (track s): the sentence break in the slot nearest its
+    end, outside every spoken line; else the first sentence break after the spoken line (or the sentence) running
+    at the slot's end has ended, however far; else the stretch's end."""
+    def inside(t):
+        return any(a_ + 0.05 < t < b_ - 0.05 for a_, b_ in quotes)
+    ok = [c for c in sents if a + 0.5 <= c <= b + 1e-6 and not inside(c)]
+    if ok:
+        return min(ok, key=lambda c: abs(c - b))
+    blk = max([b_ for a_, b_ in quotes if a_ + 0.05 < b < b_ - 0.05] or [b])
+    after = [c for c in sents if c >= blk - 0.05 and c > b and not inside(c)]
+    return min(after) if after else end
+
+
+def chain_pauses(book: Path, stem: str, es: list, by: dict, log=print) -> list:
+    """[{"t": the break (track s), "g": the pause (s), "shot": id, "absorb": [moment ids]}] for every chain whose clip
+    outlasts the narration up to its break. A break after the slot's end (the slot ends inside a line or a sentence)
+    stretches the chain over the moments up to it (they are dropped: the chain plays there); a talk moment is never
+    dropped - the chain then waits at its start."""
+    span = _spans(es)
+    todo = [(i, e, s) for i, e in enumerate(es) for s in by.get(e["id"]) or [] if s.get("chain")]
+    if not todo:
+        return []
+    voices = book / "work" / f"{stem}.mp3"
+    pts = cut_points(book, stem, voices)
+    tl = load_timeline(book, stem)
+    quotes = [(float(x["t"]), float(y["t"])) for x, y in zip(tl, tl[1:] + [{"t": float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())}])
+              if x.get("kind") == "quote" and x.get("speaker") not in (None, "", "narrator")]
+    end = float(es[-1]["t"]) + float(span[es[-1]["id"]])
+    out, gone = [], set()
+    for i, e, s in todo:
+        if e["id"] in gone:
+            continue
+        a, d = float(e["t"]), float(span[e["id"]])
+        b, T = a + d, chain_frames(len(s["chain"]["lines"])) / FPS
+        if T - d < 1.0 / FPS:
+            continue
+        p = pause_point(a, b, pts[0], quotes, end)
+        absorb = []
+        for x in es[i + 1:]:
+            if float(x["t"]) >= p - 1e-6:
+                break
+            if any(z.get("kind") == "talk" for z in by.get(x["id"]) or []):
+                p = float(x["t"])
+                log(f"!!! {s['id']}: the break after the line is past a talk shot: the narration waits at its start")
+                break
+            absorb.append(x["id"])
+        gone.update(absorb)
+        g = max(0.0, T - (max(p, b) - a))
+        out.append({"t": round(p, 3), "g": round(g, 3), "shot": s["id"], "absorb": absorb})
+        log(f"{s['id']}: the narration pauses {g:.2f} s at {p:.2f} s (slot {a:.2f}-{b:.2f} s, chain "
+            f"{chain_frames(len(s['chain']['lines']))} frames" + (f"; it plays on over {absorb}" if absorb else "") + ")")
+    return out
+
+
+def pause_map(t: float, pauses: list) -> float:
+    """A track second -> the paused video's second (a time at a break moves with what comes after it)."""
+    return t + sum(p["g"] for p in pauses or [] if t >= p["t"] - 1e-6)
+
+
+def apply_pauses(es: list, by: dict, pauses: list) -> None:
+    """In place: the moments a chain plays on over dropped, the times through the map, each chain's moment and shot
+    as long as its clip."""
+    if not pauses:
+        return
+    gone = {m for p in pauses for m in p.get("absorb") or []}
+    span = _spans(es)
+    t_of = {e["id"]: float(e["t"]) for e in es}
+    of = {p["shot"]: p for p in pauses}
+    es[:] = [e for e in es if e["id"] not in gone]
+    for m in gone:
+        by.pop(m, None)
+    for e in es:
+        for s in by.get(e["id"]) or []:
+            if s["id"] in of:
+                p = of[s["id"]]
+                d = max(p["t"], t_of[e["id"]] + span[e["id"]]) - t_of[e["id"]] + p["g"]
+                s["dur"] = e["dur"] = round(d, 4)
+        e["t"] = round(pause_map(float(e["t"]), pauses), 4)
+
+
+def _with_silence(src: Path, pauses: list, out: Path) -> Path:
+    """`src` with g seconds of silence at each break (PCM, sample-exact; the channels and rate kept)."""
+    if out.exists():
+        return out
+    pr = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                         "stream=sample_rate,channels", "-of", "json", str(src)], capture_output=True, text=True).stdout
+    st = json.loads(pr)["streams"][0]
+    sr, ch = int(st["sample_rate"]), int(st["channels"])
+    ps = sorted(pauses, key=lambda p: p["t"])
+    n = len(ps) + 1
+    fl = [f"[0:a]asplit={n}" + "".join(f"[a{i}]" for i in range(n))]
+    edges = [0.0] + [p["t"] for p in ps]
+    parts = []
+    for i in range(n):
+        lo = edges[i]
+        hi = f":end={edges[i + 1]:.6f}" if i + 1 < n else ""
+        fl.append(f"[a{i}]atrim=start={lo:.6f}{hi},asetpts=PTS-STARTPTS[s{i}]")
+        parts.append(f"[s{i}]")
+        if i + 1 < n:
+            fl.append(f"anullsrc=r={sr}:cl={'mono' if ch == 1 else 'stereo'},atrim=duration={ps[i]['g']:.6f}[z{i}]")
+            parts.append(f"[z{i}]")
+    fl.append("".join(parts) + f"concat=n={len(parts)}:v=0:a=1[out]")
+    tmp = out.with_name(out.stem + ".part" + out.suffix)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(src), "-filter_complex", ";".join(fl), "-map", "[out]",
+                    "-ar", str(sr), "-c:a", "pcm_s16le", str(tmp)], check=True)
+    os.replace(tmp, out)
+    return out
+
+
+def voice_v(book: Path, stem: str, pauses: list) -> Path:
+    """The narration with the chains' pauses in it (the video's; the audiobook's mp3 stays as it is)."""
+    voice = book / "work" / f"{stem}.mp3"
+    if not pauses:
+        return voice
+    vs = voice.stat()
+    d = shot_dir(book, stem) / "audio"
+    d.mkdir(parents=True, exist_ok=True)
+    return _with_silence(voice, pauses, d / f"voice_v_{MF._h(json.dumps([pauses, vs.st_size, vs.st_mtime_ns]))}.wav")
+
+
+def video_mix(book: Path, stem: str, mix: Path, pauses: list, log=print) -> Path:
+    """The video's mix: `mix` itself with no pause; else the score's cues laid again under the paused voice (the
+    music runs on through each pause), or - no cues to lay again - the mix with the silence in it, music too (said)."""
+    if not pauses:
+        return mix
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import score as SC, bookcaster as BC
+    vv = voice_v(book, stem, pauses)
+    ms = mix.stat() if mix.exists() else None
+    out = shot_dir(book, stem) / "audio" / f"mix_v_{MF._h(json.dumps([pauses, str(vv), ms and ms.st_mtime_ns]))}.mp3"
+    if out.exists():
+        return out
+    sw = book / "work" / "score" / stem
+    cues = json.loads((sw / "plan.json").read_text()) if (sw / "plan.json").exists() else []
+    files = [sw / f"cue{n:02d}.wav" for n in range(1, len(cues) + 1)]
+    if cues and all(f.exists() for f in files) and not BC.has_nomusic(book, stem):
+        cv = []
+        for c, f in zip(cues, files):
+            t0, t1 = pause_map(float(c["t0"]), pauses), pause_map(float(c["t1"]), pauses)
+            t1 = min(t1, t0 + max(1.0, SC.audio_seconds(f) - 3.0))      # (fading inside the cue's own length)
+            cv.append(dict(c, t0=t0, t1=t1, file=str(f)))
+        SC.mix(vv, cv, out)
+        log(f"video mix: the score's {len(cv)} cue(s) laid again under the narration with "
+            f"{len(pauses)} pause(s) ({sum(p['g'] for p in pauses):.1f} s)")
+    else:
+        base = mix.with_name(mix.stem + ".nosfx" + mix.suffix)
+        base = base if base.exists() else mix
+        w = _with_silence(base, pauses, out.with_suffix(".wav"))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(w), "-c:a", "libmp3lame", "-b:a", "192k", str(out)],
+                       check=True)
+        log(f"video mix: no score cues to lay again: the mix paused {len(pauses)} time(s), its music too")
+    return out
+
+
+def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Path, log=print,
+             pauses: list | None = None) -> Path:
     """The shots in time order: each moment's whole frames (counted from the stretch's start, so the picture never
     drifts from the voice) split over its shots by their lengths; a missing clip = its key held."""
     sd = shot_dir(book, stem)
@@ -3696,7 +4458,7 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                               "stream=nb_read_packets", "-of", "csv=p=0", str(vid)], capture_output=True, text=True).stdout or 0)
     if got != edge[-1]:
         log(f"!!! picture is {got} frames, the timeline {edge[-1]}: out of sync by {(got - edge[-1]) / FPS:+.2f} s")
-    fx = effects_mix(book, stem, mix, spans, log)
+    fx = effects_mix(book, stem, mix, spans, log, pauses)
     return MF.mux(book, stem, vid, t0, edge[-1] / FPS, fx, out, hits, len(segs), log, planned=fx == mix)
 
 
@@ -3716,9 +4478,16 @@ def _step(book: Path, text: str) -> None:
 
 
 def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Path, log=print,
-        until: str | None = None, guide: str | None = None, render: tuple | None = None) -> Path:
+        until: str | None = None, guide: str | None = None, render: tuple | None = None,
+        review: str | None = None) -> Path:
     """The whole stretch: shots (director) -> keys (both cards) -> pick (+3 seeds where none passed) -> [until=keys:
-    the review sheet] -> LTX (pipelined) -> takes judged -> the takes sheet -> assembled."""
+    the review sheet] -> LTX (pipelined) -> takes judged -> the takes sheet -> assembled. review: off | agent | user
+    (each action chain line's pick waits on a review card, REVIEW_TIMEOUT)."""
+    global REVIEW
+    if review:
+        if review not in ("off", "agent", "user"):
+            raise ValueError(f"review {review!r}: off, agent or user")
+        REVIEW = review
     es = MF.entries(book, stem, t0, t1)
     # --render a:b: the director plans the whole stretch (cached), only this window is drawn, rendered, assembled
     # (10-27 user: "shorten the clip to only a minute for now to increase the learning cycles")
@@ -3734,9 +4503,10 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         by = json.loads(fz.read_text())
         by.pop("_sig", None)
         es = by.pop("_es", None) or es
+        pauses = by.pop("_pauses", None) or []
         shots = [s for e in es for s in by.get(e["id"], [])]
         log(f"resuming the stopped render on its saved plan ({len(shots)} shots; delete {fz} to plan again)")
-        return _render(book, stem, es, by, shots, mix, op, fz, log)
+        return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
     if MF.cover(book, stem, t0, t1, log):  # narrated stretches without a moment get theirs
         es = MF.entries(book, stem, t0, t1)
     _step(book, "wardrobe and the director")
@@ -3764,6 +4534,10 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         log(f"rendering {render[0]:.1f}-{render[1]:.1f} s only: {len(shots)} shots of the directed stretch")
         if not shots:
             raise RuntimeError(f"the render window {render[0]:g}-{render[1]:g} s has no shots of the directed stretch")
+    pauses = chain_pauses(book, stem, es, by, log)       # the narration's gaps for the chains (none: nothing moves)
+    if pauses:                                           # (before the keys: a moment a chain plays over is not drawn)
+        apply_pauses(es, by, pauses)
+        shots = [s for e in es for s in by.get(e["id"], [])]
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
@@ -3773,9 +4547,9 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     log(f"key sheet: {ks}")
     if until == "keys":
         return ks
-    fz.write_text(json.dumps({"_sig": sig, "_es": es, **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
+    fz.write_text(json.dumps({"_sig": sig, "_es": es, **({"_pauses": pauses} if pauses else {}), **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
                                                                         s_["id"].rsplit("_s", 1)[0]] for s_ in shots}}))
-    return _render(book, stem, es, by, shots, mix, op, fz, log)
+    return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
 
 
 def _plan_sig(book: Path, stem: str) -> str:
@@ -3830,7 +4604,7 @@ def _plan_reach() -> set:
             keep.add(n)
     return keep
 
-def _render(book, stem, es, by, shots, mix, op, fz, log) -> Path:
+def _render(book, stem, es, by, shots, mix, op, fz, log, pauses=None) -> Path:
     """LTX (pipelined) -> takes judged -> the takes sheet -> assembled; the saved plan goes with the finished cut."""
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate
@@ -3850,6 +4624,6 @@ def _render(book, stem, es, by, shots, mix, op, fz, log) -> Path:
     # 10-24: judge_talk no longer re-renders - it failed all 7 forge lines and the user judged every one good
     log(f"takes sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_takes.jpg'), takes=True)}")
     _step(book, "assembling the cut")
-    out = assemble(book, stem, es, by, mix, op, log)
+    out = assemble(book, stem, es, by, video_mix(book, stem, mix, pauses or [], log), op, log, pauses)
     fz.unlink(missing_ok=True)
     return out
