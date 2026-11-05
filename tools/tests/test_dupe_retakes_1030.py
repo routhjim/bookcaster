@@ -45,6 +45,9 @@ verdict = {"action-000100_s0": crowd, "action-000100_s0_t2": crowd, "action-0001
 S.MF.fight_clip_ok = lambda mp4, people=None: verdict[mp4.stem]
 _real_sleep = S.time.sleep
 S.time.sleep = lambda s: _real_sleep(0.01)
+_real_run = S.subprocess.run      # (11-05: the judge's own "systemctl stop" of the language model ran for real here and
+S.subprocess.run = lambda cmd, *a, **k: (SimpleNamespace(returncode=0, stdout="") if "systemctl" in map(str, cmd)  # stopped
+                                         else _real_run(cmd, *a, **k))      # a running job's planning: faked)
 stop = threading.Event()
 th = threading.Thread(target=S._judge_as_they_land, args=(out_, [job], more, done, stop, lambda m: None), daemon=True)
 (out_ / "action-000100_s0.mp4").write_text("x")

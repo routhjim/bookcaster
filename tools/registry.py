@@ -33,6 +33,17 @@ def person_key(name) -> str:
     return re.sub(r"[^a-z]", "", s)
 
 
+PLACE_DESC = re.compile(r"^\s*(inside|outside)\s*:", re.I)   # a place's description opens with its side
+
+
+def place_named(name, desc, places) -> bool:
+    """A cast entry that is really a place (11-05: a story's four rooms were listed as characters too, so their
+    "creature" LoRAs would train and the director cast the rooms): its name is one of the places, or its
+    description is written as a place's ("Inside: ..." / "Outside: ...")."""
+    d = desc if isinstance(desc, str) else str((desc or {}).get("look") or "")
+    return place_key(name) in {place_key(p) for p in places or {}} or bool(PLACE_DESC.match(d))
+
+
 def place_key(name) -> str:
     """One key per place: 'Baker Street Bedroom (inside)' = 'Baker Street Bedroom' = 'the baker street bedroom'."""
     s = SIDE_WORD.sub("", str(name or "")).lower()
@@ -115,6 +126,8 @@ class Book:
         chars = self.data.get("characters") or {}
         self._people, self._looks = [], {}
         for n, d in chars.items():                 # the first-stored spelling of each person owns their look
+            if place_named(n, d, self.data.get("places")):     # (a place listed as a character too: not a person)
+                continue
             k = person_key(n)
             if k not in self._looks:
                 self._people.append(n)
