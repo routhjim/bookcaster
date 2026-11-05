@@ -437,18 +437,18 @@ ART_STYLE_ASK = ("Choose the picture style for illustrating this story: one shor
                  "the phrase.\n\n")
 
 
-def infer_art_style(book, text: str, log=print) -> str:
+def infer_art_style(book, text: str, log=print, force: bool = False) -> str:
     """<book>/art_style.txt from the story when the book has no picture style yet (11-05 user: "choose the style from
     the story": a sci-fi book was drawn in the default 19th-century ink-and-watercolour), the way the period is
     (infer_period). A book with art_style.txt, or already planned in a style (a chapter's style.txt), keeps it;
-    `bookcaster art` changes it. Asked while the planner's language model is up, before the sheets are drawn.
-    -> the style written, or "" (the default style stays the fallback)."""
+    `bookcaster art` changes it; `bookcaster art --auto` (force) asks again whatever the book has. Asked while the
+    planner's language model is up, before the sheets are drawn. -> the style written, or "" (the default stays)."""
     from tts_reader import bookcaster as BC
     from tts_reader.score import _chat
     book = Path(book)
     f = book / "art_style.txt"
-    if (f.exists() and f.read_text().strip()) or any(
-            x.read_text().strip() for x in (book / "work" / "video").glob("*/style.txt") if x.is_file()):
+    if not force and ((f.exists() and f.read_text().strip()) or any(
+            x.read_text().strip() for x in (book / "work" / "video").glob("*/style.txt") if x.is_file())):
         return ""
     try:
         a = (_chat(BC.LLM_URL, BC.LLM_MODEL, ART_STYLE_ASK + text[:12000], max_tokens=80) or "").strip()

@@ -49,6 +49,24 @@ with tempfile.TemporaryDirectory() as td:
     SC._chat = boom
     check("the ask fails: nothing written (the default style stays the fallback)",
           F.infer_art_style(b, "x", logs.append) == "" and not (b / "art_style.txt").exists())
+    SC._chat = lambda url, model, prompt, max_tokens=0: (asked.append(prompt), "muted painted space opera")[1]
+    (b / "work" / "video" / "01_x" / "style.txt").write_text("pen and ink")
+    asked.clear()
+    check("forced (`bookcaster art --auto`): asked again although a chapter has a style",
+          F.infer_art_style(b, "x", logs.append, force=True) == "muted painted space opera" and len(asked) == 1
+          and (b / "art_style.txt").read_text().strip() == "muted painted space opera")
+    # the CLI: `art --auto` starts the planner's model the plan's own way (faked) and asks with the book's text
+    from tts_reader import bookcaster as BC
+    from tts_reader import animate as AN
+    started = []
+    AN.igpu = lambda tenant, log=print: started.append(tenant)
+    BC.chapter_files = lambda book: [Path("c1"), Path("c2")]
+    BC._chapter_text = lambda f: f"text of {f}"
+    asked.clear()
+    got = BC.art_auto(b, log=lambda m: None)
+    check("art --auto: the language model brought up (faked), both chapters' text asked, the style written",
+          started == ["strata"] and "text of c1" in asked[0] and "text of c2" in asked[0] and got == "muted painted space opera",
+          (started, got))
 src = (HERE / "flow3d.py").read_text()
 pl = src[src.index("def plan(book, chapter"):]
 check("plan: the style is chosen with the language model up, before the pictures are planned or drawn",
