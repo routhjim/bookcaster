@@ -3147,7 +3147,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     L = sd / "ltx"
     for d_ in ("out", "emb", "audio"):
         (L / d_).mkdir(parents=True, exist_ok=True)
-    for f in ("ltx_split.py", "ltx_split_next.py"):
+    # (11-05: the runner imports its fused kernels from its own folder - vae_conv3d #125, eager_fuse #128; a copy
+    # without them died at import: "No module named 'vae_conv3d'")
+    for f in ("ltx_split.py", "ltx_split_next.py", "vae_conv3d.py", "eager_fuse.py"):
         shutil.copy(HERE / "ltx_runner" / f, L / f)
     neg = subprocess.run([str(R.LTX_PY), "-c", "import sys; sys.path.insert(0, '/home/jrouth/src/LTX-2/packages/ltx-pipelines/src');"
                           "from ltx_pipelines.utils.constants import DEFAULT_NEGATIVE_PROMPT as N; print(N)"],
