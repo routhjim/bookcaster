@@ -1192,6 +1192,18 @@ def migrate_outputs(book: Path) -> None:
 
 # --- pictures / video ----------------------------------------------------------------
 
+def art_auto(book: Path, log=print) -> str:
+    """`bookcaster art <book> --auto`: the picture style chosen again from the story by the planner's language model
+    (flow3d.infer_art_style, forced), written to art_style.txt. The keys follow it at once; a chapter already planned
+    keeps its sheets (and their LoRAs) in its own style.txt until it is planned again."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import flow3d
+    from . import animate
+    animate.igpu("strata", log)                          # the planner's language model (as the plan starts it)
+    text = "\n\n".join(_chapter_text(f) for f in chapter_files(book))
+    return flow3d.infer_art_style(book, text, log, force=True)
+
+
 def art_style(book: Path) -> str:
     f = book / "art_style.txt"
     return f.read_text(encoding="utf-8").strip() if f.exists() else ""
@@ -2309,6 +2321,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("book")
     s.add_argument("style", nargs="*", help="plain words, e.g. 'moody oil painting'")
     s.add_argument("--clear", action="store_true", help="back to the default style")
+    s.add_argument("--auto", action="store_true",
+                   help="the story chooses it again (the planner's language model); a chapter already planned keeps "
+                        "its sheets in its own style until it is planned again")
     s.add_argument("--sample", action="store_true", help="draw one picture of the opening")
     s = sub.add_parser("video", help="make the picture video of the recorded chapters (background job)")
     s.add_argument("book")
@@ -2514,6 +2529,8 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         if a.clear or a.style:
             set_art_style(d, "" if a.clear else " ".join(a.style))
+        if getattr(a, "auto", False):                # 11-05: the story chooses (the planner's language model)
+            art_auto(d)
         from .video import DEFAULT_STYLE
         print(f"picture style for {d.name}: {art_style(d) or DEFAULT_STYLE + ' (default)'}")
         if a.sample:
