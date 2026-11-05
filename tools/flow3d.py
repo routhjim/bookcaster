@@ -1152,10 +1152,27 @@ def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
                 one((n, c))
         with ThreadPoolExecutor(len(cards)) as ex:
             list(ex.map(worker, cards[:max(1, min(len(cards), len(todo)))]))
-    left = lora_lines(book, only)
+    # 11-05: a LoRA that failed for a cast member who is not a person (a creature, a craft, an object: charlora's own
+    # kind) is said and left out - its keys use its sheet, as without a LoRA; only a person's missing LoRA stops the
+    # run (a spacecraft in the cast passed 2-3 of 80 pictures through the face checks and stopped the whole job)
+    left, other = [], []
+    for n, why in lora_todo(book, only).items():
+        (left if _is_person(book, n) else other).append(f"no LoRA: {n} ({why}): `bookcaster assets` trains it")
+    for ln in other:
+        _log(f"!!! {ln} - not a person: going on without it (its keys use its sheet)", log)
     for ln in left:
         _log("!!! " + ln, log)
     return left
+
+
+def _is_person(book, name) -> bool:
+    """charlora's own kind for the cast member (the asset index's kind, else the look's words): human or not."""
+    try:
+        sys.path.insert(0, str(HERE))
+        import charlora as L
+        return L.Char(str(book), name).kind == "human"
+    except Exception:                                   # noqa: BLE001 - unknown: treated as a person (the run stops)
+        return True
 
 
 def refresh_stale_keys(R, cx, P) -> int:
