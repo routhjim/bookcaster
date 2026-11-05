@@ -432,6 +432,38 @@ def infer_period(book, text: str, log=print) -> str:
     return video.period_of(book)
 
 
+ART_STYLE_ASK = ("Choose the picture style for illustrating this story: one short phrase naming the medium, the "
+                 "technique and the look an illustrator would use, suited to the story's genre, era and mood. Only "
+                 "the phrase.\n\n")
+
+
+def infer_art_style(book, text: str, log=print) -> str:
+    """<book>/art_style.txt from the story when the book has no picture style yet (11-05 user: "choose the style from
+    the story": a sci-fi book was drawn in the default 19th-century ink-and-watercolour), the way the period is
+    (infer_period). A book with art_style.txt, or already planned in a style (a chapter's style.txt), keeps it;
+    `bookcaster art` changes it. Asked while the planner's language model is up, before the sheets are drawn.
+    -> the style written, or "" (the default style stays the fallback)."""
+    from tts_reader import bookcaster as BC
+    from tts_reader.score import _chat
+    book = Path(book)
+    f = book / "art_style.txt"
+    if (f.exists() and f.read_text().strip()) or any(
+            x.read_text().strip() for x in (book / "work" / "video").glob("*/style.txt") if x.is_file()):
+        return ""
+    try:
+        a = (_chat(BC.LLM_URL, BC.LLM_MODEL, ART_STYLE_ASK + text[:12000], max_tokens=80) or "").strip()
+    except Exception as exc:                              # noqa: BLE001 - the default style is the fallback
+        _log(f"plan: art style not chosen ({type(exc).__name__}: {exc}): the default style", log)
+        return ""
+    a = (a.splitlines() or [""])[0].strip().strip('"\'').rstrip(".")[:200]
+    if not a:
+        _log("plan: art style not chosen (no answer): the default style", log)
+        return ""
+    f.write_text(a + "\n")
+    _log(f"plan: art style = {a!r} (art_style.txt; `bookcaster art` changes it)", log)
+    return a
+
+
 def _sets_parallel(book, lg, log=print, cards=("05", "65")) -> None:
     """The sets to build, split over both cards (one world.py build-book --only per card, at once); the places
     named after another place (drawn with its picture as reference) and the registry prune are left to the
@@ -663,6 +695,7 @@ def plan(book, chapter, log=print) -> dict:
     f = next(x for x in BC.chapter_files(book) if x.stem == stem)
     work = BC._video_work(book, f)
     animate.igpu("strata", log)                       # the planner's language model (iGPU)
+    infer_art_style(book, BC._chapter_text(f), log)   # (before the plan: its pictures and sheets are drawn in it)
     _log("plan: pictures, looks, wardrobe", log)
     BC.plan_pictures_for(book, f, log)
     plan_scenes(book, f, work, log)

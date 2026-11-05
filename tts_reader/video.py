@@ -1164,14 +1164,34 @@ def para_at(starts: list[float], t: float) -> int:
 
 
 def outfit_prompt(name: str, desc: str, row: dict, style: str) -> str:
+    # headwear only if written here: 10-27, the base look's top hat was drawn on a dressing gown and its tweed jacket
+    # over a nightshirt. (11-05: that note sat INSIDE the prompt and the drawer read it as description - a sci-fi
+    # pilot was drawn in a top hat and dressing gown. Notes and examples stay in comments, never in a prompt.)
     return (f"Character sheet of one person, two views side by side on a plain light background: on the "
             f"left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on the "
             f"right the same person full length, standing. The same person as in image 1: exactly the same "
             f"face, hair, age and build ({_short(desc)}), but now wearing {row['dress']}, in BOTH views (the portrait "
             f"shows these clothes too). Only the face and body come from image 1: everything worn or held is as "
-            f"written here, not as in image 1; a hat or other headwear only if written here (10-27: the base "
-            f"look's top hat on a dressing gown, its tweed jacket over a nightshirt). Even light. "
+            f"written here, not as in image 1; a hat or other headwear only if written here. Even light. "
             f"{style}. No text, no lettering, no signature.")
+
+
+# the outfit prompt's words before 11-05 (with the note), ONLY to find a sheet drawn from them: a book's existing
+# sheets keep their files, so their LoRAs (whose input hash reads the sheet) are not retrained
+_OUTFIT_HEADWEAR = "a hat or other headwear only if written here."
+_OUTFIT_HEADWEAR_1027 = ("a hat or other headwear only if written here (10-27: the base look's top hat on a dressing "
+                         "gown, its tweed jacket over a nightshirt).")
+
+
+def outfit_path(refs_dir: Path, name: str, desc: str, row: dict, style: str) -> Path:
+    """An outfit sheet's file, named by its prompt; a sheet already drawn from the pre-11-05 words is kept."""
+    prompt = outfit_prompt(name, desc, row, style)
+    p = ref_path(refs_dir, f"{name} {row['id']}", prompt)
+    if not p.exists():
+        old = ref_path(refs_dir, f"{name} {row['id']}", prompt.replace(_OUTFIT_HEADWEAR, _OUTFIT_HEADWEAR_1027, 1))
+        if old.exists():
+            return old
+    return p
 
 
 def outfit_ref(refs_dir: Path, plan: dict, style: str, name: str, row: dict, R=None) -> Path:
@@ -1180,7 +1200,7 @@ def outfit_ref(refs_dir: Path, plan: dict, style: str, name: str, row: dict, R=N
     R = R if R is not None else registry_at(refs_dir)
     chars, _ = looks(plan, R)
     name = wardrobe_key(plan, name, R) or name
-    return ref_path(refs_dir, f"{name} {row['id']}", outfit_prompt(name, chars.get(name, ""), row, style))
+    return outfit_path(refs_dir, name, chars.get(name, ""), row, style)
 
 
 def outfit_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
@@ -1198,7 +1218,7 @@ def outfit_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
         for row in rows:
             prompt = outfit_prompt(name, chars[name], row, style)
             jobs.append({"id": f"ref_{slug(name)}_{slug(row['id'])}", "size": [1280, 896], "seed": 7,
-                         "prompt": prompt, "refs": base, "path": str(ref_path(refs_dir, f"{name} {row['id']}", prompt))})
+                         "prompt": prompt, "refs": base, "path": str(outfit_path(refs_dir, name, chars[name], row, style))})
     return jobs
 
 
