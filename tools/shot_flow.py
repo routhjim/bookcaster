@@ -2851,10 +2851,14 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         crs = _cast(book, stem, {"id": s["id"].rsplit("_s", 1)[0], "who": s["who"]})[1]
         R_ = RG.Book(book)
         miss = [w for w in s["who"] if w != s.get("ots") and not R_.lora(w)[0]]
+        # 11-05: as flow3d.ensure_loras (#133): only a PERSON without a LoRA stops the key; a creature, craft or object
+        # whose LoRA failed is drawn from its sheet and words (a spacecraft passed 2-3 of 80 pictures: no LoRA)
+        import flow3d as F3
+        miss = [w for w in miss if F3._is_person(book, w)]
         if miss:                        # never a key drawn from words alone (10-27: Watson had no LoRA, nobody said)
             raise RuntimeError(f"{s['id']}: no LoRA for {miss} (bookcaster trains them before the keys)")
         loras = [[R_.lora(w)[0], min(lw, CREATURE_LORA) if w in crs else lw, bx]
-                 for w, bx in zip(s["who"], boxes) if w != s.get("ots")]
+                 for w, bx in zip(s["who"], boxes) if w != s.get("ots") and R_.lora(w)[0]]
         p = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s)
         # an action key written as its own picture takes no place picture: the image model copies a reference's
         # layout (11-01: every fight key was the hero's wide cave view with the two pasted in; Vorgrath's sheet pose 39/39)
