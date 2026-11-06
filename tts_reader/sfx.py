@@ -28,7 +28,7 @@ PLAN_VERSION = 2       # 2 (10-31): each spot's cue words and its line's end, fo
 # a sound that lands on one frame (a video can move it onto the picture's impact, tools/shot_flow.py)
 IMPACT = re.compile(r"\b(knock|knocks|knocking|slam|slams|slammed|bang|bangs|clang|clangs|crash|crashes|thud|thuds|"
                     r"smash|shatter|shatters|gunshot|shot|strike|strikes|struck|snap|snaps|slap|thump|dashed)\b", re.I)
-SPOT_DB = {"soft": -8.0, "medium": -3.0, "loud": 1.0}        # after normalising each effect to -22 LUFS
+SPOT_DB = {"soft": -8.0, "medium": -3.0, "loud": 1.0}        # after normalising each effect to -22 LUFS (sfx_spot.py)
 BED_DB = -12.0                                               # after normalising each bed to -28 LUFS; ducked
 MAX_SPOT_S, MAX_BED_S = 8.0, 30.0
 
@@ -113,9 +113,11 @@ def ensure_plan(work: Path, timeline_path: Path, total: float, llm_url: str, mod
 
 def _fx_name(kind: str, n: int, sound: str, secs: float) -> str:
     """A file named by what it holds (10-31: named by its index, a re-planned chapter played the old plan's sound
-    for the new one's spot n)."""
+    for the new one's spot n). Spots carry a version: since 11-06 a spot file is already cut, faded and normalised
+    (tts_reader/sfx_spot.py), so an older raw one must not be mixed as one."""
     import hashlib
-    return f"{kind}{n:03d}_{hashlib.sha1(f'{sound}|{secs:.1f}'.encode()).hexdigest()[:8]}.wav"
+    key = f"{sound}|{secs:.1f}" + ("|cut2" if kind == "spot" else "")
+    return f"{kind}{n:03d}_{hashlib.sha1(key.encode()).hexdigest()[:8]}.wav"
 
 
 def generate(plan: dict, work: Path, log) -> None:
@@ -173,8 +175,8 @@ def mix(base: Path, voice: Path, plan: dict, out: Path, bitrate: str = "192k") -
             beds.append(f"[e{n}]")
         else:
             d = int(x["t"] * 1000)
-            chains.append(f"[{n}:a]aresample=48000,aformat=channel_layouts=mono,loudnorm=I=-22:TP=-2,"
-                          f"afade=t=out:st={max(0.0, x['seconds'] - 0.4):.2f}:d=0.4,"
+            # the file is cut, faded and normalised already (sfx_spot.py; 11-06: loudnorm pumped and clipped them)
+            chains.append(f"[{n}:a]aresample=48000,aformat=channel_layouts=mono,"
                           f"volume={SPOT_DB[x['loud']]}dB,pan=stereo|c0=c0|c1=c0,adelay={d}|{d}[e{n}]")
             spots.append(f"[e{n}]")
     graph = ";".join(chains)

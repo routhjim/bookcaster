@@ -1707,10 +1707,6 @@ def _mix_with_sfx(book: Path, stem: str, outdir: Path, log=print) -> Path:
         return out
     plan = json.loads((sd / "plan.json").read_text())
     sfx.generate(plan, sd, log)
-    for n, b in enumerate(plan["beds"]):
-        b["file"] = str(sd / f"bed{n:03d}.wav")
-    for n, s in enumerate(plan["spots"]):
-        s["file"] = str(sd / f"spot{n:03d}.wav")
     sfx.mix(base, W / f"{stem}.mp3", plan, out)
     return out
 
