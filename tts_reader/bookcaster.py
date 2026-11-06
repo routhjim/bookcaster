@@ -2544,7 +2544,9 @@ def main(argv: list[str] | None = None) -> int:
                 return dflt
             m_, _, s_ = v.rpartition(":")
             return float(m_ or 0) * 60 + float(s_)
-        span = f"{secs(a.t_from, 0.0)}:{secs(a.t_to, 1e9)}"
+        # no --from/--to is the whole chapter: no span, so the finished video is the chapter's and goes to Jellyfin
+        # (11-05: a "0.0:1e9" span always went in, and a span run is never sent)
+        span = f"{secs(a.t_from, 0.0)}:{secs(a.t_to, 1e9)}" if (a.t_from or a.t_to) else None
         render = None
         if getattr(a, "render", None):
             r0, _, r1 = a.render.partition("-")
