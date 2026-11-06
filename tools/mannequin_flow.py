@@ -349,20 +349,20 @@ The previous fight shot's action: {prev}
 Write:
 - "left" and "right": exactly one of these names each - {names} - for who is on the left and who is on the right of
   the opening picture (only one in the shot: that name in "left", "right" empty). Names go ONLY here.
-- "framing": "wide" or "medium" ("wide" when the creature's tail, wings or whole body act).
+- "framing": "wide" or "medium" ("wide" when a whole body or a long limb acts).
 - "layout": one sentence for the OPENING picture only: where each one is, which way each faces, how far apart they are,
   what each holds, and each body's posture: a fighter is in a READY fighting stance (weight forward, weapon raised
   toward the opponent, leaning in), never standing at rest with arms down; a four-legged creature crouches, stands or
   lies on all four legs; anyone knocked down but alive is on the ground propped on an elbow, eyes open, still holding
   the weapon; anyone dead lies flat on the ground, eyes closed, motionless. Every body part the action will use is in
-  the picture (a tail that sweeps, a claw that strikes, the wound a blade goes into). Both bodies whole and clearly
+  the picture (every limb or part that will strike, sweep or be struck). Both bodies whole and clearly
   apart, no contact yet, nothing in mid-action.
-- "action": what happens in the shot, in order, in plain physical verbs, each action played through to its result (the
-  blade goes in, the fire hits) - the narration's result happens in THIS shot when the narration says it (it says
-  "drove the sword in": the blade goes in, not a press or an aim). Every effect names its source ("a stream of fire from the dragon's mouth"); say what
-  each person's hands hold ("his hands grip only the sword"); call each one by a plain description (a young man in
-  steel plate armour, a huge black dragon), never by name; no magic words (magic, enchanted, spell, glowing) and no
-  camera directions. At most 70 words.
+- "action": what happens in the shot, in order, in plain physical verbs, each action played through to its result
+  (each blow lands, each effect reaches what it hits) - the narration's result happens in THIS shot when the narration
+  says it: what it says is done is done in full, not only aimed or begun. Every effect names its source and where it
+  comes out of; say what each person's hands hold, and only that; call each one by a plain description (their kind,
+  age and what they wear, as their look gives it), never by name; no magic words (magic, enchanted, spell, glowing)
+  and no camera directions. At most 70 words.
 {fix}Reply with JSON only: {{"left": "...", "right": "...", "framing": "...", "layout": "...", "action": "..."}}"""
 FIGHT_NEG = (", deformed anatomy, melting, morphing, bloated swollen body, egg-shaped head, distorted creature, extra "
              "limbs, fused bodies, fire from hands, magic spell, energy blast, glowing hands, explosion from a sword")
