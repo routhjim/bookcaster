@@ -725,13 +725,16 @@ def scene_frames(book, f, work: Path, shots: list, log=print) -> int:
     return n
 
 
-def plan(book, chapter, log=print) -> dict:
+def plan(book, chapter, log=print, shot_flow: bool = False) -> dict:
     """Stage 0 of the full-3D flow, from the text (10-21: the flow could only REMAKE a 2D-animated chapter - its
     moment list was the 2D clips that existed - so a fresh book had no moments and old runs leaked in).
     The language model plans the pictures + looks + wardrobe (bookcaster's picture planner) and the moments +
     their frame facts (who / where / motion: the animator's plan-only phase, anim/keyframes.json); every planned
     moment goes into anim/manifest.json (no clip yet); the reference sheets (portraits, outfits) and the chapter's
-    still pictures (the gaps between moments) are drawn. Nothing is animated here."""
+    still pictures (the gaps between moments) are drawn. Nothing is animated here.
+    shot_flow: the chapter goes on to the shot flow (bookcaster.shots_ready): no acts pass in the review (it never
+    reads them) and the language model is left up after the stills (its wardrobe asks next; 11-06: stopped here and
+    started again 22 s later, a ~40 s cold start)."""
     JOB_LOG[0] = log
     disk_check(book, log)
     from tts_reader import animate, video
@@ -751,7 +754,7 @@ def plan(book, chapter, log=print) -> dict:
     scene_frames(book, f, work, r["shots"], log)
     import plan_review                           # the plan checked for agreement BEFORE any drawing (user 10-22)
     _log("plan: review (rules + the language model, scene by scene, two passes)", log)
-    plan_review.review(book, f, work, r["shots"], log)
+    plan_review.review(book, f, work, r["shots"], log, acts=not shot_flow)
     plan_lint(book, [stem], log)
     animate.igpu("strata", log)                   # "active" is not "answering" (10-21: a starting unit refused)
     from urllib.request import urlopen
@@ -792,10 +795,10 @@ def plan(book, chapter, log=print) -> dict:
     # ONE drawing session for the sheets, their redraws and the stills: the model stays loaded on BOTH cards (10-21
     # plan items 3/4: 11 stills took ~11 min on one card after the sheets' own separate loads)
     with video.drawing_session(work / "anim" / "draw.log", log):
-        return _plan_draw(book, f, r, refs, man, work, log)
+        return _plan_draw(book, f, r, refs, man, work, log, shot_flow)
 
 
-def _plan_draw(book, f, r, refs, man, work, log) -> dict:
+def _plan_draw(book, f, r, refs, man, work, log, shot_flow: bool = False) -> dict:
     from urllib.request import urlopen
     from tts_reader import animate, video
     from tts_reader import bookcaster as BC
@@ -824,10 +827,13 @@ def _plan_draw(book, f, r, refs, man, work, log) -> dict:
             break
         except OSError:
             time.sleep(5)
+    ok = False
     try:
         BC.draw_pictures_for(book, f, log)
+        ok = True
     finally:
-        subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+        if not (ok and shot_flow):
+            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     return {"moments": len(man), "refs_drawn": miss, "manifest": str(work / "anim" / "manifest.json")}
 
 

@@ -1636,6 +1636,28 @@ LAYOUT_ASK = ("In one or two plain sentences, say where each piece of furniture 
               "Furniture and fixtures only, no colours, no light.")
 
 
+def _layouts_cached(book: Path, places: dict) -> dict | None:
+    """{place: layout} when every place's hero is settled and its layout cached for that picture's bytes, else None
+    (then the heroes are drawn or judged, or a layout asked: the vision model's work, on the iGPU)."""
+    import hashlib
+    out = {}
+    for w, fx in places.items():
+        hp = MF._hero_state(book, w, lambda *_: None, tuple(fx or ()))
+        if not isinstance(hp, Path):
+            return None
+        if not hp.exists():
+            continue                    # (settled with no picture: room_layouts skips it too)
+        cp = hp.with_suffix(".layout.json")
+        try:
+            got = json.loads(cp.read_text())
+        except (OSError, ValueError):
+            return None
+        if got.get("k") != hashlib.sha1(hp.read_bytes()).hexdigest()[:12] or not got.get("layout") or got.get("n") != 120:
+            return None
+        out[w] = got["layout"]
+    return out
+
+
 def room_layouts(book: Path, stem: str, log=print) -> dict:
     """{place: where its things are in its picture}: every described place of the chapter's scenes has its picture
     drawn BEFORE the director, and the vision model says where the bed, desk and fireplace stand in it (10-29 user:
@@ -1658,6 +1680,9 @@ def room_layouts(book: Path, stem: str, log=print) -> dict:
             places[w] = fx
     if not places:
         return {}
+    cached = _layouts_cached(book, places)
+    if cached is not None:              # 11-06: every hero settled and its layout read before: no vision work, so the
+        return cached                   # language model is not stopped (a rerun stopped it here, then restarted it)
     from tts_reader import animate
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the iGPU's to judge
     heroes = MF.heroes_for(book, places, log)
@@ -2416,7 +2441,7 @@ bring; no weather or sky; for a place indoors, nothing seen outside it.",
  "crowd": "the UNNAMED people always there (about twenty courtiers in dark robes along both walls), or \"\" when none"}}"""
 
 
-def place_sheets(book: Path, stem: str, es: list, by: dict, log=print) -> dict:
+def place_sheets(book: Path, stem: str, es: list, by: dict, log=print, keep_llm: bool = False) -> dict:
     """{mid: {"scene", "room", "fixtures", "crowd"}}: one set sheet per place the DIRECTOR's shots use, made after it
     (10-27 user: should the scenes be an output of the director? Yes: the planner's places and the scene step's
     who's-here / how-things-stand made the title card, the talk back in the bedroom and ch2's lasting flames; the
@@ -2476,7 +2501,8 @@ def place_sheets(book: Path, stem: str, es: list, by: dict, log=print) -> dict:
                 for w, sid, a in ex.map(ask, todo):
                     got_all[w] = (sid, a)
         finally:
-            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
+            if not keep_llm:            # (the run's describe_places may ask next: it stops the model after)
+                subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     out = {}
     for w, xs in at.items():
         sid, a = got_all.get(w, ("", {}))
@@ -4510,17 +4536,18 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         shots = [s for e in es for s in by.get(e["id"], [])]
         log(f"resuming the stopped render on its saved plan ({len(shots)} shots; delete {fz} to plan again)")
         return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
+    # the rooms as their pictures have them (10-29), first: their vision checks need the language model down (it is,
+    # after the LoRAs), so the cover, wardrobe and director then start it once (11-06: two cold starts, ~40 s each)
+    lays = room_layouts(book, stem, log)
     if MF.cover(book, stem, t0, t1, log):  # narrated stretches without a moment get theirs
         es = MF.entries(book, stem, t0, t1)
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
-    lays = room_layouts(book, stem, log)                      # the rooms as their pictures have them (10-29)
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
     sfx_plan(book, stem, log)                                 # (its language model is still up)
-    sheets = place_sheets(book, stem, es, by, log)            # then one set sheet per place it used
+    sheets = place_sheets(book, stem, es, by, log, keep_llm=True)   # then one set sheet per place it used
     es = apply_chains(es, by, log)                            # (after the sheets: they see the director's own shots)
     from tts_reader import animate
-    subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     shots = [s for e in es for s in by.get(e["id"], [])]
     _migrate_ids(shot_dir(book, stem), shots, log)
     R_ = RG.Book(book)
@@ -4530,6 +4557,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
                  scene=sh.get("scene", ""),
                  crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "")   # the set sheet's crowd only
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
+    subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
+    # before: a place to describe restarted the model place_sheets had just stopped)
     if render:
         keep = {e["id"] for e in es if render[0] - 1e-6 <= float(e["t"]) < render[1]}
         es = [e for e in es if e["id"] in keep]

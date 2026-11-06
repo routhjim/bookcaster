@@ -1918,7 +1918,7 @@ def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> No
     whole_timeline(book, stem, log)          # every line whole before anything reads it (10-27)
     if not (vd / "plan.json").exists() or not (vd / "anim" / "manifest.json").exists():
         status(step=f"shots: planning {stem} (looks, moments, sheets)")
-        flow3d.plan(book, stem, log=log)
+        flow3d.plan(book, stem, log=log, shot_flow=True)
     if not (vd / "flow3d" / "plan.json").exists():
         R, cx = flow3d._ctx(book, stem)
         try:

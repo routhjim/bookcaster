@@ -474,8 +474,10 @@ def direct(book, stem: str, ids: list | None = None, log=print, force: bool = Fa
     return rep
 
 
-def review(book, f, work: Path, shots: list, log=print) -> dict:
-    """The plan review of one chapter (anim/keyframes.json + plan.json scenes rewritten). -> report"""
+def review(book, f, work: Path, shots: list, log=print, acts: bool = True) -> dict:
+    """The plan review of one chapter (anim/keyframes.json + plan.json scenes rewritten). -> report
+    acts=False: no acts/beats pass (11-06: the shot flow never reads them - its director writes its own shots; the 3D
+    route's `direct` fills any moment without this DIRECTION_VERSION when it runs)."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from tts_reader import bookcaster as BC
@@ -535,7 +537,10 @@ def review(book, f, work: Path, shots: list, log=print) -> dict:
             assign()
     plan["scenes"] = video.merge_scenes(sorted(plan["scenes"], key=lambda s_: _t0(s_, pstarts)))
     assign()                                         # the moments' scene ids after the merge
-    rep["acts"] = acts_pass(book, plan, frames, starts_, cast, url, model, log)
+    if acts:
+        rep["acts"] = acts_pass(book, plan, frames, starts_, cast, url, model, log)
+    else:
+        log("  review: no acts pass (the shot flow writes its own shots)")
     for fr in frames:
         fr.pop("_t", None)
         fr.pop("_t0", None)
