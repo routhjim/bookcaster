@@ -1424,6 +1424,32 @@ def ask_chains(q0: str, shots: list, cast: list, named_in, looks: dict, ask, cac
     return kept
 
 
+# 11-06 (CHANGES 73, loop E15): a chain only when its shot moves. On the_long_dark_between ~6 of 18 chains were a
+# still view split into lines (a hull, bunks, plants, welds...): their 3 takes per line came out alike, ~40 takes
+# spent for nothing. One short yes/no ask per chain the chain ask kept, on the chain's own lines; "no" leaves the
+# director's shots as they were (single shots, as without the chain). An answer that is neither keeps the chain.
+CHAIN_MOVES = os.environ.get("BOOKCASTER_CHAIN_MOVES", "1") != "0"
+MOTION_ASK = ("A shot of a film, written for a video model as lines played one after another:\n{lines}\n"
+              "Does this shot show a person, creature or object actually moving or acting (not a static view, "
+              "lighting, or a held pose)? Answer yes or no.")
+
+
+def chain_moves(chain: dict, ask, cache: Path, log=print) -> bool:
+    """The motion ask for one chain -> True to keep it a chain. Cached in `cache` by the ask's text."""
+    lines = [str(l.get("line") if isinstance(l, dict) else l).strip() for l in chain.get("lines") or []]
+    msg = MOTION_ASK.replace("{lines}", "\n".join(f"{i}. {l}" for i, l in enumerate(lines, 1)))
+    k = MF._h(msg)
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    if k not in got:
+        r = ask([{"role": "user", "content": msg}])
+        m = re.search(r"\b(yes|no)\b", str(r or ""), re.I)
+        got[k] = {"lines": lines, "reply": r, "moves": not (m and m.group(1).lower() == "no")}
+        cache.write_text(json.dumps(got, indent=1))
+    if not got[k]["moves"]:
+        log(f"  chain over shots {chain.get('shots')} left as single shots (no motion): {lines[0][:80]}")
+    return got[k]["moves"]
+
+
 def chain_heads(shots: list, chains: list, cast: list, crs: list, sides: dict, resolve) -> list:
     """Each chain's head shot: the first replaced shot's staging row composed (or the chain's mended `head`, composed
     the same way), `who` from that row only, the key from that picture (keyshot) with the things' looks.
@@ -2168,6 +2194,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=1500)[0]
             chs = ask_chains(q0, a["shots"], cast, named_in, {w: describe(RGB, w, dress) for w in cast}, ask_,
                              sd / "passages" / f"p{mid_t:06d}.chains.json", log)
+            if CHAIN_MOVES:
+                chs = [c for c in chs if chain_moves(c, ask_, sd / "passages" / f"p{mid_t:06d}.motion.json", log)]
             for j_, (nums, head) in enumerate(chain_heads(a["shots"], chs, cast, crs, screen,
                                                           lambda v: cast_of(v, cast))):
                 tag = {"key": f"{mid_t}:{j_}", "shot": head}
