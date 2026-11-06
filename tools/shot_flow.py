@@ -3417,9 +3417,12 @@ def _crowded(faults: list) -> bool:
     return any(re.search(r"\d+ people, not \d+", f) for f in faults)
 
 
-def _next_take(j: dict, n: str, k: int, faults: list) -> dict | None:
+def _next_take(j: dict, n: str, k: int, faults: list, prev: list | None = None) -> dict | None:
     """The job for take k (2, 3, ...) of shot `n` after a take with `faults`: an extra person -> the HELD prompt and a
-    new seed, up to 1 + DUPE_TAKES takes; any other fault -> one retake as it was (seed RETAKE)."""
+    new seed, up to 1 + DUPE_TAKES takes; any other fault -> one retake as it was (seed RETAKE). None once a retake
+    failed exactly like the take before it (`prev`: the same faults at the same times - another can't win, 11-06)."""
+    if prev is not None and sorted(faults) == sorted(prev):
+        return None
     if _crowded(faults) and j.get("held") and k <= 1 + DUPE_TAKES:
         return dict(j, name=f"{n}_t{k}", seed=RETAKE + shot_seed(n) + 101 * (k - 2), **j["held"])
     if k == 2:
@@ -3480,14 +3483,14 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
     try:
         firsts = [j for j in jobs if not re.search(r"_t\d+$", j["name"])]
         names = {j["name"] for j in jobs}
-        left = {j["name"]: (j, j["name"], 1) for j in firsts}     # take name -> (shot job, shot id, take number)
+        left = {j["name"]: (j, j["name"], 1, None) for j in firsts}   # take -> (shot job, shot id, take no., last faults)
         while left and not stop.is_set():
             ready = [t for t in left if (out_ / f"{t}.mp4").exists()]
             if not ready:
                 time.sleep(10)
                 continue
             for t in ready:
-                j, n, k = left.pop(t)
+                j, n, k, prev = left.pop(t)
                 if k == 1 and ((out_ / f"{n}.judged").exists() or f"{n}_t2" in names):
                     continue
                 fa = MF.fight_clip_ok(out_ / f"{t}.mp4", j.get("people"))
@@ -3495,14 +3498,14 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                     if k == 1:
                         (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
                     continue
-                nx = _next_take(j, n, k + 1, fa)
+                nx = _next_take(j, n, k + 1, fa, prev)
                 if not nx:
                     log(f"{n}: take {k}: {fa}: no more takes (the best is kept)")
                     continue
                 log(f"{n}: take {k}: {fa}: taken again{' held still' if nx.get('emb') != j.get('emb') else ''} "
                     f"(queued on the loaded model)")
                 _queue_more(more, nx)
-                left[nx["name"]] = (j, n, k + 1)
+                left[nx["name"]] = (j, n, k + 1, fa)
     except Exception as e:                  # noqa: BLE001  (the render goes on; judge_takes catches up after)
         log(f"!!! take judge while rendering: {e!r}")
     finally:

@@ -37,11 +37,12 @@ o2 = S._next_take(job, job["name"], 2, ["deformed body at 1.5 s"])
 check("another fault: one plain retake (the prompt as it was)", o2["emb"] == "qd_x", o2)
 check("... and only one", S._next_take(job, job["name"], 3, ["deformed body at 1.5 s"]) is None)
 
-# the judge as clips land: take 1 and 2 crowded, take 3 clean -> takes queued until clean
+# the judge as clips land: take 1 and 2 crowded (differently), take 3 clean -> takes queued until clean
 out_ = b / "out"; out_.mkdir()
 more, done = b / "more.json", b / "done"
 more.write_text("[]")
-verdict = {"action-000100_s0": crowd, "action-000100_s0_t2": crowd, "action-000100_s0_t3": []}
+verdict = {"action-000100_s0": crowd, "action-000100_s0_t2": ["2 people, not 1, at 3.0 s"],   # (11-06: a take that fails
+           "action-000100_s0_t3": []}                                          # just like the last one ends the takes)
 S.MF.fight_clip_ok = lambda mp4, people=None: verdict[mp4.stem]
 _real_sleep = S.time.sleep
 S.time.sleep = lambda s: _real_sleep(0.01)
