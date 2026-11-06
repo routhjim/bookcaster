@@ -337,6 +337,32 @@ def check_sheets(plan, style, refs, log=print, tries: int = 2) -> dict:
     return fails
 
 
+LOOK_SEX = (("man", re.compile(r"^\W*(?:an?\s+)?(?:\w+\s+){0,2}(man|boy|gentleman|youth|king|prince|lord)\b", re.I)),
+            ("woman", re.compile(r"^\W*(?:an?\s+)?(?:\w+\s+){0,2}(woman|girl|lady|queen|princess)\b", re.I)))
+
+
+def look_sex(desc) -> str | None:
+    """The sex a look opens with ("a man of about 35, ..." -> "man"), or None (a creature, an unclear look)."""
+    for sx, rx in LOOK_SEX:
+        if rx.search(str(desc or "")):
+            return sx
+    return None
+
+
+def voice_cast(book, RG, name) -> dict:
+    """What the voice cast step chose for this person (book.cast.json, matched as the registry matches a voice
+    label): {"sex": "man"|"woman"|None, "role": its role sentence}."""
+    try:
+        cast = json.loads((Path(book) / "book.cast.json").read_text())["characters"]
+    except (OSError, ValueError, KeyError):
+        return {"sex": None, "role": ""}
+    for lab, c in cast.items():
+        if lab == name or RG.person(lab, narrator=False) == name:
+            g = str(c.get("gender") or "").strip()[:1].upper()
+            return {"sex": {"M": "man", "F": "woman"}.get(g), "role": str(c.get("role") or "").strip()}
+    return {"sex": None, "role": ""}
+
+
 def audit_looks(book, text, plan, log=print) -> dict:
     """Every planned look against what the text says about that character (user 10-21: the Knight's look was a
     linen tunic, no armour; the story: the king's knights "rode out in silver armor", one came back "his shield
@@ -368,34 +394,54 @@ def audit_looks(book, text, plan, log=print) -> dict:
                 fixed[n] = {"was": was, "now": pinned[pk], "why": "pinned (bookcaster look)"}
                 _log(f"look audit: {n}: the pinned look (set by hand) restored", log)
             continue
-        if checked.get(n) == sig(desc):              # audited before with this very look: not asked again (10-22: the
-            continue                                 # same look audited each run flipped the Knight's armor off)
+        # 11-05: a wife drawn as "a man of about 32": the look's sex against the voice the cast step chose for them
+        vc = voice_cast(book, RG, n)
+        clash = vc["sex"] and look_sex(desc) and vc["sex"] != look_sex(desc)
+        if checked.get(n) == sig(desc) and not clash:    # audited before with this very look: not asked again (10-22:
+            continue                                 # the same look audited each run flipped the Knight's armor off)
         # the passages naming THIS person: the full name, or a word of it that names only them (10-27: the last word
         # "Stoner" audited Julia's look on Helen's passages)
         words = {n.lower()} | {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'\-]+", n)
                                if len(w) > 2 and RG.person(w, narrator=False) is not None and RG.same(w, n)}
         rx = re.compile(r"\b(" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + r")s?\b", re.I)
         hits = [p.strip() for p in paras if rx.search(p)][:14]
-        if not hits:
+        if not hits and not clash:
             continue
         wk = video.wardrobe_key(plan, n, RG)
         later = [f"- {w['id']}: {w.get('dress', '')}" for w in (plan.get("wardrobe") or {}).get(wk, [])] if wk else []
         later_txt = ("\n\nLater outfit changes are ALREADY handled separately (do NOT put these into the look):\n"
                      + "\n".join(later)) if later else ""
+        role = (f"\n\nThe voice cast describes {n} as: {vc['role']}" if vc["role"] else "")
+        conflict = (f"\n\nCONFLICT: the voice cast gave {n} a {'female' if vc['sex'] == 'woman' else 'male'} voice, "
+                    f"but this look makes {n} a {look_sex(desc)}. Decide from the passages and the cast's words which "
+                    "is right, and correct the look if it is wrong." if clash else "")
         prompt = (f"A story character, {n}, will be drawn with this look:\n{desc}{later_txt}\n\nEvery passage of the story that "
-                  f"mentions {n}:\n\n" + "\n\n".join(f"- {h}" for h in hits) +
-                  f"\n\nDoes the look CONTRADICT what the passages say about {n} when they first appear (body, age, "
-                  "hair, face, clothes, armour)? Ignore later changes of clothes and anything they hold or carry. "
-                  'Answer only JSON: {"ok": true} or {"ok": false, "why": "<the contradiction>", "look": "<the '
-                  'corrected full look, same style and length as the planned one, held items left out>"}. The '
-                  "corrected look must STATE what the passages say instead (e.g. 'wearing dented silver armor'), "
-                  "not just drop the contradicted words.")
-        try:
-            a = _chat(BC.LLM_URL, BC.LLM_MODEL, prompt, max_tokens=600)
-            m = re.search(r"\{.*\}", a, re.S)
-            v = json.loads(m.group()) if m else {}
-        except (OSError, ValueError) as ex:
-            raise SystemExit(f"look audit: the language model failed for {n}: {ex}")
+                  f"mentions {n}:\n\n" + ("\n\n".join(f"- {h}" for h in hits) or "(none)") + role + conflict +
+                  f"\n\nDoes the look CONTRADICT what the passages say about {n} when they first appear: whether {n} "
+                  f"is a man or a woman, a boy or a girl (by the pronouns and the words for their role the passages use "
+                  "for them), their body, age, hair, face, or what they wear? Ignore later changes of clothes and "
+                  'anything they hold or carry. Answer only JSON: {"ok": true} or {"ok": false, "why": "<the '
+                  'contradiction>", "look": "<the corrected full look, same style and length as the planned one, held '
+                  'items left out>"}. The corrected look must STATE what the passages say instead, not just drop the '
+                  "contradicted words.")
+
+        def ask_(q):
+            try:
+                a = _chat(BC.LLM_URL, BC.LLM_MODEL, q, max_tokens=600)
+                m = re.search(r"\{.*\}", a, re.S)
+                return json.loads(m.group()) if m else {}
+            except (OSError, ValueError) as ex:
+                raise SystemExit(f"look audit: the language model failed for {n}: {ex}")
+        v = ask_(prompt)
+        now = v["look"] if v.get("ok") is False and v.get("look") else desc
+        if clash and look_sex(now) and look_sex(now) != vc["sex"]:     # still disagrees: asked once more, the
+            v2 = ask_(prompt + f"\n\nYour answer keeps {n} a {look_sex(now)}. Check again: what do the passages "  # conflict
+                      f"call {n} (he or she, and the words for their role)? Answer the same JSON.")      # named
+            if v2.get("ok") is False and v2.get("look"):
+                v = v2
+            elif v2.get("ok") is True:
+                _problem_line = f"!!! look audit: {n}: the look says a {look_sex(now)}, the voice is {vc['sex']}: kept"
+                _log(_problem_line, log)
         if v.get("ok") is False and v.get("look") and video.literal_safe(v["look"]) != desc:
             key = BC.set_look(Path(book), n, v["look"])
             plan_chars[n] = video.literal_safe(v["look"])
@@ -421,10 +467,10 @@ def infer_period(book, text: str, log=print) -> str:
     f = Path(book) / "period.txt"
     if f.exists() and f.read_text().strip():
         return f.read_text().strip()
-    prompt = ("In what time period and region is this story set? Answer with ONE short phrase naming a real-world "
-              "period and region with an approximate year, e.g. 'early medieval Northern Europe, around 1000 AD' or "
-              "'Victorian London, around 1890'. For a fantasy or invented world, name the real period whose "
-              "technology, clothing and buildings it matches. Only the phrase.\n\n" + text[:12000])
+    prompt = ("In what time period and region is this story set? Answer with ONE short phrase: the period's name, "
+              "the region, and an approximate year. For a fantasy, future or invented world, name the real or "
+              "imagined period whose technology, clothing and buildings it matches. Only the phrase.\n\n"
+              + text[:12000])
     a = (_chat(BC.LLM_URL, BC.LLM_MODEL, prompt, max_tokens=60) or "").strip().strip('"').splitlines()[0][:120]
     if a:
         f.write_text(a + "\n")
@@ -785,13 +831,26 @@ def _plan_draw(book, f, r, refs, man, work, log) -> dict:
     return {"moments": len(man), "refs_drawn": miss, "manifest": str(work / "anim" / "manifest.json")}
 
 
+FAILED_BEFORE = "failed before on these very inputs: not tried again until its look or sheet changes"
+
+
 def lora_todo(book, only=None) -> dict:
     """The cast (look.json characters, creatures included) whose LoRA is missing -> {name: why}. charlora's own
     input hash decides a retrain when the look/refs change; this is the cheap plan-time listing."""
     vd = vdir(book)
     out = {}
     RG = _reg(book)
+    lj = vd / "look.json"
+    props = (json.loads(lj.read_text()).get("props") or {}) if lj.exists() else {}
     for n in RG.people():
+        # 11-05 user: props are drawn from words - a cast member the plan also lists as a prop never gets a LoRA
+        if person_key(n) in {person_key(p) for p in props}:
+            continue
+        if only is not None and not any(RG.same(n, o) for o in only):
+            continue
+        if _failed_current(book, n):    # a non-person whose build failed on these very inputs: listed, not trained
+            out[n] = FAILED_BEFORE
+            continue
         # one chapter's cast (10-25: Acts 2 would retrain Acts 1's Jesus), matched PER PERSON (10-27: look.json keeps
         # "Doctor Watson" first, the chapter says "Dr. Watson": Watson never got a LoRA and was drawn from words alone)
         if only is not None and not any(RG.same(n, o) for o in only):
@@ -1109,7 +1168,7 @@ def lora_lines(book, only=None) -> list:
 
 def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
     """Train every missing LoRA before any key is drawn (iGPU, cached); returns the names still missing (loud)."""
-    todo = sorted(lora_todo(book, only))
+    todo = sorted(n for n, w in lora_todo(book, only).items() if w != FAILED_BEFORE)
     if todo and not os.environ.get("BOOKCASTER_SKIP_LORA"):
         # nothing else runs yet: one character per card, all in parallel (user 10-20: XTXs for speed); a card's
         # later characters queue behind its flock
@@ -1136,6 +1195,11 @@ def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
                      f"{why[-160:]}", log)
                 if status_cb:
                     status_cb(step=f"3d assets: LoRA {n} failed{', retrying' if k == 0 else ''}: {why[-100:]}")
+            if not _is_person(book, n):        # recorded with its inputs: not tried again until they change
+                fp = _failed_path(book, n)
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(json.dumps({"hash": _input_hash(book, n), "why": why[-300:],
+                                          "at": time.strftime("%F %T")}, indent=1))
         # one worker per CARD taking the next character as soon as it is free (10-22: the fixed i % 2 split queued
         # Edric behind the Knight on card 05 while card 65 sat idle ~30 min)
         import queue
@@ -1163,6 +1227,33 @@ def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
     for ln in left:
         _log("!!! " + ln, log)
     return left
+
+
+def _input_hash(book, name):
+    """charlora's input hash of the cast member now (look, outfits, sheets, models, style), or None."""
+    try:
+        sys.path.insert(0, str(HERE))
+        import charlora as L
+        return L.input_hash(L.Char(str(book), name), L.STEPS)
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _failed_path(book, name) -> Path:
+    return vdir(book) / "charlora" / _reg(book).slug(name) / "failed.json"
+
+
+def _failed_current(book, name) -> bool:
+    """A non-person's LoRA failed before with the inputs it has now (11-05: a spacecraft failed twice for 80 minutes
+    every run): its look or sheet must change before it is tried again."""
+    f = _failed_path(book, name)
+    if not f.exists():
+        return False
+    try:
+        h = json.loads(f.read_text()).get("hash")
+    except (OSError, ValueError):
+        return False
+    return bool(h) and h == _input_hash(book, name) and not _is_person(book, name)
 
 
 def _is_person(book, name) -> bool:

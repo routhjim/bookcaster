@@ -1209,7 +1209,8 @@ def _mend(reply: str, faults: list, cast: list, ask, named_in) -> str | None:
             if not sent:
                 continue
             ans = str(ask(f'A shot of a film: "{sent}" Where does the {w} come from? Answer with a few words starting '
-                          f'with "from", like "from the fireplace". The answer only.') or "").strip().split("\n")[0]
+                          f'with "from" and naming the thing or person it comes out of. The answer only.') or ""
+                      ).strip().split("\n")[0]
             ans = ans.strip(' "\'.').rstrip(".")
             if ans.lower().startswith("from ") and len(ans) <= 60:
                 x["action"] = act.replace(sent, re.sub(rf"\b({re.escape(w)})\b", rf"\1 {ans}", sent, count=1, flags=re.I))
@@ -2268,8 +2269,8 @@ Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the 
 "opens": "how things stand as it opens, for a painter: what each one holds, postures, the time of day and the
 light; their clothes ONLY as the text says them (nothing about clothes the text does not tell), at most 60 words",
 "blocking": "how YOU stage the scene for the camera, kept for all of it: everyone present, left to right as the camera
-sees them, where each one is and their posture (e.g. 'Helen Stoner seated on the left by the fire, Sherlock Holmes
-standing in the centre, Doctor Watson seated on the right'); who talks with whom most; and the lines one of them says
+sees them, where each one is and their posture, each by name with their side of the picture and what they are at;
+who talks with whom most; and the lines one of them says
 to someone else, which you will shoot with everyone in the picture. At most 70 words"}}]}}
 Block each scene like a stage director: count everyone present (also the silent ones), give them their places, and
 keep those places - nobody changes side or stands in someone else's place unless the story moves them.
