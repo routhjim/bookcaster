@@ -29,5 +29,7 @@ check("short prompts share a batch", max(len(b) for b in bs) > 1, [[len(x) for _
 check("nothing to encode: no batches", enc_batches([], budget) == [])
 check("the encoder skips the vision/audio towers and runs without a KV cache",
       "GEMMA_SKIP.search(k)" in src and "use_cache=False" in src and "position_ids=" in src)
+check("the connector takes CONN_ROWS prompts at a time and saves off its thread (11-06)",
+      re.search(r"^CONN_ROWS = \d+", src, re.M) is not None and "saver.submit(save" in src and "f.result()" in src)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

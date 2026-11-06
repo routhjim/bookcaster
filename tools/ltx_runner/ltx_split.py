@@ -9,6 +9,7 @@ page cache is dropped as we go; the process exits if MemAvailable < 6 GiB.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import dataclasses
 import gc
 import json
@@ -188,6 +189,7 @@ def layer_devfn(pattern: str, split: int, part: str = "both"):
 
 # ---------------------------------------------------------------- encode
 ENC_TOKENS = 1024       # Gemma batch: prompts (longest first) up to this many padded tokens
+CONN_ROWS = 8           # connector batch: prompts (rows of 1024 tokens) at a time
 GEMMA_SKIP = re.compile(r"embed_vision|embed_audio|vision_tower|audio_tower")
 
 
@@ -251,26 +253,44 @@ def cmd_encode(args, jobs):
     S = len(pairs)                                  # the tokenizer's padded length (1024)
     q, err = queue.Queue(maxsize=2), []
 
+    saver = concurrent.futures.ThreadPoolExecutor(2)        # torch.save off the connector's thread
+    saves, busy = [], [0.0]
+
+    def save(name, ve, ae, bm):
+        torch.save({"video_encoding": ve, "audio_encoding": ae, "attention_mask": bm}, emb_dir / f"{name}.pt")
+
     def embed_loop():
+        """A Gemma batch's prompts through the connector CONN_ROWS at a time (11-06: was one prompt at a time, the
+        connector's 1024-token blocks at batch 1 = ~160 ms a prompt, the encode's bottleneck): the feature extractor
+        (per token) on all their real tokens at once, then the connector blocks on the rows padded back to 1024."""
         try:
             with torch.inference_mode():
                 while (x := q.get()) is not None:
                     hs, bt = x                      # [49, B, Lm, D] on cuda:1
-                    for r, (j, ids) in enumerate(bt):
-                        n = len(ids)
-                        h = hs[:, r, hs.shape[2] - n:]
-                        v, a = proc.feature_extractor(tuple(h.unsqueeze(1)), torch.ones((1, n), dtype=torch.long, device=D1))
-                        m = torch.zeros((1, S), dtype=torch.long, device=D1)
-                        m[:, S - n:] = 1
-                        vf = v.new_zeros((1, S, v.shape[-1]))
-                        vf[:, S - n:] = v
-                        af = None
-                        if a is not None:
-                            af = a.new_zeros((1, S, a.shape[-1]))
-                            af[:, S - n:] = a
+                    t_ = time.time()
+                    lm_ = hs.shape[2]
+                    for c in range(0, len(bt), CONN_ROWS):
+                        part = bt[c:c + CONN_ROWS]
+                        ns = [len(ids) for _, ids in part]
+                        h = torch.cat([hs[:, c + r, lm_ - n:] for r, n in enumerate(ns)], 1)    # [49, T, D]
+                        v, a = proc.feature_extractor(tuple(h.unsqueeze(1)),
+                                                      torch.ones((1, h.shape[1]), dtype=torch.long, device=D1))
+                        m = torch.zeros((len(part), S), dtype=torch.long, device=D1)
+                        vf = v.new_zeros((len(part), S, v.shape[-1]))
+                        af = None if a is None else a.new_zeros((len(part), S, a.shape[-1]))
+                        o = 0
+                        for r, n in enumerate(ns):
+                            m[r, S - n:] = 1
+                            vf[r, S - n:] = v[0, o:o + n]
+                            if a is not None:
+                                af[r, S - n:] = a[0, o:o + n]
+                            o += n
                         ve, ae, bm = proc.create_embeddings(vf, af, convert_to_additive_mask(m, vf.dtype))
-                        torch.save({"video_encoding": ve.cpu(), "audio_encoding": None if ae is None else ae.cpu(),
-                                    "attention_mask": bm.cpu()}, emb_dir / f"{j['name']}.pt")
+                        ve, ae, bm = ve.cpu(), None if ae is None else ae.cpu(), bm.cpu()
+                        for r, (j, _) in enumerate(part):
+                            saves.append(saver.submit(save, j["name"], ve[r:r + 1].clone(),
+                                                      None if ae is None else ae[r:r + 1].clone(), bm[r:r + 1].clone()))
+                    busy[0] += time.time() - t_
         except BaseException as e:          # noqa: BLE001  (re-raised by the main thread)
             err.append(e)
             while q.get() is not None:
@@ -296,9 +316,13 @@ def cmd_encode(args, jobs):
             del o
     q.put(None)
     th.join()
+    for f in saves:
+        f.result()
+    saver.shutdown()
     if err:
         raise err[0]
-    log(f"encoded+saved {len(items)} prompts ({ntok} real tokens) in {time.time() - t:.1f}s;", vram())
+    log(f"encoded+saved {len(items)} prompts ({ntok} real tokens) in {time.time() - t:.1f}s (connector busy "
+        f"{busy[0]:.1f}s);", vram())
 
 
 # ---------------------------------------------------------------- gen
