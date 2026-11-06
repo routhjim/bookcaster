@@ -4543,6 +4543,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         es = MF.entries(book, stem, t0, t1)
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
+    loras = loras_beside(book, stem, log)                     # the cast's LoRAs on both cards while the director runs
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
     sfx_plan(book, stem, log)                                 # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log, keep_llm=True)   # then one set sheet per place it used
@@ -4559,6 +4560,9 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
     # before: a place to describe restarted the model place_sheets had just stopped)
+    if loras:
+        loras()                                               # every key draws with its people's LoRAs
+        sig = _plan_sig(book, stem)                           # (the saved plan is of the LoRAs it was keyed with)
     if render:
         keep = {e["id"] for e in es if render[0] - 1e-6 <= float(e["t"]) < render[1]}
         es = [e for e in es if e["id"] in keep]
@@ -4583,6 +4587,39 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     fz.write_text(json.dumps({"_sig": sig, "_es": es, **({"_pauses": pauses} if pauses else {}), **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
                                                                         s_["id"].rsplit("_s", 1)[0]] for s_ in shots}}))
     return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
+
+
+def loras_beside(book: Path, stem: str, log=print):
+    """The chapter cast's missing LoRAs train on both XTX cards WHILE the director plans (11-06 user: both cards sat
+    idle ~30 min under the director, after ~40 min of LoRAs before it): the language model goes up first (it needs
+    ~96 GB free to start, so never after the builds), then the builds, each judging on its own card (charlora: the
+    iGPU is the language model's). -> a wait() that raises on a person's missing LoRA; None when none is to do."""
+    import flow3d
+    sys.path.insert(0, str(HERE.parent))
+    from tts_reader import animate, video as V
+    cast = set(V.looks(json.loads((book / "work" / "video" / stem / "plan.json").read_text()))[0])
+    if not flow3d.lora_todo(book, cast):
+        return None
+    animate.igpu("strata", log)
+    res = {}
+
+    def build():
+        try:
+            res["left"] = flow3d.ensure_loras(book, log, only=cast)
+        except Exception as exc:                        # noqa: BLE001 - raised in wait(), on the job's thread
+            res["error"] = exc
+    th = threading.Thread(target=build, daemon=True)
+    th.start()
+
+    def wait():
+        if th.is_alive():
+            log("waiting for the character LoRAs before the keys")
+        th.join()
+        if "error" in res:
+            raise res["error"]
+        if res["left"]:
+            raise RuntimeError(f"no LoRA for {res['left']} (see work/video/charlora_build_*.log)")
+    return wait
 
 
 def _plan_sig(book: Path, stem: str) -> str:

@@ -1911,7 +1911,8 @@ def whole_timeline(book: Path, stem: str, log=print) -> int:
 def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> None:
     """What the shot flow reads, made first when a chapter has none yet (10-24 user: one bookcaster run from a
     recorded chapter to its video): the chapter plan (pictures, looks, wardrobe, moments, sheets: flow3d plan),
-    the moment list (flow3d/plan.json, CPU) and a LoRA for every cast member (both XTXs). No LoRA = no run."""
+    the moment list (flow3d/plan.json, CPU) and the outfits and sheets the LoRAs learn from (the LoRAs themselves:
+    shot_flow.run, on both XTXs while the director plans). No LoRA = no keys."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     import flow3d
     vd = book / "work" / "video" / stem
@@ -1932,19 +1933,7 @@ def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> No
     st = vd / "style.txt"                               # learns from its sheet (10-25: the Disciple's trained on
     video.draw([], vd / "img", log=log, plan=plan,     # his old white-and-blue one)
                style=st.read_text().strip() if st.exists() else video.DEFAULT_STYLE)
-    cast = set(video.looks(plan)[0])                    # this chapter's cast only
-    if flow3d.lora_todo(book, cast):
-        status(step=f"shots: character LoRAs {sorted(flow3d.lora_todo(book, cast))}")
-        # (10-25: planning left the iGPU's language model up, ~90 GB; the LoRA memory floor refused, 15 < 20 GB)
-        from . import animate
-        if subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0:
-            log("stopping the language model (LoRA training needs its memory)")
-            subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
-            time.sleep(5)
-            animate._flush()
-        left = flow3d.ensure_loras(book, log, only=cast)
-        if left:
-            raise RuntimeError(f"no LoRA for {left} (see work/video/charlora_build_*.log)")
+    # the LoRAs: shot_flow.run trains them on both cards beside the director (11-06, loras_beside)
 
 
 def chapter_video(book: Path, stem: str, mp4: Path, log=print, send: bool = True) -> None:
