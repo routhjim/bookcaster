@@ -144,6 +144,7 @@ S.room_layouts = lambda *a, **k: order.append("layouts") or {}
 S.MF.cover = lambda *a, **k: order.append("cover") or False
 S._step = lambda book, text: None
 S.wardrobe = lambda *a, **k: order.append("wardrobe")
+S.loras_beside = lambda *a, **k: None          # (#139: the LoRAs beside the director; nothing to train here)
 S.direct = lambda book, stem, es, log, **k: order.append(("direct", k.get("keep_llm"))) or (es, {}, {})
 S.sfx_plan = lambda *a, **k: order.append("sfx")
 S.place_sheets = lambda *a, **k: order.append(("sheets", k.get("keep_llm"))) or {}
