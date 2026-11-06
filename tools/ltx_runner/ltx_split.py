@@ -231,29 +231,23 @@ def cmd_encode(args, jobs):
     parent = lm.get_submodule(lname.rsplit(".", 1)[0]) if "." in lname else lm
     if hasattr(parent, "norm"):
         parent.norm.register_forward_pre_hook(hook, with_kwargs=True)
-    raw = []
-    with torch.inference_mode():
-        for j in todo:
-            t = time.time()
-            (hs, mask), = te.encode([j["prompt"]])
-            # hidden states of all layers are ~0.4 GB per prompt: park them in host RAM, not on cuda:0
-            # (52 prompts on the card = 20 GB -> OOM inside Gemma SDPA)
-            raw.append((tuple(h.to("cpu") for h in hs), mask.to("cpu")))
-            log(f"encoded {j['name']} in {time.time() - t:.1f}s")
-    te.dispose() if hasattr(te, "dispose") else None
-    del te, lm, layers
-    gc.collect()
-    torch.cuda.empty_cache()
+    # the connector is small: build it next to Gemma and turn each prompt's 49 hidden-state layers (~0.4 GiB) into its
+    # embedding as soon as they exist, so nothing piles up (11-06: was all prompts parked first -> callers chunked by 40)
     ep = Builder(model_path=(DIT_DEV if args.dev else DIT, TE),
                  model_class_configurator=EmbeddingsProcessorConfigurator.with_gemma_model_path(TE),
                  model_sd_ops=EMBEDDINGS_PROCESSOR_KEY_OPS, registry=reg)
     proc = build_split(ep, lambda k: D0).to(torch.bfloat16).eval()
+    log("connector loaded;", vram())
     with torch.inference_mode():
-        for j, (hs, mask) in zip(todo, raw):
+        for j in todo:
+            t = time.time()
+            (hs, mask), = te.encode([j["prompt"]])
             out = proc.process_hidden_states(tuple(h.to(D0) for h in hs), mask.to(D0))
+            del hs, mask
             torch.save({k: (v.cpu() if isinstance(v, torch.Tensor) else v) for k, v in out._asdict().items()},
                        emb_dir / f"{j['name']}.pt")
-            log("saved", j["name"], {k: tuple(v.shape) for k, v in out._asdict().items() if v is not None})
+            log(f"encoded+saved {j['name']} in {time.time() - t:.1f}s",
+                {k: tuple(v.shape) for k, v in out._asdict().items() if v is not None})
 
 
 # ---------------------------------------------------------------- gen

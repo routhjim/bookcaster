@@ -3325,9 +3325,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if left:
             log(f"!!! ltx {kind}: {len(left)} clip(s) not made: {left[:6]}")
     if enc_dev:
-        R.encode_chunked(cxl, L / "enc_dev.json", "enc_dev", ["--dev"])
+        R.encode_all(cxl, L / "enc_dev.json", "enc_dev", ["--dev"])
     if enc_dist:
-        R.encode_chunked(cxl, L / "enc_dist.json", "enc_dist", [])
+        R.encode_all(cxl, L / "enc_dist.json", "enc_dist", [])
     def chain_firsts():
         """Each unfinished chain's current line: its takes not made yet (their words encoded)."""
         out = []
@@ -3353,7 +3353,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             enc_c += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
                 if enc_c:
                     (L / "enc_chain.json").write_text(json.dumps(list({x["name"]: x for x in enc_c}.values()), indent=1))
-                    R.encode_chunked(cxl, L / "enc_chain.json", "enc_chain", ["--dev"])
+                    R.encode_all(cxl, L / "enc_chain.json", "enc_chain", ["--dev"])
             for sid in chains:
                 st = json.loads((L / "chains" / f"{sid}.json").read_text())
                 if st.pop("blocked", None):

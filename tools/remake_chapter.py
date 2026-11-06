@@ -2828,19 +2828,13 @@ def ltx_step(cx: Ctx, name: str, args: list[str]) -> int:
     return r.returncode
 
 
-ENC_CHUNK = 40    # (16 before the host-RAM fix in the runner) ltx_split encode keeps every prompt's 49 hidden-state layers on cuda:0 until the end (~0.4 GiB each):
-                 # 52 prompts in one call ran out of memory (10-19 22:37); the LTX agent's calls had <= 12
-
-
-def encode_chunked(cx: Ctx, enc_f: Path, name: str, extra: list[str]) -> None:
+def encode_all(cx: Ctx, enc_f: Path, name: str, extra: list[str]) -> None:
+    """All of a file's prompts in one ltx_split encode (one Gemma load; it frees each prompt's hidden states as it goes)."""
     L = cx.OUT / "ltx"
-    todo = [x for x in json.loads(enc_f.read_text()) if not (L / "emb" / f"{x['name']}.pt").exists()]
-    for k in range(0, len(todo), ENC_CHUNK):
-        part = L / f"{enc_f.stem}_part{k // ENC_CHUNK}.json"
-        part.write_text(json.dumps(todo[k:k + ENC_CHUNK], indent=1))
-        ltx_step(cx, name, ["encode", str(part), *extra])
-    left = [x["name"] for x in json.loads(enc_f.read_text()) if not (L / "emb" / f"{x['name']}.pt").exists()]
-    if left:
+    todo = lambda: [x["name"] for x in json.loads(enc_f.read_text()) if not (L / "emb" / f"{x['name']}.pt").exists()]
+    if todo():
+        ltx_step(cx, name, ["encode", str(enc_f), *extra])
+    if left := todo():
         raise SystemExit(f"{name}: {len(left)} embeddings still missing, e.g. {left[:3]}")
 
 
@@ -2870,7 +2864,7 @@ def ltx(cx: Ctx, P: dict, which: str = "talk,action", last: set | None = None) -
             if not m:
                 return fl
             # prompts may have changed since the first encode (redraw/staging fixes): encode what's new
-            encode_chunked(cx, fl["talk_enc" if kind == "talk" else "act_enc"], f"enc_{kind}", ["--dev"] if kind == "talk" else [])
+            encode_all(cx, fl["talk_enc" if kind == "talk" else "act_enc"], f"enc_{kind}", ["--dev"] if kind == "talk" else [])
             if left is not None and len(m) >= left:
                 stuck += 1           # (a hold may yield at once to another GPU job: give it time)
                 if stuck >= 6:
@@ -2883,7 +2877,7 @@ def ltx(cx: Ctx, P: dict, which: str = "talk,action", last: set | None = None) -
             log_entry(cx.OUT, {"phase": "ltx", f"{kind}_left": len(missing(L, fl[jobs_key]))})
 
     if "talk" in which:
-        encode_chunked(cx, files["talk_enc"], "enc_talk", ["--dev"])
+        encode_all(cx, files["talk_enc"], "enc_talk", ["--dev"])
         fl = run_loop("talk", "talk_jobs", ["--a2vid", "--fa-amd", "--blaslt"], HOLD_BUDGET["talk"])
         r = subprocess.run([str(LTX_PY), str(L / "stitch_talk.py"), str(fl["talk_jobs"]), out],
                            capture_output=True, text=True, cwd=str(L))
@@ -2892,7 +2886,7 @@ def ltx(cx: Ctx, P: dict, which: str = "talk,action", last: set | None = None) -
         if r.returncode:
             raise SystemExit("stitch_talk failed: see ltx/stitch.log")
     if "action" in which:
-        encode_chunked(cx, files["act_enc"], "enc_act", [])
+        encode_all(cx, files["act_enc"], "enc_act", [])
         run_loop("action", "act_jobs", ["--ic-lora", str(IC_LORA), "--fa-amd", "--blaslt"], HOLD_BUDGET["act"])
 
 
