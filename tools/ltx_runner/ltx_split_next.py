@@ -653,7 +653,30 @@ def back_server(args, inq, outqs, ready, decout=None):
 
 
 # ---------------------------------------------------------------- encode
+ENC_TOKENS = 1024       # Gemma batch: prompts (longest first) up to this many padded tokens
+GEMMA_SKIP = re.compile(r"embed_vision|embed_audio|vision_tower|audio_tower")
+
+
+def enc_batches(items: list, budget: int = ENC_TOKENS) -> list:
+    """(job, token ids) longest first -> batches whose rows padded to the batch's longest stay within `budget`."""
+    out, cur = [], []
+    for it in sorted(items, key=lambda x: -len(x[1])):
+        if cur and len(cur[0][1]) * (len(cur) + 1) > budget:
+            out.append(cur)
+            cur = []
+        cur.append(it)
+    return out + [cur] if cur else out
+
+
 def cmd_encode(args, jobs):
+    """11-06: Gemma whole on cuda:0 (22.2 GiB: the text model only, no vision/audio towers), the embeddings connector
+    on cuda:1. Gemma runs only each prompt's real tokens (the tokenizer left-pads to 1024 and the connector drops the
+    pads: masked out, then replaced by its registers), at the positions they have in the 1024 layout, in
+    length-sorted batches, with no KV cache (its sliding-window bookkeeping synced the host ~2000 times a prompt).
+    The connector embeds a batch on cuda:1 while Gemma runs the next. Was: one padded 1024-token prompt at a time,
+    Gemma split over both cards (one idle at a time): 0.5 s a prompt, ~3 TFLOP/s of real work.
+    The embeddings differ from the padded path's by ~0.4% (median; adopted 11-06), like a GEMM library swap does."""
+    import queue
     from ltx_core.loader.registry import ModelRegistry
     from ltx_core.loader.single_gpu_model_builder import SingleGPUModelBuilder as Builder
     from ltx_core.text_encoders.gemma import (
@@ -663,6 +686,7 @@ def cmd_encode(args, jobs):
         get_gemma_ops,
         resolve_gemma_weight_paths,
     )
+    from ltx_core.text_encoders.gemma.embeddings_processor import convert_to_additive_mask
 
     emb_dir = Path(args.emb)
     emb_dir.mkdir(parents=True, exist_ok=True)
@@ -670,50 +694,77 @@ def cmd_encode(args, jobs):
     if not todo:
         log("all embeddings cached")
         return
+    if args.blaslt:
+        torch.backends.cuda.preferred_blas_library("cublaslt")
     reg = ModelRegistry(cache_models=False, cache_weights=False)
     ops, mops = get_gemma_ops(TE)
     b = Builder(model_path=resolve_gemma_weight_paths(TE),
                 model_class_configurator=GemmaTextEncoderConfigurator.with_gemma_model_path(TE),
                 model_sd_ops=ops, module_ops=mops, registry=reg)
-    devfn = layer_devfn(r"layers\.(\d+)\.", 24)
-    log("loading Gemma split 24/24 ...")
-    te = build_split(b, devfn).to(torch.bfloat16).eval()
-    log("Gemma loaded;", vram())
-    lm = te.model.model
-    # find the decoder layer list and hook every layer + final norm to pull inputs to its device
-    layers = None
-    for n, mod in lm.named_modules():
-        if n.endswith("layers") and isinstance(mod, torch.nn.ModuleList) and len(mod) == 48:
-            layers, lname = mod, n
-    assert layers is not None
-    log("decoder layers at", lname)
-
-    def hook(mod, a, kw):
-        d = next(mod.parameters()).device
-        return move(a, d), move(kw, d)
-
-    for L in layers:
-        L.register_forward_pre_hook(hook, with_kwargs=True)
-    parent = lm.get_submodule(lname.rsplit(".", 1)[0]) if "." in lname else lm
-    if hasattr(parent, "norm"):
-        parent.norm.register_forward_pre_hook(hook, with_kwargs=True)
-    # the connector is small: build it next to Gemma and turn each prompt's 49 hidden-state layers (~0.4 GiB) into its
-    # embedding as soon as they exist, so nothing piles up (11-06: was all prompts parked first -> callers chunked by 40)
+    te = build_split(b, lambda k: None if GEMMA_SKIP.search(k) else D0).to(torch.bfloat16).eval()
     ep = Builder(model_path=(DIT_DEV if args.dev else DIT, TE),
                  model_class_configurator=EmbeddingsProcessorConfigurator.with_gemma_model_path(TE),
                  model_sd_ops=EMBEDDINGS_PROCESSOR_KEY_OPS, registry=reg)
-    proc = build_split(ep, lambda k: D0).to(torch.bfloat16).eval()
-    log("connector loaded;", vram())
+    proc = build_split(ep, lambda k: D1).to(torch.bfloat16).eval()
+    log("Gemma on cuda:0, connector on cuda:1;", vram())
+    lm, tk = te.model.model, te.tokenizer
+    items = []
+    for j in todo:
+        pairs = tk.tokenize_with_weights(j["prompt"])["gemma"]
+        n = int(sum(w for _, w in pairs))
+        assert all(w == 0 for _, w in pairs[:len(pairs) - n]), "the tokenizer no longer left-pads"
+        items.append((j, [int(t) for t, _ in pairs[len(pairs) - n:]]))
+    S = len(pairs)                                  # the tokenizer's padded length (1024)
+    q, err = queue.Queue(maxsize=2), []
+
+    def embed_loop():
+        try:
+            with torch.inference_mode():
+                while (x := q.get()) is not None:
+                    hs, bt = x                      # [49, B, Lm, D] on cuda:1
+                    for r, (j, ids) in enumerate(bt):
+                        n = len(ids)
+                        h = hs[:, r, hs.shape[2] - n:]
+                        v, a = proc.feature_extractor(tuple(h.unsqueeze(1)), torch.ones((1, n), dtype=torch.long, device=D1))
+                        m = torch.zeros((1, S), dtype=torch.long, device=D1)
+                        m[:, S - n:] = 1
+                        vf = v.new_zeros((1, S, v.shape[-1]))
+                        vf[:, S - n:] = v
+                        af = None
+                        if a is not None:
+                            af = a.new_zeros((1, S, a.shape[-1]))
+                            af[:, S - n:] = a
+                        ve, ae, bm = proc.create_embeddings(vf, af, convert_to_additive_mask(m, vf.dtype))
+                        torch.save({"video_encoding": ve.cpu(), "audio_encoding": None if ae is None else ae.cpu(),
+                                    "attention_mask": bm.cpu()}, emb_dir / f"{j['name']}.pt")
+        except BaseException as e:          # noqa: BLE001  (re-raised by the main thread)
+            err.append(e)
+            while q.get() is not None:
+                pass
+
+    th = threading.Thread(target=embed_loop, daemon=True)
+    th.start()
+    t, ntok = time.time(), sum(len(x[1]) for x in items)
     with torch.inference_mode():
-        for j in todo:
-            t = time.time()
-            (hs, mask), = te.encode([j["prompt"]])
-            out = proc.process_hidden_states(tuple(h.to(D0) for h in hs), mask.to(D0))
-            del hs, mask
-            torch.save({k: (v.cpu() if isinstance(v, torch.Tensor) else v) for k, v in out._asdict().items()},
-                       emb_dir / f"{j['name']}.pt")
-            log(f"encoded+saved {j['name']} in {time.time() - t:.1f}s",
-                {k: tuple(v.shape) for k, v in out._asdict().items() if v is not None})
+        for bt in enc_batches(items):
+            if err:
+                break
+            lmax = len(bt[0][1])
+            ids = torch.zeros((len(bt), lmax), dtype=torch.long)
+            am = torch.zeros((len(bt), lmax), dtype=torch.long)
+            for r, (_, x) in enumerate(bt):
+                ids[r, lmax - len(x):] = torch.tensor(x)
+                am[r, lmax - len(x):] = 1
+            pos = torch.arange(S - lmax, S).expand(len(bt), -1)
+            o = lm(input_ids=ids.to(D0), attention_mask=am.to(D0), position_ids=pos.to(D0),
+                   output_hidden_states=True, use_cache=False)
+            q.put((torch.stack(o.hidden_states).to(D1), bt))
+            del o
+    q.put(None)
+    th.join()
+    if err:
+        raise err[0]
+    log(f"encoded+saved {len(items)} prompts ({ntok} real tokens) in {time.time() - t:.1f}s;", vram())
 
 
 # ---------------------------------------------------------------- gen
