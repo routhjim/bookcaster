@@ -765,13 +765,24 @@ def compose(s: dict, cast: list, crs: list, sides: dict | None = None, resolve=N
         ends[w] = end
         hold = str(x.get("holds") or "").strip().rstrip(".")
         hold = "" if hold.lower() in ("", "nothing", "none") else re.sub(r"^holding\s+", "", hold)
+        state = str(x.get("state") or "").strip().rstrip(".")     # (CHANGES 70: how a worn or held thing sits)
         verb = POSE_VERB[pz]
         if pz == "sit" and IN_BED.search(where):     # (not on its edge, nor in a chair beside it)
             verb, where = "sits up", IN_BED.sub("in bed, under the covers, propped against the pillows", where, 1)
         parts.append(f"{w} {verb}{' ' + where if where else ''}{' ' + side if side else ''}"
                      f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
-                     f"{', holding ' + hold if hold else ''}")
+                     f"{', holding ' + hold if hold else ''}{', ' + state if state else ''}")
         placed.append({"name": w, "pose": pz, "at": where, "facing": face, "holds": hold})
+    for o in s.get("others") or []:     # CHANGES 70: someone the action needs with no cast name, by a look: in the
+        if not isinstance(o, dict):     # picture, never in `who` (no LoRA, no box)
+            continue
+        pz = pose_cat(o.get("pose")) or "stand"
+        side = {"left": "on the left", "right": "on the right"}.get(str(o.get("side") or "").lower(), "")
+        where, face, hold = (str(o.get(k_) or "").strip().rstrip(".") for k_ in ("at", "facing", "holds"))
+        parts.append(f"{str(o.get('look') or '').strip().rstrip('.')} {POSE_VERB[pz]}{' ' + where if where else ''}"
+                     f"{' ' + side if side else ''}"
+                     f"{', facing ' + re.sub(r'^(facing|toward|towards)\s+', 'toward ', face) if face else ''}"
+                     f"{', holding ' + hold if hold and hold.lower() not in ('nothing', 'none') else ''}")
     setting = str(s.get("setting") or "").strip().rstrip(".")
     opened = {p_["name"]: p_["pose"] for p_ in placed}
     s = dict(s, who=[r[0] for r in rows], pose={w: POSE_WORDS[opened[w]].split()[0] for w in opened}, placed=placed,
@@ -1473,10 +1484,132 @@ def apply_chains(es: list, by: dict, log=print) -> list:
         log(f"{cs['id']} ({d:.1f} s): chain of {len(cs['chain']['lines'])} line(s) over {len(grp)} moment(s) of the "
             f"director's shots {cs['chain']['shots']}")
         i = j
+    for e in out:                       # a single action shot keyed from its opening staging (CHANGES 70), also
+        for x in by.get(e["id"]) or []:     # after the sheets: they and every talk and quiet shot see the director's
+            if x.get("_open"):
+                x.update(json.loads(json.dumps(x.pop("_open"))))     # (each moment cut from the shot: its own)
+                e["who"] = x["who"]
     for v in by.values():
         for x in v:
             x.pop("_chain", None)
+            x.pop("_open", None)
     return out
+
+
+# 11-06 (CHANGES 70, loop E6-E8; user OK to build): a single action shot's key opens BEFORE its action. The director's
+# row is a placement record, and on the row route (63) keys drew the action's end (the poker already in hand), lacked
+# what it uses (the bag, the book's drawer) or who it needs (the onlookers' actor). One ask per shot after the
+# director, in the row's own fields; its reply only keys that shot (apply_chains), the director's history untouched.
+# On E8's 22 shots: better keys on 10, worse on 1, cockpit 15/15 kept. Asked as the loop asked it (2 tries, one
+# re-ask when the setting names someone, then the director's setting; not JSON twice: the director's row)
+OPENING = os.environ.get("BOOKCASTER_OPENING", "1") != "0"
+OPENING_ASK = (
+    'One shot of a film. What happens in it: "{action}". The director staged its opening picture as: {people}; setting: "{setting}". '
+    'Give the staging of the picture at the instant just before this action changes anything: everyone the action needs is in the picture; '
+    'each one is where the action can start from, in the pose they have before it, holding what they will use as they will use it; every '
+    'thing the action uses is already there, within reach, in the state it has before the action; whoever moves is ready to move, the moving '
+    'part short of what it acts on; nothing is yet touched, struck, taken, fallen, broken, opened, emptied, worn or changed by this action. '
+    'Keep everyone\'s place, side and facing as the director gave them unless the action cannot start from it. Add only someone the action '
+    'needs, from these names: {cast}. Anyone the action needs who has none of these names goes in "others": a short look (what kind of person, '
+    'their clothes, at most 12 words, no name), with side, pose, at, facing, holds. Give each person a "state": how anything they wear or hold '
+    'sits on them before the action, a few words, or empty. Write the setting again under the same rule: every thing the action takes, opens, '
+    'moves, uses or changes is where and as it is before the action, even where the director\'s setting says otherwise. Things and light only, '
+    'never a person. "before": for every thing the action uses, where it is and in whose hands just before the action, one short line each; '
+    'then "people", "others" and "setting", written to agree with "before". A thing the action takes from inside or under something is there, out of '
+    'sight, and not in the setting; a thing someone in the action uses is in that one\'s hands or within their reach, not anyone else\'s. '
+    'Reply with JSON only: {{"before": ["..."], "people": [{{"name": "", "side": "", "pose": "", "at": "", "facing": "", "holds": "", "state": ""}}], '
+    '"others": [{{"look": "", "side": "", "pose": "", "at": "", "facing": "", "holds": ""}}], "setting": "..."}}.')
+OPENING_LOOK = ("In one shot of a film: {action}. Describe {name} as a painter would see them: what kind of person, their "
+                "clothes, at most 12 words, no name.")
+_ROW = ("name", "side", "pose", "at", "facing", "holds")
+_OTHER = ("look", "side", "pose", "at", "facing", "holds")
+
+
+def opening_staging(action: str, row: dict, cast: list, resolve, named_in, ask) -> dict:
+    """One shot's opening ask -> its record: "mended" ({"before", "people", "others", "setting"}, or None: the
+    director's row), and what the checks did. `ask(messages, max_tokens)` -> the reply."""
+    ppl = json.dumps([{k: str(p_.get(k) or "") for k in _ROW} for p_ in row.get("people") or [] if isinstance(p_, dict)])
+    q = OPENING_ASK.format(action=action, people=ppl, setting=row.get("setting") or "", cast=", ".join(cast))
+    rec = {"q": q, "tries": [], "moved_to_others": [], "dropped": [], "fallback": None, "mended": None}
+    d = None
+    for _ in range(2):
+        rep = ask([{"role": "user", "content": q}], 1500)
+        m = re.search(r"\{.*\}", rep or "", re.S)
+        try:
+            d = json.loads(m.group(0)) if m else None
+        except ValueError:
+            d = None
+        d = d if isinstance(d, dict) and isinstance(d.get("people"), list) else None
+        bad = bool(d) and (not isinstance(d.get("setting", ""), str) or bool(named_in(d.get("setting"), cast)))
+        rec["tries"].append({"raw": rep, "json": bool(d), "setting_names_person": bad})
+        if d and not bad:
+            break
+    if not d:
+        rec["fallback"] = "no JSON twice: the director's row"
+        return rec
+    if rec["tries"][-1]["setting_names_person"]:
+        rec["fallback"] = "setting named a person twice: the director's setting"
+        d["setting"] = row.get("setting") or ""
+    people, others = [], [o for o in d.get("others") or [] if isinstance(o, dict)]
+    for p_ in d["people"]:
+        if not isinstance(p_, dict):
+            continue
+        w = resolve(p_.get("name"))
+        if w:
+            people.append(dict(p_, name=w))
+            continue
+        lk = ask([{"role": "user", "content": OPENING_LOOK.format(action=action, name=p_.get("name"))}], 60)
+        lk = str(lk or "").strip().strip('"').rstrip(".")
+        rec.setdefault("look_asks", []).append({"name": p_.get("name"), "look": lk})
+        if lk and len(lk.split()) <= 12:
+            others.append(dict({k: p_.get(k, "") for k in _OTHER}, look=lk))
+            rec["moved_to_others"].append(p_.get("name"))
+        else:
+            rec["dropped"].append(p_.get("name"))
+    rec["mended"] = {"before": d.get("before"),
+                     "people": [{k: str(p_.get(k) or "") for k in _ROW + ("state",)} for p_ in people],
+                     "others": [{k: str(o.get(k) or "") for k in _OTHER} for o in others],
+                     "setting": str(d.get("setting") or "")}
+    return rec
+
+
+def opening_keys(shots: list, actions: list, cast: list, crs: list, sides: dict, resolve, named_in, ask, cache: Path,
+                 log=print) -> int:
+    """Each single action shot (not in a chain) of one passage: its opening ask (opening_staging, asked 4 at a time,
+    cached in `cache` by the ask), the mended row composed as a chain head's is (the scene's sides, no carry), and the
+    shot tagged "_open" with that staging and its key, for apply_chains. `actions`: the director's own action lines.
+    -> how many shots were tagged."""
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    todo = [(i, x) for i, x in enumerate(shots) if x.get("kind") == "action" and not x.get("_chain")]
+    jobs = []
+    for i, x in todo:
+        ppl = json.dumps([{k: str(p_.get(k) or "") for k in _ROW} for p_ in x.get("people") or [] if isinstance(p_, dict)])
+        jobs.append((i, x, MF._h(OPENING_ASK.format(action=actions[i], people=ppl, setting=x.get("setting") or "",
+                                                    cast=", ".join(cast)))))
+    new = [(i, x, k) for i, x, k in jobs if k not in got]
+    if new:
+        with ThreadPoolExecutor(4) as ex:
+            for (i, x, k), rec in zip(new, ex.map(lambda j: opening_staging(actions[j[0]], j[1], cast, resolve,
+                                                                            named_in, ask), new)):
+                got[k] = rec
+        cache.write_text(json.dumps(got, indent=1))
+    n = 0
+    for i, x, k in jobs:
+        rec, m = got[k], got[k].get("mended")
+        if rec.get("fallback") or rec.get("moved_to_others") or rec.get("dropped"):
+            log(f"  shot {i + 1}: opening: {rec.get('fallback') or 'mended'}; moved to others "
+                f"{rec.get('moved_to_others')}, dropped {rec.get('dropped')}")
+        if not m:
+            continue
+        row = {k_: v_ for k_, v_ in x.items() if k_ not in ("people", "setting", "others", "who", "pose", "placed",
+                                                            "pose_end", "picture", "keyshot", "_open")}
+        row.update(people=m["people"], others=m["others"], setting=m["setting"])
+        comp = compose(row, cast, crs, dict(sides), resolve, None)
+        if comp.get("picture") and comp["picture"] != x.get("keyshot"):     # (an empty mend: as planned)
+            x["_open"] = {k_: comp[k_] for k_ in ("people", "others", "setting", "who", "pose", "placed", "picture")}
+            x["_open"]["keyshot"] = comp["picture"]
+            n += 1
+    return n
 
 
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
@@ -1933,6 +2066,24 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 for n_ in nums:         # (the cut below copies it onto every moment made from these shots)
                     a["shots"][n_ - 1] = dict(a["shots"][n_ - 1], _chain=tag)
                 log(f"  passage {pa:.1f} s: chain over shots {nums}: " + " | ".join(head["chain"]["lines"]))
+        if OPENING and any(x.get("kind") == "action" and not x.get("_chain") for x in a.get("shots") or []):
+            up_ = threading.Lock()      # (asked 4 at a time: the model started once)
+
+            def ask_open(msgs, n_):
+                nonlocal animate_up
+                with up_:
+                    if not animate_up:
+                        animate.igpu("strata", log)
+                        animate_up = True
+                return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=n_)[0]
+            try:                        # the director's own action lines (the shots carry them with looks for names)
+                raw = [x for x in json.loads(re.search(r"\{.*\}", reply, re.S).group(0))["shots"] if isinstance(x, dict)]
+            except (AttributeError, ValueError, KeyError, TypeError):
+                raw = []
+            acts = [str(x.get("action") or "") for x in (raw if len(raw) == len(a["shots"]) else a["shots"])]
+            n_open = opening_keys(a["shots"], acts, cast, crs, screen, lambda v: cast_of(v, cast), named_in, ask_open,
+                                  sd / "passages" / f"p{mid_t:06d}.opening.json", log)
+            log(f"  passage {pa:.1f} s: {n_open} single action key(s) from the opening staging")
         shots = a.get("shots") or []
         if not shots:                   # nothing usable at all: said so, and the people here, still
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: no usable shots from the director (quiet shots instead)")
@@ -2726,6 +2877,7 @@ def _key_questions(cx, s: dict) -> tuple:
                              f"horizontal like a lizard's, with its front feet on the ground (not rearing upright "
                              f"on its hind legs)?")
         hum += not re.search(r"^\W*(?:an?|the)?\s*(?:\w+\s+){0,3}(dragon|beast|creature|wyrm|wolf|horse|monster)\b", lk, re.I)
+    hum += len(s.get("others") or [])  # (CHANGES 70: the people drawn from words count too)
     if hum and not s.get("crowd"):
         q["count"] = "How many people are in this picture? Answer with a number."
     if s.get("kind") == "talk" and len(s.get("who") or []) == 1:   # a one-person talk shot is a close-up (10-27)
@@ -3146,7 +3298,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img, "held": hd,
-                            "people": None if s.get("crowd") else len(s.get("who") or [])})
+                            "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or [])})
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
