@@ -67,7 +67,23 @@ def mem_avail_gb() -> float:
     return 0.0
 
 
+# on an XTX the model sits in the card's own memory: host RAM sees only the load (11-06, the language model up beside
+# two builds: a load peaked at ~9 GB, a whole build at ~11.5 GB, MemAvailable never below 12 GB). The larger floors
+# are the iGPU's, whose model memory IS the host's.
+CARD_NEED_GB = 12
+
+
+def on_card() -> bool:
+    """This process draws/judges/trains on an XTX (its HIP_VISIBLE_DEVICES is not the iGPU's)."""
+    dev = os.environ.get("HIP_VISIBLE_DEVICES")
+    if dev is None:
+        return False
+    return dev != subprocess.run([str(HOME / "bin" / "hip-index"), "igpu"], capture_output=True, text=True).stdout.strip()
+
+
 def need_mem(gb: float = 15) -> None:
+    if on_card():
+        gb = min(gb, CARD_NEED_GB)
     a = mem_avail_gb()
     if a < gb:
         sys.exit(f"MemAvailable {a:.1f} GB < {gb} GB: not loading a model")
@@ -1331,9 +1347,9 @@ def cmd_train(a) -> int:
             log(msg)
             lf.write(msg + "\n")
             lf.flush()
-            if mem_avail_gb() < 15:
+            if mem_avail_gb() < (5 if on_card() else 15):         # (a card's training holds ~1.4 GB of host RAM)
                 save(step + 1)
-                sys.exit("MemAvailable < 15 GB: saved and stopped")
+                sys.exit("MemAvailable low: saved and stopped")
         if (step + 1) % a.save_every == 0 or step + 1 == a.steps:
             save(step + 1)
         if deadline and time.time() > deadline:
@@ -1552,6 +1568,12 @@ def _card_env(card: str) -> dict:
     return env
 
 
+def igpu_taken() -> bool:
+    """The director's language model (strata-eval) holds the iGPU and ~90 GB: a card's build then judges on its own
+    card, no iGPU helper (11-06 user: LoRAs fill the XTX cards while the director runs)."""
+    return subprocess.run(["systemctl", "--user", "is-active", "-q", "strata-eval"]).returncode == 0
+
+
 def _canon_motions() -> list[Path]:
     """Canonical (rig-free) motion clips: the *_s1.npz in CHARLORA_MOTIONS whose .json has no "rig"."""
     out = []
@@ -1622,8 +1644,9 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
                 log_fn(f"charlora {name}: up to date ({Path(prev['lora']).name})")
                 continue
             env = _card_env(card)
-            if mem_avail_gb() < 20:
-                raise RuntimeError(f"MemAvailable {mem_avail_gb():.0f} GB < 20 GB")
+            floor = 20 if card == "igpu" else CARD_NEED_GB
+            if mem_avail_gb() < floor:
+                raise RuntimeError(f"MemAvailable {mem_avail_gb():.0f} GB < {floor} GB")
             dkey = data_hash(c)
             same_data = (not force and prev.get("data_hash") == dkey and (c.out / "data" / "meta.json").exists()
                          and len(json.loads((c.out / "data" / "meta.json").read_text()).get("kept", [])) >= 12)
@@ -1645,7 +1668,7 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
             mot = _rig_motions(c, env)
             cmd = [card_py(card), "-I", str(HERE / "charlora.py"), "dataset", book, name, "--n-pose", str(n_pose),
                    "--n-mesh", str(n_mesh), "--min-like", "0.4", "--strength-lo", "0.8", "--strength-hi", "0.9"]
-            if card != "igpu":
+            if card != "igpu" and not igpu_taken():
                 cmd += ["--igpu-judge"]
             if len(c.outfits) > 1:
                 cmd += ["--outfit", "*"]
