@@ -1612,6 +1612,113 @@ def opening_keys(shots: list, actions: list, cast: list, crs: list, sides: dict,
     return n
 
 
+# 11-06 (CHANGES 71/72, loop E9-E10; user: "lock in E10"): a told-place (flashback) shot - one at a told place of
+# the breakdown's cutaways while its teller tells it (direct's `others`/at_key) - shows the recalled event, not the
+# teller standing in it. No new casting (USER_TASTE 11-06): one ask per told shot picks who was IN the event from the
+# row's people plus every cast person with a LoRA; a returned person is kept only if resolved to a LoRA'd person AND
+# named in the shot's own action words (Tier A, main's name-token rule: E10 wrong keeps 10->0 and 30->0). Everyone
+# else is drawn from the words: the key gets the shot's action appended. Not a valid list twice: nobody kept (the
+# user's default). Runs after the opening ask (CHANGES 70), so that ask cannot put the teller back; only the key
+# (apply_chains' "_open") changes: talk, quiet and present-place shots, and the director's history, are untouched
+TOLD_PEOPLE = os.environ.get("BOOKCASTER_TOLD_PEOPLE", "1") != "0"
+TOLD_ASK = ('This shot shows what {teller} tells of: {action} at {place}. Which of these people were themselves IN what '
+            'is shown (not only telling it or listening now)? {names}. For each one, give where they are in the '
+            'picture, as the staging fields: name, side, pose, at, facing, holds. JSON list only.')
+
+
+def _told_q(action: str, row: dict, teller: str, offered: list) -> str:
+    return TOLD_ASK.format(teller=teller or "the narration", action=str(action or "").strip().rstrip("."),
+                           place=re.sub(r"\s*\((inside|outside)\)$", "", str(row.get("place") or "")),
+                           names=", ".join(offered))
+
+
+def told_people(action: str, row: dict, teller: str, offered: list, loraed: list, resolve, named_in, ask) -> dict:
+    """One told shot's ask -> its record: "kept" (staging rows of the LoRA'd people the ask put in the event and the
+    action names), what was returned and why it went. `resolve`: name -> a LoRA'd person or None; `ask(messages,
+    max_tokens)` -> the reply."""
+    q = _told_q(action, row, teller, offered)
+    rec = {"q": q, "tries": [], "kept": [], "no_lora": [], "not_named": [], "fallback": None}
+    lst = None
+    for _ in range(2):
+        rep = ask([{"role": "user", "content": q}], 800)
+        m = re.search(r"\[.*\]", rep or "", re.S)
+        try:
+            lst = json.loads(m.group(0)) if m else None
+        except ValueError:
+            lst = None
+        rec["tries"].append({"raw": rep, "ok": isinstance(lst, list)})
+        if isinstance(lst, list):
+            break
+    if not isinstance(lst, list):
+        rec["fallback"] = "no JSON list twice: nobody kept"
+        return rec
+    for p_ in lst:
+        if not isinstance(p_, dict):
+            continue
+        w = resolve(p_.get("name"))
+        if not w or w not in loraed:
+            rec["no_lora"].append(p_.get("name"))
+        elif w in [z["name"] for z in rec["kept"]]:
+            continue
+        elif not named_in(action, [w]):
+            rec["not_named"].append(w)
+        else:
+            rec["kept"].append(dict({k: str(p_.get(k) or "") for k in _ROW[1:]}, name=w))
+    return rec
+
+
+def told_keys(shots: list, actions: list, tellers: list, cast: list, crs: list, sides: dict, resolve_lora, resolve_in,
+              named_in, loraed: list, ask, cache: Path, log=print) -> int:
+    """Each told-place shot of one passage (tellers[i] not None; not talk, not in a chain): its ask (told_people,
+    4 at a time, cached in `cache` by the ask), its staging (the opening's, else the director's row) cut to the kept
+    people (a kept one the staging lacks takes the ask's row), composed as opening_keys does, the shot's action words
+    appended to its key, and the shot tagged "_open" for apply_chains. `resolve_lora`: an asked name -> a LoRA'd
+    person or None; `resolve_in(cast)` -> name -> that cast's name.
+    -> how many shots were tagged."""
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    jobs = []
+    for i, x in enumerate(shots):
+        if tellers[i] is None or x.get("kind") == "talk" or x.get("_chain"):
+            continue
+        offered = list(dict.fromkeys([str(p_.get("name")) for p_ in x.get("people") or []
+                                      if isinstance(p_, dict) and p_.get("name")] + list(loraed)))
+        jobs.append((i, x, offered, MF._h(_told_q(actions[i], x, tellers[i], offered))))
+    new = [j for j in jobs if j[3] not in got]
+    if new:
+        with ThreadPoolExecutor(4) as ex:
+            for (i, x, _, k), rec in zip(new, ex.map(lambda j: told_people(actions[j[0]], j[1], tellers[j[0]], j[2],
+                                                                           loraed, resolve_lora, named_in, ask), new)):
+                got[k] = rec
+        cache.write_text(json.dumps(got, indent=1))
+    n = 0
+    for i, x, _, k in jobs:
+        rec = got[k]
+        keep = [z["name"] for z in rec.get("kept") or []]
+        base = x.get("_open") or x
+        c2 = list(dict.fromkeys(list(cast) + keep))
+        res = resolve_in(c2)
+        ppl = [p_ for p_ in base.get("people") or [] if isinstance(p_, dict) and res(p_.get("name")) in keep]
+        have = {res(p_.get("name")) for p_ in ppl}
+        ppl += [z for z in rec.get("kept") or [] if z["name"] not in have]
+        row = {k_: v_ for k_, v_ in x.items() if k_ not in ("people", "setting", "others", "who", "pose", "placed",
+                                                            "pose_end", "picture", "keyshot", "_open")}
+        row.update(people=ppl, others=base.get("others") or [], setting=base.get("setting") or "")
+        comp = compose(row, c2, crs, dict(sides), res, None)
+        pic, a = str(comp.get("picture") or "").rstrip(), str(actions[i] or "").strip()
+        op = {k_: comp.get(k_) for k_ in ("people", "others", "setting", "who", "pose", "placed")}
+        op.update(who=op["who"] or [], pose=op["pose"] or {}, placed=op["placed"] or [])
+        if x.get("kind") == "action":
+            op.update(picture=pic, keyshot=(pic + " " + a).strip())
+        else:
+            op["picture"] = (pic + " " + a).strip()
+        x["_open"] = op
+        log(f"  shot {i + 1}: told by {tellers[i]}: kept {keep}; dropped "
+            f"{[w for w in (x.get('who') or []) if w not in keep]}"
+            f"{'; ' + rec['fallback'] if rec.get('fallback') else ''}")
+        n += 1
+    return n
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -1851,6 +1958,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     pics_before, pics_scene, screen, last_pose, last_at, carry = [], [], {}, {}, {}, {}
     pair, lasts, cut_where = None, {}, {}
     animate_up = False
+    loraed = None                       # the book's people with a built LoRA (told-place shots; asked once)
     scenes = scene_list(book, stem, log)     # the chapter's scenes (shared, cached: the wardrobe reads them too)
     animate_up = subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0
     for sc_ in scenes:                  # the breakdown's places have their sheets (the book's looks) where known
@@ -2066,24 +2174,35 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 for n_ in nums:         # (the cut below copies it onto every moment made from these shots)
                     a["shots"][n_ - 1] = dict(a["shots"][n_ - 1], _chain=tag)
                 log(f"  passage {pa:.1f} s: chain over shots {nums}: " + " | ".join(head["chain"]["lines"]))
-        if OPENING and any(x.get("kind") == "action" and not x.get("_chain") for x in a.get("shots") or []):
-            up_ = threading.Lock()      # (asked 4 at a time: the model started once)
+        up_ = threading.Lock()          # (asked 4 at a time: the model started once)
 
-            def ask_open(msgs, n_):
-                nonlocal animate_up
-                with up_:
-                    if not animate_up:
-                        animate.igpu("strata", log)
-                        animate_up = True
-                return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=n_)[0]
-            try:                        # the director's own action lines (the shots carry them with looks for names)
-                raw = [x for x in json.loads(re.search(r"\{.*\}", reply, re.S).group(0))["shots"] if isinstance(x, dict)]
-            except (AttributeError, ValueError, KeyError, TypeError):
-                raw = []
-            acts = [str(x.get("action") or "") for x in (raw if len(raw) == len(a["shots"]) else a["shots"])]
+        def ask_open(msgs, n_):
+            nonlocal animate_up
+            with up_:
+                if not animate_up:
+                    animate.igpu("strata", log)
+                    animate_up = True
+            return _converse(BC.LLM_URL, BC.LLM_MODEL, msgs, max_tokens=n_)[0]
+        try:                            # the director's own action lines (the shots carry them with looks for names)
+            raw = [x for x in json.loads(re.search(r"\{.*\}", reply, re.S).group(0))["shots"] if isinstance(x, dict)]
+        except (AttributeError, ValueError, KeyError, TypeError):
+            raw = []
+        acts = [str(x.get("action") or "") for x in (raw if len(raw) == len(a.get("shots") or []) else
+                                                      a.get("shots") or [])]
+        if OPENING and any(x.get("kind") == "action" and not x.get("_chain") for x in a.get("shots") or []):
             n_open = opening_keys(a["shots"], acts, cast, crs, screen, lambda v: cast_of(v, cast), named_in, ask_open,
                                   sd / "passages" / f"p{mid_t:06d}.opening.json", log)
             log(f"  passage {pa:.1f} s: {n_open} single action key(s) from the opening staging")
+        tellers = [None if x.get("kind") == "talk" or not (pk_ := at_key(x.get("place"))) else
+                   next((c["teller"] for c in open_ if RG.place_key(c["place"]) == pk_), "") or "the narration"
+                   for x in a.get("shots") or []]
+        if TOLD_PEOPLE and any(w is not None and not x.get("_chain") for w, x in zip(tellers, a.get("shots") or [])):
+            if loraed is None:
+                loraed = [w for w in RGB.people() if RGB.lora(w)[0]]
+            n_told = told_keys(a["shots"], acts, tellers, cast, crs, screen, lambda v: MF._cast_name(v, loraed, [], RGB),
+                               lambda c_: (lambda v: cast_of(v, c_)), named_in, loraed, ask_open,
+                               sd / "passages" / f"p{mid_t:06d}.told.json", log)
+            log(f"  passage {pa:.1f} s: {n_told} told-place key(s) with the event's own people")
         shots = a.get("shots") or []
         if not shots:                   # nothing usable at all: said so, and the people here, still
             _problem(book, log, f"passage {pa:.1f}-{pb:.1f} s: no usable shots from the director (quiet shots instead)")
