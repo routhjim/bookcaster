@@ -78,6 +78,24 @@ def log(msg: str) -> None:
 
 
 # --- weight-only quantized layers -----------------------------------------------------------------
+def igpu_first_ccd() -> None:
+    """Keep the drawer's host threads on the first CCD when it runs on the iGPU. ROCm's dispatch and signal threads spin
+    for the whole draw and the iGPU sits at its 95 C limit within ~20 s, so where they run sets its clock. Measured (E19,
+    11-07, sustained GEMM, 2 rounds, thread pinned): cpu 0/3/7/23 19.5 TFLOPS at 1.12 GHz, cpu 8/10/15 11.9 at 0.69 GHz,
+    the same both rounds. QWEN_IMAGE_CPUS="0-7,16-23" chooses other CPUs, "" leaves it to the scheduler."""
+    spec = os.environ.get("QWEN_IMAGE_CPUS")
+    if spec == "" or not torch.cuda.is_available() or "8060S" not in torch.cuda.get_device_name(0):
+        return
+    try:
+        spec = spec or Path("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list").read_text().strip()
+        cpus = {c for part in spec.split(",") for c in (lambda r: range(int(r[0]), int(r[-1]) + 1))(part.split("-"))}
+        for tid in os.listdir("/proc/self/task"):        # also the runtime's threads, started by the first CUDA call
+            os.sched_setaffinity(int(tid), cpus)
+        log(f"iGPU drawer on CPUs {spec}")
+    except OSError as exc:
+        log(f"CPU affinity not set: {exc}")
+
+
 
 class QLinear(nn.Module):
     """A Linear stored as int8 or fp8 (one scale per output row) or int4 (asymmetric, groups of 64
@@ -866,6 +884,7 @@ def main() -> int:
     print(json.dumps({"phase": f"read {len(jobs)} prompts", "seconds": round(time.time() - t, 1)}), flush=True)
     d.free_encoder()
     t = time.time()
+    igpu_first_ccd()
     d.start_drawing("bf16" if DIT_Q == "auto" else DIT_Q)
     print(json.dumps({"phase": "load drawing model", "seconds": round(time.time() - t, 1)}), flush=True)
     for j in jobs:
