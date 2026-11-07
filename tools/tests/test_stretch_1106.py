@@ -179,6 +179,81 @@ with tempfile.TemporaryDirectory() as td:
     check("off: faulted clips retaken as today", "more" in h, list(h))
     S.STRETCH = True
 
+# ---- force arm (BOOKCASTER_STRETCH_FORCE=1): every shot of a place continues, into and out of an action chain ----
+S.STRETCH_FORCE = True
+calls.clear()
+rows = [sh(0), sh(1, kind="action", chain={"lines": ["a"]}), sh(2), sh(3, place="Cockpit"), sh(4, place="Cockpit")]
+with tempfile.TemporaryDirectory() as td:
+    S.mark_stretches(rows, lambda a, b: "", ask, Path(td) / "s.json", lambda m: None)
+    check("force: no ask; every same-place pair continues, a chain too; a place change keyed",
+          calls == [] and [r.get("cont_of") for r in rows] == [None, rows[0]["id"], rows[1]["id"], None, rows[3]["id"]],
+          [r.get("cont_of") for r in rows])
+
+
+def enc_fake(cxl, f, name, args):
+    for x in json.loads(Path(f).read_text()):
+        (cxl.OUT / "ltx" / "emb" / f"{x['name']}.pt").write_text("e")
+
+
+def step_force(cxl, name, args):
+    L = cxl.OUT / "ltx"
+    jobs = json.loads((L / args[1]).read_text())
+    holds.append((args[1], jobs))
+    made = set()
+    for _ in range(400):
+        for j in jobs + (json.loads((L / "two_more.json").read_text()) if (L / "two_more.json").exists() else []):
+            if j["name"] not in made:
+                if j.get("chain_from") and not (L / "out" / f"{j['chain_from']}.mp4").exists():
+                    continue                    # the runner's chain wait
+                (L / "out" / f"{j['name']}.mp4").write_text("v")
+                made.add(j["name"])
+        if (L / "two_more.done").exists():
+            break
+        real_sleep(0.05)
+    holds.append(("more", json.loads((L / "two_more.json").read_text())))
+    return 0
+
+
+def chains_fake(sd, chains, more, queued, stop, log, review="off", wait_cards=False):
+    if more is None:
+        return
+    L = sd / "ltx"
+    for sid in chains:
+        st = json.loads((L / "chains" / f"{sid}.json").read_text())
+        names = [j["name"] for j in S._chain_jobs(st, 1)]
+        while not stop.is_set() and not all((L / "out" / f"{n_}.mp4").exists() for n_ in names):
+            real_sleep(0.05)
+        (L / "out" / f"{sid}.mp4").write_text("joined")
+        st.update(done=True, picks=[names[0]])
+        S._chain_save(L, st)
+
+
+R.ltx_step, R.encode_all, S._chains_as_they_land = step_force, enc_fake, chains_fake
+with tempfile.TemporaryDirectory() as td:
+    q0, ch, q1, q2 = sh(20, place="Cockpit"), sh(21, place="Cockpit", kind="action", chain={"lines": ["ROW-21"]}), \
+        sh(22, place="Cockpit"), sh(23, place="Cockpit")
+    for b_, a_ in ((ch, q0), (q1, ch), (q2, q1)):
+        b_["cont_of"] = a_["id"]
+    d = Path(td) / q0["id"].rsplit("_s", 1)[0] / q0["id"]
+    d.mkdir(parents=True)
+    (d / "key.png").write_text("k")
+    h = {}
+    holds.clear()
+    S.shot_dir = lambda book, stem: Path(td)
+    S.ltx(Path(td), "x", [], [q0, ch, q1, q2], log=lambda m: None)
+    for k_, js in holds:
+        h.setdefault(k_, {}).update({j["name"]: j for j in js})
+    hj, mo = h.get("hold_jobs.json", {}), h.get("more", {})
+    l1 = [j for n_, j in hj.items() if n_.startswith(ch["id"] + "_x1")]
+    check("force: into the chain - its first line's takes from the clip before's last frame, no key",
+          len(l1) == 3 and all(j["chain_from"] == q0["id"] and j["images"] == [] and j["overlap"] == 1 and
+                               j["chain_frame"] == hj[q0["id"]]["frames"] - 1 for j in l1), list(hj))
+    check("force: out of the chain - the shots after it wait off the queue, then go on it from the joined picks",
+          q1["id"] not in hj and q2["id"] not in hj and mo.get(q1["id"], {}).get("chain_from") == ch["id"] and
+          mo[q1["id"]]["chain_frame"] == S.chain_frames(1) - 1 and mo.get(q2["id"], {}).get("chain_from") == q1["id"]
+          and (Path(td) / "ltx" / "out" / f"{q2['id']}.mp4").exists(), (list(hj), list(mo)))
+S.STRETCH_FORCE = False
+
 src = (HERE / "shot_flow.py").read_text()
 check("wired: the pair asks before the language model stops, keys skip continued shots",
       src.index("mark_stretches(win") < src.index('"stop", animate.STRATA_UNIT], capture_output=True)   # (11-06')

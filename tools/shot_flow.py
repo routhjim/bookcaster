@@ -1752,6 +1752,10 @@ def told_keys(shots: list, actions: list, tellers: list, cast: list, crs: list, 
 # (ltx: chain_from, overlap 1, no seam re-renders), with its own action line and narration slot; an unclear answer
 # cuts (today's behaviour). BOOKCASTER_STRETCH=0 turns it off.
 STRETCH = os.environ.get("BOOKCASTER_STRETCH", "1") != "0"
+# E17 force arm (user: "why can't we just chain shots together?"): no pair ask - within one place every shot continues
+# from the clip before, into an action chain (its first line from that last frame, not its key) and out of it (from
+# the joined picks' last frame). Only a place change draws a key
+STRETCH_FORCE = os.environ.get("BOOKCASTER_STRETCH_FORCE", "0") == "1"
 PAIR_ASK = ("Two shots of a film, one right after the other, at the same place.\nShot 1: {a}\nShot 2: {b}\n"
             "The narration heard over them: {words}\n"
             "Is shot 2 the same moment seen the same way, so its video can continue from the last picture of shot 1; "
@@ -1778,6 +1782,9 @@ def mark_stretches(shots: list, words, ask, cache: Path, log=print) -> int:
     pairs = []
     for a, b in zip(shots, shots[1:]):
         b.pop("cont_of", None)
+        if STRETCH_FORCE and RG.place_key(a.get("place")) == RG.place_key(b.get("place")):
+            b["cont_of"] = a["id"]
+            continue
         if a.get("chain") or b.get("chain") or RG.place_key(a.get("place")) != RG.place_key(b.get("place")):
             continue
         msg = PAIR_ASK.replace("{a}", _pair_row(a)).replace("{b}", _pair_row(b)).replace(
@@ -1796,9 +1803,9 @@ def mark_stretches(shots: list, words, ask, cache: Path, log=print) -> int:
                 if r is not None:
                     got[p[3]] = {"a": p[0]["id"], "b": p[1]["id"], "reply": r, "continue": _says_continue(r)}
         cache.write_text(json.dumps(got, indent=1))
-    n = 0
+    n = sum(bool(b.get("cont_of")) for b in shots)
     for a, b, _, k in pairs:
-        if (got.get(k) or {}).get("continue"):
+        if not STRETCH_FORCE and (got.get(k) or {}).get("continue"):
             b["cont_of"] = a["id"]
             n += 1
     log(f"stretches: {n} of {len(shots)} shots continue from the shot before ({len(pairs)} asked, "
@@ -3523,8 +3530,12 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             tail[s["id"]] = (talk[-1]["name"], talk[-1]["frames"])
         elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
             if not (retake and s["id"] not in retake):
-                _chain_state(L, s, key)
+                st = _chain_state(L, s, key)
+                if (src and tail[src["id"]][0]) != (st.get("from") or [None])[0]:     # (force arm: from the clip
+                    st["from"] = list(tail[src["id"]]) if src else None                # before, not its key)
+                    _chain_save(L, st)
                 chains.append(s["id"])
+                tail[s["id"]] = (s["id"], chain_frames(len(st["lines"])))   # (the joined picks: after it lands)
         elif s["kind"] == "action":
             act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
@@ -3593,9 +3604,13 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
             e_ = _chain_emb(sid, t_)
             enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
+    late = set()                        # jobs downstream of a chain's joined clip: queued once it exists (late_jobs)
+    for j in sorted(talk + two + quiet, key=lambda j: pos.get(re.sub(r"(_t\d+)?(_c\d+)?$", "", j["name"]), 0)):
+        if j.get("chain_from") in late or j.get("chain_from") in chains:
+            late.add(j["name"])
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
-        (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
+        (L / f"{nm}.json").write_text(json.dumps([j for j in x if j.get("name") not in late], indent=1))
     from types import SimpleNamespace
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
     # yields to a waiting GPU job (LTX_YIELD)
@@ -3684,6 +3699,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if firsts:
             ths.append(threading.Thread(target=_chains_as_they_land, daemon=True,
                                         args=(sd, chains, more, {j["name"] for j in firsts}, stop, log, REVIEW)))
+        if first and late:
+            ths.append(threading.Thread(target=late_jobs, daemon=True,
+                                        args=(L / "out", [j for j in h_two + h_talk if j["name"] in late], more, stop, chains, log)))
         for th in ths:
             th.start()
 
@@ -3696,9 +3714,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         kind = "two_talk" if h_two and h_talk else "two" if h_two else "talk"
         if firsts:
             kind = "hold"
-            (L / "hold_jobs.json").write_text(json.dumps(firsts + h_two + h_talk, indent=1))
+            (L / "hold_jobs.json").write_text(json.dumps([j for j in firsts + h_two + h_talk if j["name"] not in late],
+                                                         indent=1))
         try:
-            gen(kind, firsts + h_two + h_talk, ["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk) +
+            gen(kind, [j for j in firsts + h_two + h_talk if j["name"] not in late], ["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk) +
                 ["--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
                 F._pp_split(sd, "a2vid" if h_talk else "ti2v", 25 if h_talk else 24))
         finally:
@@ -3731,6 +3750,26 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         finally:
             stop.set()
             th.join(60)
+
+
+def late_jobs(out_: Path, jobs: list, more: Path, stop, chains: list = (), log=print) -> None:
+    """Force arm: `jobs` (shot order) wait off the runner's queue until their chain source is a clip on disk or queued
+    by this thread (the runner's chain wait covers that), then go on the loaded runner's --more queue. Given up once
+    every chain is done or blocked and a source never came (those shots: no clip, as a missing clip is today)."""
+    left, sent = list(jobs), set()
+    while left and not stop.is_set():
+        over = all((lambda st: st.get("done") or st.get("blocked"))(json.loads((out_.parent / "chains" / f"{c}.json")
+                                                                               .read_text())) for c in chains)
+        for j in list(left):
+            if j["chain_from"] in sent or (out_ / f"{j['chain_from']}.mp4").exists():
+                _queue_more(more, dict(j, priority=1))
+                sent.add(j["name"])
+                left.remove(j)
+        if over and left and not any(j["chain_from"] in sent or (out_ / f"{j['chain_from']}.mp4").exists()
+                                     for j in left):
+            log(f"!!! {len(left)} job(s) after a chain that made no clip: {[j['name'] for j in left][:6]}")
+            return
+        time.sleep(2)
 
 
 def _crowded(faults: list) -> bool:
@@ -3893,7 +3932,10 @@ def _chain_jobs(st: dict, k: int) -> list:
              "fps": FPS, "seed": sd_ + shot_seed(sid) + 10 * k + 100 * v, "frames": CHAIN_FRAMES, "line": sid,
              "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER,
              "people": st.get("people"), "priority": 1}
-        if k == 1:
+        if k == 1 and st.get("from"):       # (force arm: line 1 from the clip before's last frame)
+            j.update(chain_from=st["from"][0], chain_frame=st["from"][1] - 1, overlap=1, seam_tries=0,
+                     chain_strength=1.0, images=[])
+        elif k == 1:
             j["images"] = [{"path": st["key"], "frame": 0, "strength": 1.0}]
         else:
             j.update(chain_from=st["picks"][k - 2], chain_frame=CHAIN_FRAMES - 1, overlap=1, seam_tries=0,
