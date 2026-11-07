@@ -259,28 +259,21 @@ TALK_PICTURE = ("a close-up of {who} alone: head and shoulders filling the frame
 # in isn't convincing"; "I don't like that there's only ever one person in each shot"): its first line a two-shot, the
 # replies over the listener's shoulder, each one on the side the two-shot gave them
 # 10-25 Acts: "a few steps apart" drew them head to toe, faces ~30 px - no lips to sync ("lip sync is off")
-# 10-28: "facing each other" put the speaker in profile, turned away - a crop of Holmes's zone showed his ear, and
-# SyncNet read ~1 at 1152x640 and at 1408x768 alike (resolution: +17% cost, no gain). Staged as film does it: both
-# angled toward each other but cheated out, three-quarters to the viewer, the speaker's face and mouth in full view
-TALK_TWO = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces large "
-            "in the picture, an arm's length apart; {who} angled toward {listener} and turned three-quarters to the "
-            "viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} in profile, head turned to look at {who}, "
-            "listening")       # (10-28: "toward the viewer" alone turned Holmes away from Watson)
-# (10-28 user: "have the non speaker still look at the speaker" - the speaker cheats out, the listener faces them; in
-# an exchange each line's shot is staged around its own speaker, so they turn back and forth at the cuts)
-# 10-29 user: "what are the next steps to preserve his position in bed?": the two-shot's "waist up, an arm's length
-# apart" sat Watson on a chair beside an empty bed (868, 964, 986, 1173, 1275) - the director's talk shots carry no
-# placing, so the template IS the blocking. Someone in bed has a template of their own: the same waist-up, large-face
-# framing the lip sync needs, the other one at the bedside
-TALK_TWO_BED = ("{left} on the left and {right} on the right, seen from the waist up and close to the viewer, both faces "
-                "large in the picture; {abed} {bedpose} in bed under the covers, propped against the pillows, and {other} "
-                "standing at the bedside close beside {abed}, bending a little toward {abed}; {who} turned three-quarters "
-                "to the viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} head turned to look at {who}, "
-                "listening")
+# 10-28: "facing each other" put the speaker in profile, turned away - SyncNet read ~1 (resolution: no gain); the
+# speaker cheats out, three-quarters to the viewer, face and mouth in full view; the listener looks at them (10-28 user)
+# E22 (11-07): the side-by-side two-shot and the group put every person at one size, the speaker's place said among
+# theirs; on the 11-07 runs (first takes, SyncNet >= 5) a close-up passed 64% (n 22) and an over-the-shoulder 69% (26),
+# a side-by-side two-shot 54% (123; 40% with the speaker on the right), a four-person group 0% (12): the keys drew the
+# speaker small, in profile, behind another, or on the other side, and a seated speaker beside a standing listener small
+# and looking up. The bed variant (exactly one "in/on the bed") missed "on the bunk" and two lying, and nothing said
+# what was held: the night two-shots sat both up 6/6 and lost the held toy 6/6 (E16). So the picture of a talk shot
+# with others in it leads with the speaker as the scene holds them (pose, spot, held thing), nearest the viewer, the
+# face large; the others beyond, smaller, each as the scene holds them, looking at the speaker (user 11-07: the
+# speaker's face large and turned toward the camera, talk shots only). Sides stay the scene's (talk_layout)
+TALK_LEAD = ("{held}, {where}: seen from the chest up and close to the viewer, the face large in the picture and "
+             "turned three-quarters to the viewer, face and mouth in full view, " + MOUTH_OPEN +
+             "; beyond {who} and smaller in the picture: {rest}, listening")
 BED_POSE = {"sit": "sitting up", "lie": "lying back, head raised on the pillows"}
-TALK_GROUP = ("{people}, seen from the waist up and close to the viewer, every face in the picture; {who} turned "
-              "three-quarters toward the viewer, face and mouth in full view, " + MOUTH_OPEN + "; {listener} in profile, head turned to {who}, "
-              "listening; {others} in profile, looking at {who}")
 TALK_OTS = ("over-the-shoulder: {who} on the {side} third of the picture, seen from the chest up, turned toward the "
             "{other}, " + MOUTH_OPEN + "; in the {other} foreground, close to the viewer and out of focus, the back of "
             "{listener}'s head and one shoulder, facing {who}")
@@ -554,6 +547,31 @@ def group_layout(n: int) -> list:
         else:
             out.append(([max(0.0, c - fw * 0.32), 0.0, min(1.0, c + fw * 0.32), 0.62], f"behind, {side}"))
     return sorted(out, key=lambda b: b[0][0] + b[0][2])
+
+
+def talk_layout(s: dict) -> list:
+    """[(box, where-words)] in "who" order (left to right). A talk shot with others in it (its "speaker" set, not over
+    the shoulder) is led by the speaker (E22, TALK_LEAD): their box the large one on their own side, nearest the
+    viewer; the others in the rest of the width, higher and smaller, further back. Any other shot: group_layout."""
+    who, spk = s.get("who") or [], s.get("speaker")
+    if s.get("kind") != "talk" or s.get("ots") or spk not in who or len(who) < 2:
+        return group_layout(len(who))
+    n, i = len(who), who.index(spk)
+
+    def side(c):
+        return "on the left" if c < 0.4 else "in the centre" if c < 0.6 else "on the right"
+    x0 = min(max((i + 0.5) / n - 0.3, 0.0), 0.4)
+    x1 = x0 + 0.6
+    out = []
+    for k in range(i):              # those left of the speaker share the width left of the speaker's box
+        a, b = (x0 + 0.05) * k / i, (x0 + 0.05) * (k + 1) / i
+        out.append(([round(a, 3), 0.0, round(b, 3), 0.75], f"{side((a + b) / 2)}, further back"))
+    out.append(([round(x0, 3), 0.0, round(x1, 3), 1.0], f"{side((i + 0.5) / n)}, nearest the viewer"))
+    r = n - i - 1
+    for k in range(r):              # and those right of them the width to its right
+        a, b = x1 - 0.05 + (1.05 - x1) * k / r, x1 - 0.05 + (1.05 - x1) * (k + 1) / r
+        out.append(([round(a, 3), 0.0, round(b, 3), 0.75], f"{side((a + b) / 2)}, further back"))
+    return out
 
 
 def _cast(book: Path, stem: str, e: dict) -> tuple:
@@ -1982,7 +2000,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     new_es, by, new_sheets = [], {}, {}
     system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
     pics_before, pics_scene, screen, last_pose, last_at, carry = [], [], {}, {}, {}, {}
-    pair, lasts, cut_where = None, {}, {}
+    pair, lasts, cut_where, holding = None, {}, {}, {}
     animate_up = False
     loraed = None                       # the book's people with a built LoRA (told-place shots; asked once)
     scenes = scene_list(book, stem, log)     # the chapter's scenes (shared, cached: the wardrobe reads them too)
@@ -2003,6 +2021,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             pair, people_here, where_of, talk_, screen, last_pose, last_at = None, [], {}, [], {}, {}, {}
             carry = {}                  # each one's pose as left: nothing carried into a new scene
             lasts, cut_where = {}, {}   # the same, in each told place; who was last shown in which told place
+            holding = {}                # what each one holds now, per place (at_key): talk shots say it (E22)
             # 10-28: the scene's side map starts from the director's own blocking (it put Watson right of Holmes;
             # the two-shot code, with no map yet, put him on the left - in Helen's place)
             screen.update(_blocking_sides(sc_.get("blocking"), RGB.people()))
@@ -2274,6 +2293,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             pz = lp.get(w, "")          # (lp, la: the poses in the place this shot is at - state_at)
             return f"{w} {POSE_VERB[pz]}{' ' + la[w] if la.get(w) else ''}" if pz else ""
 
+        def talk_held(w):               # held() and what they hold now: a talk shot's picture leads with it (E22)
+            hd = holding.get(at_key(tp), {}).get(w, "")
+            return (held(w) or w) + (f", holding {hd}" if hd else "")
+
+        def lead(order):                # a talk shot with others in it: the speaker first, nearest the viewer (E22)
+            lay = talk_layout({"kind": "talk", "who": order, "speaker": who})
+            pos = {w: lb for w, (_, lb) in zip(order, lay)}
+            return TALK_LEAD.format(held=talk_held(who), where=pos[who], who=who, rest="; ".join(
+                f"{talk_held(w)}, {pos[w]}, head turned to look at {who}" for w in order if w != who))
+
         def abed(w):                    # in bed now (the last shot that placed them): stays there until a shot moves them
             return lp.get(w) in BED_POSE and bool(IN_BED.search(la.get(w, "")))
 
@@ -2339,21 +2368,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                             for w in group:     # (10-28 user: Holmes's aside to Watson as a three-shot, Watson never
                                 screen.setdefault(w, max(screen.values(), default=-1) + 1)   # in Helen's place)
                             gr = sorted(group, key=lambda w: screen[w])
-                            lab = {w: lb for w, (_, lb) in zip(gr, group_layout(len(gr)))}
-                            sh.update(who=gr, listener=lis, picture=TALK_GROUP.format(
-                                people=", ".join(f"{w} {lab[w]}" for w in gr), who=who, listener=lis,
-                                others=" and ".join(w for w in gr if w not in (who, lis)) or "the others"))
+                            sh.update(who=gr, listener=lis, speaker=who, picture=lead(gr))
                         # the director's over-the-shoulder kept for a pair's first line too (10-28 user: Helen in
                         # the armchair, Holmes at the desk - apart, so a two-shot side by side broke the blocking)
-                        elif (fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over"))) and \
-                                len([w for w in lr if abed(w)]) == 1:
-                            ab = next(w for w in lr if abed(w))
-                            sh.update(who=lr, listener=lis, bed=ab, picture=TALK_TWO_BED.format(
-                                left=lr[0], right=lr[1], who=who, listener=lis, abed=ab, other=lr[1 - lr.index(ab)],
-                                bedpose=BED_POSE[lp[ab]]))
                         elif fr.startswith("two") or (pair != {who, lis} and not fr.startswith("over")):
-                            sh.update(who=lr, listener=lis, picture=TALK_TWO.format(left=lr[0], right=lr[1], who=who,
-                                                                                   listener=lis))
+                            sh.update(who=lr, listener=lis, speaker=who, picture=lead(lr))
                         elif abed(lis):         # over the shoulder of someone in bed: his back drawn standing (10-29,
                             sh["framing"] = "close"     # 1092) - the speaker's close-up instead
                         else:
@@ -2364,7 +2383,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                                                                       "in bed under the covers, propped against the "
                                                                       "pillows, seen from the chest up", 1)
                         pair = {who, lis}
-                    hs_ = [held(w) for w in sh["who"] if held(w)] if len(sh["who"]) > 1 and not sh.get("bed") else []   # (a close-up:
+                    hs_ = [held(w) for w in sh["who"] if held(w)] if sh.get("ots") else []   # (a close-up:
                     if hs_:                       # none - "beside the bed" put an empty bed and his whole stance in it)
                         sh["picture"] += ". " + "; ".join(hs_)
                     sh["pose_held"] = {w: lp[w] for w in sh["who"] if lp.get(w)}
@@ -2402,6 +2421,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                 lp[pl["name"]] = end    # (in the place it shows: the telling's poses stay in the telling)
                 if pl.get("at"):
                     la[pl["name"]] = pl["at"]
+                holding.setdefault(at_key(place), {})[pl["name"]] = pl.get("holds") or ""   # ("" = set down)
             if place and (place == home or not home):
                 where_of.update({w: place for w in sh.get("who") or []})
             elif place:
@@ -2818,32 +2838,7 @@ def _key_style(style: str) -> str:
     return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
 
 
-def _two_shot_posed(s: dict, pic: str) -> str:
-    """A talk two-shot where one sits (kneels, ...) and the other stands: the posture said in the opening clause.
-    TALK_TWO stages two faces side by side, so the held pose added after it ("Holmes sits in the armchair") lost:
-    10-31, 16 Speckled Band two-shots drew both standing in all 5 seeds (mixed-posture groups passed 65%, uniform
-    100%); this wording took 3 such shots from 2/12 to 8/12 seeds (Roylott's own LoRA still stands). The framing
-    words stay (10-27: the seated variant without "waist up, close to the viewer" broke the lip sync). Key words only:
-    the shot's picture is quoted to the next passage's director (10-29)."""
-    held = s.get("pose_held") or {}
-    lr = s.get("who") or []
-    # TALK_TWO's own opening only (10-31 run: the in-bed two-shot TALK_TWO_BED got "seated in a chair" too and drew
-    # Helen twice, in the chair and standing: 6 shots, every seed counted 3 people)
-    head = TALK_TWO.split("{who}")[0].format(left=lr[0], right=lr[1]) if len(lr) == 2 else ""
-    down = [w for w in lr if held.get(w) in ("sit", "kneel", "crouch")]
-    if not (s.get("listener") and head and pic.startswith(head) and len(down) == 1
-            and held.get(next(w for w in lr if w not in down), "stand") == "stand"):
-        return pic
-    sit, st = down[0], next(w for w in lr if w not in down)
-    at = re.search(rf"{re.escape(sit)} {POSE_VERB[held[sit]]} ([^;.]+)", pic)
-    i = pic.find("listening")
-    base = pic[:i + len("listening")] if i >= 0 else pic   # TALK_TWO without the held suffix (said in the clause now)
-    return base.replace("seen from the waist up", f"{sit} {POSE_WORDS[held[sit]].replace('sitting', 'seated')} "
-                        f"{at.group(1) if at else 'in a chair'}, face lower in the picture, {st} standing beside and "
-                        f"leaning in; seen from the waist up", 1)
-
-
-def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) -> str:
+def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
     vd, _, _ = MF.paths(book, stem)
     R_ = RG.Book(book)                  # the looks and the style have one owner each (10-27 audit: the plan's copies
     looks = {w: no_pose(MF._appearance(R_.look(w))) for w in s["who"]}      # of the looks, art_style.txt only)
@@ -2881,7 +2876,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
         if w in dress:
             lk = re.split(r",?\s*\bwearing\b", lk)[0] + ", wearing " + dress[w]
         lk = uncarried(lk, s.get("picture", ""))
-        lay = group_layout(len(s["who"]))
+        lay = talk_layout(s)
         side = f" {lay[s['who'].index(w)][1]}" if len(s["who"]) > 1 and not moment(s) else ""
         legs = ", " + FOUR_LEGS if "four-legged" in lk and not MF.DOWN.search(s["picture"]) and not moment(s) else ""
         if moment(s):                   # the moment says where each one is and how they move: the look only
@@ -2898,8 +2893,6 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict, legacy: bool = False) 
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
     pic = figurative(moment(s) or s["picture"])
-    if not legacy and not moment(s):
-        pic = _two_shot_posed(s, pic)
     if s.get("tight") and set((s.get("pose") or {}).values()) == {"standing"}:
         # 10-29: "Holmes stands beside the bed" in a close shot drew an empty bed behind him (743, 834: all 5 seeds
         # failed the chair check). Where a standing one stands by a seat is the director's, kept in his words; the
@@ -2983,8 +2976,7 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
         lst = (f" {other} listens with a closed mouth." if len(rest) == 1 else
                f" {', '.join(rest[:-1])} and {rest[-1]} listen with closed mouths.")    # (a group: 10-28)
     n_ = len(s.get("who") or [])
-    pos = (f" on the {'left' if s['who'][0] == who else 'right'}" if n_ == 2 else
-           f" {group_layout(n_)[s['who'].index(who)][1]}" if n_ > 2 and who in s["who"] else "")
+    pos = f" {talk_layout(s)[s['who'].index(who)][1]}" if n_ > 1 and who in s["who"] else ""
     says = (f' {dict(his="He says", her="She says").get(pron, "They say")}, "{e["words"]}"'
             if e.get("words") else "")      # the line itself, as LTX's captions quote it (10-29)
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
@@ -3057,7 +3049,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         d = sd / s["id"].rsplit("_s", 1)[0] / s["id"]
         d.mkdir(parents=True, exist_ok=True)
         lw = LORA_W.get(len(s["who"]), min(LORA_W.values()))
-        boxes = [b for b, _ in group_layout(len(s["who"]))]
+        boxes = [b for b, _ in talk_layout(s)]
         if moment(s) and len(boxes) <= 2:   # a moment shares the space (the tail over him, a hand on a wrist): each
             boxes = [[0.0, 0.0, 1.0, 1.0]] * len(boxes)   # LoRA on the whole frame (11-01: 10 fight keys, no bleed;
             # with three - Roylott, Holmes, Watson - two came out the same face: three keep their boxes)
@@ -3080,11 +3072,6 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
             hero = _set_crop(heroes.get(s.get("place") or None), d, s)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
         sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
-        if (d / "key.sig").exists() and (d / "key.sig").read_text() != sig:
-            p0 = _key_prompt(book, stem, s["id"].rsplit("_s", 1)[0], s, legacy=True)
-            sig0 = MF._h(json.dumps([p0, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
-            if p0 != p and (d / "key.sig").read_text() == sig0:
-                p, sig = p0, sig0       # keyed before the two-shot posture wording (10-31): kept, not redrawn
         # a place picture drawn again (10-24: the people-free hero redraws left every key there cached, so the
         # rerun changed nothing): the keys drawn before it are drawn again
         older = hero is not None and hero.exists() and any(k.stat().st_mtime < hero.stat().st_mtime
@@ -4176,7 +4163,7 @@ def _speaker_box(s: dict, speaker) -> list | None:
     who = s.get("who") or []
     if len(who) < 2 or speaker not in who:
         return None
-    return group_layout(len(who))[who.index(speaker)][0]
+    return talk_layout(s)[who.index(speaker)][0]
 
 
 def _job_speaker_box(L: Path, name: str) -> list | None:

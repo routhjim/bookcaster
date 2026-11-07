@@ -61,9 +61,10 @@ new_es, by, _ = S.direct(b, stem, es, log=lambda m: None)
 shots = [s for e in new_es for s in by[e["id"]]]
 talk = [s for s in shots if s["kind"] == "talk"]
 two = [s for s in talk if len(s["who"]) == 2]
-check("the two-shot keeps Watson in bed, Holmes at the bedside", two and all(
-    "Doctor Watson sitting up in bed under the covers" in s["picture"] and "Sherlock Holmes standing at the bedside"
-    in s["picture"] and "arm's length" not in s["picture"] for s in two), [s["picture"] for s in talk])
+check("the two-shot keeps Watson in bed, Holmes at the bedside (E22: each as the scene holds them)", two and all(
+    "Doctor Watson sits in bed, under the covers, propped against the pillows" in s["picture"] and
+    "Sherlock Holmes stands beside the bed" in s["picture"] and "arm's length" not in s["picture"] for s in two),
+      [s["picture"] for s in talk])
 check("no over-the-shoulder shot past the man in bed", not [s for s in talk if s.get("ots") == "Doctor Watson"],
       [(s["who"], s.get("ots")) for s in talk])
 cw = [s for s in talk if s["who"] == ["Doctor Watson"]]
