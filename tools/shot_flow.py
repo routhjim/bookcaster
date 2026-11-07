@@ -3604,10 +3604,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
             e_ = _chain_emb(sid, t_)
             enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
-    late = set()                        # jobs downstream of a chain's joined clip: queued once it exists (late_jobs)
-    for j in sorted(talk + two + quiet, key=lambda j: pos.get(re.sub(r"(_t\d+)?(_c\d+)?$", "", j["name"]), 0)):
-        if j.get("chain_from") in late or j.get("chain_from") in chains:
-            late.add(j["name"])
+    # every chained stretch job of the action/talk hold waits off the runner's queue until its source clip is on disk
+    # (late_jobs; E17c: a chain's first line queued from another chain's joined clip, not a job of the hold, started
+    # at once and the runner died on the missing file): each stretch renders strictly in order, stretches side by side
+    late = {j["name"] for j in two + talk if j.get("stretch") and j.get("chain_from")}
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
         (L / f"{nm}.json").write_text(json.dumps([j for j in x if j.get("name") not in late], indent=1))
@@ -3647,7 +3647,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 continue
             k = next(i for i, p in enumerate(st["picks"], 1) if not p)
             out += [j for j in _chain_jobs(st, k) if not (L / "out" / f"{j['name']}.mp4").exists()
-                    and (L / "emb" / f"{j['emb']}.pt").exists()]
+                    and (L / "emb" / f"{j['emb']}.pt").exists()
+                    and (not j.get("chain_from") or (L / "out" / f"{j['chain_from']}.mp4").exists())]
         return out
     first = True
     for rnd in range(4):                # 11-05: a chain line overridden in review needs its words encoded: another hold
@@ -3696,7 +3697,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if h_talk:
             ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
                                         args=(book, R, L, h_talk, stop, log, True, more)))
-        if firsts:
+        ch_on = bool(firsts) or bool(chains and first and late)    # (a first line waiting on its source: queued later)
+        if ch_on:
             ths.append(threading.Thread(target=_chains_as_they_land, daemon=True,
                                         args=(sd, chains, more, {j["name"] for j in firsts}, stop, log, REVIEW)))
         if first and late:
@@ -3712,7 +3714,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         tc = threading.Thread(target=closer, daemon=True)
         tc.start()
         kind = "two_talk" if h_two and h_talk else "two" if h_two else "talk"
-        if firsts:
+        if ch_on:
             kind = "hold"
             (L / "hold_jobs.json").write_text(json.dumps([j for j in firsts + h_two + h_talk if j["name"] not in late],
                                                          indent=1))
@@ -3753,22 +3755,24 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
 
 
 def late_jobs(out_: Path, jobs: list, more: Path, stop, chains: list = (), log=print) -> None:
-    """Force arm: `jobs` (shot order) wait off the runner's queue until their chain source is a clip on disk or queued
-    by this thread (the runner's chain wait covers that), then go on the loaded runner's --more queue. Given up once
-    every chain is done or blocked and a source never came (those shots: no clip, as a missing clip is today)."""
-    left, sent = list(jobs), set()
+    """`jobs` (shot order) wait off the runner's queue until their chain source is a clip on disk, then go on the
+    loaded runner's --more queue. A job whose source can no longer come (a chain done or blocked without its joined
+    clip, or a job waiting on such a one) is given up: no clip, as a missing clip is today."""
+    left = list(jobs)
     while left and not stop.is_set():
-        over = all((lambda st: st.get("done") or st.get("blocked"))(json.loads((out_.parent / "chains" / f"{c}.json")
-                                                                               .read_text())) for c in chains)
         for j in list(left):
-            if j["chain_from"] in sent or (out_ / f"{j['chain_from']}.mp4").exists():
+            if (out_ / f"{j['chain_from']}.mp4").exists():
                 _queue_more(more, dict(j, priority=1))
-                sent.add(j["name"])
                 left.remove(j)
-        if over and left and not any(j["chain_from"] in sent or (out_ / f"{j['chain_from']}.mp4").exists()
-                                     for j in left):
-            log(f"!!! {len(left)} job(s) after a chain that made no clip: {[j['name'] for j in left][:6]}")
-            return
+        dead = {c for c in chains if not (out_ / f"{c}.mp4").exists() and (lambda st: st.get("done") or st.get(
+            "blocked"))(json.loads((out_.parent / "chains" / f"{c}.json").read_text()))}
+        for j in left:                  # (shot order: a dead source kills what waits on it, down the stretch)
+            if j["chain_from"] in dead:
+                dead.add(j["name"])
+        if dead & {j["name"] for j in left}:
+            log(f"!!! {len(dead & {j['name'] for j in left})} job(s) after a chain that made no clip: "
+                f"{[j['name'] for j in left if j['name'] in dead][:6]}")
+            left = [j for j in left if j["name"] not in dead]
         time.sleep(2)
 
 
@@ -4078,6 +4082,8 @@ def _chains_as_they_land(sd: Path, chains: list, more: Path | None, queued: set,
                         live -= 1
                         continue
                     if not all(n in queued for n in names):
+                        if jobs[0].get("chain_from") and not (L / "out" / f"{jobs[0]['chain_from']}.mp4").exists():
+                            continue            # (force arm: a first line waits for the clip before it, E17c)
                         if not (L / "emb" / f"{jobs[0]['emb']}.pt").exists():
                             st["blocked"] = "encode"
                             log(f"{sid} line {k}: its new words wait for the next hold (encode)")

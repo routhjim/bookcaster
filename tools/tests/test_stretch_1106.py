@@ -88,11 +88,15 @@ def fake_step(cxl, name, args):
     for j in jobs:
         (cxl.OUT / "ltx" / "out" / f"{j['name']}.mp4").write_text("v")
     more = cxl.OUT / "ltx" / ("quiet_more.json" if args[1] == "quiet_jobs.json" else "two_more.json")
-    for _ in range(60):                 # the judge threads: a retake queued while the hold is loaded
-        if more.exists() and json.loads(more.read_text()):
-            holds.append(("more", json.loads(more.read_text())))
+    for _ in range(200):                # what joins the loaded runner: retakes, and stretch jobs once their source landed
+        q = json.loads(more.read_text()) if more.exists() else []
+        for j in q:
+            (cxl.OUT / "ltx" / "out" / f"{j['name']}.mp4").write_text("v")
+        if more.with_suffix(".done").exists() and q == json.loads(more.read_text()):
             break
-        real_sleep(0.05)
+        real_sleep(0.03)
+    if q:
+        holds.append(("more", q))
     return 0
 
 
@@ -137,7 +141,8 @@ with tempfile.TemporaryDirectory() as td:
         (Path(td) / s_["id"].rsplit("_s", 1)[0] / s_["id"] / "key.png").unlink()
     h = render(td, shots, es)
     q0, q1, q2, act, tk, q4 = [s_["id"] for s_ in shots]
-    qj, mj = h.get("quiet_jobs.json", {}), h.get("hold_jobs.json") or h.get("two_talk_jobs.json") or {}
+    qj, mj = h.get("quiet_jobs.json", {}), dict(h.get("hold_jobs.json") or h.get("two_talk_jobs.json") or {})
+    mj.update(h.get("more", {}))
     check("quiet-only stretch: all in the quiet hold, in a chain", set(qj) == {q0, q1, q2} and
           qj[q1]["chain_from"] == q0 and qj[q2]["chain_from"] == q1 and "chain_from" not in qj[q0], qj.keys())
     check("continued: last frame, overlap 1, no seam re-renders, no key, its own prompt and length",
@@ -145,7 +150,7 @@ with tempfile.TemporaryDirectory() as td:
           and qj[q1]["images"] == [] and qj[q1]["prompt"] == "ROW-1" and qj[q1]["frames"] == S._frames(3.0), qj[q1])
     check("the opener keeps its key", qj[q0]["images"][0]["path"].endswith("key.png"))
     check("stretch jobs first in the queue, never retaken", all(j.get("priority") == 1 and j.get("stretch")
-                                                                 for j in qj.values()) and "more" not in h)
+                                                                 for j in qj.values()) and not any("_t" in n_ for n_ in h.get("more", {})))
     check("a stretch with talk/action: whole in the one action/talk hold",
           {act, f"{tk}_c0", f"{tk}_c1", q4} <= set(mj) and q4 not in qj, (list(mj), list(qj)))
     check("talk: first piece from the action's last frame, the second piece from the first as today",
@@ -176,7 +181,7 @@ with tempfile.TemporaryDirectory() as td:
           and all(j.get("chain_from") in (None, f"{shots[4]['id']}_c0") for j in allj.values())
           and allj[shots[5]["id"]]["route"] == "i2v" and set(h["quiet_jobs.json"]) == {shots[i]["id"] for i in (0, 1, 2, 5)},
           list(allj))
-    check("off: faulted clips retaken as today", "more" in h, list(h))
+    check("off: faulted clips retaken as today", any("_t2" in n_ for n_ in h.get("more", {})), list(h))
     S.STRETCH = True
 
 # ---- force arm (BOOKCASTER_STRETCH_FORCE=1): every shot of a place continues, into and out of an action chain ----
@@ -196,62 +201,73 @@ def enc_fake(cxl, f, name, args):
 
 
 def step_force(cxl, name, args):
+    """The runner as it behaves: a job starts once its chain source is neither queued nor running; a source that is
+    then not on disk kills the hold (E17c: FileNotFoundError at ltx_split_next.py:1712)."""
     L = cxl.OUT / "ltx"
     jobs = json.loads((L / args[1]).read_text())
     holds.append((args[1], jobs))
     made = set()
-    for _ in range(400):
-        for j in jobs + (json.loads((L / "two_more.json").read_text()) if (L / "two_more.json").exists() else []):
-            if j["name"] not in made:
-                if j.get("chain_from") and not (L / "out" / f"{j['chain_from']}.mp4").exists():
-                    continue                    # the runner's chain wait
-                (L / "out" / f"{j['name']}.mp4").write_text("v")
-                made.add(j["name"])
-        if (L / "two_more.done").exists():
+    for _ in range(600):
+        q = jobs + (json.loads((L / "two_more.json").read_text()) if (L / "two_more.json").exists() else [])
+        pend = {j["name"] for j in q if j["name"] not in made}
+        for j in q:
+            if j["name"] in made or j.get("chain_from") in pend:
+                continue
+            if j.get("chain_from") and not (L / "out" / f"{j['chain_from']}.mp4").exists():
+                holds.append(("crash", [j]))
+                return 1
+            (L / "out" / f"{j['name']}.mp4").write_text("v")
+            (L / "out" / f"{j['name']}.json").write_text(json.dumps(j))
+            made.add(j["name"])
+            pend.discard(j["name"])
+        if (L / "two_more.done").exists() and not pend:
             break
-        real_sleep(0.05)
+        real_sleep(0.03)
     holds.append(("more", json.loads((L / "two_more.json").read_text())))
     return 0
 
 
-def chains_fake(sd, chains, more, queued, stop, log, review="off", wait_cards=False):
-    if more is None:
-        return
-    L = sd / "ltx"
-    for sid in chains:
-        st = json.loads((L / "chains" / f"{sid}.json").read_text())
-        names = [j["name"] for j in S._chain_jobs(st, 1)]
-        while not stop.is_set() and not all((L / "out" / f"{n_}.mp4").exists() for n_ in names):
-            real_sleep(0.05)
-        (L / "out" / f"{sid}.mp4").write_text("joined")
-        st.update(done=True, picks=[names[0]])
-        S._chain_save(L, st)
+def join_fake(L, st, log):
+    (L / "out" / f"{st['id']}.mp4").write_text("joined")
 
 
-R.ltx_step, R.encode_all, S._chains_as_they_land = step_force, enc_fake, chains_fake
+R.ltx_step, R.encode_all = step_force, enc_fake
+S._judge_chain_line = lambda st, k, takes, J, log: {"pick": 0, "sheets": []}
+S._join_chain = join_fake
+S.CHAIN_POLL = 0.02
 with tempfile.TemporaryDirectory() as td:
-    q0, ch, q1, q2 = sh(20, place="Cockpit"), sh(21, place="Cockpit", kind="action", chain={"lines": ["ROW-21"]}), \
-        sh(22, place="Cockpit"), sh(23, place="Cockpit")
-    for b_, a_ in ((ch, q0), (q1, ch), (q2, q1)):
+    # E17c's order: quiet -> quiet -> chain -> chain (from the first chain's joined clip) -> quiet after it
+    q0, q1 = sh(20, place="Cockpit"), sh(21, place="Cockpit")
+    ca, cb = sh(22, place="Cockpit", kind="action", chain={"lines": ["ROW-22a", "ROW-22b"]}), \
+        sh(23, place="Cockpit", kind="action", chain={"lines": ["ROW-23"]})
+    q2 = sh(24, place="Cockpit")
+    for b_, a_ in ((q1, q0), (ca, q1), (cb, ca), (q2, cb)):
         b_["cont_of"] = a_["id"]
     d = Path(td) / q0["id"].rsplit("_s", 1)[0] / q0["id"]
     d.mkdir(parents=True)
     (d / "key.png").write_text("k")
-    h = {}
+    h, order = {}, []
     holds.clear()
     S.shot_dir = lambda book, stem: Path(td)
-    S.ltx(Path(td), "x", [], [q0, ch, q1, q2], log=lambda m: None)
+    S.ltx(Path(td), "x", [], [q0, q1, ca, cb, q2], log=lambda m: None)
     for k_, js in holds:
         h.setdefault(k_, {}).update({j["name"]: j for j in js})
     hj, mo = h.get("hold_jobs.json", {}), h.get("more", {})
-    l1 = [j for n_, j in hj.items() if n_.startswith(ch["id"] + "_x1")]
-    check("force: into the chain - its first line's takes from the clip before's last frame, no key",
-          len(l1) == 3 and all(j["chain_from"] == q0["id"] and j["images"] == [] and j["overlap"] == 1 and
-                               j["chain_frame"] == hj[q0["id"]]["frames"] - 1 for j in l1), list(hj))
-    check("force: out of the chain - the shots after it wait off the queue, then go on it from the joined picks",
-          q1["id"] not in hj and q2["id"] not in hj and mo.get(q1["id"], {}).get("chain_from") == ch["id"] and
-          mo[q1["id"]]["chain_frame"] == S.chain_frames(1) - 1 and mo.get(q2["id"], {}).get("chain_from") == q1["id"]
-          and (Path(td) / "ltx" / "out" / f"{q2['id']}.mp4").exists(), (list(hj), list(mo)))
+    out = Path(td) / "ltx" / "out"
+    check("force: E17c's order renders without the runner dying on a missing source", "crash" not in h,
+          h.get("crash"))
+    check("force: only the stretch's keyed first shot starts the hold; the rest wait off the queue",
+          list(hj) == [q0["id"]], list(hj))
+    la = [j for n_, j in mo.items() if n_.startswith(ca["id"] + "_x1")]
+    lb = [j for n_, j in mo.items() if n_.startswith(cb["id"] + "_x1")]
+    check("force: into a chain - its first line from the clip before's last frame, no key",
+          len(la) == 3 and all(j["chain_from"] == q1["id"] and j["images"] == [] and j["overlap"] == 1 and
+                               j["chain_frame"] == mo[q1["id"]]["frames"] - 1 for j in la), list(mo))
+    check("force: chain into chain - from the first chain's joined picks",
+          len(lb) == 3 and all(j["chain_from"] == ca["id"] and j["chain_frame"] == S.chain_frames(2) - 1 for j in lb))
+    check("force: out of the chain - the next shot from the joined picks, rendered",
+          mo.get(q2["id"], {}).get("chain_from") == cb["id"] and mo[q2["id"]]["chain_frame"] == S.chain_frames(1) - 1
+          and (out / f"{q2['id']}.mp4").exists() and (out / f"{cb['id']}.mp4").exists())
 S.STRETCH_FORCE = False
 
 src = (HERE / "shot_flow.py").read_text()
