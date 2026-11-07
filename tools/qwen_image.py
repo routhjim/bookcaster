@@ -290,6 +290,12 @@ def load_drawer(device: str, processor, dit_q: str = "bf16"):
     tr.to(device).eval()
     vae = AutoencoderKLQwenImage21.from_pretrained(MODEL / "vae", torch_dtype=torch.bfloat16).to(device).eval()
     # Tiled: with MIOpen off (as illustrate.py runs) a conv falls back to im2col, which asked 6.4 GiB at
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        import qwen_fuse
+        qwen_fuse.install_vae(vae.decoder, log)
+    except ImportError as exc:
+        log(f"qwen_fuse unavailable ({exc})")
     # 1536x864; with MIOpen on, each new conv shape cost ~10 min of tuning and the decode peaked at 13.6 GiB.
     # Tiles of VAE_TILE px (default 512, stride 3/4): ~1.6 s and ~3 GiB, no tuning (10-19).
     tile = int(os.environ.get("QWEN_IMAGE_VAE_TILE", "512"))
@@ -560,6 +566,12 @@ class Drawer:
         self.fa = use_fa_amd()
         self.processor = Qwen3VLProcessor.from_pretrained(MODEL / "processor")
         self.enc = load_encoder(device)
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))      # python -I leaves the script's folder off the path
+            import qwen_fuse
+            qwen_fuse.install(log)
+        except ImportError as exc:           # optional speed-up (no Triton in this venv)
+            log(f"qwen_fuse unavailable ({exc})")
         self.t_enc = time.time() - t
         if resident:
             self.start_drawing("int8" if DIT_Q == "auto" else DIT_Q)
