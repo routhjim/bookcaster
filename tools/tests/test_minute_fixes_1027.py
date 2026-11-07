@@ -19,7 +19,7 @@ f = S._faults({"shots": [{"who": [], "picture": "p", "dur": 3.0, "action": "He u
 check("one beat in 3 s is fine", not any("actions in" in x for x in f), f)
 check("a one-person talk picture is a close-up", "close-up" in S.TALK_PICTURE and "no one else" in S.TALK_PICTURE)
 check("one two-shot template (the seated variant broke the lip sync, 10-27)", not hasattr(S, "TALK_TWO_HELD")
-      and "close to the viewer" in S.TALK_TWO)
+      and "close to the viewer" in S.TALK_LEAD)
 cx = fakebook.book({"Doctor Watson": "a man of about 35, wearing a tweed jacket"}, loras="all")
 q, _ = S._key_questions(cx, {"id": "talk-000964_s0", "who": ["Doctor Watson"], "kind": "talk", "picture": "", "framing": "close"})
 check("a one-person talk key is asked whether it is a close-up", "close" in q, q)
@@ -98,10 +98,11 @@ for pz, w in (("lie", "lying down"), ("kneel", "kneeling"), ("sit", "seated"), (
                        "framing": "close", "place": "Baker Street Bedroom", "pose_held": {"Doctor Watson": pz},
                        "picture": S.TALK_PICTURE.format(who="Doctor Watson")})
     check(f"10-28: a {pz} close-up says '{w}' outright", f"alone, {w}:" in k3, k3[:120])
-t2 = S.TALK_TWO.format(left="Helen Stoner", right="Sherlock Holmes", who="Sherlock Holmes", listener="Helen Stoner")
+t2 = S.TALK_LEAD.format(held="Sherlock Holmes", where="on the right, nearest the viewer", who="Sherlock Holmes",
+                       rest="Helen Stoner, on the left, further back, head turned to look at Sherlock Holmes")
 check("10-28: a two-shot cheats the speaker out to the viewer; the listener looks at the speaker",
-      "Sherlock Holmes angled toward Helen Stoner and turned three-quarters to the viewer" in t2 and "Helen Stoner in profile, head turned to look at Sherlock Holmes"
-      in t2 and "facing each other" not in t2 and "close to the viewer" in t2, t2)
+      "turned three-quarters to the viewer" in t2 and "Helen Stoner, on the left, further back, head turned to look at "
+      "Sherlock Holmes" in t2 and "facing each other" not in t2 and "close to the viewer" in t2, t2)
 src_ = Path(S.__file__).read_text()
 tp = src_[src_.index("def _talk_prompt"):src_.index("def _key_questions")]
 check("10-28: the LTX talk words name no posture (it pulled a close-up back to the waist)",

@@ -84,17 +84,20 @@ g = [s for e, s in shots if s["kind"] == "talk" and len(s["who"]) == 3]
 check("a 'group' talk line is a three-shot of everyone in the scene", bool(g), [(s["kind"], s["who"]) for _, s in shots])
 if g:
     s = g[0]
-    check("in the scene's left-to-right order (the side map), the speaker cheated out, the listener toward him",
-          s["who"].index("Helen Stoner") < s["who"].index("Sherlock Holmes") and "Sherlock Holmes turned three-quarters"
-          in s["picture"] and "Julia Stoner in profile, head turned to Sherlock Holmes" in s["picture"], (s["who"], s["picture"]))
-    check("its speaker zone is his own layout box", S._speaker_box(s, "Sherlock Holmes") ==
-          S.group_layout(3)[s["who"].index("Sherlock Holmes")][0])
+    check("in the scene's left-to-right order (the side map), led by the speaker (E22), the others looking at him",
+          s["who"].index("Helen Stoner") < s["who"].index("Sherlock Holmes") and s["picture"].startswith(
+              "Sherlock Holmes stands by the fire, on the right, nearest the viewer") and "turned three-quarters to "
+          "the viewer" in s["picture"] and "Julia Stoner, on the left, further back, head turned to look at Sherlock "
+          "Holmes" in s["picture"], (s["who"], s["picture"]))
+    check("its speaker zone is his own layout box, the largest", S._speaker_box(s, "Sherlock Holmes") ==
+          S.talk_layout(s)[s["who"].index("Sherlock Holmes")][0] == max((b for b, _ in S.talk_layout(s)),
+                                                                        key=lambda b: (b[2] - b[0]) * (b[3] - b[1])))
 o = [s for e, s in shots if s["kind"] == "talk" and s["who"] and "Helen Stoner" in s["who"] and len(s["who"]) == 2]
 check("the director's over-the-shoulder is kept for a pair's first line (Helen in her chair, Holmes by the fire: apart)",
       bool(o) and o[0].get("ots") == "Sherlock Holmes", [(s.get("who"), s.get("ots")) for s in o])
 check("the rule puts the one spoken to in the picture", "THE ONE SPOKEN TO IS IN THE PICTURE" in S.SHOT_RULES)
 check("every talk key asks for the mouth open mid-word (closed-lip keys froze the lips)",
-      all(S.MOUTH_OPEN in t for t in (S.TALK_PICTURE, S.TALK_TWO, S.TALK_GROUP, S.TALK_OTS)))
+      all(S.MOUTH_OPEN in t for t in (S.TALK_PICTURE, S.TALK_LEAD, S.TALK_OTS)))
 check("the director simplifies an action to fit its shot, and names the screen side of every turn",
       "SIMPLIFY the action to fit" in S.SHOT_RULES and "SCREEN DIRECTION" in S.SHOT_RULES)
 fl = S._faults({"shots": [{"picture": "x", "action": "He turns to the desk. He unlocks it. He takes out a book.",
