@@ -1745,17 +1745,16 @@ def told_keys(shots: list, actions: list, tellers: list, cast: list, crs: list, 
     return n
 
 
-# 11-06 (CHANGES 79, loop E17-P1; user: "chain all the shots together ... until the shot legitimately changes"): a
-# STRETCH of consecutive shots of one place plays as one continuous camera. Code cuts on a change of place (a told
-# place included) and at an action chain (its own key); every other adjacent pair gets one short ask on both rows and
-# the narration over them. "continue" -> the second shot has no key, its clip starts from the first's last frame
-# (ltx: chain_from, overlap 1, no seam re-renders), with its own action line and narration slot; an unclear answer
-# cuts (today's behaviour). BOOKCASTER_STRETCH=0 turns it off.
-STRETCH = os.environ.get("BOOKCASTER_STRETCH", "1") != "0"
-# E17 force arm (user: "why can't we just chain shots together?"): no pair ask - within one place every shot continues
-# from the clip before, into an action chain (its first line from that last frame, not its key) and out of it (from
-# the joined picks' last frame). Only a place change draws a key
-STRETCH_FORCE = os.environ.get("BOOKCASTER_STRETCH_FORCE", "0") == "1"
+# 11-06 (CHANGES 79, loop E17; user: "chain all the shots together ... until the shot legitimately changes", "why
+# can't we just chain shots together?"; after E17c: "The continuous is better"): a STRETCH of consecutive shots of one
+# place plays as one continuous camera. By default (STRETCH_FORCE) every shot of a place continues from the clip before
+# - into an action chain (its first line from that last frame, not its key) and out of it (from the joined picks' last
+# frame); only a place change (a told place included) draws a key. A continued shot has no key; its clip starts from
+# its source's last frame (ltx: chain_from, overlap 1, no seam re-renders), with its own action line and narration
+# slot. BOOKCASTER_STRETCH_FORCE=0 restores a key per shot. (BOOKCASTER_STRETCH=1 with FORCE=0: the E17-P1 variant,
+# one continue/cut ask per adjacent pair, no chaining next to an action chain; an unclear answer cuts.)
+STRETCH_FORCE = os.environ.get("BOOKCASTER_STRETCH_FORCE", "1") != "0"
+STRETCH = os.environ.get("BOOKCASTER_STRETCH", "1" if STRETCH_FORCE else "0") != "0"
 PAIR_ASK = ("Two shots of a film, one right after the other, at the same place.\nShot 1: {a}\nShot 2: {b}\n"
             "The narration heard over them: {words}\n"
             "Is shot 2 the same moment seen the same way, so its video can continue from the last picture of shot 1; "
@@ -4915,7 +4914,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
                 c_ += float(s["dur"])
                 if not render or render[0] - 1e-6 <= float(e["t"]) < render[1]:    # (only the window rendered)
                     win.append(s)
-        animate.igpu("strata", log)
+        if not STRETCH_FORCE:                       # (forced: no ask)
+            animate.igpu("strata", log)
         mark_stretches(win, lambda a, b: " ".join(z for x0, x1, _, _, z in sents if x1 > t_of[a["id"]][0] + 0.05
                                                   and x0 < t_of[b["id"]][1] - 0.05),
                        lambda m: _converse(BC.LLM_URL, BC.LLM_MODEL, m, max_tokens=1500)[0],

@@ -13,6 +13,7 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 import shot_flow as S
 fails = []
+S.STRETCH_FORCE = False                 # (the pair-ask variant first; the default, forced, below)
 
 
 def check(name, ok, got=None):
@@ -184,7 +185,7 @@ with tempfile.TemporaryDirectory() as td:
     check("off: faulted clips retaken as today", any("_t2" in n_ for n_ in h.get("more", {})), list(h))
     S.STRETCH = True
 
-# ---- force arm (BOOKCASTER_STRETCH_FORCE=1): every shot of a place continues, into and out of an action chain ----
+# ---- the default (forced): every shot of a place continues, into and out of an action chain ----
 S.STRETCH_FORCE = True
 calls.clear()
 rows = [sh(0), sh(1, kind="action", chain={"lines": ["a"]}), sh(2), sh(3, place="Cockpit"), sh(4, place="Cockpit")]
@@ -269,6 +270,16 @@ with tempfile.TemporaryDirectory() as td:
           mo.get(q2["id"], {}).get("chain_from") == cb["id"] and mo[q2["id"]]["chain_frame"] == S.chain_frames(1) - 1
           and (out / f"{q2['id']}.mp4").exists() and (out / f"{cb['id']}.mp4").exists())
 S.STRETCH_FORCE = False
+
+# ---- the switches: forced chaining is the default; BOOKCASTER_STRETCH_FORCE=0 restores a key per shot -------------
+import os, subprocess as SP
+flags = "import shot_flow as S; print(S.STRETCH, S.STRETCH_FORCE)"
+env0 = {k: v for k, v in os.environ.items() if not k.startswith("BOOKCASTER_STRETCH")}
+got = [SP.run([sys.executable, "-c", flags], cwd=str(HERE), env=dict(env0, **e), capture_output=True,
+              text=True).stdout.split() for e in ({}, {"BOOKCASTER_STRETCH_FORCE": "0"},
+                                                   {"BOOKCASTER_STRETCH_FORCE": "0", "BOOKCASTER_STRETCH": "1"})]
+check("default: forced on; FORCE=0: off (main); FORCE=0 + STRETCH=1: the pair-ask variant",
+      got == [["True", "True"], ["False", "False"], ["True", "False"]], got)
 
 src = (HERE / "shot_flow.py").read_text()
 check("wired: the pair asks before the language model stops, keys skip continued shots",
