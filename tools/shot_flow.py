@@ -4469,7 +4469,7 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
 
 
 def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None = None, quiet: bool = False,
-                 jobs_file: str = "talk_jobs.json") -> None:
+                 jobs_file: str = "talk_stitch.json") -> None:
     """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
     line was stitched all night, and yesterday's joins of other words were assembled). A join older than any of its
     pieces is dropped and made again; one made from tonight's pieces stays (lines are joined as their pieces land,
@@ -4491,8 +4491,10 @@ def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None
     if not todo:
         return
     lines = ",".join(sorted({pieces[n][0]["line"] for n in todo}))
-    if jobs_file != "talk_jobs.json":   # a retake's pieces (not in the render's job list): their own list
-        (L / jobs_file).write_text(json.dumps([j for n in todo for j in pieces[n]], indent=1))
+    # 11-07: the pieces always go in their own list - a chained talk shot's pieces are queued late (--more, #148),
+    # so they are in neither talk_jobs.json nor hold_jobs.json; reading those, the stitcher found no lines and the
+    # shot's key was held as a still (4 talk shots in knight_forged_v3, 1 in Acts ch.3)
+    (L / jobs_file).write_text(json.dumps([j for n in todo for j in pieces[n]], indent=1))
     r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), jobs_file, "out", lines],
                        cwd=str(L), capture_output=True, text=True)
     names = todo
