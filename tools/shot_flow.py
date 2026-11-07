@@ -1745,6 +1745,75 @@ def told_keys(shots: list, actions: list, tellers: list, cast: list, crs: list, 
     return n
 
 
+# 11-06 (CHANGES 79, loop E17-P1; user: "chain all the shots together ... until the shot legitimately changes"): a
+# STRETCH of consecutive shots of one place plays as one continuous camera. Code cuts on a change of place (a told
+# place included) and at an action chain (its own key); every other adjacent pair gets one short ask on both rows and
+# the narration over them. "continue" -> the second shot has no key, its clip starts from the first's last frame
+# (ltx: chain_from, overlap 1, no seam re-renders), with its own action line and narration slot; an unclear answer
+# cuts (today's behaviour). BOOKCASTER_STRETCH=0 turns it off.
+STRETCH = os.environ.get("BOOKCASTER_STRETCH", "1") != "0"
+PAIR_ASK = ("Two shots of a film, one right after the other, at the same place.\nShot 1: {a}\nShot 2: {b}\n"
+            "The narration heard over them: {words}\n"
+            "Is shot 2 the same moment seen the same way, so its video can continue from the last picture of shot 1; "
+            "or does the shot legitimately change: someone comes or goes, the camera moves to something else, or a "
+            "new picture is needed? Reply continue or cut.")
+PAIR_FIELDS = ("kind", "framing", "who", "people", "pose", "setting", "picture", "action")
+
+
+def _pair_row(s: dict) -> str:
+    return json.dumps({k: s[k] for k in PAIR_FIELDS if s.get(k)}, ensure_ascii=False)
+
+
+def _says_continue(reply) -> bool:
+    """The reply's last 'continue' or 'cut' (the question's own words dropped); neither -> cut."""
+    m = re.findall(r"\b(continue|cut)\b", re.sub(r"continue or cut", "", str(reply or ""), flags=re.I), re.I)
+    return bool(m) and m[-1].lower() == "continue"
+
+
+def mark_stretches(shots: list, words, ask, cache: Path, log=print) -> int:
+    """Each adjacent pair of `shots` (in time order) not cut by code: one pair ask (4 at a time, cached in `cache` by
+    its text); 'continue' sets the second shot's "cont_of" to the first's id. `words(a, b)` -> the narration over
+    both. -> how many shots continue."""
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    pairs = []
+    for a, b in zip(shots, shots[1:]):
+        b.pop("cont_of", None)
+        if a.get("chain") or b.get("chain") or RG.place_key(a.get("place")) != RG.place_key(b.get("place")):
+            continue
+        msg = PAIR_ASK.replace("{a}", _pair_row(a)).replace("{b}", _pair_row(b)).replace(
+            "{words}", words(a, b) or "(none)")
+        pairs.append((a, b, msg, MF._h(msg)))
+    new = list({p[3]: p for p in pairs if p[3] not in got}.values())
+    if new:
+        def one(p):
+            try:
+                return ask([{"role": "user", "content": p[2]}])
+            except Exception as e:      # noqa: BLE001  (a failed ask cuts, and is asked again next run)
+                log(f"  stretch ask {p[1]['id']}: {e!r}")
+                return None
+        with ThreadPoolExecutor(4) as ex:
+            for p, r in zip(new, ex.map(one, new)):
+                if r is not None:
+                    got[p[3]] = {"a": p[0]["id"], "b": p[1]["id"], "reply": r, "continue": _says_continue(r)}
+        cache.write_text(json.dumps(got, indent=1))
+    n = 0
+    for a, b, _, k in pairs:
+        if (got.get(k) or {}).get("continue"):
+            b["cont_of"] = a["id"]
+            n += 1
+    log(f"stretches: {n} of {len(shots)} shots continue from the shot before ({len(pairs)} asked, "
+        f"{len(shots) - 1 - n if shots else 0} cuts)")
+    return n
+
+
+def stretch_links(shots: list) -> dict:
+    """{shot id: the shot it continues from} - only where that shot is the one right before it in `shots` (a render
+    window or a retake list that leaves the source out makes it a cut, keyed as today)."""
+    if not STRETCH:
+        return {}
+    return {b["id"]: a for a, b in zip(shots, shots[1:]) if b.get("cont_of") == a["id"]}
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -3380,13 +3449,34 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     for k, v in sorted(pitch.items()):
         log(f"voice {k}: pitch {v and round(v)} Hz -> LTX hears {drive_af(v).split(',')[0]}")
     enc_dev, enc_dist, two, quiet, talk, chains = [], [], [], [], [], []
+    # CHANGES 79: a stretch's continued shot starts from its source's last frame (one take, no retake: a re-roll of
+    # shot k would leave k+1 on a picture that is gone). A stretch with a talk or action shot is rendered whole in the
+    # one action/talk hold (its quiet shots on the two-stage route there): the chain wait is inside one hold
+    links = stretch_links(shots)
+    members = set(links) | {a["id"] for a in links.values()}
+    main_, run_ = set(), []
+    for s in shots + [{}]:
+        if s.get("id") in links:
+            run_.append(s)
+            continue
+        if len(run_) > 1 and any(x["kind"] != "quiet" for x in run_):
+            main_ |= {x["id"] for x in run_}
+        run_ = [s] if s else []
+    tail = {}                                   # shot id -> (its last job's name, its frames)
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
         key = sd / mid / s["id"] / "key.png"
-        if not key.exists():
+        src = links.get(s["id"])
+        if src and src["id"] not in tail:
+            log(f"{s['id']}: its stretch source {src['id']} made no clip")
+            continue
+        if not src and not key.exists():
             log(f"{s['id']}: no key")
             continue
         img = [{"path": str(key), "frame": 0, "strength": 1.0}]
+        cont = dict(chain_from=tail[src["id"]][0], chain_frame=tail[src["id"]][1] - 1, overlap=1, seam_tries=0,
+                    images=[]) if src else {}
+        cont.update({"stretch": 1, "priority": 1} if s["id"] in members else {})
         n = _frames(min(s["dur"], SHOT_MAX + 0.5))
         if s["kind"] == "talk":
             e = dict(byid[mid])
@@ -3427,6 +3517,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
+                    talk[-1].update({k_: v_ for k_, v_ in cont.items() if k_ in ("stretch", "priority")})
+                else:
+                    talk[-1].update(cont)
+            tail[s["id"]] = (talk[-1]["name"], talk[-1]["frames"])
         elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
             if not (retake and s["id"] not in retake):
                 _chain_state(L, s, key)
@@ -3445,7 +3539,19 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img, "held": hd,
-                            "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or [])})
+                            "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or []),
+                            **cont})
+            tail[s["id"]] = (s["id"], n)
+        elif s["id"] in main_:              # a quiet shot of a stretch rendered in the action/talk hold: two-stage
+            p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
+                            _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
+            emb = f"qx_{s['id']}_{MF._h(p_)}"
+            enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
+            two.append({"name": s["id"], "emb": emb, "prompt": p_, "width": W, "height": H, "fps": FPS,
+                        "seed": QUIET_SEED + shot_seed(s["id"]), "frames": n, "line": s["id"], "neg_extra": "",
+                        "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER, "images": img,
+                        "held": None, "people": None if s.get("crowd") else len(s.get("who") or []), **cont})
+            tail[s["id"]] = (s["id"], n)
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
@@ -3460,8 +3566,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
-                              "people": None if s.get("crowd") else len(s.get("who") or [])})
-    for j in talk + two + quiet:            # a clip from another key or other words is drawn again
+                              "people": None if s.get("crowd") else len(s.get("who") or []), **cont})
+            tail[s["id"]] = (s["id"], n)
+    pos = {s["id"]: i for i, s in enumerate(shots)}     # (shot order: a stretch's source is checked before its next)
+    for j in sorted(talk + two + quiet, key=lambda j: pos.get(re.sub(r"(_t\d+)?(_c\d+)?$", "", j["name"]), 0)):
+        # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
         key = Path(j["images"][0]["path"]) if j["images"] else src
@@ -3703,9 +3812,11 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                 if k == 1 and ((out_ / f"{n}.judged").exists() or f"{n}_t2" in names):
                     continue
                 fa = MF.fight_clip_ok(out_ / f"{t}.mp4", j.get("people"))
-                if not fa:
+                if not fa or j.get("stretch"):     # (CHANGES 79: a stretch's shot - recorded, never retaken)
                     if k == 1:
                         (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
+                    if fa:
+                        log(f"{n}: take 1: {fa}: recorded (a stretch's shot: no retake)")
                     continue
                 nx = _next_take(j, n, k + 1, fa)
                 if not nx:
@@ -4008,6 +4119,8 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the judge's iGPU
     out_ = shot_dir(book, stem) / "ltx" / "out"
     again = set()
+    links = stretch_links(shots)
+    members = set(links) | {a["id"] for a in links.values()}
     for s in shots:
         if s["kind"] not in ("action", "quiet") or s.get("chain"):     # (a chain's clip is its joined picks)
             continue
@@ -4018,7 +4131,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)) if x.exists()]
         fs = [MF.fight_clip_ok(x, n_) for x in takes]
         if len(takes) == 1:
-            if fs[0]:
+            if fs[0] and s["id"] not in members:
                 log(f"{s['id']}: {fs[0]}: taken once more")
                 again.add(s["id"])
             else:
@@ -4259,7 +4372,7 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
         js = sorted(shots[n], key=lambda j: (j.get("chunk") or [0])[0])
         c = _talk_score(L, n if k == 1 else f"{n}_t{k}", len(js))
-        if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
+        if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or js[0].get("stretch") or \
                 (k == 1 and (L / "out" / f"{n}.synced").exists()):
             return False
         tn = f"{n}_t{k + 1}"
@@ -4744,6 +4857,21 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
                  scene=sh.get("scene", ""),
                  crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "")   # the set sheet's crowd only
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
+    if STRETCH:                                     # (CHANGES 79: the pair asks while the language model is up)
+        from tts_reader import bookcaster as BC
+        t_of, sents, win = {}, sentences(load_timeline(book, stem)), []
+        for e in es:
+            c_ = float(e["t"])
+            for s in by.get(e["id"]) or []:
+                t_of[s["id"]] = (c_, c_ + float(s["dur"]))
+                c_ += float(s["dur"])
+                if not render or render[0] - 1e-6 <= float(e["t"]) < render[1]:    # (only the window rendered)
+                    win.append(s)
+        animate.igpu("strata", log)
+        mark_stretches(win, lambda a, b: " ".join(z for x0, x1, _, _, z in sents if x1 > t_of[a["id"]][0] + 0.05
+                                                  and x0 < t_of[b["id"]][1] - 0.05),
+                       lambda m: _converse(BC.LLM_URL, BC.LLM_MODEL, m, max_tokens=1500)[0],
+                       shot_dir(book, stem) / "passages" / "stretch.json", log)
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
     # before: a place to describe restarted the model place_sheets had just stopped)
     if loras:
@@ -4764,7 +4892,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
-    for s in keys_judged(book, stem, shots, log):
+    cont = stretch_links(shots)          # (CHANGES 79: a continued shot has no key; its clip starts from the last frame)
+    for s in keys_judged(book, stem, [x for x in shots if x["id"] not in cont], log):
         log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
     ks = sheet(book, stem, shots, op.with_name(op.stem + "_keys.jpg"))
     log(f"key sheet: {ks}")
