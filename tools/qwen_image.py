@@ -68,6 +68,7 @@ CTRL_Q = os.environ.get("QWEN_IMAGE_CTRL", "int8")     # bf16 | int8: the contro
 REF_RES = int(os.environ.get("QWEN_IMAGE_REF_RES", "640"))   # refs are shrunk to this many pixels squared
 MAX_REFS = int(os.environ.get("QWEN_IMAGE_MAX_REFS", "10"))  # the model's documented limit
 KV_CACHE = os.environ.get("QWEN_IMAGE_KV", "1") == "1"       # cache the prompt+refs keys after step 1
+KV_KEEP_GB = float(os.environ.get("QWEN_IMAGE_KV_KEEP_GB", "1.5"))  # a keyframe's next seed reuses a cache up to this size (0 = off)
 FA_AMD = Path(os.environ.get("QWEN_IMAGE_FA", HOME / "src" / "attn-lab")).expanduser()
 SIGMAS = [1.0, 0.75, 0.5, 0.25]                        # the Lightning LoRA's 4-step training schedule
 
@@ -75,6 +76,24 @@ SIGMAS = [1.0, 0.75, 0.5, 0.25]                        # the Lightning LoRA's 4-
 def log(msg: str) -> None:
     sys.stderr.write(msg.rstrip() + "\n")
     sys.stderr.flush()
+
+
+def igpu_first_ccd() -> None:
+    """Keep the drawer's host threads on the first CCD when it runs on the iGPU. ROCm's dispatch and signal threads spin
+    for the whole draw and the iGPU sits at its 95 C limit within ~20 s, so where they run sets its clock. Measured (E19,
+    11-07, sustained GEMM, 2 rounds, thread pinned): cpu 0/3/7/23 19.5 TFLOPS at 1.12 GHz, cpu 8/10/15 11.9 at 0.69 GHz,
+    the same both rounds. QWEN_IMAGE_CPUS="0-7,16-23" chooses other CPUs, "" leaves it to the scheduler."""
+    spec = os.environ.get("QWEN_IMAGE_CPUS")
+    if spec == "" or not torch.cuda.is_available() or "8060S" not in torch.cuda.get_device_name(0):
+        return
+    try:
+        spec = spec or Path("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_list").read_text().strip()
+        cpus = {c for part in spec.split(",") for c in (lambda r: range(int(r[0]), int(r[-1]) + 1))(part.split("-"))}
+        for tid in os.listdir("/proc/self/task"):        # also the runtime's threads, started by the first CUDA call
+            os.sched_setaffinity(int(tid), cpus)
+        log(f"iGPU drawer on CPUs {spec}")
+    except OSError as exc:
+        log(f"CPU affinity not set: {exc}")
 
 
 # --- weight-only quantized layers -----------------------------------------------------------------
@@ -271,6 +290,12 @@ def load_drawer(device: str, processor, dit_q: str = "bf16"):
         raise RuntimeError(f"{len(lora)} LoRA weights matched nothing, e.g. {list(lora)[:2]}")
     tr.to(device).eval()
     vae = AutoencoderKLQwenImage21.from_pretrained(MODEL / "vae", torch_dtype=torch.bfloat16).to(device).eval()
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        import qwen_fuse
+        qwen_fuse.install_vae(vae.decoder, log)
+    except ImportError as exc:
+        log(f"qwen_fuse unavailable ({exc})")
     # Tiled: with MIOpen off (as illustrate.py runs) a conv falls back to im2col, which asked 6.4 GiB at
     # 1536x864; with MIOpen on, each new conv shape cost ~10 min of tuning and the decode peaked at 13.6 GiB.
     # Tiles of VAE_TILE px (default 512, stride 3/4): ~1.6 s and ~3 GiB, no tuning (10-19).
@@ -537,9 +562,16 @@ class Drawer:
         self.device, self.ctl, self.pipe = device, None, None
         self.cache: dict = {}                # best-of-N: a keyframe's candidates share prompt and refs
         self.ref_cache: dict = {}
+        self.kv = None                       # (key, cache): the last draw's prompt+refs K/V for the same key's next seed
         self.cache_max = 8 if resident else 10**6
         t = time.time()
         self.fa = use_fa_amd()
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))      # python -I leaves the script's folder off the path
+            import qwen_fuse
+            qwen_fuse.install(log)
+        except ImportError as exc:           # optional speed-up (no Triton in this venv)
+            log(f"qwen_fuse unavailable ({exc})")
         self.processor = Qwen3VLProcessor.from_pretrained(MODEL / "processor")
         self.enc = load_encoder(device)
         self.t_enc = time.time() - t
@@ -703,9 +735,18 @@ class Drawer:
                                        f"{lat.shape[1]} ({w}x{h})")
             pad = torch.cat([pad.to(dev), pad.new_ones(1, lat.shape[1] // 4).to(dev)], dim=1)
             prefix = int(emb.shape[1] - pad[0, :emb.shape[1]].sum()) + 4 * int(pad[0, :emb.shape[1]].sum())
-            use_kv = KV_CACHE and kv and self._kv_fits(prefix * (3 if ctl_on else 2) // 2)  # + 16 control blocks' K/V
+            # The prefix never sees the target or the timestep (block-causal, t=0 modulation), so a keyframe's other seeds
+            # (a third of the iGPU's draws in E18) start from the last draw's K/V; a control branch writes into the prefix
+            # rows, so those draws never keep or reuse one (E19).
+            kv_key = None if ctl_on or not kv or prefix * 512 * 1024 > KV_KEEP_GB * 2**30 else (
+                j["prompt"], tuple((r, os.path.getmtime(r)) for r in refs), json.dumps(j.get("loras"), default=str), w, h)
+            reuse = kv_key is not None and self.kv is not None and self.kv[0] == kv_key
+            if not reuse:
+                self.kv = None                   # before _kv_fits: the old one's memory counts as free
+            use_kv = KV_CACHE and kv and (reuse or self._kv_fits(prefix * (3 if ctl_on else 2) // 2))  # + 16 control blocks' K/V
             j["_kv"] = use_kv
-            cache = QwenImage21KVCache(len(tr.transformer_blocks)) if use_kv else None
+            j["_kv_reused"] = reuse and use_kv
+            cache = (self.kv[1] if reuse else QwenImage21KVCache(len(tr.transformer_blocks))) if use_kv else None
             if self.ctl:
                 self.ctl.cache = QwenImage21KVCache(len(Control.LAYERS)) if use_kv and ctl_on else None
             sched.set_begin_index(0)
@@ -728,7 +769,7 @@ class Drawer:
                 x = lat.to(torch.bfloat16)
                 if ref is not None:
                     x = torch.cat([ref, x], dim=1)
-                kv_mode = ("extract" if i == 0 or refresh else "cached") if use_kv else None
+                kv_mode = ("extract" if (i == 0 and not reuse) or refresh else "cached") if use_kv else None
                 refresh = False
                 pred = tr(hidden_states=x, timestep=(t.expand(1) / 1000).to(torch.bfloat16),
                           encoder_hidden_states=emb, encoder_hidden_states_mask=mask, img_shapes=img_shapes,
@@ -739,6 +780,7 @@ class Drawer:
                     torch.cuda.synchronize()
                     steps_out.append(round(time.time() - last, 2))
                     last = time.time()
+            self.kv = (kv_key, cache) if use_kv and kv_key is not None else None
             del cache
             if self.ctl:
                 self.ctl.cache = None
@@ -791,12 +833,13 @@ def run_job(d: Drawer, j: dict) -> dict:
             log(f"{j['id']}: out of memory with the prompt cache: drawing it again without")
             if d.ctl:
                 d.ctl.cache, d.ctl.context, d.ctl.extra = None, None, []
+            d.kv = None
             gc.collect()
             torch.cuda.empty_cache()
             steps = []
             d.draw(j, steps, kv=False)
         log(f"{j['id']}: {time.time() - t:.1f} s (steps+decode {steps}, refs {j.get('_refs', 0)}, "
-            f"kv {j.get('_kv')}, control {bool(j.get('control'))}, sigma0 {j.get('_sigma0', 1.0)}"
+            f"kv {'reused' if j.get('_kv_reused') else j.get('_kv')}, control {bool(j.get('control'))}, sigma0 {j.get('_sigma0', 1.0)}"
             + (f", per-pixel {j['_dd']}" if j.get("_dd") else "") + ")")
     st = {l.split(":")[0]: int(l.split()[1]) for l in open("/proc/self/status") if l.startswith(("VmHWM", "RssAnon"))}
     return {"id": j["id"], "refs": j.get("_refs", 0), "seconds": round(time.time() - t, 1),
@@ -822,6 +865,7 @@ def serve(device: str) -> int:
             print(json.dumps({"id": j.get("id"), "error": f"{type(exc).__name__}: {exc}"[:300]}), flush=True)
             if d.ctl:
                 d.ctl.context = None
+            d.kv = None
             gc.collect()
             torch.cuda.empty_cache()
     return 0
@@ -840,6 +884,7 @@ def main() -> int:
     torch.backends.cudnn.enabled = os.environ.get("ILLUSTRATE_MIOPEN", "0") == "1"
     if os.environ.get("QWEN_IMAGE_BLASLT", "1") == "1":     # hipBLASLt GEMMs (SkyReels: +35% over rocBLAS)
         torch.backends.cuda.preferred_blas_library("cublaslt")
+    igpu_first_ccd()
     if a.serve:
         return serve("cuda")
     if not (a.jobs and a.out):
