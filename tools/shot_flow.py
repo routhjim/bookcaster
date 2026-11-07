@@ -1745,6 +1745,81 @@ def told_keys(shots: list, actions: list, tellers: list, cast: list, crs: list, 
     return n
 
 
+# 11-06 (CHANGES 79, loop E17; user: "chain all the shots together ... until the shot legitimately changes", "why
+# can't we just chain shots together?"; after E17c: "The continuous is better"): a STRETCH of consecutive shots of one
+# place plays as one continuous camera. By default (STRETCH_FORCE) every shot of a place continues from the clip before
+# - into an action chain (its first line from that last frame, not its key) and out of it (from the joined picks' last
+# frame); only a place change (a told place included) draws a key. A continued shot has no key; its clip starts from
+# its source's last frame (ltx: chain_from, overlap 1, no seam re-renders), with its own action line and narration
+# slot. BOOKCASTER_STRETCH_FORCE=0 restores a key per shot. (BOOKCASTER_STRETCH=1 with FORCE=0: the E17-P1 variant,
+# one continue/cut ask per adjacent pair, no chaining next to an action chain; an unclear answer cuts.)
+STRETCH_FORCE = os.environ.get("BOOKCASTER_STRETCH_FORCE", "1") != "0"
+STRETCH = os.environ.get("BOOKCASTER_STRETCH", "1" if STRETCH_FORCE else "0") != "0"
+PAIR_ASK = ("Two shots of a film, one right after the other, at the same place.\nShot 1: {a}\nShot 2: {b}\n"
+            "The narration heard over them: {words}\n"
+            "Is shot 2 the same moment seen the same way, so its video can continue from the last picture of shot 1; "
+            "or does the shot legitimately change: someone comes or goes, the camera moves to something else, or a "
+            "new picture is needed? Reply continue or cut.")
+PAIR_FIELDS = ("kind", "framing", "who", "people", "pose", "setting", "picture", "action")
+
+
+def _pair_row(s: dict) -> str:
+    return json.dumps({k: s[k] for k in PAIR_FIELDS if s.get(k)}, ensure_ascii=False)
+
+
+def _says_continue(reply) -> bool:
+    """The reply's last 'continue' or 'cut' (the question's own words dropped); neither -> cut."""
+    m = re.findall(r"\b(continue|cut)\b", re.sub(r"continue or cut", "", str(reply or ""), flags=re.I), re.I)
+    return bool(m) and m[-1].lower() == "continue"
+
+
+def mark_stretches(shots: list, words, ask, cache: Path, log=print) -> int:
+    """Each adjacent pair of `shots` (in time order) not cut by code: one pair ask (4 at a time, cached in `cache` by
+    its text); 'continue' sets the second shot's "cont_of" to the first's id. `words(a, b)` -> the narration over
+    both. -> how many shots continue."""
+    got = json.loads(cache.read_text()) if cache.exists() else {}
+    pairs = []
+    for a, b in zip(shots, shots[1:]):
+        b.pop("cont_of", None)
+        if STRETCH_FORCE and RG.place_key(a.get("place")) == RG.place_key(b.get("place")):
+            b["cont_of"] = a["id"]
+            continue
+        if a.get("chain") or b.get("chain") or RG.place_key(a.get("place")) != RG.place_key(b.get("place")):
+            continue
+        msg = PAIR_ASK.replace("{a}", _pair_row(a)).replace("{b}", _pair_row(b)).replace(
+            "{words}", words(a, b) or "(none)")
+        pairs.append((a, b, msg, MF._h(msg)))
+    new = list({p[3]: p for p in pairs if p[3] not in got}.values())
+    if new:
+        def one(p):
+            try:
+                return ask([{"role": "user", "content": p[2]}])
+            except Exception as e:      # noqa: BLE001  (a failed ask cuts, and is asked again next run)
+                log(f"  stretch ask {p[1]['id']}: {e!r}")
+                return None
+        with ThreadPoolExecutor(4) as ex:
+            for p, r in zip(new, ex.map(one, new)):
+                if r is not None:
+                    got[p[3]] = {"a": p[0]["id"], "b": p[1]["id"], "reply": r, "continue": _says_continue(r)}
+        cache.write_text(json.dumps(got, indent=1))
+    n = sum(bool(b.get("cont_of")) for b in shots)
+    for a, b, _, k in pairs:
+        if not STRETCH_FORCE and (got.get(k) or {}).get("continue"):
+            b["cont_of"] = a["id"]
+            n += 1
+    log(f"stretches: {n} of {len(shots)} shots continue from the shot before ({len(pairs)} asked, "
+        f"{len(shots) - 1 - n if shots else 0} cuts)")
+    return n
+
+
+def stretch_links(shots: list) -> dict:
+    """{shot id: the shot it continues from} - only where that shot is the one right before it in `shots` (a render
+    window or a retake list that leaves the source out makes it a cut, keyed as today)."""
+    if not STRETCH:
+        return {}
+    return {b["id"]: a for a, b in zip(shots, shots[1:]) if b.get("cont_of") == a["id"]}
+
+
 def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     """How to mend a shot's length, in the director's own terms (start times). 11-01: "shot 3 lasts 6.9 s" left it to
     work out which start to move, and length was 12 of the 26 faults still there after three tries."""
@@ -3380,13 +3455,34 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     for k, v in sorted(pitch.items()):
         log(f"voice {k}: pitch {v and round(v)} Hz -> LTX hears {drive_af(v).split(',')[0]}")
     enc_dev, enc_dist, two, quiet, talk, chains = [], [], [], [], [], []
+    # CHANGES 79: a stretch's continued shot starts from its source's last frame (one take, no retake: a re-roll of
+    # shot k would leave k+1 on a picture that is gone). A stretch with a talk or action shot is rendered whole in the
+    # one action/talk hold (its quiet shots on the two-stage route there): the chain wait is inside one hold
+    links = stretch_links(shots)
+    members = set(links) | {a["id"] for a in links.values()}
+    main_, run_ = set(), []
+    for s in shots + [{}]:
+        if s.get("id") in links:
+            run_.append(s)
+            continue
+        if len(run_) > 1 and any(x["kind"] != "quiet" for x in run_):
+            main_ |= {x["id"] for x in run_}
+        run_ = [s] if s else []
+    tail = {}                                   # shot id -> (its last job's name, its frames)
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
         key = sd / mid / s["id"] / "key.png"
-        if not key.exists():
+        src = links.get(s["id"])
+        if src and src["id"] not in tail:
+            log(f"{s['id']}: its stretch source {src['id']} made no clip")
+            continue
+        if not src and not key.exists():
             log(f"{s['id']}: no key")
             continue
         img = [{"path": str(key), "frame": 0, "strength": 1.0}]
+        cont = dict(chain_from=tail[src["id"]][0], chain_frame=tail[src["id"]][1] - 1, overlap=1, seam_tries=0,
+                    images=[]) if src else {}
+        cont.update({"stretch": 1, "priority": 1} if s["id"] in members else {})
         n = _frames(min(s["dur"], SHOT_MAX + 0.5))
         if s["kind"] == "talk":
             e = dict(byid[mid])
@@ -3427,10 +3523,18 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
+                    talk[-1].update({k_: v_ for k_, v_ in cont.items() if k_ in ("stretch", "priority")})
+                else:
+                    talk[-1].update(cont)
+            tail[s["id"]] = (talk[-1]["name"], talk[-1]["frames"])
         elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
             if not (retake and s["id"] not in retake):
-                _chain_state(L, s, key)
+                st = _chain_state(L, s, key)
+                if (src and tail[src["id"]][0]) != (st.get("from") or [None])[0]:     # (force arm: from the clip
+                    st["from"] = list(tail[src["id"]]) if src else None                # before, not its key)
+                    _chain_save(L, st)
                 chains.append(s["id"])
+                tail[s["id"]] = (s["id"], chain_frames(len(st["lines"])))   # (the joined picks: after it lands)
         elif s["kind"] == "action":
             act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) + STILL_CROWD * bool(s.get("crowd"))
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
@@ -3445,7 +3549,19 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img, "held": hd,
-                            "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or [])})
+                            "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or []),
+                            **cont})
+            tail[s["id"]] = (s["id"], n)
+        elif s["id"] in main_:              # a quiet shot of a stretch rendered in the action/talk hold: two-stage
+            p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
+                            _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
+            emb = f"qx_{s['id']}_{MF._h(p_)}"
+            enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
+            two.append({"name": s["id"], "emb": emb, "prompt": p_, "width": W, "height": H, "fps": FPS,
+                        "seed": QUIET_SEED + shot_seed(s["id"]), "frames": n, "line": s["id"], "neg_extra": "",
+                        "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER, "images": img,
+                        "held": None, "people": None if s.get("crowd") else len(s.get("who") or []), **cont})
+            tail[s["id"]] = (s["id"], n)
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
@@ -3460,8 +3576,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
-                              "people": None if s.get("crowd") else len(s.get("who") or [])})
-    for j in talk + two + quiet:            # a clip from another key or other words is drawn again
+                              "people": None if s.get("crowd") else len(s.get("who") or []), **cont})
+            tail[s["id"]] = (s["id"], n)
+    pos = {s["id"]: i for i, s in enumerate(shots)}     # (shot order: a stretch's source is checked before its next)
+    for j in sorted(talk + two + quiet, key=lambda j: pos.get(re.sub(r"(_t\d+)?(_c\d+)?$", "", j["name"]), 0)):
+        # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
         key = Path(j["images"][0]["path"]) if j["images"] else src
@@ -3484,9 +3603,13 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
             e_ = _chain_emb(sid, t_)
             enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
+    # every chained stretch job of the action/talk hold waits off the runner's queue until its source clip is on disk
+    # (late_jobs; E17c: a chain's first line queued from another chain's joined clip, not a job of the hold, started
+    # at once and the runner died on the missing file): each stretch renders strictly in order, stretches side by side
+    late = {j["name"] for j in two + talk if j.get("stretch") and j.get("chain_from")}
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
                   ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
-        (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
+        (L / f"{nm}.json").write_text(json.dumps([j for j in x if j.get("name") not in late], indent=1))
     from types import SimpleNamespace
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
     # yields to a waiting GPU job (LTX_YIELD)
@@ -3523,7 +3646,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 continue
             k = next(i for i, p in enumerate(st["picks"], 1) if not p)
             out += [j for j in _chain_jobs(st, k) if not (L / "out" / f"{j['name']}.mp4").exists()
-                    and (L / "emb" / f"{j['emb']}.pt").exists()]
+                    and (L / "emb" / f"{j['emb']}.pt").exists()
+                    and (not j.get("chain_from") or (L / "out" / f"{j['chain_from']}.mp4").exists())]
         return out
     first = True
     for rnd in range(4):                # 11-05: a chain line overridden in review needs its words encoded: another hold
@@ -3572,9 +3696,13 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         if h_talk:
             ths.append(threading.Thread(target=_sync_as_they_land, daemon=True,
                                         args=(book, R, L, h_talk, stop, log, True, more)))
-        if firsts:
+        ch_on = bool(firsts) or bool(chains and first and late)    # (a first line waiting on its source: queued later)
+        if ch_on:
             ths.append(threading.Thread(target=_chains_as_they_land, daemon=True,
                                         args=(sd, chains, more, {j["name"] for j in firsts}, stop, log, REVIEW)))
+        if first and late:
+            ths.append(threading.Thread(target=late_jobs, daemon=True,
+                                        args=(L / "out", [j for j in h_two + h_talk if j["name"] in late], more, stop, chains, log)))
         for th in ths:
             th.start()
 
@@ -3585,11 +3713,12 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         tc = threading.Thread(target=closer, daemon=True)
         tc.start()
         kind = "two_talk" if h_two and h_talk else "two" if h_two else "talk"
-        if firsts:
+        if ch_on:
             kind = "hold"
-            (L / "hold_jobs.json").write_text(json.dumps(firsts + h_two + h_talk, indent=1))
+            (L / "hold_jobs.json").write_text(json.dumps([j for j in firsts + h_two + h_talk if j["name"] not in late],
+                                                         indent=1))
         try:
-            gen(kind, firsts + h_two + h_talk, ["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk) +
+            gen(kind, [j for j in firsts + h_two + h_talk if j["name"] not in late], ["--ti2v"] * bool(h_two or firsts) + ["--a2vid"] * bool(h_talk) +
                 ["--fa-amd", "--blaslt", "--more", more.name, "--more-done", done.name],
                 F._pp_split(sd, "a2vid" if h_talk else "ti2v", 25 if h_talk else 24))
         finally:
@@ -3622,6 +3751,28 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         finally:
             stop.set()
             th.join(60)
+
+
+def late_jobs(out_: Path, jobs: list, more: Path, stop, chains: list = (), log=print) -> None:
+    """`jobs` (shot order) wait off the runner's queue until their chain source is a clip on disk, then go on the
+    loaded runner's --more queue. A job whose source can no longer come (a chain done or blocked without its joined
+    clip, or a job waiting on such a one) is given up: no clip, as a missing clip is today."""
+    left = list(jobs)
+    while left and not stop.is_set():
+        for j in list(left):
+            if (out_ / f"{j['chain_from']}.mp4").exists():
+                _queue_more(more, dict(j, priority=1))
+                left.remove(j)
+        dead = {c for c in chains if not (out_ / f"{c}.mp4").exists() and (lambda st: st.get("done") or st.get(
+            "blocked"))(json.loads((out_.parent / "chains" / f"{c}.json").read_text()))}
+        for j in left:                  # (shot order: a dead source kills what waits on it, down the stretch)
+            if j["chain_from"] in dead:
+                dead.add(j["name"])
+        if dead & {j["name"] for j in left}:
+            log(f"!!! {len(dead & {j['name'] for j in left})} job(s) after a chain that made no clip: "
+                f"{[j['name'] for j in left if j['name'] in dead][:6]}")
+            left = [j for j in left if j["name"] not in dead]
+        time.sleep(2)
 
 
 def _crowded(faults: list) -> bool:
@@ -3703,9 +3854,11 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                 if k == 1 and ((out_ / f"{n}.judged").exists() or f"{n}_t2" in names):
                     continue
                 fa = MF.fight_clip_ok(out_ / f"{t}.mp4", j.get("people"))
-                if not fa:
+                if not fa or j.get("stretch"):     # (CHANGES 79: a stretch's shot - recorded, never retaken)
                     if k == 1:
                         (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
+                    if fa:
+                        log(f"{n}: take 1: {fa}: recorded (a stretch's shot: no retake)")
                     continue
                 nx = _next_take(j, n, k + 1, fa)
                 if not nx:
@@ -3782,7 +3935,10 @@ def _chain_jobs(st: dict, k: int) -> list:
              "fps": FPS, "seed": sd_ + shot_seed(sid) + 10 * k + 100 * v, "frames": CHAIN_FRAMES, "line": sid,
              "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER,
              "people": st.get("people"), "priority": 1}
-        if k == 1:
+        if k == 1 and st.get("from"):       # (force arm: line 1 from the clip before's last frame)
+            j.update(chain_from=st["from"][0], chain_frame=st["from"][1] - 1, overlap=1, seam_tries=0,
+                     chain_strength=1.0, images=[])
+        elif k == 1:
             j["images"] = [{"path": st["key"], "frame": 0, "strength": 1.0}]
         else:
             j.update(chain_from=st["picks"][k - 2], chain_frame=CHAIN_FRAMES - 1, overlap=1, seam_tries=0,
@@ -3925,6 +4081,8 @@ def _chains_as_they_land(sd: Path, chains: list, more: Path | None, queued: set,
                         live -= 1
                         continue
                     if not all(n in queued for n in names):
+                        if jobs[0].get("chain_from") and not (L / "out" / f"{jobs[0]['chain_from']}.mp4").exists():
+                            continue            # (force arm: a first line waits for the clip before it, E17c)
                         if not (L / "emb" / f"{jobs[0]['emb']}.pt").exists():
                             st["blocked"] = "encode"
                             log(f"{sid} line {k}: its new words wait for the next hold (encode)")
@@ -4008,6 +4166,8 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # the judge's iGPU
     out_ = shot_dir(book, stem) / "ltx" / "out"
     again = set()
+    links = stretch_links(shots)
+    members = set(links) | {a["id"] for a in links.values()}
     for s in shots:
         if s["kind"] not in ("action", "quiet") or s.get("chain"):     # (a chain's clip is its joined picks)
             continue
@@ -4018,7 +4178,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)) if x.exists()]
         fs = [MF.fight_clip_ok(x, n_) for x in takes]
         if len(takes) == 1:
-            if fs[0]:
+            if fs[0] and s["id"] not in members:
                 log(f"{s['id']}: {fs[0]}: taken once more")
                 again.add(s["id"])
             else:
@@ -4259,7 +4419,7 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
         js = sorted(shots[n], key=lambda j: (j.get("chunk") or [0])[0])
         c = _talk_score(L, n if k == 1 else f"{n}_t{k}", len(js))
-        if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
+        if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or js[0].get("stretch") or \
                 (k == 1 and (L / "out" / f"{n}.synced").exists()):
             return False
         tn = f"{n}_t{k + 1}"
@@ -4744,6 +4904,22 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
                  scene=sh.get("scene", ""),
                  crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "")   # the set sheet's crowd only
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
+    if STRETCH:                                     # (CHANGES 79: the pair asks while the language model is up)
+        from tts_reader import bookcaster as BC
+        t_of, sents, win = {}, sentences(load_timeline(book, stem)), []
+        for e in es:
+            c_ = float(e["t"])
+            for s in by.get(e["id"]) or []:
+                t_of[s["id"]] = (c_, c_ + float(s["dur"]))
+                c_ += float(s["dur"])
+                if not render or render[0] - 1e-6 <= float(e["t"]) < render[1]:    # (only the window rendered)
+                    win.append(s)
+        if not STRETCH_FORCE:                       # (forced: no ask)
+            animate.igpu("strata", log)
+        mark_stretches(win, lambda a, b: " ".join(z for x0, x1, _, _, z in sents if x1 > t_of[a["id"]][0] + 0.05
+                                                  and x0 < t_of[b["id"]][1] - 0.05),
+                       lambda m: _converse(BC.LLM_URL, BC.LLM_MODEL, m, max_tokens=1500)[0],
+                       shot_dir(book, stem) / "passages" / "stretch.json", log)
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
     # before: a place to describe restarted the model place_sheets had just stopped)
     if loras:
@@ -4764,7 +4940,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
-    for s in keys_judged(book, stem, shots, log):
+    cont = stretch_links(shots)          # (CHANGES 79: a continued shot has no key; its clip starts from the last frame)
+    for s in keys_judged(book, stem, [x for x in shots if x["id"] not in cont], log):
         log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
     ks = sheet(book, stem, shots, op.with_name(op.stem + "_keys.jpg"))
     log(f"key sheet: {ks}")
