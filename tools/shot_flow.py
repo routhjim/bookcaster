@@ -213,6 +213,47 @@ About {nmin} to {nmax} shots. Places: {places}. Names: {names}.
 {extra}{fix}"""
 # the rules for what only some passages have, given only when the passage has it (10-27: forge, dragon and
 # tongues-of-fire rules were a third of every Speckled Band prompt)
+# 11-08 song mode (tts_reader/song.py): a song made into a music video. The lyric lines are the passage's lines, each
+# with its section; the song's recording is the whole sound. Only general rules here (what is shown and when to cut
+# is the director's judgment); the talk machinery is the flow's own, driven by the song's vocal stem.
+SONG_RULES = """
+THIS FILM IS A MUSIC VIDEO of a song, and these rules come before the ones above wherever they differ. Each passage
+is a stretch of the song: its lyric lines, each timed and marked with its SECTION of the song, and the music between
+them. The song's own recording is the whole sound of the film; nobody speaks.
+- Only {singer} sings on screen. A "talk" shot is {singer} singing a line, the lips synced to the voice, framed as a
+  talk shot above (the others around {singer} are the ones sung to). Give talk shots to the lines where seeing the
+  singer matters most, never to every line: every other line plays over the other shots. A talk shot starts when its
+  line starts and runs to the line's end. Nobody's mouth moves in any other shot.
+- The other shots show the song's world: the people and things the lyrics sing of, doing what the lyrics say, and
+  the people around the singer in the place where the song is set. The words of a line are shown while it is sung.
+- Cut with the music: shots change at the start of a line or in the music between lines, and a new section of the
+  song brings a new view. A stretch with no singing shows the place and its people.
+- A section heard again is never the same shots again: other angles, other people, the story moved on.
+"""
+SONG_BREAKDOWN = ("This chapter is a SONG being made into a music video: every line is sung by {singer} (marked with its "
+                  "section of the song), and the lines marked (music) have no singing. A scene is where the video is "
+                  "set and who is there; a scene may run over several sections of the song.")
+
+
+def song_of(book: Path) -> dict | None:
+    """Song mode (tts_reader/song.py): the song's facts (song.json: the lossless audio, sections, the lead singer),
+    or None for a book."""
+    p = Path(book) / "song.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def section_starts(tl: list) -> list:
+    """The section starts of a song's timeline (the first entry of each new section), its first one left out."""
+    out = []
+    for a, b in zip(tl, tl[1:]):
+        if b.get("kind") == "quote" and b.get("section") and b.get("section") != a.get("section"):
+            out.append(float(b["t"]))
+    return out
+
+
 RULE_TOLD = ("Other places in this passage: {others}. While someone TELLS of another time or place (recounting what "
              "happened, a memory), the shots show what they tell, there, with only the people the words describe, and "
              "the teller's voice plays over them: the teller's lines of the telling get NO talk shot, except the first "
@@ -898,12 +939,16 @@ json.dump([[w.word.strip(), round(w.start, 3)] for s in segs for w in (s.words o
 
 
 def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> list:
-    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes."""
+    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes. A song
+    (song_of): its own Whisper model and prompt, and only its sung words matched (not the chapter's opening line
+    nor the [section] labels: 11-08, the opening line's "The" took the first sung word's time)."""
     import difflib
     track = track or book / "work" / f"{stem}.mp3"
     st = track.stat()
     cp = track.with_name(track.name + ".wordtimes.json")
-    key = f"{st.st_size}:{st.st_mtime_ns}:{WHISPER_MODEL}"
+    song = (song_of(book) or {}).get("align") or {}
+    model, prompt = song.get("model") or WHISPER_MODEL, song.get("prompt")
+    key = f"{st.st_size}:{st.st_mtime_ns}:{model}" + (f":{MF._h(json.dumps(song, sort_keys=True))}" if song else "")
     try:
         got = json.loads(cp.read_text())
         if got.get("k") == key:
@@ -914,10 +959,11 @@ def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> l
     bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
     if not bw or not WHISPER_PY.exists():
         return [None] * len(bw)             # no book text or no Whisper: the talk prompts quote nothing
-    names = ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
-    log(f"  word timing: {track.name} (Whisper {WHISPER_MODEL}, CPU)")
+    names = prompt if prompt is not None else \
+        ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
+    log(f"  word timing: {track.name} (Whisper {model}, CPU)")
     tmp = cp.with_suffix(".tmp")
-    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), WHISPER_MODEL, names])
+    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), model, names])
     try:
         hw = json.loads(tmp.read_text()) if getattr(r, "returncode", 1) == 0 else None
     except (OSError, ValueError):
@@ -927,10 +973,12 @@ def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> l
         log(f"  !!! word timing failed for {track.name}: the talk prompts quote only whole lines")
         return [None] * len(bw)
     times = [None] * len(bw)
-    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(w) for w in bw], autojunk=False)
+    sung = [j for j, w in enumerate(bw) if j >= int(song.get("from_word") or 0) and
+            not (song and (w.startswith("[") or w.endswith("]")))]
+    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(bw[j]) for j in sung], autojunk=False)
     for blk in sm.get_matching_blocks():
         for k in range(blk.size):
-            times[blk.b + k] = hw[blk.a + k][1]
+            times[sung[blk.b + k]] = hw[blk.a + k][1]
     cp.write_text(json.dumps({"k": key, "t": times}))
     return times
 
@@ -1949,6 +1997,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     tl = load_timeline(book, stem, chars)
     sents = sentences(tl)
     nar = RGB.narrator() or ""
+    song = song_of(book)                # song mode: sung lines with their sections, the singer the one on camera
     talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
     real = list(dict.fromkeys(e["where"] for e in es if e.get("where") and not NO_PLACE.search(e["where"])))
 
@@ -2014,6 +2063,10 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     state, prev_shot, people_here = "(the start of the chapter)" if t_a < 1 else "", None, []
     new_es, by, new_sheets = [], {}, {}
     system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
+    if song:
+        system += SONG_RULES.format(singer=RGB.person(song["singer"]["name"]) or song["singer"]["name"])
+    sec_of = (lambda t: next((x.get("section") or "" for x in reversed(tl) if float(x["t"]) <= t + 1e-3), "")) \
+        if song else None
     pics_before, pics_scene, screen, last_pose, last_at, carry = [], [], {}, {}, {}, {}
     pair, lasts, cut_where, holding = None, {}, {}, {}
     animate_up = False
@@ -2026,7 +2079,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if w not in place_sheet and base in place_sheet:
                 place_sheet[w] = place_sheet[base]
     cur = None
-    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes), sent=pts[0]):
+    forced = tuple(x["start"] for x in scenes) + (tuple(section_starts(tl)) if song else ())   # (a song: per section)
+    for pa, pb in passages(tl, t_a, t_b, forced=tuple(sorted(set(forced))), sent=pts[0]):
         sec = pb - pa
         si = max([i for i, x in enumerate(scenes) if x["start"] <= pa + 0.5] or [0])
         sc_ = scenes[si] if scenes else {"place": home, "who": [], "what": "", "cutaways": [], "opens": "",
@@ -2056,11 +2110,19 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
         quotes = [(max(0.0, x0 - pa), min(sec, x1 - pa), _who_full(spk, chars)) for x0, x1, spk, k, _ in lines_
                   if k == "quote" and spk != "narrator"]
-        txt = []
+        txt, sec_was = [], None
         for x0, x1, spk, k, z in lines_:
             who = _who_full(spk, chars) or ("narrator" + (f" ({nar}, telling it as 'I')" if nar else ""))
             cont = " (continuing)" if x0 < pa - 0.3 else ""
-            if k == "quote" and spk != "narrator":
+            if song:                    # each section headed once; sung lines SING, the music between has no words
+                if (sl := sec_of(x0)) != sec_was:
+                    txt.append(f"SECTION: {sl or '(unlabelled)'}")
+                    sec_was = sl
+                if k == "music":
+                    txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] (music, no singing)")
+                else:
+                    txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] {who} SINGS{cont}: {z}")
+            elif k == "quote" and spk != "narrator":
                 txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] {who} SAYS ALOUD{cont}: {z}")
             else:
                 txt.append(f"[{max(0.0, x0 - pa):.1f}] {who}{cont}: {z}")
@@ -2117,14 +2179,16 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         looks = {w: MF._brief(MF._appearance(RGB.look(w))) for w in cast}
         people = "; ".join(f"{w} ({looks.get(w, '')}{'; wears ' + dress[w] if dress.get(w) else ''})" for w in cast)
         hs = place_sheet.get(home) or {}
-        narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote")
+        narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote" or song)    # (a song: its words are its story)
         extra = "".join(r for rx, r in RULE_EXTRA if rx.search(narr))     # the narration's own events only
         told = RULE_TOLD.format(others="; ".join(f"{w} (its fixed things: {(place_sheet.get(w) or {}).get('room') or 'as the narration says'})"
                                                   for w in others)) if others else ""
         pv = ("(none: the chapter starts here)" if prev_shot is None else
               f"at {prev_shot.get('place')}: {prev_shot.get('picture') or ', '.join(prev_shot.get('who') or [])}"
               + (f" Postures at its end: {json.dumps(prev_shot.get('pose_end'))}" if prev_shot.get("pose_end") else ""))
-        q0 = PASSAGE_ASK.format(scene=scene_txt, before=before, sec=sec, text="\n".join(txt) or "(silence)", after=after,
+        q0 = (PASSAGE_ASK if not song else PASSAGE_ASK.replace(
+            'Spoken lines say\n"SAYS ALOUD" with their start and end.',
+            'Sung lines say\n"SINGS" with their start and end, under a SECTION heading.')).format(scene=scene_txt, before=before, sec=sec, text="\n".join(txt) or "(silence)", after=after,
                                narrator=(f"The narrator is {nar}, telling the story as 'I'. When the narration is {nar} "
                                          f"musing, explaining or judging rather than telling what happens, show {nar} "
                                          f"where the story has them NOW, doing what they are doing there (listening, "
@@ -2577,11 +2641,17 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
     whole chapter at once (cached in shots/scenes/breakdown.json by its question)."""
     from tts_reader import animate
     from tts_reader import bookcaster as BC
-    end = float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())
+    song = song_of(book)
+    end = float(song["seconds"]) if song else float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())
     text = "\n".join(f"[{float(x['t']):.0f}] {_who_full(x.get('speaker') or 'narrator', chars) or 'narrator'}: "
-                     f"{x['text']}" for x in tl)
+                     f"{x['text']}" if not song else
+                     f"[{float(x['t']):.0f}] ({x.get('section') or 'song'}) " + (
+                         "(music)" if x.get("kind") == "music" else
+                         f"{_who_full(x.get('speaker'), chars) or x.get('speaker')} sings: {x['text']}") for x in tl)
     q = BREAKDOWN_ASK.format(narrator=(f"The narrator, {nar}, tells the story as 'I'; a stretch where {nar} looks "
-                                       f"back before the story begins is a scene of its own." if nar else ""),
+                                       f"back before the story begins is a scene of its own." if nar else "") + (
+        SONG_BREAKDOWN.format(singer=RG.Book(book).person(song["singer"]["name"]) or song["singer"]["name"])
+        if song else ""),
                              places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
@@ -5051,8 +5121,22 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                               "stream=nb_read_packets", "-of", "csv=p=0", str(vid)], capture_output=True, text=True).stdout or 0)
     if got != edge[-1]:
         log(f"!!! picture is {got} frames, the timeline {edge[-1]}: out of sync by {(got - edge[-1]) / FPS:+.2f} s")
+    song = song_of(book)
+    if song:                            # a music video: the picture on the song's own (lossless) recording, nothing added
+        return song_mux(Path(song["audio"]), vid, t0, edge[-1] / FPS, out, len(segs), log)
     fx = effects_mix(book, stem, mix, spans, log, pauses)
     return MF.mux(book, stem, vid, t0, edge[-1] / FPS, fx, out, hits, len(segs), log, planned=fx == mix)
+
+
+def song_mux(audio: Path, vid: Path, t0: float, dur: float, out: Path, n: int, log=print) -> Path:
+    """The cut on the song's own recording from t0, untouched (no limiter, no mix), swapped in whole."""
+    tmp = Path(out).with_name(f".{Path(out).stem}.{os.getpid()}{Path(out).suffix}")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(vid), "-ss", f"{t0:.3f}", "-t", f"{dur:.3f}", "-i",
+                    str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+                    "-shortest", str(tmp)], check=True)
+    os.replace(tmp, out)
+    log(f"assembled {n} clips on the song ({audio.name}) -> {out}")
+    return out
 
 
 def out_path(book: Path, stem: str, t0: float, t1: float) -> Path:
@@ -5109,7 +5193,9 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     wardrobe(book, stem, log)
     loras = loras_beside(book, stem, log, es)                 # the cast's LoRAs on both cards while the director runs
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
-    sfx_plan(book, stem, log)                                 # (its language model is still up)
+    song = song_of(book)
+    if not song:                                              # (a song is its own whole sound: no effects)
+        sfx_plan(book, stem, log)                             # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log, keep_llm=True)   # then one set sheet per place it used
     es = apply_chains(es, by, log)                            # (after the sheets: they see the director's own shots)
     from tts_reader import animate
@@ -5132,7 +5218,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         log(f"rendering {render[0]:.1f}-{render[1]:.1f} s only: {len(shots)} shots of the directed stretch")
         if not shots:
             raise RuntimeError(f"the render window {render[0]:g}-{render[1]:g} s has no shots of the directed stretch")
-    pauses = chain_pauses(book, stem, es, by, log)       # the narration's gaps for the chains (none: nothing moves)
+    # the narration's gaps for the chains (none: nothing moves); a song never waits: a chain plays to its slot's end
+    pauses = chain_pauses(book, stem, es, by, log) if not song else []
     if pauses:                                           # (before the keys, so the plan saved has them)
         apply_pauses(es, by, pauses)
         shots = [s for e in es for s in by.get(e["id"], [])]
