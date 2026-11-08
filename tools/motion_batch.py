@@ -266,7 +266,7 @@ def human_prompt(sents, who):
 
 
 def beats_of(frame, who):
-    """The director's beats for `who` ("Edric: rolls away ..." -> "Edric rolls away ..."): the moment's MECHANICS,
+    """The director's beats for `who` ("Ann: rolls away ..." -> "Ann rolls away ..."): the moment's MECHANICS,
     which the motion follows when given (10-23: the fight's motion came from the planner's one-line text by keywords
     - the tail sweep, the block and the roll were never staged, both figures stood still)."""
     out = []
