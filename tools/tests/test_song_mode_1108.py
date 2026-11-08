@@ -135,6 +135,16 @@ with tempfile.TemporaryDirectory() as d:
     lk = json.loads((b / "work" / "video" / "look.json").read_text())
     check("a new direction plans looks again, a pinned look kept", lk["characters"] == {"B": "b"} and not lk["places"]
           and not (b / "art_style.txt").exists() and not (b / "work" / "video" / S2.STEM / "plan.json").exists(), lk)
+    # a person the chapter shows acting with no planned look gets one (asked once more after the picture plan)
+    V._chat = lambda url, model, prompt, max_tokens=0: (asked.append(prompt) or
+                                                         '{"characters": {"The Cook": "a man of about 40", '
+                                                         '"Elsie": "dup", "The Galley": "Inside: a galley"}}')
+    got = V.missing_people(["The cook hid almonds."], {"Elsie": "a girl"}, {"The Galley": "Inside: a galley"}, "", "",
+                           direction=dr)
+    check("a person acting without a look gets one; the planned and the places are not added",
+          got == {"The Cook": "a man of about 40"} and dr in asked[-1], got)
+    check("a new direction re-chooses the art style (the chapter's style.txt goes too)",
+          '"style.txt"' in inspect.getsource(S2.replan_for_direction))
 src_bd = inspect.getsource(SF.breakdown) + inspect.getsource(SF.direct) + inspect.getsource(SF.place_sheets) + \
     inspect.getsource(SF.describe_places)
 check("the breakdown, director, set sheets and place descriptions read the direction",

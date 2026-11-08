@@ -219,7 +219,7 @@ def replan_for_direction(book: Path, log=print) -> list:
         look.pop("_described", None)
         lp.write_text(json.dumps(look, indent=1, ensure_ascii=False))
     vd = book / "work" / "video" / STEM
-    for f in (vd / "plan.json", vd / "anim" / "manifest.json", vd / "flow3d" / "plan.json"):
+    for f in (vd / "plan.json", vd / "style.txt", vd / "anim" / "manifest.json", vd / "flow3d" / "plan.json"):
         if f.exists():
             f.unlink()
             gone.append(str(f.relative_to(book)))

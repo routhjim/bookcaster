@@ -217,9 +217,40 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
     if not pics:
         raise ValueError("the planner returned no usable pictures")
     pics[0]["start"] = 0          # a picture from the first second
+    chars.update(missing_people(paras, chars, places, llm_url, model, direction))
     chars = check_looks(chars, llm_url, model)
     return {"version": PLAN_VERSION, "look": {"characters": chars, "places": places},
             "pictures": pics}
+
+
+MISSING_ASK = """Below is a chapter, then the people and creatures whose looks are already planned for its pictures.
+Which living people or creatures does the chapter show DOING or SAYING anything (named, or called only by their role,
+however briefly) who are not in that list? Leave out anyone only spoken of, remembered or addressed. For each one
+missing, write their look the way the listed ones are written (who they are, apparent age as a number, build, face,
+hair, clothing). {direction}Reply with ONLY JSON: {{"characters": {{"Name": "look"}}}}, or {{"characters": {{}}}}.
+
+Planned: {cast}
+
+Chapter:
+{chapter}"""
+
+
+def missing_people(paras: list[str], chars: dict, places: dict, llm_url: str, model: str, direction: str = "") -> dict:
+    """{name: look} for the people the chapter shows acting whom the picture plan gave no look (11-08: the song's
+    cook, who acts in one verse, had none in two plans, so the director's shot of him drew a teacup alone). One ask;
+    {} when none or no usable answer. A place or a name already planned is never added."""
+    try:
+        reply = _chat(llm_url, model, MISSING_ASK.format(
+            direction=f"{direction}\n" if direction else "", cast="; ".join(f"{n}: {d}" for n, d in chars.items()) or
+            "(nobody)", chapter="\n\n".join(paras)), max_tokens=2000)
+        m = re.search(r"\{.*\}", reply or "", re.S)
+        got = (json.loads(m.group(0)) if m else {}).get("characters") or {}
+    except Exception:                                     # noqa: BLE001 - the planned cast stands
+        return {}
+    keys = {_rg().person_key(n) for n in chars}
+    return {str(n).strip(): str(d).strip() for n, d in (got.items() if isinstance(got, dict) else [])
+            if str(n).strip() and str(d).strip() and _rg().person_key(n) not in keys
+            and not _rg().place_named(n, d, places)}
 
 
 SCENE_SIDE_RX = re.compile(r"^\s*(inside|outside)\s*:", re.I)
