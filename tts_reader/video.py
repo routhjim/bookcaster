@@ -129,14 +129,17 @@ VIDEO_BITRATE = os.environ.get("BOOKCASTER_VIDEO_BITRATE", "2500k")
 PLAN_VERSION = 4   # bump when the plan's shape changes: older plans are redone
 
 
-def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count: int, direction: str = "") -> dict:
+def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count: int, direction: str = "",
+                  names: list | None = None) -> dict:
     numbered = "\n\n".join(f"[P{i}] {p}" for i, p in enumerate(paras))
     prompt = (
         "You are the illustrator of an illustrated audiobook video. Below is one chapter, "
         "paragraph-numbered. Plan the pictures shown while it is read aloud.\n\n"
-        "First fix the LOOK of every character and every recurring place. A character is every living person or "
-        "creature the chapter shows doing or saying anything, named or called only by their role, however briefly "
-        "they appear (11-08: a one-verse role who acts got no look, and his shot was drawn without him). A reference picture is "
+        "First fix the LOOK of every character and every recurring place. A character is every INDIVIDUAL living "
+        "person or creature the chapter singles out (by name, or picked out on their own by their role) doing or "
+        "saying anything, however briefly they appear (11-08: a one-verse role who acts got no look, and his shot "
+        "was drawn without him). A group, a crew, a crowd or an unnamed member of one is never a character: groups "
+        "are drawn as a picture's \"crowd\", many different people. A reference picture is "
         "drawn from each description and reused in every scene, so write it for an image "
         "model that takes words literally:\n"
         "- A person: START with \"a man\", \"a woman\", \"a boy\" or \"a girl\" as the story calls them "
@@ -187,7 +190,9 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
         'Reply with ONLY JSON: {"look": {"characters": {"Name": "description"}, '
         '"places": {"Name": "description"}}, '
         '"pictures": [{"start": 0, "who": ["Name"], "where": "Name", "crowd": "", "prompt": "..."}]}\n\n'
-        + (f"{direction}\n" if direction else "") +
+        + (f"{direction}\n" if direction else "")
+        + (f"Names this book already uses for its people: {', '.join(names)}. A character who is one of them keeps "
+           "that exact name; a name here is no reason to make anyone a character.\n\n" if names else "") +
         f"Chapter:\n{numbered}"
     )
     reply = _chat(llm_url, model, prompt, max_tokens=12000)
@@ -224,8 +229,10 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
 
 
 MISSING_ASK = """Below is a chapter, then the people and creatures whose looks are already planned for its pictures.
-Which living people or creatures does the chapter show DOING or SAYING anything (named, or called only by their role,
-however briefly) who are not in that list? Leave out anyone only spoken of, remembered or addressed. For each one
+Which INDIVIDUAL living people or creatures does the chapter single out (by name, or picked out on their own by their
+role) DOING or SAYING anything, however briefly, who are not in that list? Leave out anyone only spoken of,
+remembered or addressed. A group, a crew, a crowd or an unnamed member of one is never added: groups are drawn as a
+picture's crowd, many different people. For each one
 missing, write their look the way the listed ones are written (who they are, apparent age as a number, build, face,
 hair, clothing). {direction}Reply with ONLY JSON: {{"characters": {{"Name": "look"}}}}, or {{"characters": {{}}}}.
 
@@ -617,7 +624,9 @@ def ensure_plan(text: str, work: Path, llm_url: str, llm_model: str, style: str,
         return plan
     count = max(3, min(90, round(total / 60 * per_minute)))
     log(f"  planning ~{count} pictures...")
-    plan = plan_pictures(paragraphs(text), llm_url, llm_model, style, count, direction=_direction(work))
+    lj = work.parent / "look.json"          # (the names a re-plan keeps: song.replan_for_direction)
+    names = (json.loads(lj.read_text()).get("_names") or []) if lj.exists() else []
+    plan = plan_pictures(paragraphs(text), llm_url, llm_model, style, count, direction=_direction(work), names=names)
     keep_looks(plan, work.parent / "look.json")
     refresh_looks(plan, work.parent / "look.json", llm_url, llm_model, style, log)
     ensure_wardrobe(plan, text, llm_url, llm_model, log, direction=_direction(work))

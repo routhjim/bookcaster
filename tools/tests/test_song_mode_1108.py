@@ -120,7 +120,17 @@ with tempfile.TemporaryDirectory() as d:
         pass
     check("... and a book's look ask has no direction in it", "AUTHOR'S DIRECTION" not in asked[-1])
     check("every person the text shows acting gets a look, not only recurring ones",
-          "every living person" in asked[-1] and "recurring character" not in asked[-1])
+          "INDIVIDUAL living person" in asked[-1] and "recurring character" not in asked[-1])
+    check("... and a group is never a character (it is the picture's crowd)",
+          "never a character" in asked[-1] and "never added" in V.MISSING_ASK)
+    try:
+        V.plan_pictures(["p"], "", "", "", 3, names=["Elsie"])
+    except ValueError:
+        pass
+    check("a re-plan keeps the people's names", "already uses for its people: Elsie" in asked[-1])
+    import plan_review as PR
+    check("the plan review never makes a crowd mention a cast member", "never put in 'who' as a cast member" in
+          inspect.getsource(PR))
     check("a book's wardrobe key is as before", V.wardrobe_inputs_key({"look": {}}, "t") ==
           V.wardrobe_inputs_key({"look": {}}, "t", direction=""))
     check("a direction is part of the wardrobe's key",
@@ -135,6 +145,7 @@ with tempfile.TemporaryDirectory() as d:
     lk = json.loads((b / "work" / "video" / "look.json").read_text())
     check("a new direction plans looks again, a pinned look kept", lk["characters"] == {"B": "b"} and not lk["places"]
           and not (b / "art_style.txt").exists() and not (b / "work" / "video" / S2.STEM / "plan.json").exists(), lk)
+    check("... and the names it had are kept for the re-plan", lk.get("_names") == ["A", "B"], lk.get("_names"))
     # a person the chapter shows acting with no planned look gets one (asked once more after the picture plan)
     V._chat = lambda url, model, prompt, max_tokens=0: (asked.append(prompt) or
                                                          '{"characters": {"The Cook": "a man of about 40", '

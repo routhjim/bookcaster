@@ -211,6 +211,9 @@ def replan_for_direction(book: Path, log=print) -> list:
     if lp.exists():
         look = json.loads(lp.read_text())
         pins = look.get("_pinned") or {}
+        # the people keep their names across the re-plan (11-08: "Elsie" came back as "Young Elsie"); a name kept is
+        # no reason to keep a character, and their LoRAs follow their look checks, not their names
+        look["_names"] = sorted(set(look.get("_names") or []) | set(look.get("characters") or {}))
         for kind in ("characters", "places", "props"):
             keep = {k: v for k, v in (look.get(kind) or {}).items() if k in pins}
             if (look.get(kind) or {}) != keep:
