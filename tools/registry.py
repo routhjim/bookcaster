@@ -89,6 +89,23 @@ def at(path):
     return R
 
 
+_SENTENCE_START = re.compile(r"(?:^|[.!?:;—–\n\"“‘’”(]\s*)$")
+
+
+def common_words(text: str) -> set:
+    """The words *text* writes in lower case and capitalises only where a sentence starts ("and", "but"), never a
+    name. Lower-cased. (The same rule as tts_reader.speakers.common_words, which makes the voice labels; kept here so
+    the registry needs no tts_reader of the same age.)"""
+    low, named = set(), set()
+    for m in re.finditer(r"[A-Za-z][a-z'’]*", text):
+        w = m.group(0)
+        if w[0].islower():
+            low.add(w)
+        elif not _SENTENCE_START.search(text[max(0, m.start() - 3):m.start()]):
+            named.add(w.lower())
+    return low - named
+
+
 class Looks(dict):
     """{name: look} whose keys are the given spellings (a chapter's cast) and whose lookups take ANY spelling of a
     person: looks.get("Dr. Watson") is Doctor Watson's look, "Stoner" in looks is Helen (10-27: chars.get(w, "")
@@ -205,7 +222,24 @@ class Book:
         # every word of the given name in one person's name, and in nobody else's ("Stoner" alone: Helen or Julia?
         # -> no answer; "Helen Stoner" / "Miss Helen" -> Helen)
         hits = [n for n in self._people if set(words) <= {w.lower() for w in _words(n)}]
+        if not hits:
+            # 11-08 (E26): a voice label with the narration's lead word taken in ("And Peter said to them," gave "And
+            # Peter"; the label is made so in tts_reader/speakers.py, now fixed there, but timelines carry it): the
+            # talk shot of Peter's 16 s line went unmatched and was dropped. Leading words that the book uses as
+            # common words and that are in no cast name are not part of the name
+            names = {w.lower() for n in self._people for w in _words(n)}
+            while len(words) > 1 and words[0] not in names and words[0] in self._common():
+                words = words[1:]
+            hits = [n for n in self._people if set(words) <= {w.lower() for w in _words(n)}]
         return hits[0] if len(hits) == 1 else default
+
+    def _common(self) -> set:
+        """The book's common words (common_words of its text), read once."""
+        if getattr(self, "_common_words", None) is None:
+            fs = [self.book / "book.txt"] if (self.book / "book.txt").exists() else \
+                sorted((self.book / "chapters").glob("*.txt"))
+            self._common_words = common_words("\n\n".join(f.read_text() for f in fs))
+        return self._common_words
 
     def same(self, a, b) -> bool:
         pa, pb = self.person(a), self.person(b)
