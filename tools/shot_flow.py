@@ -59,7 +59,7 @@ PP_POOL = True                      # activations between the cards through reus
 DECODE_B = True                     # quiet clips decode on card 65 (runner --decode-b); on once its A/B test passes
 # 10-28 talk A/B (the 15 s window, SyncNet + the user's eye): 8 s pieces + 20 steps + STG off = 44% less GPU time
 # and lip sync 4.9 -> 9.0 on a 6.5 s close-up ("the close up is much better"); the long piece pushed the camera in on a
-# two-shot until its last frame was lightly pinned (TALK_LOCK 0.3: framing held, the cheapest of the three tried)
+# two-shot until its last frame was lightly pinned (a 0.3 end lock: framing held; E27 below drops it)
 TALK_PIECE_MIN = 73                 # no talk piece under ~3 s (talk_pieces)
 TALK_PIECE_COST = 0.8               # what one more piece costs against a cut mid-word (~1.1) (talk_pieces)
 TALK_PIECE = 193                    # talk lines in <= 8 s pieces, chained (10-24: 97; 10-28 A/B: 193)
@@ -67,12 +67,13 @@ TALK_STEPS = 20                     # stage-1 steps for talk (30 before; no meas
 TALK_GUIDER = {"stg_scale": 0.0, "modality_scale": 1.0}   # STG off (as LTX's own HQ preset); 10-29: the audio-video
 # guidance pass off too - LTX 2.5 users found it "unusable at every strength" (HF LTX-2.5 discussion 44); measured:
 # equal or better on every line (Holmes 2203 6.4/0.8 -> 6.0/7.3) and one forward pass a step fewer
-TALK_LOCK = 0.3                     # each talk piece's last frame weakly pinned to its first: the framing holds
 # 10-29 lip-sync hunt (SyncNet, calibrated 8/8 on the user's eye at a bar of ~5): a CLOSE-UP's key pinned at 0.8 and
 # copied into its last frame froze the mouth in the key's pose ("ventriloquist") - Helen's 4785 passed 1 of 6 seeds;
-# with no end lock and the key at 0.5, 4 of 4 (7.0-7.8), the framing held. Two-shots keep the lock (it held the push-in)
-TALK_CLOSE_KEY = 0.5
-TALK_KEY = 0.8
+# with no end lock and the key at 0.5, 4 of 4 (7.0-7.8), the framing held. E27 (11-08): shots with others in them
+# kept the 0.8 key and the 0.3 end lock (10-28, for a push-in on 8 s two-shots, before the 10-29 hunt); on the 11-08
+# runs they passed SyncNet's first take 6 of 31 (close-ups 6 of 9), their mouths weak or near still in the failing
+# takes, face size alike in passing and failing ones: every talk shot now has the close-up's settings
+TALK_KEY = 0.5
 # Holmes's voice drove almost no mouth (envelope swing 17.8 dB vs ~23, few dips between syllables): LTX hears a
 # cleaned copy - low-passed at 3.8 kHz and expanded so the gaps between syllables drop - while the clip keeps the
 # real voice (audio_mux). Farintosh: 1.1/0.5 -> 7.9/7.8 and 8.0/8.0 (two runs); good lines unchanged
@@ -2998,7 +2999,7 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     lst = ""
     other = next((w for w in s.get("who") or [] if w != who), None)
     # (10-28: "Sherlock Holmes, standing, ..." here made LTX pull a close-up back to the waist to show the posture -
-    # SyncNet 9.0 -> 1.0; the key carries the posture and TALK_LOCK holds the framing, so the talk words name none)
+    # SyncNet 9.0 -> 1.0; the key carries the posture, so the talk words name none)
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
         rest = [w for w in s.get("who") or [] if w != who]
         lst = (f" {other} listens with a closed mouth." if len(rest) == 1 else
@@ -3505,7 +3506,6 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             drv = L / "audio" / f"{mid}_drv.wav"        # what LTX hears; the clip keeps `pad` (TALK_DRIVE_AF)
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", drive_af(pitch.get(e.get("speaker"))),
                             str(drv)], check=True)
-            close = len(s.get("who") or []) <= 1
             p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
             emb = f"t_{mid}_{MF._h(p_)}"
             enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
@@ -3518,8 +3518,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                              "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
-                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None if close else TALK_LOCK,
-                             "images": [dict(img[0], strength=TALK_CLOSE_KEY if close else TALK_KEY)]})
+                             "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None,
+                             "images": [dict(img[0], strength=TALK_KEY)]})
                 if k:       # 10-24 user: the pieces didn't join - each restarted from the key; now each starts on
                     pst, pn = e["chunks"][k - 1]    # the frame of the piece before where their overlap begins
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
