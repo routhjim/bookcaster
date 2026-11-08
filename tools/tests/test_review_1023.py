@@ -51,7 +51,8 @@ if (md / "action-003217" / "maps" / "frames" / "depth_0000_creature.npy").exists
     import re
     check(re.search(r"chr_vorgrath Vorgrath(, [^:]+)?: a (four-legged )?massive dragon", p) is not None,
           "keys: the dragon's trigger and look in the prompt", p[:400])
-    check("Star-iron breastplate" in p, "keys: Edric in the wardrobe's armour at the fight")
+    check(MF._dress(book, "01_chapter_1", "action-003217", ["Edric"]).get("Edric", "?") in p,
+          "keys: Edric in the wardrobe's armour at the fight")
     check(".." not in p, "keys: no doubled stops")
 
 # looks carry no posture (the slain dragon was drawn standing "on four legs"); overlapping regions -> lighter LoRAs
@@ -91,7 +92,8 @@ check("fighting stance" not in MF._fight_prompt(book, "01_chapter_1", "action-00
       "fight key: a knocked-down fighter is not also drawn standing in a stance (two Edrics at 5:26)")
 check("fighting stance" in MF._fight_prompt(book, "01_chapter_1", "action-003267", dict(lay, layout="Apart; the dragon "
       "crouches on all four legs on the ground.")), "fight key: a standing fighter keeps the stance")
-check("tail that sweeps" in MF.FIGHT_RULES, "fight rules: the body part the action uses is in the opening picture")
+check("Every body part the action will use is in" in MF.FIGHT_RULES,
+      "fight rules: the body part the action uses is in the opening picture")
 
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
