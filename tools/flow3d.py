@@ -1172,9 +1172,13 @@ def lora_lines(book, only=None) -> list:
     return [f"no LoRA: {n} ({why}): `bookcaster assets` trains it" for n, why in lora_todo(book, only).items()]
 
 
-def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
-    """Train every missing LoRA before any key is drawn (iGPU, cached); returns the names still missing (loud)."""
-    todo = sorted(n for n, w in lora_todo(book, only).items() if w != FAILED_BEFORE)
+def ensure_loras(book, log=print, status_cb=None, only=None, rank=None, landed=None) -> list:
+    """Train every missing LoRA before any key is drawn (iGPU, cached); returns the names still missing (loud).
+    rank: {name: how many of the chapter's moments they are in}: the most first (11-08 user: "the LoRAs in the most
+    shots are made first"). landed(name=, ok=) as each build ends, landed(card=) as a card has no more to train."""
+    todo = sorted((n for n, w in lora_todo(book, only).items() if w != FAILED_BEFORE),
+                  key=lambda n: (-(rank or {}).get(n, 0), n))
+    landed = landed or (lambda **k: None)
     if todo and not os.environ.get("BOOKCASTER_SKIP_LORA"):
         # nothing else runs yet: one character per card, all in parallel (user 10-20: XTXs for speed); a card's
         # later characters queue behind its flock
@@ -1191,7 +1195,7 @@ def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
                            "--card", c, "--n-pose", str(n_pose)], lg_)
                 if rc_ == 0 and n not in lora_todo(book, only):
                     _log(f"LoRA {n}: done (card {c})", log)
-                    return
+                    return True
                 why = ""
                 try:
                     why = [ln for ln in lg_.read_text().splitlines() if f"charlora {n}: FAILED" in ln][-1]
@@ -1218,10 +1222,13 @@ def ensure_loras(book, log=print, status_cb=None, only=None) -> list:
                 try:
                     n = q.get_nowait()
                 except queue.Empty:
-                    return
-                one((n, c))
+                    return landed(card=c)
+                landed(name=n, ok=bool(one((n, c))))
+        busy = cards[:max(1, min(len(cards), len(todo)))]
+        for c in cards[len(busy):]:
+            landed(card=c)                  # (more cards than LoRAs: free from the start)
         with ThreadPoolExecutor(len(cards)) as ex:
-            list(ex.map(worker, cards[:max(1, min(len(cards), len(todo)))]))
+            list(ex.map(worker, busy))
     # 11-05: a LoRA that failed for a cast member who is not a person (a creature, a craft, an object: charlora's own
     # kind) is said and left out - its keys use its sheet, as without a LoRA; only a person's missing LoRA stops the
     # run (a spacecraft in the cast passed 2-3 of 80 pictures through the face checks and stopped the whole job)

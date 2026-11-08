@@ -3061,17 +3061,25 @@ IGPU_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    #
 QUIET_LOAD_WAIT, QUIET_KEY_GRACE = 180, 90     # s: LTX waits for the iGPU drawer's load; its last draw at the quiet hold
 
 
-def key_tasks(book: Path, stem: str, shots: list, log=print) -> list:
-    """The shots whose key is still to draw or judge, as keys_judged's tasks (their place pictures made first, on
-    both cards; a shot whose words, LoRAs or place picture changed has its old pictures removed)."""
-    _, cx = _ctx(book, stem)
-    sd = shot_dir(book, stem)
+def key_places(shots: list) -> dict:
+    """{place: the fixtures its picture must hold} of these shots (the first shot there that names any)."""
     places = {}
     for s in shots:
         if s.get("place") and s.get("place") not in places:
             places[s.get("place")] = next((tuple(x.get("fixtures") or ()) for x in shots
                                            if x.get("place") == s.get("place") and x.get("fixtures")), ())
-    heroes = MF.heroes_for(book, places, log)   # all places at once, both cards, judged as they land (10-24)
+    return places
+
+
+def key_tasks(book: Path, stem: str, shots: list, log=print, heroes: dict | None = None) -> list:
+    """The shots whose key is still to draw or judge, as keys_judged's tasks (their place pictures made first, on
+    both cards; a shot whose words, LoRAs or place picture changed has its old pictures removed). heroes: the
+    place pictures already settled (keys_judged's gate: settled for the whole hold's places, not these shots')."""
+    _, cx = _ctx(book, stem)
+    sd = shot_dir(book, stem)
+    if heroes is None:
+        heroes = MF.heroes_for(book, key_places(shots), log)   # all places at once, both cards, judged as they land
+    heroes = dict(heroes)
     heroes.setdefault(None, None)
     tasks = []
     for s in shots:
@@ -3122,21 +3130,24 @@ def key_tasks(book: Path, stem: str, shots: list, log=print) -> list:
     return tasks
 
 
-def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | None = None, side=None) -> list:
+def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | None = None, side=None,
+                gate=None) -> list:
     """Each shot's opening picture: ONE seed drawn, judged on the iGPU the moment it lands, the next seed only if it
     fails (up to ALL_SEEDS), by kept-loaded drawers on both cards (qwen_image.py --serve) (10-24 user: one seed, the
     image model kept loaded, checked as it is ready; before, 2 seeds were drawn for every shot, then all judged:
     the first seed passed for 142 of 149). key.png = the first clean seed, else the nearest head count.
     tasks: key_tasks' (made here when None). side: a _QuietKeys - ONE drawer on the iGPU instead (no card lock), which
     stops drawing at side.stop. A drawer that dies stops; its shot goes back to the others (none left: unsettled).
+    gate: a _Loras still training - a shot's key is drawn once its people's LoRAs have landed (feed()), on the iGPU
+    from the start and on each card as it has no more LoRAs to train.
     -> the shots with no clean seed."""
     import contextlib
     import queue
-    tasks = key_tasks(book, stem, shots, log) if tasks is None else tasks
+    tasks = [] if gate else key_tasks(book, stem, shots, log) if tasks is None else tasks
     q_, dirty, lock = queue.Queue(), [], threading.Lock()
     for t in tasks:
         q_.put(t)
-    left = {t["s"]["id"] for t in tasks}
+    left = {t["s"]["id"] for t in tasks} | ({FEEDING} if gate else set())
 
     def settle(t, best, clean):
         if best is not None and not ((t["d"] / "key.png").exists() and
@@ -3182,6 +3193,11 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
                 try:
                     t = q_.get(timeout=5)
                 except queue.Empty:
+                    continue
+                if gate and proc is None and card != "igpu" and \
+                        subprocess.run(["flock", "-n", f"/tmp/gpu-{card}.lock", "true"]).returncode:
+                    q_.put(t)               # the card is someone else's: polled, never queued on
+                    time.sleep(10)
                     continue
                 seed = t["seeds"].pop(0)
                 k = t["d"] / f"key_{seed}.png"
@@ -3241,19 +3257,88 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
             try:
                 t, k = jq.get(timeout=5)
             except queue.Empty:
-                if not any(th.is_alive() for th in ths[:-1]) and jq.empty():
+                with lock:
+                    gone = FEEDING not in left and not any(th.is_alive() for th in ths)
+                if gone and jq.empty():
                     return                  # no drawer left (stopped or died): what is left stays unsettled
                 continue
             judge(t, k)
 
-    if tasks:
-        ths = [threading.Thread(target=drawer, args=(c,)) for c in (("igpu",) if side else ("05", "65"))] + \
-            [threading.Thread(target=judger)]
-        for th in ths:
-            th.start()
-        for th in ths:
-            th.join()
+    def start(c):
+        th = threading.Thread(target=drawer, args=(c,))
+        with lock:
+            ths.append(th)
+        th.start()
+
+    def feed():
+        """The gate's shots as they become ready, each card's drawer as that card has no LoRA left to train, the
+        iGPU's at once (the language model is down). The place pictures come first: all of them settled already,
+        or drawn on the first card that is free (as heroes_for always has, on the cards), before its drawer."""
+        try:
+            places, fed, heroes = key_places(shots), set(), None
+            sys.path.insert(0, str(HERE.parent))
+            from tts_reader import animate
+            if QUIET_IGPU and subprocess.run(["systemctl", "--user", "is-active", "-q",
+                                              animate.STRATA_UNIT]).returncode:
+                animate._flush()            # (the language model's pages, before the drawer loads)
+                start("igpu")
+            while True:
+                with gate.cond:
+                    done, free = gate.done(), list(gate.free)
+                cards = ["05", "65"] if done else free
+                if heroes is None:
+                    # (only its said-once "!!!" lines: heroes_for says the rest, once, as it always has)
+                    st = {w: MF._hero_state(book, w, lambda m_: m_.startswith("!!!") and log(m_), m)
+                          for w, m in places.items()}
+                    open_ = [c for c in cards if not subprocess.run(["flock", "-n", f"/tmp/gpu-{c}.lock",
+                                                                     "true"]).returncode]   # (polled, never queued)
+                    if open_ or all(isinstance(v, Path) for v in st.values()):
+                        heroes = MF.heroes_for(book, places, log, cards=tuple(open_) or MF.HERO_CARDS)
+                    have = heroes if heroes is not None else {w: v for w, v in st.items() if isinstance(v, Path)}
+                if heroes is not None:
+                    for c in cards:
+                        if c not in started:
+                            started.add(c)
+                            log(f"keys: card {c} has no LoRA left to train: drawing keys")
+                            start(c)
+                ready = [s for s in shots if s["id"] not in fed and (s.get("place") or None) in have | {None: 0}
+                         and gate.ready(s)]
+                if ready:
+                    fed.update(s["id"] for s in ready)
+                    new = key_tasks(book, stem, ready, log, heroes=have)
+                    with lock:
+                        left.update(t["s"]["id"] for t in new)
+                    for t in new:
+                        q_.put(t)
+                    log(f"keys: {len(ready)} more shots ready ({len(new)} to draw), {len(shots) - len(fed)} waiting")
+                if done and heroes is not None:
+                    return                  # (a person whose LoRA failed: never fed; the gate's wait() says so)
+                with gate.cond:
+                    gate.cond.wait(10)
+        finally:
+            with lock:
+                left.discard(FEEDING)
+
+    ths, started = [], set()
+    if tasks or gate:
+        for c in () if gate else ("igpu",) if side else ("05", "65"):
+            start(c)
+        jt = threading.Thread(target=judger)
+        jt.start()
+        if gate:
+            feed()
+        while True:
+            with lock:
+                live = [th for th in ths if th.is_alive()]
+            if not live:
+                break
+            for th in live:
+                th.join()
+        jt.join()
     return dirty
+
+
+FEEDING = "\0feeding"      # keys_judged's `left` while a gate's shots are still to come
 
 
 def quiet_later(shots: list) -> list:
@@ -4841,7 +4926,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         es = MF.entries(book, stem, t0, t1)
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
-    loras = loras_beside(book, stem, log)                     # the cast's LoRAs on both cards while the director runs
+    loras = loras_beside(book, stem, log, es)                 # the cast's LoRAs on both cards while the director runs
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
     sfx_plan(book, stem, log)                                 # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log, keep_llm=True)   # then one set sheet per place it used
@@ -4858,9 +4943,6 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
     # before: a place to describe restarted the model place_sheets had just stopped)
-    if loras:
-        loras()                                               # every key draws with its people's LoRAs
-        sig = _plan_sig(book, stem)                           # (the saved plan is of the LoRAs it was keyed with)
     if render:
         keep = {e["id"] for e in es if render[0] - 1e-6 <= float(e["t"]) < render[1]}
         es = [e for e in es if e["id"] in keep]
@@ -4877,8 +4959,13 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
     later = {s["id"] for s in quiet_later(shots)} if until != "keys" else set()    # (drawn in _render, E24)
-    for s in keys_judged(book, stem, [s for s in shots if s["id"] not in later], log):
+    # 11-08 user: the keys start as the LoRAs land - a shot's once its people's LoRAs are built, on the iGPU at once
+    # and on each card as it has no more to train (keys_judged's gate)
+    for s in keys_judged(book, stem, [s for s in shots if s["id"] not in later], log, gate=loras):
         log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
+    if loras:
+        loras()                                               # a person's missing LoRA stops the job, as before
+        sig = _plan_sig(book, stem)                           # (the saved plan is of the LoRAs it was keyed with)
     ks = sheet(book, stem, shots, op.with_name(op.stem + "_keys.jpg"))
     log(f"key sheet: {ks}")
     if until == "keys":
@@ -4888,37 +4975,101 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
 
 
-def loras_beside(book: Path, stem: str, log=print):
+def loras_beside(book: Path, stem: str, log=print, es: list | None = None):
     """The chapter cast's missing LoRAs train on both XTX cards WHILE the director plans (11-06 user: both cards sat
     idle ~30 min under the director, after ~40 min of LoRAs before it): the language model goes up first (it needs
     ~96 GB free to start, so never after the builds), then the builds, each judging on its own card (charlora: the
-    iGPU is the language model's). -> a wait() that raises on a person's missing LoRA; None when none is to do."""
+    iGPU is the language model's). The one in the most of the stretch's moments (es) trains first (11-08 user: "the
+    LoRA's in the most shots are made first"; the director's shots are not made yet, its moments are what they are
+    cut from). -> a _Loras (the keys drawn as each lands); None when none is to do."""
     import flow3d
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate, video as V
     cast = set(V.looks(json.loads((book / "work" / "video" / stem / "plan.json").read_text()))[0])
-    if not flow3d.lora_todo(book, cast):
+    todo = flow3d.lora_todo(book, cast)
+    if not todo:
         return None
+    rank = lora_rank(book, stem, es or [], todo)
     animate.igpu("strata", log)
-    res = {}
+    return _Loras(book, RG.Book(book), {n: w for n, w in todo.items() if w != flow3d.FAILED_BEFORE}, rank,
+                  lambda landed: flow3d.ensure_loras(book, log, only=cast, rank=rank, landed=landed), log)
 
-    def build():
+
+def lora_rank(book: Path, stem: str, es: list, names) -> dict:
+    """{name: the stretch's moments they are in + its lines they speak}: how many shots they will be in, before the
+    director has made any (11-08, on the saved plans: the two together put the knight's, the Long Dark's and the
+    Speckled Band's casts in their shot order but for one neighbouring pair; the moments alone missed Sherlock's,
+    whose moments name nobody, and the lines alone put Hulda before Edric)."""
+    R_ = RG.Book(book)
+    a = min((float(e["t"]) for e in es), default=0.0)
+    b = max((float(e["t"]) + float(e.get("dur") or 0) for e in es), default=float("inf"))
+    tl = [x for x in load_timeline(book, stem) if x.get("kind") == "quote" and a <= float(x.get("t") or 0) < b] \
+        if (book / "work" / f"{stem}.timeline.json").exists() else []
+    return {n: sum(any(n == w or R_.same(n, w) for w in (e.get("who") or [])) for e in es)
+            + sum(n == x.get("speaker") or R_.same(n, x.get("speaker")) for x in tl) for n in names}
+
+
+class _Loras:
+    """The LoRA builds beside the director (loras_beside), as the keys see them (11-08 user: "have the iGPU get to
+    work on keyframes as soon as Strata/Director is done ... whenever the first XTX card is done with LoRA, kick that
+    one off on key frames too"): who has landed and built, and which cards have no more to train. wait() (or a
+    call): every build, raising on a person's missing LoRA as before."""
+
+    def __init__(self, book, R_, todo: dict, rank: dict, build, log=print):
+        self.book, self.R, self.log = book, R_, log
+        self.todo = sorted(todo, key=lambda n: (-rank.get(n, 0), n))      # (ensure_loras' order)
+        self.cond, self.ok, self.free, self.res = threading.Condition(), {}, [], {}
+        if self.todo:
+            log("LoRAs, the most moments first: " + ", ".join(f"{n} ({rank.get(n, 0)})" for n in self.todo))
+        self.th = threading.Thread(target=self._build, args=(build,), daemon=True)
+        self.th.start()
+
+    def _build(self, build):
         try:
-            res["left"] = flow3d.ensure_loras(book, log, only=cast)
+            self.res["left"] = build(self._landed)
         except Exception as exc:                        # noqa: BLE001 - raised in wait(), on the job's thread
-            res["error"] = exc
-    th = threading.Thread(target=build, daemon=True)
-    th.start()
+            self.res["error"] = exc
+        with self.cond:
+            self.res["done"] = True
+            self.cond.notify_all()
 
-    def wait():
-        if th.is_alive():
-            log("waiting for the character LoRAs before the keys")
-        th.join()
-        if "error" in res:
-            raise res["error"]
-        if res["left"]:
-            raise RuntimeError(f"no LoRA for {res['left']} (see work/video/charlora_build_*.log)")
-    return wait
+    def _landed(self, name=None, ok=None, card=None):
+        with self.cond:
+            if name is not None:
+                self.ok[name] = ok
+            if card is not None and card not in self.free:
+                self.free.append(card)
+            self.cond.notify_all()
+
+    def done(self) -> bool:
+        return bool(self.res.get("done"))
+
+    def ready(self, s: dict):
+        """True: everyone in the shot whose LoRA was to train has it (or is not a person: drawn as before without
+        it); None: a person whose build failed (the key is never drawn; wait() says so, as it always has);
+        False: still training."""
+        import flow3d as F3
+        for n in self.todo:
+            if not any(n == w or self.R.same(n, w) for w in s.get("who") or []):
+                continue
+            if n not in self.ok:
+                if not self.done():
+                    return False
+                self.ok[n] = n not in F3.lora_todo(self.book, [n])     # (the builds ended without a word on it)
+            if not self.ok[n] and F3._is_person(self.book, n):
+                return None
+        return True
+
+    def wait(self):
+        if self.th.is_alive():
+            self.log("waiting for the character LoRAs")
+        self.th.join()
+        if "error" in self.res:
+            raise self.res["error"]
+        if self.res["left"]:
+            raise RuntimeError(f"no LoRA for {self.res['left']} (see work/video/charlora_build_*.log)")
+
+    __call__ = wait
 
 
 def _plan_sig(book: Path, stem: str) -> str:

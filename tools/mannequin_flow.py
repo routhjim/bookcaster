@@ -1779,7 +1779,7 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
 HERO_CARDS = ("05", "65")
 
 
-def heroes_for(book: Path, places: dict, log=print) -> dict:
+def heroes_for(book: Path, places: dict, log=print, cards: tuple = HERO_CARDS) -> dict:
     """{where: must} -> {where: hero path}. Every place still to settle is drawn on BOTH cards by kept-loaded drawers
     (qwen_image.py --serve) and judged on the iGPU as each picture lands; a failed one's next seed goes straight
     back to a drawer (10-24 user: the vision model kept loaded, checking as the sets get built - before, each seed
@@ -1888,7 +1888,7 @@ def heroes_for(book: Path, places: dict, log=print) -> dict:
                 continue
             judge(st)
 
-    ths = [threading.Thread(target=drawer, args=(c,)) for c in HERO_CARDS[:max(1, min(len(HERO_CARDS), len(todo)))]]
+    ths = [threading.Thread(target=drawer, args=(c,)) for c in cards[:max(1, min(len(cards), len(todo)))]]
     ths.append(threading.Thread(target=judger))
     for t in ths:
         t.start()
