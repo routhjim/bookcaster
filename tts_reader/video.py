@@ -50,6 +50,12 @@ def registry_at(path):
         return None
 
 
+def _direction(path) -> str:
+    """The author's direction block of the book holding *path* (registry.Book.direction), or ""."""
+    R = registry_at(path)
+    return R.direction() if R is not None and hasattr(R, "direction") else ""
+
+
 def period_of(path) -> str:
     """The book's time period (<book>/period.txt, `bookcaster period`; the 3D plan writes it from the text when
     missing). Any path inside the book works (the book dir, work/video, a chapter dir). '' = not set."""
@@ -123,12 +129,14 @@ VIDEO_BITRATE = os.environ.get("BOOKCASTER_VIDEO_BITRATE", "2500k")
 PLAN_VERSION = 4   # bump when the plan's shape changes: older plans are redone
 
 
-def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count: int) -> dict:
+def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count: int, direction: str = "") -> dict:
     numbered = "\n\n".join(f"[P{i}] {p}" for i, p in enumerate(paras))
     prompt = (
         "You are the illustrator of an illustrated audiobook video. Below is one chapter, "
         "paragraph-numbered. Plan the pictures shown while it is read aloud.\n\n"
-        "First fix the LOOK of every recurring character and place. A reference picture is "
+        "First fix the LOOK of every character and every recurring place. A character is every living person or "
+        "creature the chapter shows doing or saying anything, named or called only by their role, however briefly "
+        "they appear (11-08: a one-verse role who acts got no look, and his shot was drawn without him). A reference picture is "
         "drawn from each description and reused in every scene, so write it for an image "
         "model that takes words literally:\n"
         "- A person: START with \"a man\", \"a woman\", \"a boy\" or \"a girl\" as the story calls them "
@@ -179,6 +187,7 @@ def plan_pictures(paras: list[str], llm_url: str, model: str, style: str, count:
         'Reply with ONLY JSON: {"look": {"characters": {"Name": "description"}, '
         '"places": {"Name": "description"}}, '
         '"pictures": [{"start": 0, "who": ["Name"], "where": "Name", "crowd": "", "prompt": "..."}]}\n\n'
+        + (f"{direction}\n" if direction else "") +
         f"Chapter:\n{numbered}"
     )
     reply = _chat(llm_url, model, prompt, max_tokens=12000)
@@ -559,7 +568,7 @@ def ensure_plan(text: str, work: Path, llm_url: str, llm_model: str, style: str,
             p.setdefault("full_prompt", full_prompt(p["prompt"], plan.get("look", {}), style))
         before = {p["id"]: p["full_prompt"] for p in plan["pictures"]}
         refresh_looks(plan, work.parent / "look.json", llm_url, llm_model, style, log)
-        if ensure_wardrobe(plan, text, llm_url, llm_model, log):
+        if ensure_wardrobe(plan, text, llm_url, llm_model, log, direction=_direction(work)):
             plan_path.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
         changed = []
         for p in plan["pictures"]:       # the prompt rules may have changed since: redraw what differs
@@ -577,10 +586,10 @@ def ensure_plan(text: str, work: Path, llm_url: str, llm_model: str, style: str,
         return plan
     count = max(3, min(90, round(total / 60 * per_minute)))
     log(f"  planning ~{count} pictures...")
-    plan = plan_pictures(paragraphs(text), llm_url, llm_model, style, count)
+    plan = plan_pictures(paragraphs(text), llm_url, llm_model, style, count, direction=_direction(work))
     keep_looks(plan, work.parent / "look.json")
     refresh_looks(plan, work.parent / "look.json", llm_url, llm_model, style, log)
-    ensure_wardrobe(plan, text, llm_url, llm_model, log)
+    ensure_wardrobe(plan, text, llm_url, llm_model, log, direction=_direction(work))
     for n, p in enumerate(plan["pictures"]):
         p.update(id=f"p{n + 1:03d}", seed=1000 + n,
                  full_prompt=full_prompt(p["prompt"], plan.get("look", {}), style,
@@ -1021,7 +1030,7 @@ def changes_nothing(dress: str, look: str) -> bool:
 
 
 def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narrator: str = "",
-                   notes: str = "") -> dict | None:
+                   notes: str = "", direction: str = "") -> dict | None:
     """{name: [{"from": paragraph, "id", "dress"}, ...]} (in story order), from one language-model
     pass over the whole chapter; {} when nobody changes, None when the server gave no usable answer
     (10-25: Acts 2's answer filtered down to {} read as "no answer", and the stale fire outfits stayed)."""
@@ -1039,7 +1048,8 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narra
         nt = (f"The film director's notes on how each scene opens (hints only; the chapter's own words decide - an "
               f"outfit the chapter does not describe or clearly imply is not an entry):\n{notes}\n\n"
               if notes else "")
-        reply = _chat(llm_url, model, WARDROBE_PROMPT.format(notes=nt, people=people, paras=numbered), max_tokens=4000)
+        reply = _chat(llm_url, model, WARDROBE_PROMPT.format(notes=nt + (f"{direction}\n" if direction else ""),
+                                                             people=people, paras=numbered), max_tokens=4000)
     except Exception:
         return None
     m = re.search(r"\{.*\}", reply or "", re.S)
@@ -1070,34 +1080,35 @@ def plan_wardrobe(paras: list[str], chars: dict, llm_url: str, model: str, narra
     return out
 
 
-def wardrobe_inputs_key(plan: dict, text: str, narrator: str = "", notes: str = "") -> str:
+def wardrobe_inputs_key(plan: dict, text: str, narrator: str = "", notes: str = "", direction: str = "") -> str:
     """What a chapter's wardrobe is planned from: its rules, the cast's looks and the chapter (10-27 audit: the key was
     the prompt alone, so a look change or a fixed cast never re-planned it)."""
     import hashlib
     chars, _ = looks(plan)
     return hashlib.sha1(json.dumps([WARDROBE_PROMPT, sorted(chars.items()), hashlib.sha1(text.encode()).hexdigest(),
-                                    narrator, notes],
+                                    narrator, notes] + ([direction] if direction else []),
                                    sort_keys=True).encode()).hexdigest()[:8]
 
 
 def ensure_wardrobe(plan: dict, text: str, llm_url: str, model: str, log=print, narrator: str = "",
-                    notes: str = "") -> bool:
+                    notes: str = "", direction: str = "") -> bool:
     """Plan the wardrobe into plan["wardrobe"] once (again when its rules change: 10-24, the armor Edric forges was
     worn from the forging paragraph on, in the forge); True if it was planned now. A re-plan keeps each outfit's
     words (the sheets, and any `bookcaster look` edit): only when each starts and ends changes.
     10-28: keyed on the rules, looks, chapter and narrator - NOT the director's scene notes (they are read when it plans):
     every re-asked breakdown re-planned the whole wardrobe, a new outfit set each time, and all LoRAs retrained twice in
     a day. A wardrobe keyed with the notes (before 10-28) is kept and re-keyed, not planned again."""
-    k = wardrobe_inputs_key(plan, text, narrator)
+    k = wardrobe_inputs_key(plan, text, narrator, direction=direction)
     if "wardrobe" in plan and plan.get("wardrobe_k", k if not plan["wardrobe"] else "") == k:
         return False
-    if plan.get("wardrobe") and notes and plan.get("wardrobe_k") == wardrobe_inputs_key(plan, text, narrator, notes):
+    if plan.get("wardrobe") and notes and plan.get("wardrobe_k") == wardrobe_inputs_key(plan, text, narrator, notes,
+                                                                                         direction):
         plan["wardrobe_k"] = k
         log("  wardrobe: kept (re-keyed without the scene notes)")
         return True
     old = {(n, r["id"].lower()): r["dress"] for n, rows in (plan.get("wardrobe") or {}).items() for r in rows}
     chars, _ = looks(plan)
-    new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator, notes)
+    new = plan_wardrobe(paragraphs(text), chars, llm_url, model, narrator, notes, direction)
     if new is None:
         log("  wardrobe: the language model gave no usable answer; the old outfits stay")
         return False

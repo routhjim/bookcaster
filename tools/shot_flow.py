@@ -2181,6 +2181,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         hs = place_sheet.get(home) or {}
         narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote" or song)    # (a song: its words are its story)
         extra = "".join(r for rx, r in RULE_EXTRA if rx.search(narr))     # the narration's own events only
+        extra = RGB.direction() + extra    # (a song's author's direction, every passage; the chains read it too)
         told = RULE_TOLD.format(others="; ".join(f"{w} (its fixed things: {(place_sheet.get(w) or {}).get('room') or 'as the narration says'})"
                                                   for w in others)) if others else ""
         pv = ("(none: the chapter starts here)" if prev_shot is None else
@@ -2580,7 +2581,8 @@ time jumps. Someone TELLING of another place or time (a story, a memory) stays i
 the places the telling may cut to as "cutaways". {narrator}
 
 The places already known (use these names when it is one of them; else name a new place plainly, with "(inside)" or
-"(outside)"): {places}
+"(outside)"; those two words only ever mean the inside and the outside of the SAME building, so a different room or
+space, inside or under a known place, is a new place with a name of its own): {places}
 The people of the book: {people}
 
 THE CHAPTER, each line [seconds from its start] who: the words:
@@ -2651,7 +2653,7 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
     q = BREAKDOWN_ASK.format(narrator=(f"The narrator, {nar}, tells the story as 'I'; a stretch where {nar} looks "
                                        f"back before the story begins is a scene of its own." if nar else "") + (
         SONG_BREAKDOWN.format(singer=RG.Book(book).person(song["singer"]["name"]) or song["singer"]["name"])
-        if song else ""),
+        if song else "") + ("\n" + RG.Book(book).direction() if RG.Book(book).direction() else ""),
                              places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
@@ -2772,7 +2774,8 @@ def place_sheets(book: Path, stem: str, es: list, by: dict, log=print, keep_llm:
         shots = "\n".join(f"- {sh.get('picture') or ', '.join(sh.get('who') or [])}" for _, sh in xs
                           if sh.get("kind") != "talk")[:3000] or "(people talking)"
         said = " ".join(z for e, _ in xs for _, z in timed(tl, float(e["t"]), float(e["dur"])))[:2500]
-        q = SET_ASK.format(place=w, period=period, people=", ".join(chars), shots=shots, said=said)
+        q = SET_ASK.format(place=w, period=period + RG.Book(book).direction(), people=", ".join(chars), shots=shots,
+                           said=said)        # (the author's direction, a song's: the set and its crowd may follow it)
         sid = "set_" + re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")
         cp, k = sd / f"{sid}.json", MF._h(q)
         got = json.loads(cp.read_text()) if cp.exists() else {}
@@ -2828,11 +2831,12 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
     text = (book / "chapters" / f"{stem}.txt").read_text()
     R_ = RG.Book(book)                  # the narrator in the plan's own spelling of them (the "I" of the text)
     nar = R_.key_in(R_.narrator(), video.looks(plan)[0]) if R_.narrator() else ""
-    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or ""):
+    dr = R_.direction()                 # (a song's author's direction: the outfits may follow it too)
+    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or "", direction=dr):
         return                          # current for these rules, looks, chapter and narrator: nothing to ask
     notes = scene_notes(book, stem, log)          # the breakdown (cached; it brings up the language model if not)
     animate.igpu("strata", log)
-    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or "", notes=notes):
+    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or "", notes=notes, direction=dr):
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 
@@ -2910,7 +2914,8 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
             text = " ".join(x["text"] for x in tl for mid in sorted(mids, key=t_of.get)
                             if t_of[mid] - 0.5 <= x["t"] < t_of[mid] + span[mid] - 0.5)[:1500]
             reply = (_chat(BC.LLM_URL, BC.LLM_MODEL, PLACE_ASK.format(where=base, side=f"from {sd_}", text=text,
-                                                                        period=MF.period_line(book, "everything there")),
+                                                                        period=MF.period_line(book, "everything there"))
+                           + ("\n\n" + R_.direction() if R_.direction() else ""),
                            max_tokens=300) or "").strip().strip('"')
             reply = re.sub(r"(?s)<think>.*?</think>", "", reply).strip().splitlines()[0:1]
             if reply and reply[0].strip():

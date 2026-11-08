@@ -196,9 +196,43 @@ def pick_singer(lyrics: str, tags: str, log=print) -> dict:
     raise RuntimeError("song: the language model named no lead singer")
 
 
+def replan_for_direction(book: Path, log=print) -> list:
+    """The author's direction changed: what was planned from the old one is planned again (the art style the planner
+    chose, the people's looks and the places, the chapter's picture plan and moments). A look or place set by hand
+    (look.json "_pinned") stays. The LoRAs, sheets and heroes are not touched here: their own staleness checks (each
+    look's and outfit's signature, lora_todo, _plan_sig) retrain and redraw what the new looks change, and the
+    director's caches miss on their changed questions. -> what was reset."""
+    gone = []
+    for f in (book / "art_style.txt",):
+        if f.exists():
+            f.unlink()
+            gone.append(f.name)
+    lp = book / "work" / "video" / "look.json"
+    if lp.exists():
+        look = json.loads(lp.read_text())
+        pins = look.get("_pinned") or {}
+        for kind in ("characters", "places", "props"):
+            keep = {k: v for k, v in (look.get(kind) or {}).items() if k in pins}
+            if (look.get(kind) or {}) != keep:
+                gone.append(f"look.json {kind}")
+            look[kind] = keep
+        look.pop("_described", None)
+        lp.write_text(json.dumps(look, indent=1, ensure_ascii=False))
+    vd = book / "work" / "video" / STEM
+    for f in (vd / "plan.json", vd / "anim" / "manifest.json", vd / "flow3d" / "plan.json"):
+        if f.exists():
+            f.unlink()
+            gone.append(str(f.relative_to(book)))
+    if gone:
+        log(f"song: the direction changed: planned again from it: {', '.join(gone)}")
+    return gone
+
+
 def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "", singer: str = "",
-         log=print) -> Path:
-    """The song's book (see the module's doc); safe to run again (the stem and the word times are cached)."""
+         log=print, direction: str | None = None) -> Path:
+    """The song's book (see the module's doc); safe to run again (the stem and the word times are cached).
+    direction: the author's own words on how the film should look and feel, kept verbatim (song.json) and given to
+    every planning prompt (registry.Book.direction); None keeps the one stored, "" clears it."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     import shot_flow as SF
     book = Path(book).expanduser().resolve()
@@ -213,6 +247,9 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
         d.mkdir(parents=True, exist_ok=True)
     meta = book / "song.json"
     old = json.loads(meta.read_text()) if meta.exists() else {}
+    direction = str(old.get("direction") or "") if direction is None else direction.strip()
+    if meta.exists() and direction != str(old.get("direction") or ""):
+        replan_for_direction(book, log)
     who = {"name": singer, "who": ""} if singer else (old.get("singer") if old.get("lyrics") == text and old.get("singer")
                                                        else pick_singer(text, tags, log))
     # the chapter: who sings, then each section a paragraph (its label first, as the lyrics have it)
@@ -244,7 +281,7 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
     once = list(dict.fromkeys(x["text"] for x in lines))
     body_at = len(SF._WORD.findall(chapter.split("\n\n[", 1)[0]))     # (the lines' words start after the intro)
     align = {"model": WHISPER_SONG, "prompt": " ".join(" ".join(once).split()[:180]), "from_word": body_at}
-    meta.write_text(json.dumps(dict(old, audio=str(audio), lyrics=text, singer=who, align=align), indent=1,
+    meta.write_text(json.dumps(dict(old, audio=str(audio), lyrics=text, singer=who, align=align, direction=direction), indent=1,
                                ensure_ascii=False))
     times = SF.word_times(book, STEM, track=voices, log=log)
     words = SF._WORD.findall(chapter)
@@ -275,6 +312,7 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
         tl.pop(0)
     (work / f"{STEM}.timeline.json").write_text(json.dumps(tl, indent=1, ensure_ascii=False))
     meta.write_text(json.dumps({"title": title, "audio": str(audio), "lyrics": text, "tags": tags, "singer": who,
+                                "direction": direction,
                                 "seconds": round(total, 3), "align": align,
                                 "sections": [{"label": lab, "start": spans[idx[0]][0], "end": spans[idx[-1]][1]}
                                              for lab, idx in secs]}, indent=1, ensure_ascii=False))

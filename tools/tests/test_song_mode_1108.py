@@ -93,5 +93,66 @@ with tempfile.TemporaryDirectory() as d:     # word timing: a book as before; a 
     (b / "work" / "x.timeline.json").write_text(json.dumps(tl_))
     BC.whole_timeline(b, "x", log=lambda *a: None)
     check("a song's timeline is left whole", json.loads((b / "work" / "x.timeline.json").read_text()) == tl_)
+
+# 11-08 (the user's notes on the smoke clip): the author's direction, verbatim, reaches the planning prompts
+import registry as RGm
+from tts_reader import video as V, song as S2
+with tempfile.TemporaryDirectory() as d:
+    b = Path(d)
+    (b / "work" / "video").mkdir(parents=True)
+    check("a book has no direction", RGm.Book(b).direction() == "")
+    (b / "song.json").write_text(json.dumps({"direction": "make it merry", "tags": "Lively, cozy"}))
+    dr = RGm.Book(b).direction()
+    check("a song's direction is its author's words, verbatim, with the recording's notes",
+          '"make it merry"' in dr and "Lively, cozy" in dr, dr)
+    asked = []
+    V._chat = lambda url, model, prompt, max_tokens=0: asked.append(prompt) or "{}"
+    V.plan_wardrobe(["p"], {"A": "a man"}, "", "", direction=dr)
+    check("the wardrobe planner reads it", dr in asked[-1])
+    try:
+        V.plan_pictures(["p"], "", "", "", 3, direction=dr)
+    except ValueError:
+        pass
+    check("the look planner reads it", dr in asked[-1])
+    try:
+        V.plan_pictures(["p"], "", "", "", 3)
+    except ValueError:
+        pass
+    check("... and a book's look ask has no direction in it", "AUTHOR'S DIRECTION" not in asked[-1])
+    check("every person the text shows acting gets a look, not only recurring ones",
+          "every living person" in asked[-1] and "recurring character" not in asked[-1])
+    check("a book's wardrobe key is as before", V.wardrobe_inputs_key({"look": {}}, "t") ==
+          V.wardrobe_inputs_key({"look": {}}, "t", direction=""))
+    check("a direction is part of the wardrobe's key",
+          V.wardrobe_inputs_key({"look": {}}, "t") != V.wardrobe_inputs_key({"look": {}}, "t", direction=dr))
+    # a changed direction plans the looks, places, style and picture plan again (pins kept; LoRAs left to their checks)
+    (b / "art_style.txt").write_text("old style\n")
+    (b / "work" / "video" / "look.json").write_text(json.dumps({"characters": {"A": "a", "B": "b"},
+                                                                 "places": {"P": "Outside: p"}, "_pinned": {"B": "b"}}))
+    (b / "work" / "video" / S2.STEM).mkdir()
+    (b / "work" / "video" / S2.STEM / "plan.json").write_text("{}")
+    S2.replan_for_direction(b, log=lambda *a: None)
+    lk = json.loads((b / "work" / "video" / "look.json").read_text())
+    check("a new direction plans looks again, a pinned look kept", lk["characters"] == {"B": "b"} and not lk["places"]
+          and not (b / "art_style.txt").exists() and not (b / "work" / "video" / S2.STEM / "plan.json").exists(), lk)
+src_bd = inspect.getsource(SF.breakdown) + inspect.getsource(SF.direct) + inspect.getsource(SF.place_sheets) + \
+    inspect.getsource(SF.describe_places)
+check("the breakdown, director, set sheets and place descriptions read the direction",
+      src_bd.count("direction()") >= 4, src_bd.count("direction()"))
+check("'(inside)'/'(outside)' are one place's two sides; another room is a place of its own",
+      "a different room" in SF.BREAKDOWN_ASK)
+
+# a place named for one side never takes the other side's description (the cabin drawn as the open deck)
+with tempfile.TemporaryDirectory() as d:
+    b = Path(d)
+    (b / "work" / "video").mkdir(parents=True)
+    (b / "work" / "video" / "look.json").write_text(json.dumps({"places": {"Ship Deck": "Outside: an open deck"}}))
+    R2 = RGm.Book(b)
+    check("'X (inside)' with only an outside description is undescribed", R2.place_look("Ship Deck (inside)") == "",
+          R2.place_look("Ship Deck (inside)"))
+    check("... 'X (outside)' and 'X' keep it", R2.place_look("Ship Deck (outside)").startswith("Outside:")
+          and R2.place_look("Ship Deck").startswith("Outside:"))
+    (b / "work" / "video" / "look.json").write_text(json.dumps({"places": {"Mill": "A mill by the river"}}))
+    check("a description with no side serves either side", RGm.Book(b).place_look("Mill (inside)") == "A mill by the river")
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
