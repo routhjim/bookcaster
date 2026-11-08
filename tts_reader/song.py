@@ -209,7 +209,7 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
         raise ValueError(f"no lyric lines in {lyrics}")
     title = title or audio.stem.replace("_", " ").title()
     work = book / "work"
-    for d in (book / "chapters", work / "final", work / "song"):
+    for d in (book / "chapters", book / "out", work / "final", work / "song"):   # out/: the cut and the key sheet
         d.mkdir(parents=True, exist_ok=True)
     meta = book / "song.json"
     old = json.loads(meta.read_text()) if meta.exists() else {}
