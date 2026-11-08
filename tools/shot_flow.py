@@ -3183,6 +3183,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
         return True
 
     def drawer(card):
+        held = []                           # (this drawer holds `loading`)
         hip = subprocess.run([os.path.expanduser("~/bin/hip-index"), card], capture_output=True, text=True).stdout.strip()
         proc = None
         try:
@@ -3206,6 +3207,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
                         cmd, env = ["flock", f"/tmp/gpu-{card}.lock", MF.QWEN_PY], dict(os.environ, HIP_VISIBLE_DEVICES=hip)
                         if card == "igpu":      # (one CU left for the desktop, as every iGPU job)
                             cmd, env = [str(IGPU_PY)], dict(env, HSA_CU_MASK=f"{hip}:0-38")
+                        if gate:                # one drawer loads at a time (a charlora build beside it
+                            loading.acquire()   # needs 20 GB free; two loads at once left 9 GiB)
+                            held.append(1)
                         proc = subprocess.Popen(cmd + ["-I", str(HERE / "qwen_image.py"), "--serve"],
                                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                 stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
@@ -3219,6 +3223,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
                         ln = proc.stdout.readline()
                         if side:
                             side.up.set()       # (its load line, or its end)
+                        if held:
+                            held.pop()
+                            loading.release()   # (loaded, or ended)
                         if not ln:
                             break
                         try:
@@ -3239,6 +3246,8 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
                 else:
                     settle(t, (t["tried"] or [(None, {})])[0][0], False)
         finally:
+            if held:
+                loading.release()
             if proc is not None:
                 with contextlib.suppress(OSError):
                     proc.stdin.close()
@@ -3293,7 +3302,8 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
                     open_ = [c for c in cards if not subprocess.run(["flock", "-n", f"/tmp/gpu-{c}.lock",
                                                                      "true"]).returncode]   # (polled, never queued)
                     if open_ or all(isinstance(v, Path) for v in st.values()):
-                        heroes = MF.heroes_for(book, places, log, cards=tuple(open_) or MF.HERO_CARDS)
+                        with loading:           # (its drawers load too: not beside the iGPU's load)
+                            heroes = MF.heroes_for(book, places, log, cards=tuple(open_) or MF.HERO_CARDS)
                     have = heroes if heroes is not None else {w: v for w, v in st.items() if isinstance(v, Path)}
                 if heroes is not None:
                     for c in cards:
@@ -3319,7 +3329,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
             with lock:
                 left.discard(FEEDING)
 
-    ths, started = [], set()
+    ths, started, loading = [], set(), threading.Lock()
     if tasks or gate:
         for c in () if gate else ("igpu",) if side else ("05", "65"):
             start(c)

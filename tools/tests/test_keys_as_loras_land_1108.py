@@ -78,6 +78,9 @@ class FakeProc:
 
     def readline(self):
         v = self.out.get()
+        if '"phase"' in v:              # the model's load: it takes a while, then its line
+            time.sleep(0.05)
+            note("loaded", self.card)
         if not v:
             self.out.put("")
         return v
@@ -117,6 +120,8 @@ S.MF._hero_state = lambda book, w, log=print, must=(): Path(f"/hero/{w}.png") if
 
 def heroes_for(book, places, log=print, cards=()):
     note("heroes", tuple(cards), tuple(sorted(w for w in places if w == "Hall" and not HERO["Hall"])))
+    time.sleep(0.05)                    # (its own drawers load and draw)
+    note("heroes end")
     HERO["Hall"] = True
     return {w: Path(f"/hero/{w}.png") for w in places}
 
@@ -191,6 +196,22 @@ def draws():
 
 WHO = {s["id"]: s["who"] for s in SHOTS}
 
+
+def loads():
+    """[(start, end)] of every model load: each drawer's (start .. its load line) and the place pictures' drawing."""
+    out, open_ = [], {}
+    for x in ev:
+        if x[1] in ("drawer start", "heroes"):
+            open_[x[2] if x[1] == "drawer start" else "h"] = x[0]
+        elif x[1] in ("loaded", "heroes end"):
+            out.append((open_.pop(x[2] if x[1] == "loaded" else "h"), x[0]))
+    return sorted(out)
+
+
+def no_overlap():
+    ls = loads()
+    return len(ls) >= 2 and all(a[1] <= b[0] for a, b in zip(ls, ls[1:]))
+
 # ---- 1. three people on two cards ----------------------------------------------------------------------------------
 logs, dirty, err = go({"Ada": 0.8, "Cy": 0.3, "Bo": 0.3})
 starts = [(x[2], x[3]) for x in ev if x[1] == "build start"]
@@ -219,6 +240,7 @@ ids = [x[3] for x in draws()]
 check("each seed drawn once, each shot fed once", len(ids) == len(set(ids)) == len(SHOTS) and
       sorted(fed) == sorted(s["id"] for s in SHOTS), (ids, fed))
 check("the iGPU and both cards all drew", {x[1] for x in draws()} >= {"igpu", "65"}, {x[1] for x in draws()})
+check("the drawers load one at a time, never beside each other or the place pictures", no_overlap(), loads())
 
 # ---- 2. a person's LoRA fails ----------------------------------------------------------------------------------------
 logs, dirty, err = go({"Ada": 0.4, "Cy": 0.2, "Bo": 0.2}, fail={"Cy"})
@@ -233,6 +255,7 @@ logs, dirty, err = go({"Ada": 0.4, "Cy": 0.2, "Bo": 0.1}, igpu=False)
 check("BOOKCASTER_QUIET_IGPU=0: no iGPU drawer, the first key after the first card is free",
       t("drawer start", "igpu") is None and draws()[0][0] >= t("build end", "Bo"), ev)
 check("... every key still drawn", all((Path(TD[0]) / s["id"] / "key.png").exists() for s in SHOTS))
+check("... and the cards load one at a time", no_overlap(), loads())
 
 # ---- 4. a card someone else holds: polled (flock -n), never queued on --------------------------------------------------
 logs, dirty, err = go({"Ada": 0.3, "Cy": 0.1, "Bo": 0.1}, busy={"/tmp/gpu-65.lock"})
