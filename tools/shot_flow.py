@@ -3025,9 +3025,9 @@ def _key_questions(cx, s: dict) -> tuple:
 
 
 ALL_SEEDS = KEY_SEEDS[:1] + KEY_SEEDS[1:] + MORE_SEEDS     # tried in this order, one at a time
-# 11-07 (loop E24, E21's option 2): BOOKCASTER_QUIET_IGPU=1 - the main hold's keys are drawn on the cards before LTX
-# as before, the quiet hold's on the iGPU while the main hold renders (_QuietKeys)
-QUIET_IGPU = os.environ.get("BOOKCASTER_QUIET_IGPU", "0") == "1"
+# 11-07 (loop E24, E21's option 2): the main hold's keys are drawn on the cards before LTX as before, the quiet hold's
+# on the iGPU while the main hold renders (_QuietKeys); BOOKCASTER_QUIET_IGPU=0 draws every key on the cards first
+QUIET_IGPU = os.environ.get("BOOKCASTER_QUIET_IGPU", "1") != "0"
 IGPU_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    # (the iGPU's torch, as vl_judge)
 QUIET_LOAD_WAIT, QUIET_KEY_GRACE = 180, 90     # s: LTX waits for the iGPU drawer's load; its last draw at the quiet hold
 
@@ -3228,7 +3228,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
 
 
 def quiet_later(shots: list) -> list:
-    """BOOKCASTER_QUIET_IGPU=1: the quiet hold's shots, whose keys the iGPU draws while the main hold renders (only when
+    """The quiet hold's shots, whose keys the iGPU draws while the main hold renders (only when
     there is a main hold to draw them beside); [] = every key on the cards first."""
     q = [s for s in shots if s["kind"] not in ("talk", "action") and not s.get("chain")]    # (ltx's quiet route)
     return q if QUIET_IGPU and q and len(q) < len(shots) else []
