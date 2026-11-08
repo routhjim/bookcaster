@@ -1777,6 +1777,20 @@ def _length_hint(i: int, a_: float, b: float, d: float, n: int) -> str:
     return ", or ".join(opts) or "make it longer"
 
 
+def boundary_runs(shots: list, before: str = "", after: str = "") -> dict:
+    """{index: place} of a boundary passage's shots that belong to the neighbouring scene (E26): the run of non-talk
+    shots it OPENS with at `before` (the scene before's place) and the run it CLOSES with at `after` (the next one's).
+    A shot there between this scene's own shots is not on the boundary and stays outside the scene."""
+    out = {}
+    for w, order in ((before, range(len(shots))), (after, range(len(shots) - 1, -1, -1))):
+        for i in order if w else ():
+            x = shots[i]
+            if not isinstance(x, dict) or x.get("kind") == "talk" or RG.place_key(x.get("place")) != RG.place_key(w):
+                break
+            out[i] = w
+    return out
+
+
 def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> list:
     """The director's passage answer against the rules: starts in order, lengths, talk shots on their own speaker's
     line, and the one-shot checks (_faults) on the rest."""
@@ -2060,8 +2074,18 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                  (not c["teller"] or c["teller"] in tellers or (c["teller"] == nar and len(quotes) < len(lines_)))]
         others = list(dict.fromkeys(c["place"] for c in open_ if c["place"] != home)) if scenes else \
             [w for w in wheres or real if w != home]
+        # 11-08 (E26): a scene starts where the breakdown guessed, snapped to a line (Long Dark scene 3 at 170.0 s, its
+        # patrol at 174.8 s), and the passage cut there opened on Family Quarters' last two lines. The director kept
+        # them there, the rule check called it outside the scene, and the cut moved the shot to the cockpit with its
+        # bunk-side people (Sena beside Daven in the cockpit). A passage on a scene boundary may open on the scene
+        # before's place and close on the next one's: those runs of shots are at that place, with its own poses
+        edge = (scenes[si - 1]["place"] if scenes and si > 0 and pa <= sc_["start"] + 0.5 else "",
+                nxt["place"] if scenes and nxt and pb >= sc_["end"] - 0.5 else "")
+        edge = tuple("" if RG.place_key(w) in {RG.place_key(v) for v in [home] + others} else w for w in edge)
+
         def at_key(p):                  # whose state a shot reads and moves: "" the scene's own place, else a told place's
-            w = next((w for w in others if RG.place_key(w) == RG.place_key(p)), None) if home else None
+            w = next((w for w in others + [v for v in edge if v]                  # (or a boundary place's: E26)
+                      if RG.place_key(w) == RG.place_key(p)), None) if home else None
             return RG.place_key(w) if w else ""
 
         # 10-31 user ("Helen is often in bed while talking to Sherlock"): poses were ONE state per person for the whole
@@ -2137,10 +2161,11 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     if x.get("action"):
                         x["action"] = unname(str(x["action"]), cast, dress, x["who"])
             a["shots"] = [x for x in a["shots"] if isinstance(x, dict)]
+            ends_ = boundary_runs(a["shots"], *edge)
             faults = _shot_faults(a, cast, sec, quotes, RGB.places() + [home] + others) + _repeats(a, pics_before, pics_scene) + [
                 f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
                                                                                if others else "")
-                for i, x in enumerate(a["shots"], 1) if x.get("kind") != "talk" and scenes and
+                for i, x in enumerate(a["shots"], 1) if x.get("kind") != "talk" and scenes and i - 1 not in ends_ and
                 not any(RG.place_key(x.get("place")) == RG.place_key(w) for w in [home] + others)] + [
                 f"shot {i}'s setting names {', '.join(n_)}: where people are, their posture and clothes go only in "
                 f"\"people\"" for i, x in enumerate(a["shots"], 1)
@@ -2240,7 +2265,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             n_open = opening_keys(a["shots"], acts, cast, crs, screen, lambda v: cast_of(v, cast), named_in, ask_open,
                                   sd / "passages" / f"p{mid_t:06d}.opening.json", log)
             log(f"  passage {pa:.1f} s: {n_open} single action key(s) from the opening staging")
-        tellers = [None if x.get("kind") == "talk" or not (pk_ := at_key(x.get("place"))) else
+        tellers = [None if x.get("kind") == "talk" or not (pk_ := at_key(x.get("place"))) or   # (a boundary place
+                   pk_ in {RG.place_key(v) for v in edge if v} else                          # is no telling)
                    next((c["teller"] for c in open_ if RG.place_key(c["place"]) == pk_), "") or "the narration"
                    for x in a.get("shots") or []]
         if TOLD_PEOPLE and any(w is not None and not x.get("_chain") for w, x in zip(tellers, a.get("shots") or [])):
@@ -2259,6 +2285,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                               "setting": "", "start": i * sec / n, "kind": "quiet", "place": home, "framing": "medium",
                               "action": "They listen and look at one another."}, cast, crs, screen,
                              lambda v: cast_of(v, cast)) for i in range(n)]
+        at_edge = {id(shots[i]): w for i, w in boundary_runs(shots, *edge).items()}     # (E26: kept at their place)
         st = [float(x.get("start") or 0) for x in shots]
         st[0] = 0.0
         for i in range(1, len(st)):     # starts in order, and at least 1 s apart
@@ -2311,7 +2338,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             t, d = pa + x, b - x
             if d < 0.4:
                 continue
-            place = next((w for w in [home] + others if RG.place_key(w) == RG.place_key(x0.get("place"))), home)
+            place = at_edge.get(id(x0)) or \
+                next((w for w in [home] + others if RG.place_key(w) == RG.place_key(x0.get("place"))), home)
             lp, la = state_at(place)
             if x0.get("kind") == "reaction":          # the listener's reaction during a long line
                 lis, spk = cast_of(x0.get("of"), cast), cast_of(x0.get("to"), cast)

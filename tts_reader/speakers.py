@@ -120,6 +120,32 @@ def _tag_speaker(m: re.Match, text: str) -> str:
     return normalize_name(name)
 
 
+# A capitalised word at a sentence's start (or a quote's, a clause's after a colon or a dash)
+_SENTENCE_START = re.compile(r"(?:^|[.!?:;—–\n\"“‘’”(]\s*)$")
+
+
+def common_words(text: str) -> set[str]:
+    """The words *text* writes in lower case and capitalises only where a sentence starts: "and", "but",
+    "suddenly", never a name ("Peter", "Rose" mid-sentence). Lower-cased."""
+    low, named = set(), set()
+    for m in re.finditer(r"[A-Za-z][a-z'’]*", text):
+        w = m.group(0)
+        if w[0].islower():
+            low.add(w)
+        elif not _SENTENCE_START.search(text[max(0, m.start() - 3):m.start()]):
+            named.add(w.lower())
+    return low - named
+
+
+def drop_lead_words(name: str, common: set[str]) -> str:
+    """A speaker label without the narration's lead words taken in with it ("And Peter said to them," ->
+    "Peter"; E26, 11-08): leading words of a several-word label that the book uses as common words."""
+    words = name.split()
+    while len(words) > 1 and words[0].lower() in common:
+        words = words[1:]
+    return " ".join(words)
+
+
 def _valid_name(raw: str) -> bool:
     return normalize_name(raw).lower() not in _NOT_NAMES
 
@@ -399,9 +425,11 @@ def attribute_segments(
         # roster improvements apply to old caches without new LLM calls.
         cache.update(segments)
         cache.save()
+    # (re-derived on every load, like the alias merge: a cached "And Peter" is Peter too)
+    common = common_words("".join(s.text for s in segments))
     for seg in segments:
         if seg.speaker:
-            seg.speaker = canonical_speaker(seg.speaker, roster)
+            seg.speaker = canonical_speaker(drop_lead_words(seg.speaker, common), roster)
     fixed = enforce_dialogue_conventions(segments)
     if fixed and log:
         log(f"  {fixed} attribution(s) corrected by quotation conventions")
