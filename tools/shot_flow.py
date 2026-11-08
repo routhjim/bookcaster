@@ -3025,16 +3025,16 @@ def _key_questions(cx, s: dict) -> tuple:
 
 
 ALL_SEEDS = KEY_SEEDS[:1] + KEY_SEEDS[1:] + MORE_SEEDS     # tried in this order, one at a time
+# 11-07 (loop E24, E21's option 2): the main hold's keys are drawn on the cards before LTX as before, the quiet hold's
+# on the iGPU while the main hold renders (_QuietKeys); BOOKCASTER_QUIET_IGPU=0 draws every key on the cards first
+QUIET_IGPU = os.environ.get("BOOKCASTER_QUIET_IGPU", "1") != "0"
+IGPU_PY = Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"    # (the iGPU's torch, as vl_judge)
+QUIET_LOAD_WAIT, QUIET_KEY_GRACE = 180, 90     # s: LTX waits for the iGPU drawer's load; its last draw at the quiet hold
 
 
-def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
-    """Each shot's opening picture: ONE seed drawn, judged on the iGPU the moment it lands, the next seed only if it
-    fails (up to ALL_SEEDS), by kept-loaded drawers on both cards (qwen_image.py --serve) (10-24 user: one seed, the
-    image model kept loaded, checked as it is ready; before, 2 seeds were drawn for every shot, then all judged:
-    the first seed passed for 142 of 149). key.png = the first clean seed, else the nearest head count.
-    -> the shots with no clean seed."""
-    import queue
-    import threading
+def key_tasks(book: Path, stem: str, shots: list, log=print) -> list:
+    """The shots whose key is still to draw or judge, as keys_judged's tasks (their place pictures made first, on
+    both cards; a shot whose words, LoRAs or place picture changed has its old pictures removed)."""
     _, cx = _ctx(book, stem)
     sd = shot_dir(book, stem)
     places = {}
@@ -3044,7 +3044,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                                            if x.get("place") == s.get("place") and x.get("fixtures")), ())
     heroes = MF.heroes_for(book, places, log)   # all places at once, both cards, judged as they land (10-24)
     heroes.setdefault(None, None)
-    q_, tasks, dirty, lock = queue.Queue(), [], [], threading.Lock()
+    tasks = []
     for s in shots:
         d = sd / s["id"].rsplit("_s", 1)[0] / s["id"]
         d.mkdir(parents=True, exist_ok=True)
@@ -3090,6 +3090,22 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         t = {"s": s, "d": d, "q": q, "need": need, "seeds": list(ALL_SEEDS), "tried": [],
              "job": {"prompt": p, "refs": [str(hero)] if hero else [], "loras": loras, "size": [W, H]}}
         tasks.append(t)
+    return tasks
+
+
+def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | None = None, side=None) -> list:
+    """Each shot's opening picture: ONE seed drawn, judged on the iGPU the moment it lands, the next seed only if it
+    fails (up to ALL_SEEDS), by kept-loaded drawers on both cards (qwen_image.py --serve) (10-24 user: one seed, the
+    image model kept loaded, checked as it is ready; before, 2 seeds were drawn for every shot, then all judged:
+    the first seed passed for 142 of 149). key.png = the first clean seed, else the nearest head count.
+    tasks: key_tasks' (made here when None). side: a _QuietKeys - ONE drawer on the iGPU instead (no card lock), which
+    stops drawing at side.stop. A drawer that dies stops; its shot goes back to the others (none left: unsettled).
+    -> the shots with no clean seed."""
+    import contextlib
+    import queue
+    tasks = key_tasks(book, stem, shots, log) if tasks is None else tasks
+    q_, dirty, lock = queue.Queue(), [], threading.Lock()
+    for t in tasks:
         q_.put(t)
     left = {t["s"]["id"] for t in tasks}
 
@@ -3132,7 +3148,7 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
         try:
             while True:
                 with lock:
-                    if not left:
+                    if not left or (side and side.stop.is_set()):
                         return
                 try:
                     t = q_.get(timeout=5)
@@ -3142,15 +3158,22 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                 k = t["d"] / f"key_{seed}.png"
                 if not k.exists():
                     if proc is None:
-                        proc = subprocess.Popen(["flock", f"/tmp/gpu-{card}.lock", MF.QWEN_PY, "-I",
-                                                 str(HERE / "qwen_image.py"), "--serve"], stdin=subprocess.PIPE,
-                                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                                bufsize=1, env=dict(os.environ, HIP_VISIBLE_DEVICES=hip))
+                        cmd, env = ["flock", f"/tmp/gpu-{card}.lock", MF.QWEN_PY], dict(os.environ, HIP_VISIBLE_DEVICES=hip)
+                        if card == "igpu":      # (one CU left for the desktop, as every iGPU job)
+                            cmd, env = [str(IGPU_PY)], dict(env, HSA_CU_MASK=f"{hip}:0-38")
+                        proc = subprocess.Popen(cmd + ["-I", str(HERE / "qwen_image.py"), "--serve"],
+                                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                                stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
+                        if side:
+                            side.procs.append(proc)
                     job = dict(t["job"], id=f"{t['s']['id']}_key_{seed}", seed=seed + shot_seed(t["s"]["id"]), path=str(k))
-                    proc.stdin.write(json.dumps(job) + "\n")
-                    proc.stdin.flush()
+                    with contextlib.suppress(OSError):
+                        proc.stdin.write(json.dumps(job) + "\n")
+                        proc.stdin.flush()
                     while True:
                         ln = proc.stdout.readline()
+                        if side:
+                            side.up.set()       # (its load line, or its end)
                         if not ln:
                             break
                         try:
@@ -3158,6 +3181,11 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                                 break
                         except ValueError:
                             pass
+                    if not ln and not k.exists():    # it died: its shot to the other drawer
+                        log(f"!!! the {card} key drawer died (rc {proc.wait()}): {t['s']['id']} seed {seed} not drawn")
+                        t["seeds"].insert(0, seed)
+                        q_.put(t)
+                        return
                 if k.exists():
                     jq.put((t, k))          # judged on the iGPU while this card draws the next one
                 elif t["seeds"]:
@@ -3167,7 +3195,8 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
                     settle(t, (t["tried"] or [(None, {})])[0][0], False)
         finally:
             if proc is not None:
-                proc.stdin.close()
+                with contextlib.suppress(OSError):
+                    proc.stdin.close()
                 try:
                     proc.wait(60)
                 except subprocess.TimeoutExpired:
@@ -3183,16 +3212,69 @@ def keys_judged(book: Path, stem: str, shots: list, log=print) -> list:
             try:
                 t, k = jq.get(timeout=5)
             except queue.Empty:
+                if not any(th.is_alive() for th in ths[:-1]) and jq.empty():
+                    return                  # no drawer left (stopped or died): what is left stays unsettled
                 continue
             judge(t, k)
 
     if tasks:
-        ths = [threading.Thread(target=drawer, args=(c,)) for c in ("05", "65")] + [threading.Thread(target=judger)]
+        ths = [threading.Thread(target=drawer, args=(c,)) for c in (("igpu",) if side else ("05", "65"))] + \
+            [threading.Thread(target=judger)]
         for th in ths:
             th.start()
         for th in ths:
             th.join()
     return dirty
+
+
+def quiet_later(shots: list) -> list:
+    """The quiet hold's shots, whose keys the iGPU draws while the main hold renders (only when
+    there is a main hold to draw them beside); [] = every key on the cards first."""
+    q = [s for s in shots if s["kind"] not in ("talk", "action") and not s.get("chain")]    # (ltx's quiet route)
+    return q if QUIET_IGPU and q and len(q) < len(shots) else []
+
+
+class _QuietKeys:
+    """The quiet hold's keys drawn on the iGPU while the main hold renders (E21 option 2, built in E24). Made before
+    the encode: the place pictures are settled on the cards first (key_tasks), and the drawer loads before LTX does
+    (loaded(); E18: an iGPU allocation after LTX found the page cache unreclaimed). finish(), as the quiet hold is due:
+    the drawer stops after the picture it is drawing (killed after QUIET_KEY_GRACE s), and the cards draw what it did
+    not settle (main's keys_judged: the seeds it drew are judged first, not drawn again)."""
+
+    def __init__(self, book: Path, stem: str, shots: list, log=print):
+        self.book, self.stem, self.shots, self.log = book, stem, shots, log
+        self.ids = {s["id"] for s in shots}
+        self.stop, self.up, self.procs = threading.Event(), threading.Event(), []
+        tasks = key_tasks(book, stem, shots, log)
+        log(f"{len(tasks)} of {len(shots)} quiet keys to draw on the iGPU during the main hold")
+        self.th = threading.Thread(target=self._draw, args=(tasks,), daemon=True)
+        self.th.start()
+
+    def _draw(self, tasks):
+        try:
+            for s in keys_judged(self.book, self.stem, self.shots, self.log, tasks=tasks, side=self):
+                self.log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
+        except Exception as e:              # noqa: BLE001  (said; the cards draw what is left at finish)
+            self.log(f"!!! quiet keys on the iGPU: {e!r}")
+
+    def loaded(self) -> None:
+        t0 = time.time()
+        while not self.up.wait(1) and self.th.is_alive() and time.time() - t0 < QUIET_LOAD_WAIT:
+            pass
+        if time.time() - t0 > 1:
+            self.log(f"LTX waited {time.time() - t0:.0f} s for the iGPU key drawer to load")
+
+    def finish(self) -> None:
+        t0 = time.time()
+        self.stop.set()
+        self.th.join(QUIET_KEY_GRACE)
+        if self.th.is_alive():
+            for p in self.procs:
+                p.kill()
+            self.th.join()
+        self.log(f"the quiet hold waited {time.time() - t0:.0f} s for the iGPU's quiet keys")
+        for s in keys_judged(self.book, self.stem, self.shots, self.log):     # (what it left: on the cards)
+            self.log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
 
 
 def _clean(a: dict, k: Path, need: int) -> bool:
@@ -3346,8 +3428,9 @@ def drive_af(pitch: float | None) -> str:
 
 
 def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | None = None,
-        retake: set | None = None) -> None:
-    """The clips, pipelined over both XTXs: action = two-stage in TAKES, quiet = distilled, talk = A2Vid."""
+        retake: set | None = None, quiet_keys: _QuietKeys | None = None) -> None:
+    """The clips, pipelined over both XTXs: action = two-stage in TAKES, quiet = distilled, talk = A2Vid.
+    quiet_keys: the quiet shots' keys still being drawn on the iGPU (their jobs wait for them until the quiet hold)."""
     import flow3d as F
     R, cx = _ctx(book, stem)
     sd = shot_dir(book, stem)
@@ -3370,7 +3453,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
         key = sd / mid / s["id"] / "key.png"
-        if not key.exists():
+        if not key.exists() and not (quiet_keys and s["id"] in quiet_keys.ids):
             log(f"{s['id']}: no key")
             continue
         img = [{"path": str(key), "frame": 0, "strength": 1.0}]
@@ -3448,7 +3531,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
                               "people": None if s.get("crowd") else len(s.get("who") or [])})
-    for j in talk + two + quiet:            # a clip from another key or other words is drawn again
+    def drop_stale(j):                  # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
         key = Path(j["images"][0]["path"]) if j["images"] else src
@@ -3466,6 +3549,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, TALK_TAKES))] + \
                         [L / "out" / f"{j['name']}.judged", L / "out" / f"{j['name']}.synced"]:
                     x.unlink(missing_ok=True)
+    for j in talk + two + ([] if quiet_keys else quiet):    # (the quiet ones' keys may change: at the quiet hold)
+        drop_stale(j)
     for sid in chains:                  # every chain line's words, known in advance: encoded with the rest
         st = json.loads((L / "chains" / f"{sid}.json").read_text())
         for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
@@ -3501,6 +3586,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         R.encode_all(cxl, L / "enc_dev.json", "enc_dev", ["--dev"])
     if enc_dist:
         R.encode_all(cxl, L / "enc_dist.json", "enc_dist", [])
+    if quiet_keys:
+        quiet_keys.loaded()
     def chain_firsts():
         """Each unfinished chain's current line: its takes not made yet (their words encoded)."""
         out = []
@@ -3590,6 +3677,14 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     left_ = [sid for sid in chains if not json.loads((L / "chains" / f"{sid}.json").read_text())["done"]]
     if left_:
         log(f"!!! chains not finished: {left_} (their key is held)")
+    if quiet_keys:                      # the quiet keys: the iGPU's, and the cards' for what it did not settle
+        quiet_keys.finish()
+        for j in [j for j in quiet if not Path(j["images"][0]["path"]).exists()]:
+            log(f"{j['line']}: no key")
+            quiet.remove(j)
+        for j in quiet:
+            drop_stale(j)
+        (L / "quiet_jobs.json").write_text(json.dumps(quiet, indent=1))
     if quiet:
         # 10-26 user: quiet clips judged as they land too (the same body checks as action, on the idle iGPU), a
         # faulted one's retake queued on the loaded runner
@@ -4753,7 +4848,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
-    for s in keys_judged(book, stem, shots, log):
+    later = {s["id"] for s in quiet_later(shots)} if until != "keys" else set()    # (drawn in _render, E24)
+    for s in keys_judged(book, stem, [s for s in shots if s["id"] not in later], log):
         log(f"!!! {s['id']}: no clean picture in {len(ALL_SEEDS)} seeds")
     ks = sheet(book, stem, shots, op.with_name(op.stem + "_keys.jpg"))
     log(f"key sheet: {ks}")
@@ -4861,7 +4957,10 @@ def _render(book, stem, es, by, shots, mix, op, fz, log, pauses=None) -> Path:
         time.sleep(5)
         animate._flush()
     _step(book, f"LTX video ({len(shots)} shots)")
-    ltx(book, stem, es, shots, log)
+    qs = quiet_later(shots)
+    ltx(book, stem, es, shots, log, quiet_keys=_QuietKeys(book, stem, qs, log) if qs else None)
+    if qs:
+        log(f"key sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_keys.jpg'))}")
     again = judge_takes(book, stem, shots, log)
     if again:
         ltx(book, stem, es, [s for s in shots if s["id"] in again], log, retake=again)
