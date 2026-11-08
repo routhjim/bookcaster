@@ -40,6 +40,7 @@ S._stitch_talk = real_stitch
 ran = []
 S.subprocess.run = lambda cmd, *a, **k: (ran.append(cmd), types.SimpleNamespace(returncode=0, stderr=""))[1]
 time.sleep(0.05); (L / "out" / "talk-2_s0.mp4").write_text("tonight's join")
+(L / "out" / "talk-2_s0.join.json").write_text(json.dumps({"shifts": [None, None]}))    # (E29: its pieces' shifts)
 S._stitch_talk(Path("."), types.SimpleNamespace(LTX_PY="python"), L, talk, lambda m: None)
 check("a join newer than its pieces is kept (no stitch again)", ran == [] and (L / "out" / "talk-2_s0.mp4").exists(), ran)
 print(json.dumps({"fails": fails}))
