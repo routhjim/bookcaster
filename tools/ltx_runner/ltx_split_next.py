@@ -14,6 +14,7 @@ import dataclasses
 import gc
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -365,10 +366,14 @@ class _Ref:
 
 class ShmPool:
     """--pp-pool (10-24): the activations cross between the two processes through REUSED, PINNED shared-memory
-    buffers (one per lane, direction, tensor slot and shape) instead of fresh pageable ones per hop: no allocation
-    and page-faulting per hop, DMA straight from pinned pages; a buffer travels once, then only its name.
+    buffers instead of fresh pageable ones per hop: no allocation and page-faulting per hop, DMA straight from
+    pinned pages; a buffer travels once, then only its name.
     Reuse is safe: a lane's next hop waits for the other side's reply, and the receiver copies a buffer onto its
-    card (synchronously) before it replies."""
+    card (synchronously) before it replies.
+    E32 (11-09): ONE buffer per lane, direction and tensor slot. A new shape or dtype in a slot replaces its buffer
+    (both sides unpin and drop the old one, so its shm is freed). Keyed by shape too, the pool grew by every
+    (route, frames) shape a longest-first hold walks through (29 in Sherlock ch9 hold 1) until /dev/shm was full
+    and card B died allocating a decode buffer."""
 
     def __init__(self):
         self.bufs = {}
@@ -380,15 +385,26 @@ class ShmPool:
             pass
         return t
 
+    def _set(self, name, t):
+        """Slot `name` now holds t; the buffer it held before is unpinned and dropped (its shm freed)."""
+        old = self.bufs.get(name)
+        if old is not None:
+            try:
+                torch.cuda.cudart().cudaHostUnregister(old.data_ptr())
+            except Exception:                # noqa: BLE001  (never pinned)
+                pass
+        self.bufs[name] = self._pin(t)
+
     def pack(self, obj, tag):
         n = [0]
 
         def put(t):
             n[0] += 1
-            name = f"{tag}:{n[0]}:{tuple(t.shape)}:{t.dtype}"
-            new = name not in self.bufs
+            name = f"{tag}:{n[0]}"
+            b = self.bufs.get(name)
+            new = b is None or b.shape != t.shape or b.dtype != t.dtype
             if new:
-                self.bufs[name] = self._pin(torch.empty(t.shape, dtype=t.dtype).share_memory_())
+                self._set(name, torch.empty(t.shape, dtype=t.dtype).share_memory_())
             b = self.bufs[name]
             b.copy_(t, non_blocking=True)
             return _Ref(name, b if new else None)
@@ -400,7 +416,7 @@ class ShmPool:
         def walk(o):
             if isinstance(o, _Ref):
                 if o.buf is not None:
-                    self.bufs[o.name] = self._pin(o.buf)
+                    self._set(o.name, o.buf)
                 return self.bufs[o.name].to(dev, non_blocking=False)
             if dataclasses.is_dataclass(o) and not isinstance(o, type):
                 ch = {f.name: walk(getattr(o, f.name)) for f in dataclasses.fields(o)}
@@ -416,6 +432,23 @@ class ShmPool:
 
 
 POOL = None
+B_POLL_S = 2.0          # E32: how often a wait on card B checks that process B is still alive
+
+
+class BDied(RuntimeError):
+    """Process B (card B) exited while card A waited on it."""
+
+
+def b_reply(pp, q):
+    """E32 (11-09): card A's wait on a reply from process B. A bare get() waited forever once B had died (Sherlock
+    ch9: B failed to allocate shm in a decode; all lanes idled 92 min until the 4 h timeout). Fail fast instead:
+    the lane's error ends the hold, and shot_flow gen() relaunches it for the rest."""
+    while True:
+        try:
+            return q.get(timeout=B_POLL_S)
+        except queue.Empty:
+            if not pp["proc"].is_alive():
+                raise BDied(f"card-B process {pp['proc'].pid} died (exit {pp['proc'].exitcode})") from None
 
 
 def thash(t):
@@ -983,7 +1016,7 @@ def install_pp_forward(ltx, split, pp, get_state):
             del msg
             if PAIR is not None:
                 PAIR.a_turn(st.lane)
-            v, a, bt = pp["outqs"][st.lane].get()
+            v, a, bt = b_reply(pp, pp["outqs"][st.lane])
             if PAIR is not None:
                 PAIR.after_b()
         finally:
@@ -1121,10 +1154,13 @@ class PairSched:
         """End of the hold: the parked rest, on whichever card is free; then wait for card B's."""
         while (it := self.take()) is not None:
             with self.lk:
-                use_b = not self.b_busy
+                use_b = not self.b_busy and self.pp["proc"].is_alive()
             self.to_b(it) if use_b else self.decode_a(it, -1)
         with self.lk:
-            self.lk.wait_for(lambda: not self.on_b)
+            while not self.lk.wait_for(lambda: not self.on_b, timeout=B_POLL_S):
+                if not self.pp["proc"].is_alive():      # E32: a decode lost with process B fails the hold, no hang
+                    self.err.append(BDied(f"card-B process died with {len(self.on_b)} decode(s) in flight"))
+                    return
 
 
 class RemoteDecoder:
@@ -1154,7 +1190,7 @@ class RemoteDecoder:
         try:
             self.pp["inq"].put(msg)
             del msg
-            fr, bt = self.pp["outqs"][st.lane].get()
+            fr, bt = b_reply(self.pp, self.pp["outqs"][st.lane])
         finally:
             A_OWNER.acquire()
         tm_add("b_decode_s", bt)
@@ -1534,7 +1570,7 @@ def cmd_gen(args, jobs):
         pp = dict(inq=inq, outqs=outqs, ready=ready, proc=procB, decout=decout)
         log(f"[A] spawned back-half process pid {procB.pid} on HIP device {PP_BACK_DEV}; loading front half ...")
         ltx = build_split(builder, layer_devfn(r"^transformer_blocks\.(\d+)\.", split, "front")).eval()
-        r = ready.get()
+        r = b_reply(pp, ready)
         if r[0] != "ok":
             raise SystemExit(f"back-half process failed: {r}")
         nb = len(ltx.transformer_blocks)
@@ -1847,7 +1883,13 @@ def cmd_gen(args, jobs):
             with lock:
                 if errors:
                     return
-                if not todo and not (args.more and more_jobs()):
+                if pp and not pp["proc"].is_alive():    # E32: also when no lane waits on B (all idle on a chain source)
+                    errors.append(BDied(f"card-B process died (exit {pp['proc'].exitcode})"))
+                    return
+                # E32: the queue file is read on every take (it was read only once todo ran dry), so a chain's next
+                # line and the retakes join mid-hold, a chain line ahead of the fill work (more_jobs' priority rule)
+                more = bool(args.more) and more_jobs()
+                if not todo and not more:
                     return
                 if time.time() - T0 > args.budget:
                     log("GPU-hold budget reached; lane", dev, "stops;", len(todo), "left")
@@ -1929,9 +1971,15 @@ def cmd_gen(args, jobs):
     log(json.dumps(timings, indent=1))
     if pp:
         pp["inq"].put(None)
-        r = pp["ready"].get(timeout=120)
-        log(f"[B] busy {r[1]:.1f}s of {wall:.1f}s wall ({100 * r[1] / wall:.0f}%), peak {r[2] / 2**30:.1f} GiB; "
-            f"[A] owned {A_OWNER.held:.1f}s ({100 * A_OWNER.held / wall:.0f}%)")
+        try:
+            r = pp["ready"].get(timeout=120 if pp["proc"].is_alive() else 5)
+        except queue.Empty:
+            r = ("gone",)
+        if r[0] != "busy":          # E32: B already failed (its error is on `ready`); the lanes' errors follow
+            log(f"[B] {r}")
+        else:
+            log(f"[B] busy {r[1]:.1f}s of {wall:.1f}s wall ({100 * r[1] / wall:.0f}%), peak {r[2] / 2**30:.1f} GiB; "
+                f"[A] owned {A_OWNER.held:.1f}s ({100 * A_OWNER.held / wall:.0f}%)")
         pp["proc"].join(timeout=60)
     if errors:
         raise SystemExit(f"{len(errors)} lane error(s)")
@@ -2086,7 +2134,7 @@ def main():
                     help="decodes parked and paired across both cards (PairSched; implies a decoder on each card)")
     ap.add_argument("--decode-b", action="store_true",
                     help="--pp: VAE decode on process B's card (B keeps a decoder loaded)")
-    ap.add_argument("--more", default="", help="a jobs file read again whenever the queue runs dry")
+    ap.add_argument("--more", default="", help="a jobs file read again on every take (E32: queued work joins mid-hold)")
     ap.add_argument("--more-done", default="", help="--more: this file existing = no more jobs will come")
     ap.add_argument("--budget", type=float, default=780.0, help="stop starting new jobs after this many s")
     args = ap.parse_args()
