@@ -1878,8 +1878,8 @@ def whole_timeline(book: Path, stem: str, log=print) -> int:
     with it. Rewritten in place (atomically); -> the number of lines restored."""
     from .textprep import prepare_for_speech
     tp, cp = book / "work" / f"{stem}.timeline.json", book / "chapters" / f"{stem}.txt"
-    if not tp.exists() or not cp.exists():
-        return 0
+    if not tp.exists() or not cp.exists() or (book / "song.json").exists():   # (a song's lines are whole: song.py;
+        return 0                        # 11-08: its next [section] label was appended to each section's last line)
     tl = json.loads(tp.read_text())
     prep = re.sub(r"\s+", " ", prepare_for_speech(cp.read_text(encoding="utf-8")))
     norm = lambda z: re.sub(r"\s+", " ", re.sub(r"^<[^>]+>\s*", "", str(z or ""))).strip()
@@ -2134,6 +2134,8 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
     # BOOKCASTER_JOB tags every process of the job, the renderers in scopes of their own too (`stop` ends just those)
     cmd = ["systemd-run", "--user", f"--unit={unit}", "-p", f"MemoryMax={'100G' if flow3d else '8G'}",
            "-p", "MemorySwapMax=0", f"--working-directory={book}", f"--setenv=BOOKCASTER_JOB={unit}",
+           # the job runs the code it was started from (11-08: a branch's CLI started main's installed package)
+           f"--setenv=PYTHONPATH={Path(__file__).resolve().parents[1]}",
            sys.executable, "-m", "tts_reader.bookcaster", "_job", str(book)]
     cmd += ["--level", level]
     if storyboard:
@@ -2340,6 +2342,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="mannequin: how a landing action's staging steers its clip - depth (the staged depth video, "
                         "light), full (the depth video at full strength), pins (start/hit/end keys drawn on the staging)")
     # the full-3D stages (tools/flow3d.py): each resumable, cached under work/video/
+    s = sub.add_parser("song", help="make a song (audio + lyrics) into a one-chapter book for the shot flow's music video "
+                       "(vocals separated, lyric lines timed); then `bookcaster video <dir> --level animated`")
+    s.add_argument("dir", help="the song's book folder (made if missing)")
+    s.add_argument("--audio", required=True, help="the song's recording (lossless preferred: the cut is muxed on it)")
+    s.add_argument("--lyrics", required=True, help="the lyrics, sections marked [Verse 1], [Chorus], ...")
+    s.add_argument("--title", default="")
+    s.add_argument("--tags", default="", help="the recording's style notes (e.g. Suno's tags)")
+    s.add_argument("--suno", default=None, help="a Suno clip.json: its title and metadata.tags")
+    s.add_argument("--singer", default="", help="who sings lead on screen (default: the language model picks)")
+    s.add_argument("--direction", default=None, help="the author's own direction for the video, verbatim (looks, "
+                   "outfits, places, scenes and shots follow it; a change plans them again); default: the one stored")
+    s.add_argument("--keep-looks", action="store_true", help="a changed --direction re-plans the scenes and shots only "
+                   "(the style, looks, places and LoRAs stay)")
     s = sub.add_parser("plan", help="3d stage 0: plan a chapter from the text (pictures, looks, moments, ref sheets)")
     s.add_argument("book")
     s.add_argument("--chapter", required=True)
@@ -2557,6 +2572,18 @@ def main(argv: list[str] | None = None) -> int:
                   keys_only=a.keys_only)
         print(f"making the 3D video of {d.name} in the background — `bookcaster status {d.name}`"
               + ("" if a.auto_approve else f"; it stops for review when assets wait (`bookcaster review {d.name}`)"))
+    elif a.cmd == "song":
+        from . import song
+        title, tags = a.title, a.tags
+        if a.suno:
+            cj = json.loads(Path(a.suno).expanduser().read_text())
+            title, tags = title or cj.get("title") or "", tags or (cj.get("metadata") or {}).get("tags") or ""
+        d = Path(a.dir).expanduser()
+        if HOME in d.resolve().parents:
+            print(f"(a song book in {HOME} shows up in the library like any book)")
+        song.make(d, Path(a.audio), Path(a.lyrics), title=title, tags=tags, singer=a.singer, direction=a.direction,
+                  keep_looks=a.keep_looks)
+        print(f"made {d}: now `bookcaster video {d} --level animated --flow shots`")
     elif a.cmd == "plan":
         d = book_dir(a.book)
         start_job(d, flow3d="plan", chapter=a.chapter)

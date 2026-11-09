@@ -131,6 +131,7 @@ stopped or fails picks up where it left off.
 | `pace [value] [--who NAME]` | Listening speed, pitch kept (default 1.25), for the book or one voice. |
 | `sfx` | Add sound effects to chapters already recorded. |
 | `video [--level ...] [--flow ...]` | Make or remake the video of recorded chapters (see below). |
+| `song <dir> --audio FILE --lyrics FILE` | Turn a song into a one-chapter book that `video` films as a music video (see below). |
 | `art [style] [--sample] [--auto] [--clear]` | Set or show the picture style. |
 | `period [text] [--clear]` | Set the story's time period. Every picture is drawn in it. |
 | `look [--do "Name = description"] [--swap A B]` | Show or change how characters and places look. |
@@ -185,6 +186,24 @@ The other flows, chosen with `--flow`:
 | `mannequin` | The 3D staging used only as pose and depth maps for the keyframes, which are then animated. |
 
 `3d` and `mannequin` came first and are kept, but new work goes into `shots`.
+
+### Music videos
+
+`bookcaster song` turns a recording and its lyrics into a one-chapter book, which the shots flow then films:
+
+```
+bookcaster song ~/audiobooks/my_song --audio song.flac --lyrics lyrics.txt \
+    --direction "an 80s hair band playing in a chip factory"
+bookcaster video ~/audiobooks/my_song --level animated --flow shots
+```
+
+- The lyrics file marks its sections with lines like `[Verse 1]` and `[Chorus]`.
+- The song is used as it is. The finished video carries the original recording, and nothing is re-sung or
+  remixed. The vocals are separated only to time the words and to drive the singers' lips.
+- `--direction` is your own description of the video. Looks, outfits, places and shots follow it. Changing it
+  plans the video again; with `--keep-looks` only the scenes and shots are planned again.
+- `--singer` names who sings lead on screen. Without it the language model picks.
+- `--tags` gives the recording's style notes, and `--suno clip.json` reads the title and tags from a Suno clip file.
 
 ## Changing the result
 

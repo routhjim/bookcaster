@@ -415,7 +415,10 @@ def audit_looks(book, text, plan, log=print) -> dict:
         conflict = (f"\n\nCONFLICT: the voice cast gave {n} a {'female' if vc['sex'] == 'woman' else 'male'} voice, "
                     f"but this look makes {n} a {look_sex(desc)}. Decide from the passages and the cast's words which "
                     "is right, and correct the look if it is wrong." if clash else "")
-        prompt = (f"A story character, {n}, will be drawn with this look:\n{desc}{later_txt}\n\nEvery passage of the story that "
+        dr = RG.direction() if hasattr(RG, "direction") else ""
+        dr = (f"\n\n{dr}What the author's direction adds to a look (its style, its colours, its costume) is no "
+              "contradiction; only what the passages themselves say is." if dr else "")
+        prompt = (f"A story character, {n}, will be drawn with this look:\n{desc}{later_txt}{dr}\n\nEvery passage of the story that "
                   f"mentions {n}:\n\n" + ("\n\n".join(f"- {h}" for h in hits) or "(none)") + role + conflict +
                   f"\n\nDoes the look CONTRADICT what the passages say about {n} when they first appear: whether {n} "
                   f"is a man or a woman, a boy or a girl (by the pronouns and the words for their role the passages use "
@@ -497,7 +500,9 @@ def infer_art_style(book, text: str, log=print, force: bool = False) -> str:
             x.read_text().strip() for x in (book / "work" / "video").glob("*/style.txt") if x.is_file())):
         return ""
     try:
-        a = (_chat(BC.LLM_URL, BC.LLM_MODEL, ART_STYLE_ASK + text[:12000], max_tokens=80) or "").strip()
+        dr = _reg(book).direction() if hasattr(_reg(book), "direction") else ""     # (a song's author's direction:
+        a = (_chat(BC.LLM_URL, BC.LLM_MODEL, ART_STYLE_ASK + (f"{dr}\n" if dr else "") + text[:12000],   # its colours)
+                   max_tokens=80) or "").strip()
     except Exception as exc:                              # noqa: BLE001 - the default style is the fallback
         _log(f"plan: art style not chosen ({type(exc).__name__}: {exc}): the default style", log)
         return ""
