@@ -1,3 +1,4 @@
+# suite: slow
 """11-06 (CHANGES 63): a single action shot's key is its own staging row through compose() (row_keys), as a chain
 head's already was. CPU replay over every director row recorded under ~/audiobooks (read only; no book text in the
 repo): each row's key prompt by today's route (the director's recorded keyshot) and by row_keys, through main's

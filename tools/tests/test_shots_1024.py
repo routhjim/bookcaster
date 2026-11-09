@@ -1,3 +1,4 @@
+# suite: slow
 """10-24: the shot flow's queued drawing + judging (keys_judged, heroes_for), the take judge while rendering, one
 take + retakes, the saved-plan resume, 3-4 s talk pieces, the cached vision answers. CPU only: a stand-in drawer
 (a --serve process writing flat PNGs whose red value is the seed) and a stand-in vision judge.

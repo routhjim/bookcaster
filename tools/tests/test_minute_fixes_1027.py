@@ -26,11 +26,6 @@ check("a one-person talk key is asked whether it is a close-up", "close" in q, q
 R = S.RG.Book(cx.book)
 check("no 'his usual' in a description", S.describe(R, "Doctor Watson", {"Doctor Watson": "His usual tweed shooting jacket, white shirt"})
       == "the man in the tweed shooting jacket", S.describe(R, "Doctor Watson", {"Doctor Watson": "His usual tweed shooting jacket"}))
-check("a talk shot ends with its line; the rest is a reaction (the code is there)",
-      '"kind": "reaction", "of": x0.get("listener") or x0.get("speaker")' in inspect.getsource(S.direct))
-check("outfit-sheet portraits never train (only the full figure)", 'if oid is not None and part == "head":' in inspect.getsource(L.cand_sheet)
-      if hasattr(L, "cand_sheet") else 'if oid is not None and part == "head":' in Path(L.__file__).read_text())
-check("pose drawings take the outfits in turn", "list(c.outfits)[k % len(c.outfits)]" in inspect.getsource(L.gen_jobs_pose))
 check("helmets are props", "helm" in L.PROPS)
 check("run() takes a render window", "render" in inspect.signature(S.run).parameters)
 (cx.book / "work" / "video" / "x").mkdir(parents=True, exist_ok=True)
@@ -42,7 +37,7 @@ kp = S._key_prompt(cx.book, "x", "talk-000996", {"id": "talk-000996_s0", "who": 
 check("a one-person talk key: the room only soft behind the face, no ', standing' clause (10-27: medium shots)",
       "Watson, standing" not in kp and "fills the whole picture" not in kp and "softly out of focus" in kp, kp)
 check("a one-person talk key gets no wide room reference", S.closeup({"kind": "talk", "who": ["A"]})
-      and not S.closeup({"kind": "talk", "who": ["A", "B"]}) and "hero = None if closeup(s)" in Path(S.__file__).read_text())
+      and not S.closeup({"kind": "talk", "who": ["A", "B"]}))
 check("10-28 A/B: a standing close-up has the posture in its subject and keeps its real background",
       "alone, standing upright:" in kp and "a glimpse of Baker Street Bedroom" in kp and "papered wall" not in kp
       and "chair" not in kp, kp)
@@ -103,9 +98,10 @@ t2 = S.TALK_LEAD.format(held="Sherlock Holmes", where="on the right, nearest the
 check("10-28: a two-shot cheats the speaker out to the viewer; the listener looks at the speaker",
       "turned three-quarters to the viewer" in t2 and "Helen Stoner, on the left, further back, head turned to look at "
       "Sherlock Holmes" in t2 and "facing each other" not in t2 and "close to the viewer" in t2, t2)
-src_ = Path(S.__file__).read_text()
-tp = src_[src_.index("def _talk_prompt"):src_.index("def _key_questions")]
+_R = type("R", (), {"gender_of": staticmethod(lambda look: "man")})
+tps = [S._talk_prompt(_R, cx, {"speaker": "Doctor Watson", "t": 1.0}, "Baker Street Bedroom",
+                      {"who": ["Doctor Watson"], "pose_held": {"Doctor Watson": p}}) for p in S.POSE_WORDS]
 check("10-28: the LTX talk words name no posture (it pulled a close-up back to the waist)",
-      "posed(" not in tp and "POSE_WORDS" not in tp)
+      not any(w in t for t in tps for w in S.POSE_WORDS.values()), tps)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

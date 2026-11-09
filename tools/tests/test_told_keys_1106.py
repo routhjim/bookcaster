@@ -1,3 +1,4 @@
+# suite: slow
 """11-06 (CHANGES 71/72, user: "lock in E10"): a told-place (flashback) shot's key holds only the event's LoRA'd people
 the shot's action names (told_people: one ask, the language model stubbed here; Tier A, main's name rule), its
 action words appended, applied after the opening ask (opening_keys) through apply_chains. Mechanics on made-up rows,

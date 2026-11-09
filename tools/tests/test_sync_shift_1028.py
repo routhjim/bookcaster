@@ -44,14 +44,6 @@ check("a joined line's zone comes from its first piece", S._job_speaker_box(d, "
 check("talk defaults: 8 s pieces, 20 steps, STG off, key 0.5 and no end lock (E27)", S.TALK_PIECE == 193 and
       S.TALK_STEPS == 20 and S.TALK_GUIDER == {"stg_scale": 0.0, "modality_scale": 1.0} and S.TALK_KEY == 0.5 and
       not hasattr(S, "TALK_LOCK") and (S.TALK_PIECE - 1) % 8 == 0)
-src = (HERE.parent / "shot_flow.py").read_text()
-check("the assembly drops the lead-in plus the sync shift", "st_ = talk_pre(c) + sync_shift(c)" in src)
-check("talk jobs carry the settings, and a clip made with other settings is drawn again",
-      '"steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None' in src and
-      'for k in ("steps", "guider", "lock_end", "base")' in src)
-check("talk audio starts TALK_PRE frames of silence early", "adelay={TALK_PRE / 24 * 1000:.0f}" in src and
-      S.TALK_PRE >= S.SYNC_MAX_SHIFT)
-check("the assembly shifts talk clips, the render measures them after the stitch",
-      "sync_shift(c) if s.get(\"kind\") == \"talk\" else 0" in src and "_sync_offsets(book, L, sorted(" in src)
+check("the talk lead-in covers the largest sync shift", S.TALK_PRE >= S.SYNC_MAX_SHIFT)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

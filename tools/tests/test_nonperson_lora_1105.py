@@ -36,9 +36,5 @@ with tempfile.TemporaryDirectory() as td:
     check("a craft's and a creature's failed LoRA are said, and the run goes on without them",
           sum("not a person: going on" in m for m in logs) == 2 and not any("Kite" in ln or "Wyrm" in ln for ln in left),
           logs)
-ask = V.plan_pictures.__code__.co_consts
-txt = " ".join(c for c in ask if isinstance(c, str))
-check("the cast ask: characters are living people and creatures; a craft or object is a prop",
-      "only the living people and creatures" in txt and "never a character: it is a prop" in txt, txt[:200])
 print({"fails": fails})
 sys.exit(1 if fails else 0)

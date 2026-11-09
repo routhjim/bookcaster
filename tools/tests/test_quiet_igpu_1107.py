@@ -1,3 +1,4 @@
+# suite: slow
 """11-07 (loop E24, E21's option 2): BOOKCASTER_QUIET_IGPU=1 - the main hold's keys on the cards before LTX (as main),
 the quiet hold's keys on the iGPU while the main hold renders. CPU only (the LTX runner, qwen_image --serve and the
 key judge faked):
