@@ -1,8 +1,9 @@
 """11-06 user: "fill them with LoRA training" - the cast's LoRAs train on both XTX cards WHILE the director plans
 (they sat idle ~30 min under it), each build judging on its own card while the language model holds the iGPU.
   - charlora: a card's build asks the iGPU helper only when the language model is down (a fake systemctl on PATH);
-  - shot_flow.run: the language model up first, then the builds, the director running beside them, the keys only
-    after every build; a person's missing LoRA stops the keys; nothing to train = the run as before.
+  - shot_flow.run: the language model up first, then the builds, the director running beside them, the keys
+    started after it with the builds' gate (11-08: drawn as each LoRA lands, test_keys_as_loras_land_1108), the
+    job's wait on every build after them; a person's missing LoRA stops the run; nothing to train = as before.
 CPU only, every step faked (no card, no service: systemctl is a fake, nothing is really started or stopped).
     PATH=<fakebin>:$PATH ~/tts_reader/.venv/bin/python3 tools/tests/test_lora_beside_director_1106.py"""
 import json
@@ -111,8 +112,8 @@ def direct(book, stem, es, log, **k):
     return es, {"m1": [{"id": "m1_s1", "kind": "quiet", "who": ["Ada"]}]}, None
 
 
-def keys(book, stem, shots, log):
-    note("keys")
+def keys(book, stem, shots, log, gate=None):
+    note("keys" + (" gated" if gate else ""))
     return []
 
 
@@ -122,7 +123,7 @@ flow3d.lora_todo = lambda b, only=None: {n: w for n, w in todo.items() if not on
 seen_only = []
 
 
-def ensure(b, log, only=None, status_cb=None):
+def ensure(b, log, only=None, status_cb=None, rank=None, landed=None):
     seen_only.append(set(only or ()))
     note("loras start")
     time.sleep(0.6)                     # longer than the director: the keys must wait for it
@@ -139,17 +140,20 @@ check("the language model goes up before the builds (it can't start beside them:
 check("the builds start after the room layouts and before the director, and run beside it",
       i("layouts") < i("loras start") < i("director start") and i("director end") < i("loras end"), ev)
 check("the builds are the chapter's cast only", seen_only == [{"Ada", "Bo"}], seen_only)
-check("the keys wait for every build", i("loras end") < i("keys"), ev)
+check("the keys start after the director, gated on the builds still training",
+      i("director end") < i("keys gated") < i("loras end"), ev)
 check("the saved plan's signature is taken again after the LoRAs", ev[i("loras end"):].count("sig") == 1, ev)
 
 ev.clear()
 todo.update({"Ada": "new"})
-flow3d.ensure_loras = lambda b, log, only=None, status_cb=None: (note("loras end"), ["no LoRA: Ada (new)"])[1]
+flow3d.ensure_loras = lambda b, log, only=None, status_cb=None, rank=None, landed=None: (note("loras end"),
+                                                                                          ["no LoRA: Ada (new)"])[1]
 try:
     S.run(book, "01_one", 0, 10, None, TMP / "mix.mp3", log=lambda m: None, until="keys")
-    check("a person's missing LoRA stops the run before the keys", False, ev)
+    check("a person's missing LoRA stops the run", False, ev)
 except RuntimeError as exc:
-    check("a person's missing LoRA stops the run before the keys", "Ada" in str(exc) and "keys" not in ev, (exc, ev))
+    check("a person's missing LoRA stops the run (after the keys it does not block)",
+          "Ada" in str(exc) and "keys gated" in ev and "sig" not in ev[i("keys gated"):], (exc, ev))
 
 ev.clear()
 todo.clear()
