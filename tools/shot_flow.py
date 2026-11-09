@@ -689,6 +689,18 @@ def _ctx(book: Path, stem: str):
     return _CTX[k]
 
 
+def covered(book: Path, stem: str, t0: float, t1: float, log=print) -> list:
+    """The moments of [t0, t1) once every narrated stretch of it has one (MF.cover adds them). 11-09: the moment
+    list (flow3d/plan.json) is made again when some were added. It was read again as it stood, without them, and
+    the director films from the first moment to the last: a chapter whose planned moments stopped 88 s before its
+    narration did had those 88 s given moments, and its film still ended where the old list ended."""
+    if MF.cover(book, stem, t0, t1, log):
+        _CTX.pop((str(book), stem), None)   # (the planner's context read the moments when it was made)
+        R, cx = _ctx(book, stem)
+        R.plan(cx)
+    return MF.entries(book, stem, t0, t1)
+
+
 def _spans(es: list) -> dict:
     """Each moment's time: to the next moment's start (the last: its own length)."""
     return {e["id"]: (float(es[i + 1]["t"]) - float(e["t"]) if i + 1 < len(es) else float(e["dur"]))
@@ -5404,8 +5416,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     # the rooms as their pictures have them (10-29), first: their vision checks need the language model down (it is,
     # after the LoRAs), so the cover, wardrobe and director then start it once (11-06: two cold starts, ~40 s each)
     lays = room_layouts(book, stem, log)
-    if MF.cover(book, stem, t0, t1, log):  # narrated stretches without a moment get theirs
-        es = MF.entries(book, stem, t0, t1)
+    es = covered(book, stem, t0, t1, log)   # narrated stretches without a moment get theirs
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
     loras = loras_beside(book, stem, log, es)                 # the cast's LoRAs on both cards while the director runs
