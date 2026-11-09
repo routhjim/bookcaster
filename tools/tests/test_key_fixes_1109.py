@@ -89,5 +89,16 @@ g = S.gloss_once("Close on the sword blade.", "sword", "a blade")
 check("gloss after a compound with no other place: the whole phrase, named", g == "Close on the sword blade (sword: a blade).", g)
 check("gloss before a preposition", S.gloss_once("the dark metal on the anvil.", "dark metal", "X") == "the dark metal (X) on the anvil.")
 
+# --- judgment rules: general words only, in the existing asks
+check("director: the thing's state now", "not its usual look" in S.SHOT_RULES)
+check("director: within reach, not apart across the picture", "never apart across it" in S.SHOT_RULES)
+check("director: how far a thing goes in", "how far it goes in" in S.SHOT_RULES)
+check("director: no repeated picture", "never the same picture twice" in S.SHOT_RULES)
+check("opening: within one move", "within one move of it" in S.OPENING_ASK)
+check("chain: a thing's look before any line changes it", "before any line changes it" in S.CHAIN_ASK)
+check("chain: head mended when too far apart", "too far apart" in S.CHAIN_ASK)
+story = re.compile(r"\b(dragon|sword|anvil|hammer|forge|river|quench|knight|armou?r|helm|Edric|Hulda|Vorgrath)\b", re.I)
+new = [x for x in (S.OPENING_ASK, S.CHAIN_ASK) if story.search(x)]
+check("no story content in the opening and chain asks", not new, [story.search(x).group(0) for x in new])
 print({"fails": fails})
 sys.exit(1 if fails else 0)

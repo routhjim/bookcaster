@@ -136,7 +136,8 @@ Rules:
   in a running exchange, or two who are apart in the BLOCKING, one at the desk and one in the armchair), "group"
   (everyone in the scene in the picture, in the blocking's order: a line to someone other than the one they have been
   talking with, or an exchange of three or more), or "close" (the speaker alone: only a line said to nobody, or a
-  reply straight after a shot that showed the listener). Keep the BLOCKING: nobody appears in a place someone else
+  reply straight after a shot that showed the listener). Two talk shots in a row of the same speaker to the same
+  listener take different framings. Keep the BLOCKING: nobody appears in a place someone else
   stood in, and everyone stays on their side. A talk shot is always where the speaker really is,
   never in a place someone describes. No picture or action words.
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
@@ -145,7 +146,9 @@ Rules:
   result: about one beat for every 2 seconds of the shot. When the passage tells more than the shot's time holds,
   SIMPLIFY the action to fit, never cut it into slivers: keep the one or two moves that tell it and leave the rest out
   ("he turned to his desk and, unlocking it, drew out a small case-book" in 4 s: he turns to the desk and lifts a small
-  book from its open drawer). One continuous move per shot, the video model plays it as one take. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+  book from its open drawer). One continuous move per shot, the video model plays it as one take. A move told again and again (the same work
+  over and over) is never the same picture twice: each such shot changes the framing or the side it is seen from, or
+  shows how the thing worked on has changed since the shot before. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
 - SCREEN DIRECTION: the opening picture is the moment BEFORE the action, so a turn starts facing the old way (he turns
   from Helen to the desk: in the opening picture he still faces Helen). Every turn, walk or reach names the side of the
   picture it goes toward, and "setting" puts that thing on that side ("turns to his right, toward the desk on the right
@@ -172,10 +175,12 @@ Rules:
   "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
 - "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
   action will use, set up for the action's first moment (his hand already at the drawer; a thing the action takes out
-  is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
+  is in sight or in an open drawer). Each thing as it looks at this moment of the story, not its usual look: a thing the passage has
+  heated, cooled, wet, lit, burning, broken or being worked shows it (its colour, glow, steam or damage). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
   writing, a title or a caption: the video model can't draw letters.
 - "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
-  change over time is written as visible steps. Say what the hands hold. Call each person by their NAME (the film
+  change over time is written as visible steps. Say what the hands hold. A thing put into, under or through
+  something says how far it goes in and how much of it is still seen. Call each person by their NAME (the film
   turns each name into how they look and where they are in the picture), never "the man", "she" or "the other one"
   when more than one person is in the shot. No magic words (magic, enchanted, spell), no camera directions, no
   written words or titles. At most 50 words.
@@ -185,7 +190,8 @@ Rules:
 - "kind": "talk" (above), "action" when someone DOES something the passage tells: a hand reaches for or touches
   someone or something, a thing is picked up, bent, thrown, opened or turned, someone leans, rises, sits down, walks,
   runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
-  opening picture has the people where it can start: in "people", one who touches another is "at" arm's reach of them.
+  opening picture has the people where it can start: in "people", one who strikes, touches or reaches another, or
+  puts a thing into or onto something, is "at" within reach of it: the two close together in the picture, never apart across it.
 - ACTION SHOTS also give "moment": one sentence, the picture at the instant the action BEGINS, the movement already
   under way - not the calm before it: "Vorgrath's spiked tail sweeps in low from the left as Edric throws himself
   into a roll beneath it, sword in hand"; "Roylott's hands close on the poker, the iron starting to curve". Name each
@@ -228,7 +234,7 @@ RULE_EXTRA = [
     (re.compile(r"\b(fight\w*|fought|sword\w*|attack\w*|lunge\w*|slash\w*|stab\w*|spear\w*|axe|arrows?|kill\w*|"
                 r"slain|duel\w*|grappl\w*|wrestl\w*)\b", re.I),
      "- A fight is covered as intent (wide: both fighters, the attacker coils, the other sees the opening), action (both\n"
-     "  in the picture: the one blow or move and the one it reaches), reaction (close: the one hit, or a witness). A\n"
+     "  in the picture, within reach of each other: the one blow or move and the one it reaches), reaction (close: the one hit, or a witness). A\n"
      "  fighter's picture has a READY stance, weapon raised toward the opponent; someone knocked down but alive is on the\n"
      "  ground propped on an elbow, eyes open; someone dead lies flat, eyes closed.\n"),
 ]
@@ -1324,10 +1330,10 @@ The look to call each one by in the lines:
 {looks}
 
 The video model makes each clip from ONE short line of words, starting from the last picture of the clip before it: it plays one move in a clip well and loses a second one, and a line whose move does not fit that last picture goes wrong. Wherever the passage tells one continuous physical action of more than one step (one move leading straight into the next, by the same bodies or things), write that action as a CHAIN:
-- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
+- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. A thing put into, under or through something: the line says how far it goes in. When one body's move changes another (knocks down, pushes, lifts), the line says how the one moving is as the move ends too, so that only the one it reaches changes. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
 - A move that goes somewhere is told by where it goes relative to someone or something in the picture: toward, away from, past or around them. Never forward, back, left or right on their own: the video model reads those from the viewer.
-- "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
-- "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks, so that a painter draws the right object: its shape, material, size and colour in at most 12 plain words, without the book's name for it. Only things in the passage or the staging.
+- "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it, or the bodies and things the first line brings together are too far apart in it to meet within one move), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
+- "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks in the opening picture, before any line changes it, so that a painter draws the right object: its shape, material, size, colour and state in at most 12 plain words, without the book's name for it. A change the lines make is never in its look. Only things in the passage or the staging.
 - "shots": the numbers of the director's consecutive shots whose time this action covers. None of them is a talk shot. The chain takes their place. A cut to someone only watching, or to another place, is not part of a chain.
 - The video model reads each line alone and knows no names: call each one by the look given for them above, the same in every line. Never a name, never he, she, it or they, and never begin a line with his, her, its or their.
 - Only what the passage and the staging tell: no side, place or detail it does not give, and nothing from after it.
@@ -1585,8 +1591,10 @@ OPENING_ASK = (
     'One shot of a film. What happens in it: "{action}". The director staged its opening picture as: {people}; setting: "{setting}". '
     'Give the staging of the picture at the instant just before this action changes anything: everyone the action needs is in the picture; '
     'each one is where the action can start from, in the pose they have before it, holding what they will use as they will use it; every '
-    'thing the action uses is already there, within reach, in the state it has before the action; whoever moves is ready to move, the moving '
-    'part short of what it acts on; nothing is yet touched, struck, taken, fallen, broken, opened, emptied, worn or changed by this action. '
+    'thing the action uses is already there, within reach, in the state it has before the action and looking as it does at that instant '
+    'in the story (a thing heated, cooled, wet, lit or being worked shows it); whatever the action puts a thing into, onto or against is '
+    'right beside it in the picture; whoever moves is ready to move, the moving part just short of what it acts on and within one move of '
+    'it: the two close together in the picture, never apart across it; nothing is yet touched, struck, taken, fallen, broken, opened, emptied, worn or changed by this action. '
     'Keep everyone\'s place, side and facing as the director gave them unless the action cannot start from it. Add only someone the action '
     'needs, from these names: {cast}. Anyone the action needs who has none of these names goes in "others": a short look (what kind of person, '
     'their clothes, at most 12 words, no name), with side, pose, at, facing, holds. Give each person a "state": how anything they wear or hold '
