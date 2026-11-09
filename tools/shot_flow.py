@@ -3676,6 +3676,13 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 for x in [L / "out" / f"{j['name']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, TALK_TAKES))] + \
                         [L / "out" / f"{j['name']}.judged", L / "out" / f"{j['name']}.synced"]:
                     x.unlink(missing_ok=True)
+            if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1:
+                # E30: a piece drawn again makes its line new - its lip-sync record (<line>.synced) would stop the
+                # new line's retakes, and the old retakes' pieces are not chains of it
+                b_ = j["name"].rsplit("_c", 1)[0]
+                (L / "out" / f"{b_}.synced").unlink(missing_ok=True)
+                for k in range(2, 1 + TALK_TAKES):
+                    (L / "out" / f"{b_}_t{k}_c{j['chunk'][0]}.mp4").unlink(missing_ok=True)
     for j in talk + two + ([] if quiet_keys else quiet):    # (the quiet ones' keys may change: at the quiet hold)
         drop_stale(j)
     for sid in chains:                  # every chain line's words, known in advance: encoded with the rest
@@ -3898,6 +3905,63 @@ def _swap_take(L: Path, a_: str, b_: str, exts: tuple) -> None:
             os.replace(a, tmp)
             os.replace(b, a)
             os.replace(tmp, b)
+
+
+def _piece_chains(tree: dict, P: int) -> list:
+    """Every whole line a pieced shot's renders make: one piece per position, each starting on the piece before it.
+    `tree`: piece name -> (position, the piece it starts from; None at position 0), in the order they were rendered
+    (so the chains come earliest-rendered first)."""
+    kids = {}
+    for x, (_, p) in tree.items():
+        kids.setdefault(p, []).append(x)
+    out = []
+
+    def walk(path):
+        if len(path) == P:
+            out.append(path)
+            return
+        for x in kids.get(path[-1] if path else None, []):
+            walk(path + [x])
+    walk([])
+    return out
+
+
+def _piece_retake(chains: list, score) -> tuple | None:
+    """E30 (11-08): which pieces of a pieced line to render again - (the chain to build on, its first piece under
+    TALK_SYNC_BAR), None when a chain passes. The chain built on: the one whose first failing piece comes latest (the
+    fewest pieces left to redo), then the best worst piece, then the earliest. Every piece from the failing one on is
+    redone: a new piece k has a new last frame, so the old pieces after it no longer start where it ends."""
+    def bad(c):
+        return next((i for i, x in enumerate(c) if score(x) < TALK_SYNC_BAR), len(c))
+    best = max(range(len(chains)), key=lambda i: (bad(chains[i]), min(map(score, chains[i])), -i))
+    f = bad(chains[best])
+    return None if f == len(chains[best]) else (chains[best], f)
+
+
+def _keep_best_pieces(book: Path, R, L: Path, n: str, js: list, tree: dict, log) -> None:
+    """E30: of a pieced line's chains (_piece_chains) the one with the best worst piece (a tie: the earliest) becomes
+    the line: its pieces are swapped into <n>_c0.. (clip, sync record, last frame) and the line joined again from
+    them, so the kept pieces and the join always belong together (E29)."""
+    P = len(js)
+    chains = _piece_chains(tree, P)
+    sc = [min(_talk_score(L, x) for x in c) for c in chains]
+    best = max(range(len(chains)), key=lambda i: (sc[i], -i))
+    moved = False
+    for i, x in enumerate(chains[best]):
+        if x != f"{n}_c{i}":
+            _swap_take(L, f"{n}_c{i}", x, (".mp4", ".sync.json", "_last.png"))
+            moved = True
+    (L / "out" / f"{n}.synced").write_text(json.dumps({",".join(c): s for c, s in zip(chains, sc)} |
+                                                      {"_pieces": chains[best]}))
+    if moved:
+        for ext in (".mp4", ".join.json", ".sync.json"):
+            (L / "out" / f"{n}{ext}").unlink(missing_ok=True)
+        _stitch_talk(book, R, L, js, log, only={n}, quiet=True)
+        if (L / "out" / f"{n}.mp4").exists():
+            _sync_offsets(book, L, [n], log, quiet=True)
+    renders = len(tree) - P
+    log(f"{n}: lip sync line {best + 1} of {len(chains)} kept ({' / '.join(f'{s:.1f}' for s in sc)}; "
+        f"{renders} piece(s) rendered again, kept {sum(x != f'{n}_c{i}' for i, x in enumerate(chains[best]))})")
 
 
 def _kept_pieces(L: Path, n: str, pieces: int) -> None:
@@ -4507,8 +4571,13 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     body-checked like action and quiet clips (10-28 user: talk clips had no clip check) - a fault is a counted defect
     (a job problem) to remove at its cause, not a retake (lean: fewer defects, not more catching). With `more`
     (10-30 user): a shot under TALK_SYNC_BAR is taken again with a new seed, up to TALK_TAKES takes, and the best
-    kept (_keep_best_talk); a line in pieces by its worst piece, all its pieces again (11-02)."""
+    kept (_keep_best_talk); a line in pieces by its worst piece (11-02). E30 (11-08): a line in pieces is taken again
+    from its first failing piece on, the passing pieces before it kept (E29: bad pieces are per take - Long Dark
+    02m32s went 5.6/1.5 then 6.0/1.0, its whole-line retakes threw a good first piece away twice); the new first
+    piece starts on the kept piece's last frame. TALK_TAKES still caps the takes per line; the kept line is the chain
+    of pieces with the best worst piece (_keep_best_pieces)."""
     shots, takes = {}, {}               # takes: take name -> (shot, take number)
+    trees = {}                          # a pieced line's renders: piece -> (position, the piece it starts from)
     for j in talk:
         shots.setdefault(j["name"].rsplit("_c", 1)[0] if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1
                          else j["name"], []).append(j)
@@ -4519,23 +4588,45 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
 
     def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
         js = sorted(shots[n], key=lambda j: (j.get("chunk") or [0])[0])
+        tn = f"{n}_t{k + 1}"
+        if len(js) > 1:
+            return again_pieces(n, k, js, tn)
         c = _talk_score(L, n if k == 1 else f"{n}_t{k}", len(js))
         if not more or k >= TALK_TAKES or c >= TALK_SYNC_BAR or \
                 (k == 1 and (L / "out" / f"{n}.synced").exists()):
             return False
-        tn = f"{n}_t{k + 1}"
-        if len(js) == 1:
-            nx = [dict(js[0], name=tn, seed=js[0]["seed"] + 7919 * k)]
-        else:                           # every piece again, each chained to the take's own piece before it
-            nx = [dict(j, name=f"{tn}_c{j['chunk'][0]}", seed=j["seed"] + 7919 * k, line=tn,
-                       **({"chain_from": f"{tn}_c{j['chain_from'].rsplit('_c', 1)[1]}"} if j.get("chain_from") else {}))
-                  for j in js]
+        nx = [dict(js[0], name=tn, seed=js[0]["seed"] + 7919 * k)]
         for x in nx:
             _queue_more(more, x)
         left[tn] = nx
         takes[tn] = (n, k + 1)
-        log(f"{n}: lip sync {c:.1f} < {TALK_SYNC_BAR}{f' (worst of {len(js)} pieces)' if len(js) > 1 else ''}: "
-            f"take {k + 1} (new seed, queued on the loaded model)")
+        log(f"{n}: lip sync {c:.1f} < {TALK_SYNC_BAR}: take {k + 1} (new seed, queued on the loaded model)")
+        return True
+
+    def again_pieces(n: str, k: int, js: list, tn: str) -> bool:
+        tree = trees.setdefault(n, {j["name"]: (i, js[i - 1]["name"] if i else None) for i, j in enumerate(js)})
+        nxt = _piece_retake(_piece_chains(tree, len(js)), lambda x: _talk_score(L, x))
+        if not more or k >= TALK_TAKES or nxt is None or (k == 1 and (L / "out" / f"{n}.synced").exists()):
+            return False
+        path, f = nxt
+        nx = []
+        for j in js[f:]:                # the failing piece and every one after it, a new seed each (as a whole take)
+            i = j["chunk"][0]
+            x = dict(j, name=f"{tn}_c{i}", seed=j["seed"] + 7919 * k, line=tn)
+            if i:                       # starts on the kept piece before it, or on this take's own (piece 0 keeps
+                x["chain_from"] = path[i - 1] if i == f else nx[-1]["name"]  # its own start: the key or a chain pick)
+            nx.append(x)
+        for x in nx:
+            for ext in (".mp4", ".sync.json", "_last.png", "_first.png"):   # (a name left by an earlier run)
+                (L / "out" / f"{x['name']}{ext}").unlink(missing_ok=True)
+            tree[x["name"]] = (x["chunk"][0], x.get("chain_from") if x["chunk"][0] else None)
+            _queue_more(more, x)
+        left[tn] = nx
+        takes[tn] = (n, k + 1)
+        log(f"{n}: lip sync {min(_talk_score(L, p_) for p_ in path):.1f} < {TALK_SYNC_BAR} (worst of {len(js)} "
+            f"pieces; piece {f + 1} the first under): take {k + 1} of piece{'s' if f < len(js) - 1 else ''} "
+            f"{', '.join(str(i + 1) for i in range(f, len(js)))} (new seed, from "
+            f"{path[f - 1] if f else 'the start'}, queued on the loaded model)")
         return True
     try:
         while left and not stop.is_set():
@@ -4547,8 +4638,12 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
                 js = left.pop(n)
                 if n in takes:          # a lip-sync retake landed: measured, then again or the best kept
                     s_, k = takes[n]
-                    if len(js) > 1:
-                        _stitch_talk(book, R, L, js, log, only={n}, quiet=True, jobs_file="talk_takes.json")
+                    if len(shots[s_]) > 1:      # its new pieces only (a take of some pieces is not a line to join)
+                        _sync_offsets(book, L, [j["name"] for j in js], log, quiet=True)
+                        if not again(s_, k):
+                            _keep_best_pieces(book, R, L, s_, sorted(shots[s_], key=lambda j: j["chunk"][0]),
+                                              trees[s_], log)
+                        continue
                     measure(n, js)
                     if not again(s_, k):
                         _keep_best_talk(L, s_, k, log, len(shots[s_]))

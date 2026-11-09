@@ -61,13 +61,15 @@ check("...with its sync record", json.loads((L / "out" / "talk-b_s0.sync.json").
 check("best of three kept when none passes (take 2, 3.5)",
       (L / "out" / "talk-c_s0.mp4").read_text().startswith("talk-c_s0_t2"), (L / "out" / "talk-c_s0.mp4").read_text())
 Q = {j["name"]: j for j in json.loads(more.read_text())}
-check("a pieced line with a bad piece is retaken whole (the joined reading hid it)",
-      {n for n in q if n.startswith("talk-d")} == {"talk-d_s0_t2_c0", "talk-d_s0_t2_c1"}, q)
-check("...each take piece chained to the take's own piece before it, new seeds",
-      Q.get("talk-d_s0_t2_c1", {}).get("chain_from") == "talk-d_s0_t2_c0" and q.get("talk-d_s0_t2_c0") != 400 and
+# E30: retaken from its first failing piece on (test_piece_retakes_1108), the passing piece kept
+check("a pieced line with a bad piece is retaken (the joined reading hid it): that piece only",
+      {n for n in q if n.startswith("talk-d")} == {"talk-d_s0_t2_c1"}, q)
+check("...chained to the kept piece before it, a new seed",
+      Q.get("talk-d_s0_t2_c1", {}).get("chain_from") == "talk-d_s0_c0" and q.get("talk-d_s0_t2_c1") != 400 and
       Q["talk-d_s0_t2_c1"].get("line") == "talk-d_s0_t2", Q.get("talk-d_s0_t2_c1"))
-check("...and the retake (worst piece 6.0) becomes the line's clip",
-      (L / "out" / "talk-d_s0.mp4").read_text().startswith("talk-d_s0_t2"), (L / "out" / "talk-d_s0.mp4").read_text())
+check("...and the retaken piece (6.0) is the line's, under a new join",
+      (L / "out" / "talk-d_s0_c1.mp4").read_text().startswith("talk-d_s0_t2_c1") and
+      (L / "out" / "talk-d_s0.mp4").read_text() == "talk-d_s0", (L / "out" / "talk-d_s0_c1.mp4").read_text())
 check("the shot is marked so a later run doesn't retake it", (L / "out" / "talk-c_s0.synced").exists())
 check("kept takes are logged", any("take 2 of 3 kept" in m for m in logs), logs)
 print({"fails": fails})
