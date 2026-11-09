@@ -307,7 +307,10 @@ class Book:
         es = self._entries.get(place_key(name)) or []
         sd = side_of(name)
         fit = sorted((e for e in es if not sd or e[2] in ("", sd)), key=lambda e: bool(sd) and e[2] != sd)   # its side first
-        e = (fit or es or [None])[0]
+        # 11-08: never the OTHER side's words - "Ship Deck (inside)" (the cabin) took the open deck's "Outside: ..."
+        # description, its hero failed every seed and its shots were drawn on the snowy deck; with none of its own
+        # it is undescribed, and describe_places writes it (as place_slot already stores it: a place of its own)
+        e = (fit or ([] if sd else es) or [None])[0]
         return (e[0], e[1]) if e else (None, "")
 
     def place_look(self, name) -> str:
@@ -358,6 +361,19 @@ class Book:
             if f.exists() and f.read_text().strip():
                 return f.read_text().strip()
         return DEFAULT_STYLE
+
+    def direction(self) -> str:
+        """The author's own direction for the film, verbatim, and the recording's style notes (a song made by
+        tts_reader/song.py: song.json "direction" and "tags"), as one block for the planning prompts; "" for a book.
+        11-08: the user's "more festive and merry ..." reached no prompt, and the song's own tags none either."""
+        try:
+            s = json.loads((self.book / "song.json").read_text())
+        except (OSError, ValueError):
+            return ""
+        d, t = str(s.get("direction") or "").strip(), str(s.get("tags") or "").strip()
+        return ((f"THE AUTHOR'S DIRECTION for this film, in their own words (follow it; how is yours to decide): "
+                 f"\"{d}\"\n" if d else "") +
+                (f"The song recording's own style notes: {t}\n" if t else ""))
 
     def picture_style(self) -> str:
         """The PICTURE style of the shots flow's keys and place pictures: `bookcaster art` (art_style.txt), else none -

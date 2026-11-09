@@ -213,6 +213,63 @@ About {nmin} to {nmax} shots. Places: {places}. Names: {names}.
 {extra}{fix}"""
 # the rules for what only some passages have, given only when the passage has it (10-27: forge, dragon and
 # tongues-of-fire rules were a third of every Speckled Band prompt)
+# 11-08 song mode (tts_reader/song.py): a song made into a music video. The lyric lines are the passage's lines, each
+# with its section; the song's recording is the whole sound. Only general rules here (what is shown and when to cut
+# is the director's judgment); the talk machinery is the flow's own, driven by the song's vocal stem.
+SONG_RULES = """
+THIS FILM IS A MUSIC VIDEO of a song, and these rules come before the ones above wherever they differ. Each passage
+is a stretch of the song: its lyric lines, each timed and marked with its SECTION of the song, and the music between
+them. The song's own recording is the whole sound of the film; nobody speaks.
+- Only {singer}'s singing is lip-synced. A "talk" shot is {singer} singing a line, the lips synced to the voice,
+  framed as a talk shot above (the others around {singer} are the ones sung to). Give talk shots to the lines where
+  seeing the singer matters most, never to every line: every other line plays over the other shots. A talk shot
+  starts when its line starts and runs to the line's end.
+- A talk shot here ALSO gives "people" and "setting", as the other shots do: where {singer} is in that shot, in what
+  posture, holding what, and who is with them. Across the song the talk shots differ from one another: {singer} in
+  different spots of the place, with different people, in different framings; never the same picture twice running.
+- Between the talk shots, cut to the others: singing along with the song in the choruses, or reacting to it.
+{beat}- A line marked ALL SING is sung by many voices together. Its talk shot is framed "group": {singer} with the others
+  of the scene and the crowd in the picture, everyone singing together. A line marked SINGS is {singer} alone.
+- The other shots show the song's world: the people and things the lyrics sing of, doing what the lyrics say, and
+  the people around the singer in the place where the song is set. The words of a line are shown while it is sung.
+- Cut with the music: shots change at the start of a line or in the music between lines, and a new section of the
+  song brings a new view. A stretch with no singing shows the place and its people.
+- A section heard again is never the same shots again: other angles, other people, the story moved on.
+"""
+# (a song's breakdown only, so no book's cached breakdown is asked again: 11-08, the cabin was "Ship Deck (inside)")
+SIDES_RULE = (" A new place's \"(inside)\" or \"(outside)\" only ever means the inside or the outside of the SAME "
+              "building; a different room or space, inside or under a known place, is a new place with a name of its "
+              "own.")
+# 11-08 clap A/B (loop_state/scratch/song/clap_ab, 2 seeds): driving a clap shot's A2Vid with the percussion stem did
+# not beat the vocal-driven one (beat-comb |r| 0.48 / 0.33 against 0.16 / 0.38; no impact detected in any clip), so
+# it is OFF: plain clap shots. BOOKCASTER_BEAT_DRIVE=1 turns on the director's "beat" field and its percussion route
+BEAT_DRIVE = os.environ.get("BOOKCASTER_BEAT_DRIVE", "0") == "1"
+SONG_BEAT = ('- A shot whose people clap, stomp or dance to the music gives "beat": true; its movement then follows '
+             "the song's\n  own beat.\n")
+SONG_BREAKDOWN = ("This chapter is a SONG being made into a music video: every line is sung by {singer} (marked with its "
+                  "section of the song), and the lines marked (music) have no singing. A scene is where the video is "
+                  "set and who is there; a scene may run over several sections of the song.")
+
+
+def song_of(book: Path) -> dict | None:
+    """Song mode (tts_reader/song.py): the song's facts (song.json: the lossless audio, sections, the lead singer),
+    or None for a book."""
+    p = Path(book) / "song.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def section_starts(tl: list) -> list:
+    """The section starts of a song's timeline (the first entry of each new section), its first one left out."""
+    out = []
+    for a, b in zip(tl, tl[1:]):
+        if b.get("kind") == "quote" and b.get("section") and b.get("section") != a.get("section"):
+            out.append(float(b["t"]))
+    return out
+
+
 RULE_TOLD = ("Other places in this passage: {others}. While someone TELLS of another time or place (recounting what "
              "happened, a memory), the shots show what they tell, there, with only the people the words describe, and "
              "the teller's voice plays over them: the teller's lines of the telling get NO talk shot, except the first "
@@ -931,12 +988,16 @@ json.dump([[w.word.strip(), round(w.start, 3)] for s in segs for w in (s.words o
 
 
 def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> list:
-    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes."""
+    """Each book word's time (s) in the voice track (None: not found), cached beside the track by its bytes. A song
+    (song_of): its own Whisper model and prompt, and only its sung words matched (not the chapter's opening line
+    nor the [section] labels: 11-08, the opening line's "The" took the first sung word's time)."""
     import difflib
     track = track or book / "work" / f"{stem}.mp3"
     st = track.stat()
     cp = track.with_name(track.name + ".wordtimes.json")
-    key = f"{st.st_size}:{st.st_mtime_ns}:{WHISPER_MODEL}"
+    song = (song_of(book) or {}).get("align") or {}
+    model, prompt = song.get("model") or WHISPER_MODEL, song.get("prompt")
+    key = f"{st.st_size}:{st.st_mtime_ns}:{model}" + (f":{MF._h(json.dumps(song, sort_keys=True))}" if song else "")
     try:
         got = json.loads(cp.read_text())
         if got.get("k") == key:
@@ -947,10 +1008,11 @@ def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> l
     bw = _WORD.findall(f.read_text(encoding="utf-8")) if f.exists() else []
     if not bw or not WHISPER_PY.exists():
         return [None] * len(bw)             # no book text or no Whisper: the talk prompts quote nothing
-    names = ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
-    log(f"  word timing: {track.name} (Whisper {WHISPER_MODEL}, CPU)")
+    names = prompt if prompt is not None else \
+        ", ".join(sorted({w for w in re.findall(r"\b[A-Z][a-z]{3,}\b", " ".join(bw)) if bw.count(w) > 2})[:40])
+    log(f"  word timing: {track.name} (Whisper {model}, CPU)")
     tmp = cp.with_suffix(".tmp")
-    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), WHISPER_MODEL, names])
+    r = subprocess.run([str(WHISPER_PY), "-I", "-c", _WHISPER_RUN, str(track), str(tmp), model, names])
     try:
         hw = json.loads(tmp.read_text()) if getattr(r, "returncode", 1) == 0 else None
     except (OSError, ValueError):
@@ -960,10 +1022,12 @@ def word_times(book: Path, stem: str, track: Path | None = None, log=print) -> l
         log(f"  !!! word timing failed for {track.name}: the talk prompts quote only whole lines")
         return [None] * len(bw)
     times = [None] * len(bw)
-    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(w) for w in bw], autojunk=False)
+    sung = [j for j, w in enumerate(bw) if j >= int(song.get("from_word") or 0) and
+            not (song and (w.startswith("[") or w.endswith("]")))]
+    sm = difflib.SequenceMatcher(None, [_norm(w) for w, _ in hw], [_norm(bw[j]) for j in sung], autojunk=False)
     for blk in sm.get_matching_blocks():
         for k in range(blk.size):
-            times[blk.b + k] = hw[blk.a + k][1]
+            times[sung[blk.b + k]] = hw[blk.a + k][1]
     cp.write_text(json.dumps({"k": key, "t": times}))
     return times
 
@@ -1039,6 +1103,8 @@ def spoken_words(book: Path, stem: str, tl: list, lines: list, t: float, d: floa
             b0 = hi if b_ <= t + d + 0.5 else max(sel)
             out.append(" ".join(bw[a0:b0 + 1]))
     txt = re.sub(r"[“”\"‘’]|(?<!\w)'|'(?!\w)", "", " ".join(out))
+    if song_of(book):                   # (11-08: a talk clip was told to say "... song. [Pre-Chorus]")
+        txt = re.sub(r"\[[^\]]*\]", "", txt)
     return re.sub(r"\s+", " ", txt).strip()
 
 
@@ -1982,6 +2048,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     tl = load_timeline(book, stem, chars)
     sents = sentences(tl)
     nar = RGB.narrator() or ""
+    song = song_of(book)                # song mode: sung lines with their sections, the singer the one on camera
     talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
     real = list(dict.fromkeys(e["where"] for e in es if e.get("where") and not NO_PLACE.search(e["where"])))
 
@@ -2047,6 +2114,13 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     state, prev_shot, people_here = "(the start of the chapter)" if t_a < 1 else "", None, []
     new_es, by, new_sheets = [], {}, {}
     system, talk_ = SHOT_RULES.format(maxp=MAX_PEOPLE, closemax=CLOSE_MAX), []
+    if song:
+        system += SONG_RULES.format(singer=RGB.person(song["singer"]["name"]) or song["singer"]["name"],
+                                    beat=SONG_BEAT if BEAT_DRIVE else "")
+    sec_of = (lambda t: next((x.get("section") or "" for x in reversed(tl) if float(x["t"]) <= t + 1e-3), "")) \
+        if song else None
+    grp_of = (lambda t: next((bool(x.get("group")) for x in reversed(tl) if float(x["t"]) <= t + 1e-3), False)) \
+        if song else None              # (a song's line sung by many: song.py's "group")
     pics_before, pics_scene, screen, last_pose, last_at, carry = [], [], {}, {}, {}, {}
     pair, lasts, cut_where, holding = None, {}, {}, {}
     animate_up = False
@@ -2059,7 +2133,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
             if w not in place_sheet and base in place_sheet:
                 place_sheet[w] = place_sheet[base]
     cur = None
-    for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes), sent=pts[0]):
+    forced = tuple(x["start"] for x in scenes) + (tuple(section_starts(tl)) if song else ())   # (a song: per section)
+    for pa, pb in passages(tl, t_a, t_b, forced=tuple(sorted(set(forced))), sent=pts[0]):
         sec = pb - pa
         si = max([i for i, x in enumerate(scenes) if x["start"] <= pa + 0.5] or [0])
         sc_ = scenes[si] if scenes else {"place": home, "who": [], "what": "", "cutaways": [], "opens": "",
@@ -2089,11 +2164,20 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         lines_ = [x for x in sents if x[1] > pa + 0.05 and x[0] < pb - 0.05]
         quotes = [(max(0.0, x0 - pa), min(sec, x1 - pa), _who_full(spk, chars)) for x0, x1, spk, k, _ in lines_
                   if k == "quote" and spk != "narrator"]
-        txt = []
+        txt, sec_was = [], None
         for x0, x1, spk, k, z in lines_:
             who = _who_full(spk, chars) or ("narrator" + (f" ({nar}, telling it as 'I')" if nar else ""))
             cont = " (continuing)" if x0 < pa - 0.3 else ""
-            if k == "quote" and spk != "narrator":
+            if song:                    # each section headed once; sung lines SING, the music between has no words
+                if (sl := sec_of(x0)) != sec_was:
+                    txt.append(f"SECTION: {sl or '(unlabelled)'}")
+                    sec_was = sl
+                if k == "music":
+                    txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] (music, no singing)")
+                else:
+                    txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] "
+                               + (f"ALL SING, led by {who}{cont}" if grp_of(x0) else f"{who} SINGS{cont}") + f": {z}")
+            elif k == "quote" and spk != "narrator":
                 txt.append(f"[{max(0.0, x0 - pa):.1f}-{min(sec, x1 - pa):.1f}] {who} SAYS ALOUD{cont}: {z}")
             else:
                 txt.append(f"[{max(0.0, x0 - pa):.1f}] {who}{cont}: {z}")
@@ -2150,14 +2234,17 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
         looks = {w: MF._brief(MF._appearance(RGB.look(w))) for w in cast}
         people = "; ".join(f"{w} ({looks.get(w, '')}{'; wears ' + dress[w] if dress.get(w) else ''})" for w in cast)
         hs = place_sheet.get(home) or {}
-        narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote")
+        narr = " ".join(z for *_, k_, z in lines_ if k_ != "quote" or song)    # (a song: its words are its story)
         extra = "".join(r for rx, r in RULE_EXTRA if rx.search(narr))     # the narration's own events only
+        extra = RGB.direction() + extra    # (a song's author's direction, every passage; the chains read it too)
         told = RULE_TOLD.format(others="; ".join(f"{w} (its fixed things: {(place_sheet.get(w) or {}).get('room') or 'as the narration says'})"
                                                   for w in others)) if others else ""
         pv = ("(none: the chapter starts here)" if prev_shot is None else
               f"at {prev_shot.get('place')}: {prev_shot.get('picture') or ', '.join(prev_shot.get('who') or [])}"
               + (f" Postures at its end: {json.dumps(prev_shot.get('pose_end'))}" if prev_shot.get("pose_end") else ""))
-        q0 = PASSAGE_ASK.format(scene=scene_txt, before=before, sec=sec, text="\n".join(txt) or "(silence)", after=after,
+        q0 = (PASSAGE_ASK if not song else PASSAGE_ASK.replace(
+            'Spoken lines say\n"SAYS ALOUD" with their start and end.',
+            'Sung lines say\n"SINGS" with their start and end, under a SECTION heading.')).format(scene=scene_txt, before=before, sec=sec, text="\n".join(txt) or "(silence)", after=after,
                                narrator=(f"The narrator is {nar}, telling the story as 'I'. When the narration is {nar} "
                                          f"musing, explaining or judging rather than telling what happens, show {nar} "
                                          f"where the story has them NOW, doing what they are doing there (listening, "
@@ -2405,13 +2492,34 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                     # 673-710 s): a line between people of the telling is at the told place, with its poses
                     tp = told_at(t, who, lis) or tp
                     lp, la = state_at(tp)
+                    if song:            # (a song: the director stages each talk shot; 11-08, every sung shot carried
+                        for pl in x0.get("people") or []:     # one early pose - the singer at the helm, all song)
+                            w_ = cast_of(pl.get("name"), cast) if isinstance(pl, dict) else None
+                            if w_:
+                                lp[w_] = pose_cat(pl.get("pose")) or lp.get(w_) or "stand"
+                                if str(pl.get("at") or "").strip():
+                                    la[w_] = str(pl["at"]).strip().rstrip(".")
+                                h_ = str(pl.get("holds") or "").strip().rstrip(".")
+                                holding.setdefault(at_key(tp), {})[w_] = "" if h_.lower() in ("nothing", "none") \
+                                    else re.sub(r"^holding\s+", "", h_)
                     fr = str(x0.get("framing") or "").lower()
                     sh = {"id": f"{mid}_s0", "dur": d, "who": [who], "framing": "close" if fr.startswith("close")
                           else "medium", "kind": "talk", "place": tp, "action": "",
                           "picture": (TALK_CREATURE if who in crs else TALK_PICTURE).format(who=who)}
                     if abed(who) and who not in crs:      # a close-up in bed: the pillows behind the face, not a chair
                         sh["picture"] += f", {BED_POSE[lp[who]]} in bed, against the pillows, the covers at the chest"
-                    if lis and who not in crs and lis not in crs and not fr.startswith("close"):
+                    if song and fr.startswith("group") and who not in crs and any(
+                            x_.get("group") for a_, b_, x_ in spans.get(who, []) if b_ > t and a_ < t + d):
+                        chor = [w for w in (sc_who or []) if w in cast and w not in crs
+                                and (w in people_here or w in where_of or w == who)]
+                        if len(chor) >= 2 and who in chor:     # (11-08 user: "a chorus of multiple people singing ...
+                            for w in chor:                     # many people all singing")
+                                screen.setdefault(w, max(screen.values(), default=-1) + 1)
+                            gr = sorted(chor, key=lambda w: screen[w])
+                            sh.update(who=gr, speaker=who, chorus=True, picture=lead(gr).replace(
+                                f", head turned to look at {who}", ", singing along, mouth open on a vowel").replace(
+                                ", listening", ", everyone singing together"))
+                    if not sh.get("chorus") and lis and who not in crs and lis not in crs and not fr.startswith("close"):
                         # the scene's ONE side map, the same the other shots use (10-27 audit: talk shots kept their
                         # own, and Helen and Holmes swapped sides at every cut between a talk shot and the others)
                         if who not in screen and lis not in screen:
@@ -2610,11 +2718,17 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
     whole chapter at once (cached in shots/scenes/breakdown.json by its question)."""
     from tts_reader import animate
     from tts_reader import bookcaster as BC
-    end = float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())
+    song = song_of(book)
+    end = float(song["seconds"]) if song else float(tl[-1]["t"]) + 0.4 * len(tl[-1]["text"].split())
     text = "\n".join(f"[{float(x['t']):.0f}] {_who_full(x.get('speaker') or 'narrator', chars) or 'narrator'}: "
-                     f"{x['text']}" for x in tl)
+                     f"{x['text']}" if not song else
+                     f"[{float(x['t']):.0f}] ({x.get('section') or 'song'}) " + (
+                         "(music)" if x.get("kind") == "music" else
+                         f"{_who_full(x.get('speaker'), chars) or x.get('speaker')} sings: {x['text']}") for x in tl)
     q = BREAKDOWN_ASK.format(narrator=(f"The narrator, {nar}, tells the story as 'I'; a stretch where {nar} looks "
-                                       f"back before the story begins is a scene of its own." if nar else ""),
+                                       f"back before the story begins is a scene of its own." if nar else "") + (
+        SONG_BREAKDOWN.format(singer=RG.Book(book).person(song["singer"]["name"]) or song["singer"]["name"]) + SIDES_RULE
+        if song else "") + ("\n" + RG.Book(book).direction() if RG.Book(book).direction() else ""),
                              places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
@@ -2735,7 +2849,8 @@ def place_sheets(book: Path, stem: str, es: list, by: dict, log=print, keep_llm:
         shots = "\n".join(f"- {sh.get('picture') or ', '.join(sh.get('who') or [])}" for _, sh in xs
                           if sh.get("kind") != "talk")[:3000] or "(people talking)"
         said = " ".join(z for e, _ in xs for _, z in timed(tl, float(e["t"]), float(e["dur"])))[:2500]
-        q = SET_ASK.format(place=w, period=period, people=", ".join(chars), shots=shots, said=said)
+        q = SET_ASK.format(place=w, period=period + RG.Book(book).direction(), people=", ".join(chars), shots=shots,
+                           said=said)        # (the author's direction, a song's: the set and its crowd may follow it)
         sid = "set_" + re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")
         cp, k = sd / f"{sid}.json", MF._h(q)
         got = json.loads(cp.read_text()) if cp.exists() else {}
@@ -2791,11 +2906,12 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
     text = (book / "chapters" / f"{stem}.txt").read_text()
     R_ = RG.Book(book)                  # the narrator in the plan's own spelling of them (the "I" of the text)
     nar = R_.key_in(R_.narrator(), video.looks(plan)[0]) if R_.narrator() else ""
-    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or ""):
+    dr = R_.direction()                 # (a song's author's direction: the outfits may follow it too)
+    if plan.get("wardrobe_k") == video.wardrobe_inputs_key(plan, text, nar or "", direction=dr):
         return                          # current for these rules, looks, chapter and narrator: nothing to ask
     notes = scene_notes(book, stem, log)          # the breakdown (cached; it brings up the language model if not)
     animate.igpu("strata", log)
-    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or "", notes=notes):
+    if video.ensure_wardrobe(plan, text, BC.LLM_URL, BC.LLM_MODEL, log, narrator=nar or "", notes=notes, direction=dr):
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 
@@ -2873,7 +2989,8 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
             text = " ".join(x["text"] for x in tl for mid in sorted(mids, key=t_of.get)
                             if t_of[mid] - 0.5 <= x["t"] < t_of[mid] + span[mid] - 0.5)[:1500]
             reply = (_chat(BC.LLM_URL, BC.LLM_MODEL, PLACE_ASK.format(where=base, side=f"from {sd_}", text=text,
-                                                                        period=MF.period_line(book, "everything there")),
+                                                                        period=MF.period_line(book, "everything there"))
+                           + ("\n\n" + R_.direction() if R_.direction() else ""),
                            max_tokens=300) or "").strip().strip('"')
             reply = re.sub(r"(?s)<think>.*?</think>", "", reply).strip().splitlines()[0:1]
             if reply and reply[0].strip():
@@ -2898,6 +3015,29 @@ def _key_style(style: str) -> str:
     head = re.sub(r"(?i)\b(gothic|baroque|romanesque|victorian|byzantine|rococo|renaissance|medieval)\b\s*", "", head)
     keep = [re.sub(r"(?i)\bgothic\s*", "", c).strip() for c in re.split(r",", rest) if c.strip() and not STYLE_CONTENT.search(c)]
     return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
+
+
+HOLDING = re.compile(r",\s*holding\s+(?:the\s+|a\s+|an\s+|his\s+|her\s+|their\s+)?([^,;.]+)", re.I)
+
+
+def fixed_holds(pic: str, s: dict) -> str:
+    """A key's picture with no fixture of the set "held" (11-08: "The Captain stands behind the helm, holding helm" -
+    every key put the wheel in his hands and LTX lifted it off its post): a held thing that is one of the place's
+    fixtures (its set sheet's), or the very thing the person stands at, is a hand resting on it, fixed in place. Only
+    the key's words change (the director's own words, and so his cached asks, are left as they are)."""
+    heads = {_norm(f.split()[-1]) for f in s.get("fixtures") or [] if str(f).split()}
+
+    def one(part):
+        def rep(m):
+            thing = m.group(1).strip()
+            head = _norm(thing.split()[-1]) if thing.split() else ""
+            before = {_norm(w) for w in part[:m.start()].split(",")[0].split()}     # (where they are: the clause before the first comma)
+            words = {_norm(w) for w in thing.split()} - {"", "the", "a", "an"}
+            if head and (head in heads or (words and words <= before and not re.search(r"\w[’']s\b", thing))):  # (not a person's)
+                return f", one hand resting on the {thing}, which stays fixed in its place"
+            return m.group(0)
+        return HOLDING.sub(rep, part)
+    return "; ".join(one(p) for p in str(pic).split("; "))
 
 
 def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
@@ -2953,7 +3093,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
         people.append(f"{MF._lora(book, w)[1] or ''} {w}{side}{', ' + pz if pz else ''}"
                       f"{', whole body visible' if s.get('framing') == 'wide' else ''}: {lk.rstrip('.')}{legs}".strip())
     place = re.sub(r"\s*\((inside|outside)\)$", "", s.get("place") or "")
-    pic = figurative(moment(s) or s["picture"])
+    pic = fixed_holds(figurative(moment(s) or s["picture"]), s)
     if s.get("tight") and set((s.get("pose") or {}).values()) == {"standing"}:
         # 10-29: "Holmes stands beside the bed" in a close shot drew an empty bed behind him (743, 834: all 5 seeds
         # failed the chair check). Where a standing one stands by a seat is the director's, kept in his words; the
@@ -3057,6 +3197,10 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     other = next((w for w in s.get("who") or [] if w != who), None)
     # (10-28: "Sherlock Holmes, standing, ..." here made LTX pull a close-up back to the waist to show the posture -
     # SyncNet 9.0 -> 1.0; the key carries the posture, so the talk words name none)
+    if s.get("chorus"):                           # (a song's line sung by many: all of them sing it, 11-08)
+        rest = [w for w in s.get("who") or [] if w != who]
+        lst = f" {', '.join(rest)} and everyone around sing along, their mouths moving with the song." if rest else ""
+        other = None
     if other and not s.get("ots"):                # a two-shot: the other face is in the picture, never the speaker's
         rest = [w for w in s.get("who") or [] if w != who]
         lst = (f" {other} listens with a closed mouth." if len(rest) == 1 else
@@ -3678,7 +3822,9 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                              "seed": (int((sd / mid / s["id"] / "talk_seed").read_text())
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
-                             "audio_src": e["wav"], "people": len(s.get("who") or []) or None,
+                             "audio_src": e["wav"],
+                             "people": None if s.get("chorus") else len(s.get("who") or []) or None,
+                             **({"chorus": True} if s.get("chorus") else {}),
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
                              "steps": TALK_STEPS, "guider": dict(TALK_GUIDER), "lock_end": None,
@@ -3688,6 +3834,28 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                     talk[-1].update(chain_from=talk[-2]["name"], chain_frame=st - pst, overlap=pst + pn - st,
                                     seam_tries=0,      # user: chained, no re-renders, no checks
                                     images=[])
+        elif BEAT_DRIVE and s.get("beat") and key.exists() and (BEAT_DRUMS(book)).exists():
+            # 11-08 (clap A/B, loop_state/scratch/song/clap_ab): a song's clap/stomp shot driven by the song's
+            # PERCUSSION stem through A2Vid, so the motion locks to the beat; LTX's own sound is never used (the cut
+            # is muxed on the song itself)
+            e = byid.get(mid) or {}
+            t0_, nn = float(e.get("t") or 0.0), n + TALK_PRE
+            pad = L / "audio" / f"{mid}_beat.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t0_:.3f}", "-t", f"{n / FPS:.3f}", "-i",
+                            str(BEAT_DRUMS(book)), "-ac", "2", "-ar", "48000", "-af",
+                            f"adelay={int(TALK_PRE / FPS * 1000)}:all=1,apad=whole_dur={nn / FPS:.4f}", str(pad)],
+                           check=True)
+            bp = _offscreen(cx, s, figurative(s["action"] or "") + _pose_hold(cx, s), only=False).strip()   # (no
+            # "the crowd stays still": the crowd moves to the beat too)
+            bp = f"Static camera, the framing does not change. {bp} No text anywhere in the picture."
+            emb = f"b_{mid}_{MF._h(bp)}"
+            enc_dev += [{"name": emb, "prompt": bp}, {"name": emb + "__neg", "prompt": neg}]
+            talk.append({"name": s["id"], "emb": emb, "prompt": bp, "width": W, "height": H, "fps": FPS, "frames": nn,
+                         "audio": str(pad), "audio_mux": str(pad), "seed": 42 + shot_seed(s["id"]), "audio_start": 0.0,
+                         "line": mid, "speaker": None, "audio_src": f"{pad}|{t0_:.3f}|{n}", "beat": True,
+                         "people": None if s.get("crowd") else len(s.get("who") or []) or None, "speaker_box": None,
+                         "speech_s": n / FPS, "chunk": [0, 1, 0, nn], "pre": TALK_PRE, "steps": TALK_STEPS,
+                         "guider": dict(TALK_GUIDER), "lock_end": None, "images": [dict(img[0], strength=TALK_KEY)]})
         elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
             if not (retake and s["id"] not in retake):
                 _chain_state(L, s, key)
@@ -3906,6 +4074,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         finally:
             stop.set()
             th.join(60)
+
+
+def BEAT_DRUMS(book: Path) -> Path:
+    """A song's percussion stem (tts_reader/song.py separate: work/song/drums.wav); a book has none."""
+    return Path(book) / "work" / "song" / "drums.wav"
 
 
 def _crowded(faults: list) -> bool:
@@ -4644,6 +4817,7 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     02m32s went 5.6/1.5 then 6.0/1.0, its whole-line retakes threw a good first piece away twice); the new first
     piece starts on the kept piece's last frame. TALK_TAKES still caps the takes per line; the kept line is the chain
     of pieces with the best worst piece (_keep_best_pieces)."""
+    talk = [j for j in talk if not j.get("beat")]     # (a song's beat clip: driven by the drums, nobody sings)
     shots, takes = {}, {}               # takes: take name -> (shot, take number)
     trees = {}                          # a pieced line's renders: piece -> (position, the piece it starts from)
     for j in talk:
@@ -4657,6 +4831,9 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
     def again(n: str, k: int) -> bool:  # take k + 1 of shot n, when take k missed the bar and takes are left
         js = sorted(shots[n], key=lambda j: (j.get("chunk") or [0])[0])
         tn = f"{n}_t{k + 1}"
+        if any(j.get("chorus") for j in js):    # (a song's chorus: many mouths, one measured box; logged, not gated)
+            log(f"{n}: chorus shot, lip sync {_talk_score(L, n, len(js)):.1f} on the lead's face (not gated)")
+            return False
         if len(js) > 1:
             return again_pieces(n, k, js, tn)
         c = _talk_score(L, n if k == 1 else f"{n}_t{k}", len(js))
@@ -4788,6 +4965,35 @@ def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None
                  f"{': ' + r.stderr.strip().splitlines()[-1] if r.stderr.strip() else ''}")
     elif not quiet:
         log(f"talk stitch: {len(names)} lines joined")
+
+
+def beat_times(wav: Path) -> list:
+    """The onsets of a percussion track (s): each a sharp rise of its loudness (10 ms frames) over the half second
+    before it, at least 0.15 s apart (a clap or stomp in a song's drums stem, 11-08)."""
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(wav), "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                         capture_output=True).stdout
+    x = np.frombuffer(raw, np.float32)
+    x = x[:len(x) // 80 * 80].reshape(-1, 80)
+    env = np.sqrt((x ** 2).mean(1)) if len(x) else np.zeros(0)
+    if len(env) < 60:
+        return []
+    flux = np.maximum(np.diff(env, prepend=env[0]), 0)
+    thr = 3.0 * float(np.median(flux[flux > 0])) if (flux > 0).any() else 1.0
+    out, last = [], -99
+    for i in range(1, len(flux) - 1):
+        if flux[i] >= thr and flux[i] >= flux[i - 1] and flux[i] >= flux[i + 1] and \
+                env[i] > 1.5 * float(np.mean(env[max(0, i - 50):i] + 1e-9)) and i - last >= 15:
+            out.append(round(i / 100, 3))
+            last = i
+    return out
+
+
+def on_beat(impacts: list, beats: list, fps: int = FPS, tol: int = 2) -> tuple:
+    """(impact frames within `tol` frames of a beat, all impact frames): how well a clip's hits follow the music."""
+    bf = [b * fps for b in beats]
+    hit = sum(1 for f in impacts if any(abs(f - b) <= tol for b in bf))
+    return hit, len(impacts)
 
 
 def _impacts_in_clip(mp4: Path, fps: int = FPS) -> list:
@@ -5097,6 +5303,8 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                 # a talk clip: its silent lead-in dropped (talk_pre), and SyncNet's shift (10-28 user: "version 3
                 # is definitely an improvement") trims a little more (lips late) or less (lips early) of it
                 st_ = talk_pre(c) + sync_shift(c) if s.get("kind") == "talk" else 0
+                if s.get("beat") and s.get("kind") != "talk":   # (a song's beat clip: its silent lead-in too)
+                    st_ = talk_pre(c)
                 if st_ > 0:
                     src = ["-ss", f"{st_ / FPS:.4f}", "-i", str(c)]
                 elif st_ < 0:           # (a clip from before the lead-in, lips early: its first frame held)
@@ -5119,8 +5327,22 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                               "stream=nb_read_packets", "-of", "csv=p=0", str(vid)], capture_output=True, text=True).stdout or 0)
     if got != edge[-1]:
         log(f"!!! picture is {got} frames, the timeline {edge[-1]}: out of sync by {(got - edge[-1]) / FPS:+.2f} s")
+    song = song_of(book)
+    if song:                            # a music video: the picture on the song's own (lossless) recording, nothing added
+        return song_mux(Path(song["audio"]), vid, t0, edge[-1] / FPS, out, len(segs), log)
     fx = effects_mix(book, stem, mix, spans, log, pauses)
     return MF.mux(book, stem, vid, t0, edge[-1] / FPS, fx, out, hits, len(segs), log, planned=fx == mix)
+
+
+def song_mux(audio: Path, vid: Path, t0: float, dur: float, out: Path, n: int, log=print) -> Path:
+    """The cut on the song's own recording from t0, untouched (no limiter, no mix), swapped in whole."""
+    tmp = Path(out).with_name(f".{Path(out).stem}.{os.getpid()}{Path(out).suffix}")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(vid), "-ss", f"{t0:.3f}", "-t", f"{dur:.3f}", "-i",
+                    str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k",
+                    "-shortest", str(tmp)], check=True)
+    os.replace(tmp, out)
+    log(f"assembled {n} clips on the song ({audio.name}) -> {out}")
+    return out
 
 
 def out_path(book: Path, stem: str, t0: float, t1: float) -> Path:
@@ -5177,7 +5399,9 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     wardrobe(book, stem, log)
     loras = loras_beside(book, stem, log, es)                 # the cast's LoRAs on both cards while the director runs
     es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
-    sfx_plan(book, stem, log)                                 # (its language model is still up)
+    song = song_of(book)
+    if not song:                                              # (a song is its own whole sound: no effects)
+        sfx_plan(book, stem, log)                             # (its language model is still up)
     sheets = place_sheets(book, stem, es, by, log, keep_llm=True)   # then one set sheet per place it used
     es = apply_chains(es, by, log)                            # (after the sheets: they see the director's own shots)
     from tts_reader import animate
@@ -5200,7 +5424,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         log(f"rendering {render[0]:.1f}-{render[1]:.1f} s only: {len(shots)} shots of the directed stretch")
         if not shots:
             raise RuntimeError(f"the render window {render[0]:g}-{render[1]:g} s has no shots of the directed stretch")
-    pauses = chain_pauses(book, stem, es, by, log)       # the narration's gaps for the chains (none: nothing moves)
+    # the narration's gaps for the chains (none: nothing moves); a song never waits: a chain plays to its slot's end
+    pauses = chain_pauses(book, stem, es, by, log) if not song else []
     if pauses:                                           # (before the keys, so the plan saved has them)
         apply_pauses(es, by, pauses)
         shots = [s for e in es for s in by.get(e["id"], [])]
