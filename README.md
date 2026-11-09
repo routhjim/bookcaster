@@ -51,8 +51,8 @@ people stand and which way they face, and some shots need a redraw or a retake.
 | Checks | A vision model for pictures and takes, SyncNet for lip sync, Whisper for timings | started per job |
 
 The reference machine has two Radeon RX 7900 XTX cards (24 GB each, ROCm) and an AMD Strix Halo
-whose integrated GPU runs the language model in shared memory. ffmpeg is needed for video and
-`.m4b`.
+whose integrated GPU runs the language model in shared memory (see
+[The reference machine](#the-reference-machine)). ffmpeg is needed for video and `.m4b`.
 
 **Portability.** The audio path is configured through environment variables (see
 [Configuration](#configuration)). The video path is not packaged for other machines yet: several
@@ -271,6 +271,62 @@ language:
 
 `tools/fish_stack.sh` has its own variables for venvs and GPU pins, listed in its header.
 `tts-reader` uses `TTS_READER_MODELS_DIR` for its Piper voice cache.
+
+## The reference machine
+
+Everything runs on one desktop. No cloud GPU is used.
+
+| Part | What it is | What runs on it |
+|------|------------|-----------------|
+| CPU and memory | AMD Ryzen AI Max+ 395 (Strix Halo), 16 cores, about 123 GiB of usable RAM | The job itself, ffmpeg, assembly |
+| Integrated GPU | Radeon 8060S. It uses system RAM as its memory; the kernel's limit for that is raised to about 124 GiB | The language model (about 90 GiB, pinned), the vision judge, keyframes for quiet shots |
+| Two cards | Radeon RX 7900 XTX, 24 GB each, each on a PCIe 4.0 x4 link | Voices on one and music on the other while recording. LoRA training, keyframes and LTX while filming |
+| Software | Fedora 44, PyTorch 2.11 on ROCm 7 nightly builds | |
+
+### How the work is spread
+
+Filming is the slow part, so the aim is that no device waits for another.
+
+- The language model plans on the integrated GPU while both cards train the character LoRAs.
+- LTX's transformer is split evenly over the two cards (24 blocks each), with three clips in
+  flight. Each card does one piece of work at a time, and finished clips are decoded in pairs,
+  one on each card.
+- For prompt encoding, the text encoder runs on one card. The connector on the other card embeds
+  each batch while the encoder runs the next.
+- The cards draw keyframes and the integrated GPU judges each one as it lands. While the cards
+  render the main shots, the integrated GPU draws the keyframes for the quiet shots.
+- The director is one running conversation per chapter, so the language model reads only the new
+  turn each time.
+
+### What was tuned
+
+Each figure was measured on this machine against the version before it.
+
+| Change | Effect |
+|--------|--------|
+| LTX weights cast to fp8 ahead of time and read from the internal NVMe | Model ready in 18.7 s instead of 101.9 s |
+| All guidance passes of a step in one batched call | Action clips: 16-20% less card time |
+| Guidance on the first 60% of steps only, for talking shots | 13-17% less card time; the lip sync score stayed within 0.15 |
+| The character LoRA folded into the weight as it is upcast | Quiet clips: 7.6% less card time |
+| Paired decode, the even split, one job at a time per card | 7 talking clips: 463 s to 387 s |
+| A Triton kernel for the video decoder's 3x3x3 convolution | A 177-frame decode: 21.0 s to 9.5 s, with half the peak memory |
+| Three clips in flight under a full lock on the first card | 13% less wall time than two clips; 0 bad clips in 9 |
+| Hand-written fused kernels in place of `torch.compile` | 446 s to 372 s on the same clips, and no 50-70 s of tracing at each start |
+| Prompt encoding: one model load, real tokens only, sorted batches, the connector on the other card | A chapter's 221 prompts: about 331 s to 45 s |
+| LoRA training under bf16 autocast with fused AdamW | 1.52 s to 1.33 s a step |
+| The integrated GPU judges a LoRA's pictures while a card draws them | Judging ends 34 s after drawing instead of 4.5 min |
+| Quiet-shot keyframes drawn on the integrated GPU during the render | 6.6% less time from keyframes to the end |
+| The integrated GPU's host threads kept on the first group of CPU cores | The chip runs at its heat limit, so where those threads run sets its clock: 19.5 against 11.9 TFLOPS |
+
+### Tried and not kept
+
+- **`torch.compile` for LTX.** It beat plain eager code, but it traced for 50-70 s at every
+  start. The fused kernels are faster still.
+- **MIOpen on the cards.** Each new tensor shape cost about 10 minutes of tuning. It is off, and
+  convolutions go through the project's own kernels or run in tiles.
+- **fp8 weights in Qwen-Image.** They gave NaNs, so its stored weights are int8.
+- **Parallel requests to the language model.** They gave no gain with the model in use.
+- **hipBLASLt for prompt encoding.** It saved 6-8 s and changed the embeddings by about 0.5%.
 
 ## Tests
 
