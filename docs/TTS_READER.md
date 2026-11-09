@@ -1,0 +1,605 @@
+# tts-reader: the voice engine layer
+
+`tts-reader` is the command-line tool under [bookcaster](../README.md). It turns a text file into a
+spoken-word MP3 or `.m4b`, with one voice or a full cast, entirely on your own machine. Use it
+directly when you want one file converted and don't need bookcaster's library, music, sound
+effects or video.
+
+The simplest path needs no GPU. It uses [Piper](https://github.com/OHF-Voice/piper1-gpl) — a fast, fully local
+neural text-to-speech engine — so there is **no cloud service** and **no API
+key**. Pick from several voices, adjust the speaking rate, and get an `.mp3`
+out the other side. MP3 encoding is done in-process with `lameenc`, so MP3
+output **doesn't need ffmpeg** (`.m4b` output does).
+
+---
+
+## Features
+
+- 🎙️ **Several voices** out of the box — US/UK English plus a few other
+  languages — and you can use any voice from the Piper collection.
+- 🔒 **100% local synthesis.** After a voice model is downloaded once, it runs
+  offline on CPU.
+- 🎧 **Direct MP3 output** (no ffmpeg required) with adjustable bitrate, or `.m4b` with ffmpeg.
+- ⏩ **Speed & volume control.**
+- 📚 **Batch mode** — convert many text files in one command.
+- 🎭 **Full-cast narration** with the GPU engines below (Orpheus, F5-TTS, Fish S2 Pro).
+
+## Install
+
+Requires Python 3.9+.
+
+```bash
+# from the project root
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+> The **first time** you use a given voice, its model (a few tens of MB) is
+> downloaded from Hugging Face and cached locally. Every run after that is
+> fully offline.
+
+## Usage
+
+List the available voices:
+
+```bash
+python -m tts_reader voices
+```
+
+Convert a file with the default voice (`amy`):
+
+```bash
+python -m tts_reader convert notes.txt
+# -> notes.mp3
+```
+
+Try the included sample:
+
+```bash
+python -m tts_reader convert examples/sample.txt -o hello.mp3 --voice ryan
+```
+
+Read straight from a URL (Project Gutenberg license boilerplate is trimmed
+automatically; pass `--no-strip-gutenberg` to keep it):
+
+```bash
+python -m tts_reader convert https://www.gutenberg.org/cache/epub/2701/pg2701.txt \
+    -o moby_dick.mp3 --voice ryan
+```
+
+> Note: full-length books are **hours** of audio and take a long time to
+> synthesize. Try a single chapter first.
+
+### Chapters (browseable audiobooks)
+
+`tts-reader` can detect chapters (`CHAPTER 1`, `Part II`, `Prologue`, …) and turn
+a book into something you can navigate.
+
+Preview the detected chapters without synthesizing anything:
+
+```bash
+python -m tts_reader convert moby.txt --list-chapters
+```
+
+By default (`--chapters auto`), when multiple chapters are found the output MP3
+gets **embedded chapter markers** (ID3 `CHAP`/`CTOC`) so you can jump between
+chapters in a chapter-aware player (VLC, most podcast apps, Foobar2000, …):
+
+```bash
+python -m tts_reader convert moby.txt -o moby.mp3 --voice ryan
+```
+
+Prefer one file per chapter plus a playlist? Use split mode — this works in
+*any* player as a track list:
+
+```bash
+python -m tts_reader convert moby.txt -o moby_audiobook/ --chapters split
+# moby_audiobook/001_....mp3, 002_....mp3, ... + playlist.m3u
+```
+
+Chapter options:
+
+| Option              | Description                                                            |
+|---------------------|-----------------------------------------------------------------------|
+| `--chapters auto`   | Embed markers when chapters are detected, else a plain MP3 (default). |
+| `--chapters embed`  | Force a single MP3 with jump-to-chapter markers.                       |
+| `--chapters split`  | One MP3 per chapter + `playlist.m3u` in a folder.                      |
+| `--chapters off`    | Ignore chapters; one continuous MP3.                                   |
+| `--overwrite`       | Split mode: re-render chapters whose MP3 already exists (default: skip them, so interrupted runs resume). |
+| `--list-chapters`   | Print detected chapters and exit (no audio).                          |
+| `--chapter-regex`   | Custom per-line regex marking where chapters begin.                   |
+
+### Audiobook output: `.m4b` and library layout
+
+For real audiobook apps (resume position, chapter navigation, speed
+control), output an `.m4b` — needs system ffmpeg:
+
+```bash
+tts-reader convert moby.txt -o moby.m4b
+```
+
+Chapters render incrementally into a lossless workdir (`moby.m4b.work/`),
+so interrupted runs resume like split mode; the final AAC mux happens once
+at the end, straight from lossless. `--m4b-bitrate` tunes the AAC rate
+(default 64 kbps, transparent for mono speech).
+
+Building a library (e.g. for Audiobookshelf)? `--library ~/Audiobooks`
+organizes output as `<Author>/<Title>/<Title>.m4b`, with author/title taken
+from `--author`/`--book-title` or parsed automatically from the Project
+Gutenberg header. Split-MP3 chapters also carry proper ID3 tags now (album,
+track, chapter title, author, genre=Audiobook) so players group and order
+them correctly.
+
+> Not every player supports embedded MP3 chapters. If yours doesn't show them,
+> use `--chapters split` for per-chapter files that any player can browse, or
+> `.m4b` (above), which has the broadest chapter support.
+
+Pick a voice, speed, and bitrate:
+
+```bash
+python -m tts_reader convert chapter1.txt -o audiobook/ch1.mp3 \
+    --voice lessac --speed 1.1 --bitrate 192
+```
+
+Batch-convert a folder of text files (one MP3 each) into `out/`:
+
+```bash
+python -m tts_reader convert *.txt -o out/
+```
+
+### Options (`convert`)
+
+| Option          | Default | Description                                                        |
+|-----------------|---------|--------------------------------------------------------------------|
+| `inputs`        | —       | One or more `.txt` files to read.                                  |
+| `-o, --output`  | `<name>.mp3` | Output MP3 file (single input) or output directory (many inputs). |
+| `-v, --voice`   | `amy`   | Voice alias or full Piper key.                                     |
+| `--speed`       | `1.0`   | Rate multiplier: `1.2` faster, `0.85` slower.                      |
+| `--volume`      | `1.0`   | Volume multiplier.                                                 |
+| `--bitrate`     | `128`   | MP3 bitrate in kbps (try `192` / `256`).                           |
+| `--models-dir`  | data dir | Where to cache downloaded voice models.                           |
+| `-V, --verbose` | off     | Show Piper's low-level logs (e.g. harmless missing-phoneme notes). |
+
+## Higher quality: the Orpheus engine (GPU)
+
+Piper is fast but can sound flat. **Orpheus** (Canopy Labs, Apache-2.0) is a
+Llama-3B-based TTS model that sounds dramatically more natural and supports
+inline emotion tags. It runs locally on your GPU; `tts-reader` talks to it over
+an OpenAI-compatible endpoint, so all the chapter/MP3 features work unchanged.
+
+```bash
+python -m tts_reader convert book.txt -o book.mp3 --engine orpheus --voice leo
+```
+
+Orpheus voices: `tara` (default), `leah`, `jess`, `leo`, `dan`, `mia`, `zac`,
+`zoe`. Emotion tags can be embedded inline in the text:
+
+```text
+Well, that went about as well as expected. <sigh> Let's try again. <laugh>
+```
+
+### Setting up the Orpheus server
+
+Orpheus has two parts: the **LLM** (served by llama.cpp) and the
+**Orpheus-FastAPI** front end that decodes tokens to audio (SNAC) and exposes
+`/v1/audio/speech`.
+
+1. **Build llama.cpp with GPU support.** On AMD (e.g. Strix Halo / Radeon
+   8060S) the **Vulkan** backend is usually the smoothest path on Linux and
+   avoids a ROCm install:
+
+   ```bash
+   git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
+   cmake -B build -DGGML_VULKAN=ON && cmake --build build -j
+   ```
+
+2. **Get an Orpheus GGUF** (Q4_K_M is a good balance; Q8_0 is highest quality)
+   and serve it — note the port, which Orpheus-FastAPI expects on 5006:
+
+   ```bash
+   ./build/bin/llama-server -m orpheus-3b-0.1-ft-q4_k_m.gguf \
+       --port 5006 --ctx-size 8192 --n-predict 8192 \
+       --rope-scaling linear -ngl 99
+   ```
+
+   `-ngl 99` offloads all layers to the GPU.
+
+3. **Run Orpheus-FastAPI** pointing at that llama.cpp server:
+
+   ```bash
+   git clone https://github.com/Lex-au/Orpheus-FastAPI && cd Orpheus-FastAPI
+   pip install -r requirements.txt
+   export ORPHEUS_API_URL=http://127.0.0.1:5006/v1/completions
+   python app.py            # serves on port 5005
+   ```
+
+4. **Point `tts-reader` at it** (this is the default URL, so you can omit it):
+
+   ```bash
+   python -m tts_reader convert book.txt -o book.mp3 \
+       --engine orpheus --voice leo \
+       --orpheus-url http://127.0.0.1:5005/v1/audio/speech
+   ```
+
+Orpheus options:
+
+| Option                  | Default                                    | Description                             |
+|-------------------------|--------------------------------------------|-----------------------------------------|
+| `--engine orpheus`      | `piper`                                    | Use the Orpheus backend.                |
+| `--orpheus-url`         | `http://127.0.0.1:5005/v1/audio/speech`    | Server endpoint.                        |
+| `--orpheus-model`       | `orpheus`                                  | Model name sent in the request.         |
+| `--orpheus-chunk-chars` | `400`                                      | Split long text into chunks this size.  |
+
+> **Why chunking?** Orpheus generates audio *as tokens*, so a whole chapter in
+> one request can exceed its token limit. `tts-reader` splits long text on
+> sentence boundaries and stitches the audio back together automatically.
+
+> **Speed expectations:** Orpheus is far heavier than Piper — expect closer to
+> real-time generation rather than Piper's ~13×. It's the right choice for
+> quality; for a 20-hour book, Piper is still the pragmatic option.
+
+## Voice cloning: the F5-TTS engine (GPU)
+
+**F5-TTS** clones any voice from a ~10-second reference clip — there are no
+baked-in voices; a "voice" is just `<name>.wav` (the clip) plus `<name>.txt`
+(its exact transcript) dropped into the server's voices directory
+(`~/.local/share/tts_reader/f5_voices/`). LibriVox is a goldmine of
+public-domain narrator clips. An optional `voices.json` there adds
+`{"name": {"gender": "Male", "description": "..."}}` metadata that the
+`cast` command uses for gender-matched casting.
+
+```bash
+tts-reader convert book.txt -o book.mp3 --engine f5 --voice my_narrator
+tts-reader cast book.txt --engine f5          # roster comes from the server
+```
+
+The engine talks to a small local server (same OpenAI-style
+`/v1/audio/speech` API as Orpheus, port 5010) that wraps F5-TTS on your GPU.
+On AMD (gfx1151/Strix Halo), install PyTorch from TheRock's wheel index —
+the generic pytorch.org ROCm wheels crash on this hardware.
+
+## Fish S2 Pro: the default cast engine (GPU)
+
+`cast` renders through Fish Audio S2 Pro by default. Three pieces:
+
+* `tools/fish_engine_server.py` (:8891) decodes up to 8 lines at once with
+  continuous batching (7900 XTX: one line 1.8x real time, eight 12x).
+* `tools/fish_tts_server.py` (:5014) is the adapter the tool talks to. It
+  handles voices, turns emotion cues into inline tags (`[angry]`, `[whisper]`,
+  `[pause]`...), and re-renders a take when Whisper finds skipped words or babble.
+* ACE-Step 1.5 (:8001) is optional. It composes the music for `score`.
+
+Start and stop them as memory-capped systemd user units:
+
+```bash
+tools/fish_stack.sh up --music     # engine + adapter (+ ACE); first start compiles for a few minutes
+tools/fish_stack.sh status
+tools/fish_stack.sh down --music
+```
+
+Venv paths and GPU pins come from environment variables (see the script's
+header). Then cast and render a book, with an LLM on `--llm-url` doing the
+speaker attribution, character descriptions, emotion cues and directing:
+
+```bash
+tts-reader cast book.txt --llm-url http://127.0.0.1:8081/v1/chat/completions \
+    --emote --bitrate 192 -o book.mp3
+# cast> (review the proposed voices, direct in plain language) ... convert
+```
+
+To score the result with music:
+
+```bash
+tts-reader score book.txt --audio book.mp3 --llm-url http://127.0.0.1:8081/v1/chat/completions
+```
+
+What the Fish path adds over the other engines:
+
+* **Delivery cues.** The LLM tags each sentence of dialogue (`[angry][shouting]`
+  with an intensity). A quote whose delivery changes mid-line is split into
+  takes, each with its own loudness and pitch offset. Narration is levelled to
+  `--speech-level-db`, and a lookahead limiter keeps shouts clean.
+* **Steady narration** (`--steady-narration anchor`, the default). Each narration
+  chunk is shown one shared "anchor" take of its voice, so a long passage keeps
+  one pitch and tone across chunk joins. `match` also nudges each chunk toward
+  the anchor's pitch and spectrum.
+* **Verse.** With `--verse-pacing auto|tags`, a stanza goes to the model whole,
+  with `[pause]` tags at line ends.
+* **Speed.** Lines render concurrently, as many as the server batches
+  (`--parallel` overrides). A 60-minute Sherlock Holmes story renders in about
+  9 minutes. `score --ahead` composes the music from estimated scene lengths
+  while the narration renders.
+
+The caches beside the book (`.speakers.json`, `.cast.json`,
+`.emotions-fish.json`) keep a re-render from asking the LLM again. Delete one,
+or pass `--fresh-cast`, to redo that step.
+
+## Multi-voice narration (character casting)
+
+`tts-reader` can give the narrator and each speaking character **their own
+voice**. It splits prose into narration and quoted dialogue, works out who is
+speaking, and routes each line to the voice you assigned.
+
+First, see who talks in your book:
+
+```bash
+python -m tts_reader characters moby.txt
+```
+
+This prints the speakers found (with quote counts and an example line) plus a
+ready-to-edit `--voice-map` suggestion. Attribution uses built-in heuristics
+(`"...," said Ahab` and friends) — free and offline. To resolve the quotes the
+heuristics can't attribute (unattributed back-and-forth exchanges, "said he",
+…), point it at any **OpenAI-compatible LLM endpoint**, such as a local
+llama.cpp server:
+
+```bash
+python -m tts_reader characters moby.txt \
+    --llm-url http://127.0.0.1:8080/v1/chat/completions
+```
+
+Then convert with a cast:
+
+```bash
+python -m tts_reader convert moby.txt -o moby.mp3 --engine orpheus \
+    --voice-map "narrator=leo,dialogue=tara,Ahab=zac,Starbuck=dan,Stubb=mia" \
+    --llm-url http://127.0.0.1:8080/v1/chat/completions
+```
+
+Voice-map keys: `narrator` (required) reads everything outside quotes;
+`dialogue` (optional) is the fallback for quotes whose speaker is unknown or
+unmapped (defaults to the narrator's voice); every other key is a character
+name as shown by `characters` (case-insensitive).
+
+Casting works with every engine. With Piper, pick voices from the same quality
+tier (all `-medium`/`-high`) — mixed sample rates are rejected. With Orpheus,
+any mix of its eight voices works.
+
+**Voice variants**: any voice can carry a delivery-rate variant —
+`Ahab=zac@0.92` speaks zac's voice slightly slower, `Stubb=zac@1.08` slightly
+faster — so one voice can play several characters distinguishably. The `cast`
+command uses this automatically: characters are cast in priority order (most
+lines first), voices are matched to each character's gender, and when a
+gender's roster runs out it hands out rate variants rather than casting
+across gender.
+
+A short beat of silence (250 ms) is inserted whenever the speaking voice
+changes, so switches don't feel abrupt; tune it with `--cast-pause-ms`
+(`0` disables).
+
+**Emotional voice palettes (`--emote` with F5)**: a voice in the F5 registry
+can carry *emotional variants* — reference clips of the same narrator in
+different registers, named `smith.tense.wav`, `smith.angry.wav`, ... beside
+the neutral `smith.wav`. With `--emote`, an LLM tags each dialogue line's
+register (warm/tense/angry/sad/excited/cold/surprised) and the engine
+synthesizes that line from the matching reference clip — same voice,
+shifting delivery. Lines rated neutral (most of them) use the base clip;
+missing variants fall back silently. `tools/mine_voice.py` semi-automates
+building palettes from LibriVox recordings (whisper alignment + LLM span
+picking + quality gating), and `tools/grids/` holds sourcing grids.
+
+**Pronunciation lexicon**: `tts-reader lexicon book.txt` scans a book for
+words TTS engines mispronounce (rare proper nouns, archaic spellings) and
+has an LLM add phonetic respellings to
+`~/.local/share/tts_reader/lexicon.json`, applied automatically during
+preprocessing for every engine. Edit the file to tune or remove entries.
+
+**Emotion tags (`--emote` with Orpheus)**: an LLM reads each line's
+surrounding narration ("he laughed", "she sighed") and injects a sparse
+inline tag (`<laugh>`, `<sigh>`, `<gasp>`, ...) where the text clearly calls
+for one — most lines get none, and decisions are cached per book
+(`<book>.emotions.json`). Works with `--voice-map` or single-voice; needs
+`--llm-url`. Orpheus's tag vocabulary covers laughter, sighs, gasps and the
+like — it can't do "coldly" or "furiously", so tags add texture at emotional
+beats rather than full performance direction.
+
+> Attribution is good but not perfect — expect an occasional line in the wrong
+> voice, especially in older prose. The LLM pass helps a lot; without it,
+> unattributed quotes simply use the `dialogue` voice, which always sounds
+> reasonable.
+
+**Review and pin attribution by hand**: `tts-reader attribution book.txt`
+lists every quoted line with its speaker and opens a correction REPL —
+`44 = Roylott`, ranges (`4-14 = Helen`), `find <text>`, `unattributed`.
+Corrections pin into the cache immediately and survive all future renders;
+LLMs fall for name-mention traps ("Which of you is Holmes?" is not Holmes
+speaking), so a quick review pass before a long render is worth it.
+
+**Attribution is cached.** LLM speaker attributions are saved to a sidecar
+file next to the book (`moby.txt.speakers.json`) and reused by `characters`,
+`cast`, and `convert` alike — the expensive first pass over a book happens
+once, and recasting or re-converting afterwards is nearly instant. Delete the
+sidecar to start fresh.
+
+### Interactive casting (`cast`)
+
+Rather than hand-writing a voice map, let the tool interview the book and you
+direct the cast in plain language:
+
+```text
+$ tts-reader cast moby.txt -o moby_audiobook/ --chapters split
+Parsing dialogue...
+Asking the LLM to describe each character and suggest voices...
+
+Proposed cast:
+  narrator  dan   (everything outside quotes)
+  (other)   zoe   (unattributed/minor speakers)
+  Ahab      leo   A tormented, obsessive captain ... deep authority
+  Starbuck  tara  The prudent, loyal first mate ...
+  Stubb     zac   A sardonic, observant second mate ...
+
+cast> Starbuck is an old, grizzled, crusty pirate
+cast> Ahab is refined and commanding, almost genteel
+cast> Stubb = dan
+cast> convert
+```
+
+The session needs an OpenAI-compatible LLM endpoint (default
+`http://127.0.0.1:8080/v1/chat/completions`, llama.cpp's standard port;
+change with `--llm-url`) for role descriptions, voice suggestions, and
+plain-language directing. Without one it still works — you just assign
+voices directly with `Name = voice`. `map` prints the resulting
+`--voice-map` string instead of converting, so you can reuse it later.
+
+### Designed character voices (`cast --design`)
+
+Instead of picking from a voice library, give every character an
+**original** voice built from a description of how they sound. The LLM writes
+the description from the book; Qwen3-TTS VoiceDesign turns it into a short
+reference clip; F5 then renders the whole book in that voice. No real
+person's voice is involved.
+
+```text
+$ tts-reader cast sherlock.txt --design --no-play \
+    --llm-url http://127.0.0.1:18100/v1/chat/completions --llm-model flashnext-c2t8
+Designing 5 voice(s)...
+  designed Holmes (8.6s clip, take 0)
+    audition: sherlock.txt.auditions/Holmes_v1.mp3
+  ...
+  Roylott   [designed]  A menacing, aggressive stepfather ...
+            sounds: A man in his fifties with a gravelly, booming bass ...
+  Ghost     [= Marley]  same person — shares Marley's voice
+
+cast> Roylott should sound older, with a harsh rasp     # rewrites + rebuilds
+cast> redesign Stoner                                   # new take, same description
+cast> play Holmes                                       # F5 renders one of his lines
+cast> Watson is the narrator
+cast> proceed                                           # convert the book
+```
+
+Every design, redesign and `play` also saves an MP3 to `<book>.auditions/`
+(`<Name>_v1.mp3`, `_v2`, …), so you can audition from a phone or file browser;
+`--no-play` skips this machine's speakers entirely. Designed voices live in
+the F5 registry as `d_<book>_<character>`.
+
+Needs three local servers (pin each to a GPU; HIP order on the reference box is
+0 = XTX, 1 = iGPU, 2 = XTX):
+
+```bash
+HIP_VISIBLE_DEVICES=0 F5_PORT=5011 ~/f5-tts/.venv-xtx/bin/python ~/f5-tts/server.py   # renderer
+HIP_VISIBLE_DEVICES=2 ~/tts-ab/.venv-qwen/bin/python -I tools/qwen_design_server.py   # designer, :5012
+# plus an OpenAI-compatible LLM for attribution/descriptions (--llm-url)
+```
+
+**Emotion.** Each designed voice also gets seven emotional variants (warm,
+tense, angry, sad, excited, cold, surprised). With `--emote` (the default with
+`--design`) every line is tagged, and F5 uses the matching clip. The neutral
+clip is designed with a calm delivery instruction so it has room to move.
+
+**Accents.** VoiceDesign can't do accents (everything comes out American), so
+accents borrow the *delivery* of a real accented speaker and keep the
+character's designed *timbre*:
+
+```text
+cast> accent Roylott scottish        # or: "make Roylott Scottish"; 'none' removes
+  Roylott: scottish accent (renders on Qwen; emotion is added by pitch/pace shaping)
+    audition: sherlock.txt.auditions/Roylott_scottish.mp3
+```
+
+A description that already names an accent ("a soft Irish lilt") turns it on
+automatically. Accented characters render through the Qwen3-TTS server
+(`--qwen-url`, default `:5013`), because F5 drops the accent when it copies the
+clip. Their emotions come from reshaping pitch, pitch range, pace and loudness
+after rendering, since an emotional reference clip would cancel the accent.
+Accent speakers come from the VCTK corpus (CC-BY 4.0), picked by ear, and live
+in `~/.local/share/tts_reader/accent_donors/` (`donors.json` maps accent →
+gender → clips). Scottish and Irish are available so far.
+
+```bash
+HIP_VISIBLE_DEVICES=2 ~/tts-ab/.venv-qwen/bin/python -I tools/qwen_tts_server.py      # accents, :5013
+```
+
+Speaker attribution reads the book passage by passage (`--llm-context`,
+default 6000 characters) so the LLM follows each conversation's turn-taking;
+titled names ("Miss Stoner", "Dr. Roylott") seed a character roster that
+supplies genders and merges aliases ("Sherlock Holmes" → Holmes, but never
+"Mr." and "Mrs. Bennet"); a first-person narrator's own lines ("said I") use
+the narrator voice.
+
+### Abridged audiobooks (`abridge`)
+
+For long books, an LLM can condense the text before synthesis — keeping every
+dialogue exchange verbatim (so casting still works), trimming only very long
+monologues, and compressing narration to key events, imagery, and themes in
+the book's own style:
+
+```bash
+tts-reader abridge moby.txt --level medium       # -> moby_abridged.txt
+tts-reader cast moby_abridged.txt -o moby_short/ --chapters split
+```
+
+Levels: `light` (~60% of narration kept), `medium` (~40%), `heavy` (~25%) —
+dialogue always survives, so dialogue-heavy chapters stay closer to full
+length. The output is a plain text file: read it, edit it, then cast/convert
+it like any book. Progress is checkpointed, so an interrupted run resumes
+where it stopped.
+
+## Speech-friendly text preprocessing
+
+Before synthesis, text is cleaned up so it *reads* well (on by default, skip
+with `--no-preprocess`):
+
+- Abbreviations are spoken: `Mr.` → "Mister", `Dr.` → "Doctor", `&c.`/`etc.` →
+  "et cetera", `No. 3` → "Number 3", `e.g.` → "for example", …
+- Roman-numeral headings become numbers: `CHAPTER XLI` → "Chapter 41".
+- SHOUTED HEADINGS are softened so they aren't spelled out letter-by-letter
+  (true acronyms without vowels are left alone).
+- Footnote markers (`[3]`), `_emphasis_` underscores, and `* * *` section
+  rules are removed; hyphen-split line-wrapped words are rejoined.
+
+## Voices
+
+Run `python -m tts_reader voices` for the full table. The catalog includes:
+
+| Alias        | Voice                     | Notes                         |
+|--------------|---------------------------|-------------------------------|
+| `amy`        | US English, female        | Default; warm and natural     |
+| `ryan`       | US English, male          | Confident narrator (high-q)   |
+| `lessac`     | US English, neutral       | Crisp, great for documents    |
+| `joe`        | US English, male          | Conversational                |
+| `kathleen`   | US English, female        | Light and fast                |
+| `hfc_female` | US English, female        | Balanced/professional         |
+| `hfc_male`   | US English, male          | Balanced/professional         |
+| `alan`       | UK English, male          | Calm British                  |
+| `jenny`      | UK English, female        | Friendly British              |
+| `alba`       | UK English, female        | Scottish accent               |
+| `thorsten`   | German, male              |                               |
+| `siwis`      | French, female            |                               |
+| `davefx`     | Spanish (Spain), male     |                               |
+
+You can also pass any voice key from the
+[Piper voices collection](https://huggingface.co/rhasspy/piper-voices)
+directly, e.g. `--voice en_US-kusal-medium`.
+
+## Use as a library
+
+```python
+from tts_reader import PiperEngine
+
+engine = PiperEngine("ryan")          # alias or full Piper key
+engine.synthesize_to_mp3(
+    "Hello from a local text-to-speech engine.",
+    "hello.mp3",
+    speed=1.0,
+    bitrate=192,
+)
+```
+
+## How the Piper path works
+
+1. Your text file is read (UTF-8).
+2. Piper synthesizes 16-bit PCM audio locally using the selected neural voice
+   model (downloaded and cached on first use).
+3. The audio is encoded to MP3 in-process with `lameenc`.
+
+## Configuration
+
+- `TTS_READER_MODELS_DIR` — override where voice models are cached
+  (default: `~/.local/share/tts_reader/voices`).
+
+## Notes & limitations
+
+- The first download of each voice needs internet access to
+  `huggingface.co`; synthesis afterwards is offline.
+- Piper focuses on natural single-speaker narration; it is not designed for
+  fine-grained SSML/emotion control.
