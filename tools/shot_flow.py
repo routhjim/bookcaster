@@ -136,8 +136,7 @@ Rules:
   in a running exchange, or two who are apart in the BLOCKING, one at the desk and one in the armchair), "group"
   (everyone in the scene in the picture, in the blocking's order: a line to someone other than the one they have been
   talking with, or an exchange of three or more), or "close" (the speaker alone: only a line said to nobody, or a
-  reply straight after a shot that showed the listener). Two talk shots in a row of the same speaker to the same
-  listener take different framings. Keep the BLOCKING: nobody appears in a place someone else
+  reply straight after a shot that showed the listener). Keep the BLOCKING: nobody appears in a place someone else
   stood in, and everyone stays on their side. A talk shot is always where the speaker really is,
   never in a place someone describes. No picture or action words.
 - Every other shot is 2 to 5 seconds long. Show what the passage says is HAPPENING to the people in it: who does what,
@@ -146,9 +145,7 @@ Rules:
   result: about one beat for every 2 seconds of the shot. When the passage tells more than the shot's time holds,
   SIMPLIFY the action to fit, never cut it into slivers: keep the one or two moves that tell it and leave the rest out
   ("he turned to his desk and, unlocking it, drew out a small case-book" in 4 s: he turns to the desk and lifts a small
-  book from its open drawer). One continuous move per shot, the video model plays it as one take. A move told again and again (the same work
-  over and over) is never the same picture twice: each such shot changes the framing or the side it is seen from, or
-  shows how the thing worked on has changed since the shot before. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
+  book from its open drawer). One continuous move per shot, the video model plays it as one take. A shot may show a thing alone (a clock, a letter, a door) when the passage looks at it.
 - SCREEN DIRECTION: the opening picture is the moment BEFORE the action, so a turn starts facing the old way (he turns
   from Helen to the desk: in the opening picture he still faces Helen). Every turn, walk or reach names the side of the
   picture it goes toward, and "setting" puts that thing on that side ("turns to his right, toward the desk on the right
@@ -175,12 +172,10 @@ Rules:
   "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
 - "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
   action will use, set up for the action's first moment (his hand already at the drawer; a thing the action takes out
-  is in sight or in an open drawer). Each thing as it looks at this moment of the story, not its usual look: a thing the passage has
-  heated, cooled, wet, lit, burning, broken or being worked shows it (its colour, glow, steam or damage). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
+  is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
   writing, a title or a caption: the video model can't draw letters.
 - "action": what moves in the shot, in order, plain physical verbs, played through. Every effect names its source. A
-  change over time is written as visible steps. Say what the hands hold. A thing put into, under or through
-  something says how far it goes in and how much of it is still seen. Call each person by their NAME (the film
+  change over time is written as visible steps. Say what the hands hold. Call each person by their NAME (the film
   turns each name into how they look and where they are in the picture), never "the man", "she" or "the other one"
   when more than one person is in the shot. No magic words (magic, enchanted, spell), no camera directions, no
   written words or titles. At most 50 words.
@@ -190,8 +185,7 @@ Rules:
 - "kind": "talk" (above), "action" when someone DOES something the passage tells: a hand reaches for or touches
   someone or something, a thing is picked up, bent, thrown, opened or turned, someone leans, rises, sits down, walks,
   runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
-  opening picture has the people where it can start: in "people", one who strikes, touches or reaches another, or
-  puts a thing into or onto something, is "at" within reach of it: the two close together in the picture, never apart across it.
+  opening picture has the people where it can start: in "people", one who touches another is "at" arm's reach of them.
 - ACTION SHOTS also give "moment": one sentence, the picture at the instant the action BEGINS, the movement already
   under way - not the calm before it: the moving part already in motion toward what it reaches, the thing it changes
   starting to change, the one it reaches already reacting. Name each
@@ -234,7 +228,7 @@ RULE_EXTRA = [
     (re.compile(r"\b(fight\w*|fought|sword\w*|attack\w*|lunge\w*|slash\w*|stab\w*|spear\w*|axe|arrows?|kill\w*|"
                 r"slain|duel\w*|grappl\w*|wrestl\w*)\b", re.I),
      "- A fight is covered as intent (wide: both fighters, the attacker coils, the other sees the opening), action (both\n"
-     "  in the picture, within reach of each other: the one blow or move and the one it reaches), reaction (close: the one hit, or a witness). A\n"
+     "  in the picture: the one blow or move and the one it reaches), reaction (close: the one hit, or a witness). A\n"
      "  fighter's picture has a READY stance, weapon raised toward the opponent; someone knocked down but alive is on the\n"
      "  ground propped on an elbow, eyes open; someone dead lies flat, eyes closed.\n"),
 ]
@@ -1330,9 +1324,9 @@ The look to call each one by in the lines:
 {looks}
 
 The video model makes each clip from ONE short line of words, starting from the last picture of the clip before it: it plays one move in a clip well and loses a second one, and a line whose move does not fit that last picture goes wrong. Wherever the passage tells one continuous physical action of more than one step (one move leading straight into the next, by the same bodies or things), write that action as a CHAIN:
-- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. A thing put into, under or through something: the line says how far it goes in. When one body's move changes another (knocks down, pushes, lifts), the line says how the one moving is as the move ends too, so that only the one it reaches changes. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
+- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. When one body's move changes another (knocks down, pushes, lifts), the line says how the one moving is as the move ends too, so that only the one it reaches changes. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
 - A move that goes somewhere is told by where it goes relative to someone or something in the picture: toward, away from, past or around them. Never forward, back, left or right on their own: the video model reads those from the viewer.
-- "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it, or the bodies and things the first line brings together are too far apart in it to meet within one move), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
+- "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
 - "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks in the opening picture, before any line changes it, so that a painter draws the right object: its shape, material, size, colour and state in at most 12 plain words, without the book's name for it. A change the lines make is never in its look. Only things in the passage or the staging.
 - "shots": the numbers of the director's consecutive shots whose time this action covers. None of them is a talk shot. The chain takes their place. A cut to someone only watching, or to another place, is not part of a chain.
 - The video model reads each line alone and knows no names: call each one by the look given for them above, the same in every line. Never a name, never he, she, it or they, and never begin a line with his, her, its or their.
@@ -1591,10 +1585,8 @@ OPENING_ASK = (
     'One shot of a film. What happens in it: "{action}". The director staged its opening picture as: {people}; setting: "{setting}". '
     'Give the staging of the picture at the instant just before this action changes anything: everyone the action needs is in the picture; '
     'each one is where the action can start from, in the pose they have before it, holding what they will use as they will use it; every '
-    'thing the action uses is already there, within reach, in the state it has before the action and looking as it does at that instant '
-    'in the story (a thing heated, cooled, wet, lit or being worked shows it); whatever the action puts a thing into, onto or against is '
-    'right beside it in the picture; whoever moves is ready to move, the moving part just short of what it acts on and within one move of '
-    'it: the two close together in the picture, never apart across it; nothing is yet touched, struck, taken, fallen, broken, opened, emptied, worn or changed by this action. '
+    'thing the action uses is already there, within reach, in the state it has before the action; whoever moves is ready to move, the moving '
+    'part short of what it acts on; nothing is yet touched, struck, taken, fallen, broken, opened, emptied, worn or changed by this action. '
     'Keep everyone\'s place, side and facing as the director gave them unless the action cannot start from it. Add only someone the action '
     'needs, from these names: {cast}. Anyone the action needs who has none of these names goes in "others": a short look (what kind of person, '
     'their clothes, at most 12 words, no name), with side, pose, at, facing, holds. Give each person a "state": how anything they wear or hold '
@@ -3077,45 +3069,6 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
             f"clearly in sync with {pron} voice.{says}{lst} No text anywhere in the picture.")
 
 
-_NOT_A_TARGET = re.compile(r"\b(viewer|camera|audience|forward|ahead|front|away|out|down|up|sky|distance|nothing|"
-                           r"no one|nobody)\b", re.I)
-
-
-def _facing_target(cx, s: dict, w: str) -> str:
-    """What the key judge asks `w` to be turned toward: another one in the picture (by their look's first words), a
-    side of it, or a thing the picture names; "" when the row asks no facing, the shot is a talk shot (the speaker
-    cheats out by design), `w` lies down, or the target is not in the picture (E33: no question asked about facing,
-    and Edric was drawn square to the viewer in 16/16 kept keys with "facing right" / "facing toward the anvil" in
-    the prompt, so best-of-5 could not select for it)."""
-    if s.get("kind") == "talk" or w == s.get("ots"):
-        return ""
-    row = next((p_ for p_ in s.get("placed") or [] if isinstance(p_, dict) and p_.get("name") == w), None)
-    f = str((row or {}).get("facing") or "").strip().rstrip(".")
-    if not f or (row or {}).get("pose") == "lie":
-        return ""
-    who = list(s.get("who") or [])
-    R_ = RG.Book(cx.book)
-
-    def first(o):
-        lk = R_.look(o) or ""
-        return re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk.strip(), maxsplit=1)[0]).strip().rstrip(".")
-    for o in who:                       # someone in the picture, by name or any of its words
-        if o != w and any(re.search(rf"\b{re.escape(t)}\b", f, re.I) for t in [o] + [x for x in o.split() if len(x) > 3]):
-            return first(o) or ""
-    thing = re.sub(r"^(?:facing\s+)?(?:(?:the\s+)?(?:left|right)\s*,?\s*)?(?:toward|towards|to|at)\s+", "", f, flags=re.I)
-    side = re.fullmatch(r"(?:facing\s+)?(?:toward\s+|to\s+)?(?:the\s+)?(left|right)(?:\s+side)?(?:\s+of the (?:picture|frame))?", f, re.I)
-    if side:                            # a bare side: the one other there, else the side itself
-        i = who.index(w) if w in who else -1
-        there = [o for k, o in enumerate(who) if o != w and (k > i if side.group(1).lower() == "right" else k < i)]
-        return first(there[0]) if len(there) == 1 and i >= 0 else f"the {side.group(1).lower()} of the picture"
-    if _NOT_A_TARGET.search(thing):
-        return ""
-    head = (re.findall(r"[A-Za-z-]{3,}", thing) or [""])[-1]
-    seen = re.sub(r"\bfacing\b[^,;.]*", "", str(s.get("picture") or ""), flags=re.I) + " " + str(s.get("room") or "")
-    # (the picture without the facing words themselves, and the place as the key describes it)
-    return thing if head and re.search(rf"\b{re.escape(head)}", seen, re.I) else ""
-
-
 def _key_questions(cx, s: dict) -> tuple:
     """The vision questions for a shot's opening picture, and how many people it should hold."""
     # (10-24: no "does it show the words" question - it only chose between near-identical clean seeds)
@@ -3137,10 +3090,6 @@ def _key_questions(cx, s: dict) -> tuple:
                          lambda: clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0)))
         if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
             q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {worn_outer(cl, 2)}?"   # (what the key draws, E33)
-        fc = _facing_target(cx, s, w)
-        if first and fc:
-            q[f"face{i}"] = (f"Answer yes or no: is {first} turned toward {fc}, body and face toward it rather than "
-                             f"toward the viewer?")
         pz = "" if moment(s) else (s.get("pose_held") or {}).get(w, "")   # (a roll, a lunge: not a held pose)
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
@@ -3157,10 +3106,6 @@ def _key_questions(cx, s: dict) -> tuple:
     hum += len(s.get("others") or [])  # (CHANGES 70: the people drawn from words count too)
     if hum and not s.get("crowd"):
         q["count"] = "How many people are in this picture? Answer with a number."
-    st = str(s.get("setting") or "").strip().rstrip(".")
-    if moment(s) and st:                # E33: the drawer left the worked thing out (an empty anvil 5/9) and no question
-        q["obj"] = (f'Answer yes or no: is every object this names in the picture, looking as it says: "{st}"? '
-                    f'(Light, weather and the place itself do not count.)')     # (an action's setting: its things)
     if s.get("kind") == "talk" and len(s.get("who") or []) == 1:   # a one-person talk shot is a close-up (10-27)
         q["close"] = "Answer yes or no: is this a close-up, the person's head and shoulders filling most of the picture?"
     return q, hum
@@ -3521,7 +3466,7 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     import characters as CH
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
-                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close", "face", "obj")))
+                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
                         and not any(CH._yes(a.get(x)) for x in a if x.startswith("chair"))      # (must be "no")
                         and not (need and c and int(c.group(0)) != need))
 
@@ -3530,7 +3475,7 @@ def _misses(a: dict) -> int:
     """How many of a seed's answers fail (_clean's questions; the head count and the edges aside)."""
     import characters as CH
     return (CH._yes(a.get("text")) + sum(not CH._yes(a.get(x)) for x in a
-                                         if x.startswith(("who", "legs", "pose", "close", "face", "obj")))
+                                         if x.startswith(("who", "legs", "pose", "close")))
             + sum(CH._yes(a.get(x)) for x in a if x.startswith("chair")))
 
 
