@@ -45,9 +45,17 @@ naming conventions vary per item.
 
 ## 3. Run the miner
 
+The miner is CPU only. Its venv needs numpy, scipy, soundfile,
+praat-parselmouth and faster-whisper; `~/tts-ab/.venv-qwen` has all of them
+(the repo's `.venv` does not). The LLM is Strata, at the URL and model the
+pipeline uses (`tts_reader/bookcaster.py`: `LLM_URL`, `LLM_MODEL`, which
+`BOOKCASTER_LLM_URL` / `BOOKCASTER_LLM_MODEL` override).
+
 ```bash
-python tools/mine_voice.py grids/smith.json            # all cells
-python tools/mine_voice.py grids/smith.json --cells tense,angry
+PY=~/tts-ab/.venv-qwen/bin/python
+$PY tools/mine_voice.py tools/grids/smith.json            # all cells
+$PY tools/mine_voice.py tools/grids/smith.json --cells tense,angry
+$PY tools/mine_voice.py --check ~/.local/share/tts_reader/f5_voices/smith.wav   # screen any clip
 ```
 
 Per cell it: downloads the chapter (cached), transcribes with faster-whisper
@@ -61,10 +69,36 @@ should match the emotion, then applies the gates learned the hard way:
   not emotional ones)
 - **sentence-final endings** — clips cut mid-sentence make F5 hallucinate
   quiet "ghost" completions into generated audio
-- **SNR / clipping / duration** (8–15 s target)
+- **SNR / clipping**
+- **liveliness** (11-09: the narrator smith sounded "dead"; kilmer, weiss
+  and melin sounded alive). Smith's clip was flat on *every* channel at
+  once; each liked clip has at least one channel that moves, not always the
+  same one. Measured on the clip (Praat intensity and pitch at 16 kHz); the
+  thresholds are constants in `mine_voice.py`, a little looser than the
+  analysis numbers because they come from one take of seven voices:
+  1. **phrasing** — at least 2.8 pauses of ≥150 ms per 10 s, *or* a mean
+     phrase of ≤2.2 s (smith 2.2 pauses / 2.57 s; liked 3.4-5.0 / 1.4-1.9 s);
+  2. **not flat on every channel** — reject when pitch movement is low (SD
+     < 3.1 st *and* 5-95 % range < 10.2 st) *and* loudness movement is low
+     (syllable-peak SD < 2.9 dB *and* in-phrase swell < 2.4 dB/s);
+  3. **pace variation** — CV of syllable rate across the clip's phrases
+     ≥ 0.08 (smith 0.05); fewer than two phrases of 3+ syllables fails;
+  4. **shape** — 9.5-15.5 s (10-15 s target) and ending on a sentence end.
 
-Survivors land in the registry's `staging/` as `smith.tense.cand1.wav` +
-matching transcript.
+  Not gated, on purpose: SNR beyond the check above, bandwidth, pitch level
+  and the clip's own pace (none tracked the ear, and Fish resets pace).
+
+Survivors are **ranked by a liveliness score** (each channel's measure over
+its threshold, capped at 2, averaged over the four channels; 1.0 = on the
+line) and land in the registry's `staging/` liveliest first:
+`smith.tense.cand1.wav` (the best) + matching transcript.
+
+`--check WAV...` prints the same measures, the score and the verdict for any
+existing clip (the transcript for the ending check is the clip's sibling
+`.txt`), so library voices can be screened. On the 11-09 clips: smith.wav
+fails every gate (score 0.83); kilmer cand2 1.44, weiss cand1 1.51 and
+melin cand1 1.33 pass; smithb cand1 (0.80) fails only on pace variation,
+because its phrasing is still smith's.
 
 ## 4. Audition — the ear is the final gate
 
