@@ -4,3 +4,5 @@ piper-tts>=1.6.0
 lameenc>=1.7.0
 # Reads/writes ID3 tags, including CHAP/CTOC chapter markers, in pure Python.
 mutagen>=1.47.0
+# Draws and crops pictures in-process for the video flows.
+Pillow>=10.0
