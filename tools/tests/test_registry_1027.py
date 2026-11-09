@@ -39,7 +39,13 @@ with tempfile.TemporaryDirectory() as d:
     check("a LoRA is found under any spelling", R.lora("Dr. Watson") == ("w.safetensors", "chr_w", "h1"))
     check("one place, one description (the first stored)", R.place("Baker Street Bedroom (inside)") ==
           R.place("Baker Street Bedroom") and R.place_look("Baker Street Bedroom") == "a bedroom with a bed")
-    check("'The Crown Inn Room' = 'Crown Inn Room (inside)'", R.place_look("Crown Inn Room (inside)") == "an inn room")
+    check("'The Crown Inn Room' = 'Crown Inn Room'", R.place_look("Crown Inn Room") == "an inn room")
+    # 11-09 (E34): a description with no side is never taken for a side ("X (inside)" drew X's outside words)
+    check("a side is not given a description that says no side", R.place_look("Crown Inn Room (inside)") == ""
+          and R.place_entry("Crown Inn Room (inside)") is None)
+    check("place_id: the place and its side", (R.place_id("The Crown Inn Room (inside)"), R.place_id("crown inn room"))
+          == ("The Crown Inn Room (inside)", "The Crown Inn Room"), (R.place_id("The Crown Inn Room (inside)"),
+                                                                    R.place_id("crown inn room")))
     check("the style: the default when nothing is set", "pen and ink" in R.style())
     (b / "work" / "video" / "09_x").mkdir()
     (b / "work" / "video" / "09_x" / "style.txt").write_text("oil painting")
