@@ -194,7 +194,9 @@ with tempfile.TemporaryDirectory() as d:
     check("... 'X (outside)' and 'X' keep it", R2.place_look("Ship Deck (outside)").startswith("Outside:")
           and R2.place_look("Ship Deck").startswith("Outside:"))
     (b / "work" / "video" / "look.json").write_text(json.dumps({"places": {"Mill": "A mill by the river"}}))
-    check("a description with no side serves either side", RGm.Book(b).place_look("Mill (inside)") == "A mill by the river")
+    # 11-09 (E34): nor one that says no side (a house's unmarked facade words drew its inside on the lawn)
+    check("a description with no side serves the place, not a named side", RGm.Book(b).place_look("Mill") ==
+          "A mill by the river" and RGm.Book(b).place_look("Mill (inside)") == "")
 
 # a song's clap/stomp shots follow its beat: the percussion stem, its onsets, an A2Vid clip driven by it (never for a book)
 with tempfile.TemporaryDirectory() as d:
