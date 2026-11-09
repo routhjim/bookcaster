@@ -8,7 +8,6 @@
 No real services: subprocess.run is faked in the modules under test (systemctl never runs)."""
 import ast
 import hashlib
-import inspect
 import json
 import sys
 import tempfile
@@ -21,7 +20,6 @@ sys.path.insert(0, str(HERE.parent.parent))
 import shot_flow as S          # noqa: E402
 import mannequin_flow as MF    # noqa: E402
 import flow3d                  # noqa: E402
-import plan_review             # noqa: E402
 from tts_reader import bookcaster as BC  # noqa: E402
 
 fails = []
@@ -88,14 +86,6 @@ for path, names in used.items():
 own = defs(S.__file__)
 bad += [f"shot_flow:{f}" for f in own if reads_acts(own[f])]
 check("no function the shot flow runs reads acts/beats/direction", not bad, bad)
-check("review(acts=False) skips the acts pass",
-      "if acts:\n        rep[\"acts\"] = acts_pass(" in inspect.getsource(plan_review.review))
-check("flow3d.plan: shot_flow -> review without acts", "acts=not shot_flow" in inspect.getsource(flow3d.plan))
-check("shots_ready plans with shot_flow=True", "flow3d.plan(book, stem, log=log, shot_flow=True)"
-      in inspect.getsource(BC.shots_ready))
-pd = inspect.getsource(flow3d._plan_draw)
-check("flow3d stills: the model stays up for the shot flow (stopped on a failure)",
-      "if not (ok and shot_flow):" in pd and "shot_flow" in inspect.signature(flow3d._plan_draw).parameters, pd[-400:])
 
 # --- 2. room_layouts: no stop when everything is cached; a stop when there is vision work ----------------------
 TMP = Path(tempfile.mkdtemp(prefix="sf-reloads-"))

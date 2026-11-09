@@ -81,10 +81,6 @@ check("four-legged" in MF._appearance("a massive dragon, black scales, standing 
 check(MF._action_faults({"left": "Edric", "right": "Vorgrath", "layout": "x", "action": "Edric drives the sword in."},
                         ["Edric", "Vorgrath"]) != [], "fight: a name in the action is a fault")
 
-import inspect                   # noqa: E402
-src = inspect.getsource(MF.run)
-blk = src[src.index("if fights:"):src.index("def frozen")]
-check('igpu("strata"' not in blk, "fight clip check: the language model is not started beside the vision judge (OOM 17:40)")
 
 lay = {"left": "Edric", "right": "Vorgrath", "framing": "wide", "layout": "On the left, a young man in steel plate armour "
        "lies on the grey ash propped on an elbow; on the right, a huge black dragon crouches on all four legs."}

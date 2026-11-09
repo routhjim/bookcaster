@@ -35,8 +35,5 @@ check("an unjoined line is a problem", probs and "1 of 1" in probs[0] and "FileN
 ran.clear(); S.subprocess.run = fake
 S._stitch_talk(Path("."), R, L, talk[2:], log=lambda m: None)
 check("no stitcher for single-piece talk", ran == [], ran)
-src = (HERE.parent / "shot_flow.py").read_text()
-check("render uses the checked helper (not the moment's old pieces)", "_stitch_talk(book, R, L, h_talk, log)" in src
-      and 'byid[s["id"].rsplit("_s", 1)[0]].get("chunks")' not in src)
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

@@ -187,8 +187,8 @@ Rules:
   runs, strikes or falls; "quiet" only when nobody does more than breathe, look, listen or shift a little. An action's
   opening picture has the people where it can start: in "people", one who touches another is "at" arm's reach of them.
 - ACTION SHOTS also give "moment": one sentence, the picture at the instant the action BEGINS, the movement already
-  under way - not the calm before it: "Vorgrath's spiked tail sweeps in low from the left as Edric throws himself
-  into a roll beneath it, sword in hand"; "Roylott's hands close on the poker, the iron starting to curve". Name each
+  under way - not the calm before it: the moving part already in motion toward what it reaches, the thing it changes
+  starting to change, the one it reaches already reacting. Name each
   one; say what each holds and where any fire, light or blow comes from; someone sitting or lying stays so. Frame an
   action "medium" or "close", "wide" only to show where everyone is.
 - HANDS ON A THING: when hands change a thing (bend, break, open, pour, write, strike metal, take a pulse), its
@@ -395,6 +395,39 @@ def garments(clothes: str) -> str:
     """The first two garments of a clothes description, whole ("a tweed jacket, white shirt with tie")."""
     parts = [x.strip() for x in re.split(r",|;|\band\b", clothes) if x.strip()]
     return ", ".join(parts[:2])
+
+
+def worn_outer(clothes: str, n: int = 3) -> str:
+    """The outer layer of an outfit as its first `n` WHOLE garments, for a key and its judge (E33: garments() split
+    "Dull, unpolished star-iron armour consisting of a breastplate ..., a helm with a narrow eye slit, ..." into "Dull"
+    + the breastplate, so every action key lost the helm (0/5) while the quiet keys, with the whole dress, kept it 5/7).
+    A one-word part is an adjective of the garment after it; what is worn under it ("worn over ...") is left out."""
+    outer = re.split(r",?\s*\bworn\s+(?:over|under|beneath)\b", str(clothes or ""), 1)[0]
+    parts, lone = [], ""
+    for x in re.split(r"[,;]", outer):
+        x = re.sub(r"^and\s+", "", x.strip(), flags=re.I)
+        if not x:
+            continue
+        if " " not in x:                # (an adjective on its own: joined to the next part)
+            lone = f"{lone}, {x}" if lone else x
+            continue
+        parts.append(f"{lone}, {x}" if lone else x)
+        lone = ""
+    if lone:
+        parts.append(lone)
+    return ", ".join(parts[:n])
+
+
+def key_clothes(book: Path, stem: str, mid: str, w: str, look: str, other=None) -> str:
+    """The clothes a shot's key draws on `w`: the wardrobe in force at the shot (MF._dress, the made-outfit shift
+    included), else their look's own. E33: the key judge asked the wardrobe by the raw paragraph time (cx.dress, no
+    shift) - armour while the key drew the jerkin - and 16 keys shipped after 5 rejected seeds. `other()`: the dress
+    to use when the plan's wardrobe cannot be read at all."""
+    try:
+        d = MF._dress(book, stem, mid, [w]).get(w)
+    except Exception:                                   # noqa: BLE001 - no plan files: the caller's dress, or the look's
+        d = other() if other else None
+    return d or clothes_of(look)
 
 
 def pose_cat(text) -> str:
@@ -1357,10 +1390,10 @@ The look to call each one by in the lines:
 {looks}
 
 The video model makes each clip from ONE short line of words, starting from the last picture of the clip before it: it plays one move in a clip well and loses a second one, and a line whose move does not fit that last picture goes wrong. Wherever the passage tells one continuous physical action of more than one step (one move leading straight into the next, by the same bodies or things), write that action as a CHAIN:
-- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
+- "lines": the moves in the order the passage tells them, ONE move to a line, at most four lines, written from the passage's own words: where one sentence holds two moves, they are two lines. Two things the passage tells as happening at the same time are two moves too: one line each, in the order a viewer would see them. A move the passage tells as repeated is one line for each time it is seen, at most two. A breath or a look that goes with a move is its own line only if a viewer could see it alone; else leave it out. Each line is one plain sentence of at most 25 words: who moves, the move, and where it leaves them or the thing it reaches. Each line starts from how the line before left things, the first from the opening picture, the first shot's staging as the director wrote it: when the one moving is no longer as they were there, the line says how they are as it begins, and a hand that takes hold of something is free first. An effect the move itself makes where it lands may go in the same line. When one body's move changes another (knocks down, pushes, lifts), the line says how the one moving is as the move ends too, so that only the one it reaches changes. When the move goes toward, at or away from another body, or that body is close by it, the line names that body too, with where it is, so that it is not lost between clips; someone who only watches from apart is not named.
 - A move that goes somewhere is told by where it goes relative to someone or something in the picture: toward, away from, past or around them. Never forward, back, left or right on their own: the video model reads those from the viewer.
 - "head": only when the FIRST shot's staging, as the director wrote it, would not let the first line start (someone the first line needs is missing from it, or does not hold what they must hold, or a thing the lines act on is not in it or not where the move needs it), give that shot's staging again with only that mended, in the same fields: {"people": [{"name": "...", "side": "...", "pose": "...", "at": "...", "facing": "...", "holds": "..."}], "setting": "..."}. Keep its people as they are, add only someone the first line needs, and no one who comes in later. The setting holds things and light only, never a person. Otherwise "head" is {}.
-- "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks, so that a painter draws the right object: its shape, material, size and colour in at most 12 plain words, without the book's name for it. Only things in the passage or the staging.
+- "things": for every thing the lines act on and every thing anyone in the first shot holds, how it looks in the opening picture, before any line changes it, so that a painter draws the right object: its shape, material, size, colour and state in at most 12 plain words, without the book's name for it. A change the lines make is never in its look. Only things in the passage or the staging.
 - "shots": the numbers of the director's consecutive shots whose time this action covers. None of them is a talk shot. The chain takes their place. A cut to someone only watching, or to another place, is not part of a chain.
 - The video model reads each line alone and knows no names: call each one by the look given for them above, the same in every line. Never a name, never he, she, it or they, and never begin a line with his, her, its or their.
 - Only what the passage and the staging tell: no side, place or detail it does not give, and nothing from after it.
@@ -3024,8 +3057,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
                      if z.strip() and z.strip().lower() != "no clothing"]
             if not re.search(r"\b(dragon|creature|beast|wyrm|horse|wolf)\b", lk, re.I):
                 parts = parts[:4]       # a person: age, face, hair; a creature keeps its wings and tail
-            cl = garments(dress.get(w) or clothes_of(lk))
-            cl = ", ".join(z.strip() for z in cl.split(",")[:2]).strip()
+            cl = worn_outer(dress.get(w) or clothes_of(lk))     # (whole garments: E33, the helm)
             ids.append(f"{MF._lora(book, w)[1] or ''} {w}: {', '.join(parts)}{', wearing ' + cl if cl else ''}".strip())
         room = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(s.get("room") or ""), flags=re.I)
         room1 = (re.split(r"(?<=[.;])\s+", room) or [""])[0].rstrip(".")
@@ -3036,7 +3068,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
             if not any(re.search(k_, nm, re.I) for nm in th):
                 pic = re.sub(k_, v_, pic, count=1, flags=re.I)
         for nm in sorted(th, key=len, reverse=True):
-            pic = re.sub(rf"\b{re.escape(nm)}\b(?!\s*\()", lambda m_, v=th[nm]: m_.group(0) + f" ({v})", pic, flags=re.I)
+            pic = gloss_once(pic, nm, th[nm])
         return (f"{pic}. {'. '.join(ids)}. In {place}{': ' + room1 if room1 else ''}. "
                 f"{MF.period_line(book)} {style} No text.").replace("..", ".").replace("  ", " ")
     people = []
@@ -3112,6 +3144,31 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
             ).replace("..", ".").replace("  ", " ")
 
 
+_GLOSS_NEXT = re.compile(r"\s+([A-Za-z-]+)(\W*)(\S*)")
+_FUNC = re.compile(r"^(?:a|an|the|on|in|at|of|by|to|with|from|into|onto|over|under|above|below|beside|near|and|or|as|"
+                   r"that|which|resting|lying|toward|towards|across|through|behind|before|is|are|was|were)$", re.I)
+
+
+def gloss_once(pic: str, nm: str, look: str) -> str:
+    """A thing's look after the FIRST place its name stands as a noun of its own (E33: the river's look went inside
+    "river bank" - "at the river (cold clear water ...) bank" - and again after every later "river"). A name followed
+    by one more word that ends the phrase ("river bank,", "river bank on the left") is that word's modifier: passed
+    over; with no such place, the look follows the whole phrase, named."""
+    rx = re.compile(rf"\b{re.escape(nm)}\b(?!\s*\()", re.I)
+    first = None
+    for m in rx.finditer(pic):
+        nx = _GLOSS_NEXT.match(pic, m.end())
+        if nx and not _FUNC.match(nx.group(1)) and (nx.group(2).strip() or not nx.group(3) or _FUNC.match(nx.group(3))):
+            first = first or (m, nx)    # a modifier: "river bank"
+            continue
+        return pic[:m.end()] + f" ({look})" + pic[m.end():]
+    if first:
+        m, nx = first
+        e = m.end() + len(nx.group(0)) - len(nx.group(2)) - len(nx.group(3))
+        return pic[:e] + f" ({m.group(0)}: {look})" + pic[e:]
+    return pic
+
+
 def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     """The mannequin flow's talk words (motion_prompts): short, "lips and jaw moving clearly", no style paragraph and
     no "everyone else ... mouth closed" (10-24: R.talk_prompt's long prompt with that sentence froze the lips again in
@@ -3173,9 +3230,10 @@ def _key_questions(cx, s: dict) -> tuple:
         if first:
             q[f"who{i}"] = f"Answer yes or no: is there {first} in this picture?"
         m_ = re.search(r"-(\d{4,})", s.get("id") or "")     # the shot's time (ids carry it in tenths of a second)
-        cl = clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0) or lk)
+        cl = key_clothes(cx.book, getattr(cx, "stem", ""), str(s.get("id") or "").rsplit("_s", 1)[0], w, lk,
+                         lambda: clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0)))
         if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
-            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {garments(cl)}?"   # (10-27: cut at 14 words)
+            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {worn_outer(cl, 2)}?"   # (what the key draws, E33)
         pz = "" if moment(s) else (s.get("pose_held") or {}).get(w, "")   # (a roll, a lunge: not a held pose)
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
@@ -3323,7 +3381,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
         def off(x):
             c = re.search(r"\d+", str(x[1].get("count") or ""))
             return abs(int(c.group(0)) - t["need"]) if c and t["need"] else 0
-        settle(t, min(t["tried"], key=off)[0], False)    # none clean: the nearest head count
+        # none clean: the nearest head count, then the fewest failed questions (E33: the first seed shipped, whatever
+        # else it failed)
+        settle(t, min(t["tried"], key=lambda x: (off(x), _misses(x[1])))[0], False)
         return True
 
     def drawer(card):
@@ -3553,6 +3613,14 @@ def _clean(a: dict, k: Path, need: int) -> bool:
                         and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
                         and not any(CH._yes(a.get(x)) for x in a if x.startswith("chair"))      # (must be "no")
                         and not (need and c and int(c.group(0)) != need))
+
+
+def _misses(a: dict) -> int:
+    """How many of a seed's answers fail (_clean's questions; the head count and the edges aside)."""
+    import characters as CH
+    return (CH._yes(a.get("text")) + sum(not CH._yes(a.get(x)) for x in a
+                                         if x.startswith(("who", "legs", "pose", "close")))
+            + sum(CH._yes(a.get(x)) for x in a if x.startswith("chair")))
 
 
 def _judge(items: list, ans: dict, first: bool) -> None:

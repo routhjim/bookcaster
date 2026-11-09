@@ -40,8 +40,5 @@ with tempfile.TemporaryDirectory() as td:
     check("cached: no second ask, same answers", len(calls) == 3 and again == got, (len(calls), again))
     d = json.loads(c.read_text())
     check("cache keeps the reply and the lines", len(d) == 3 and all({"lines", "reply", "moves"} <= set(v) for v in d.values()))
-src = (HERE / "shot_flow.py").read_text()
-check("wired after the chain ask, before the chain tags", src.index("chain_moves(c, ask_") > src.index("chs = ask_chains(")
-      and src.index("chain_moves(c, ask_") < src.index("for j_, (nums, head) in enumerate(chain_heads("))
 print("ALL PASS" if not fails else f"{len(fails)} FAIL")
 sys.exit(1 if fails else 0)

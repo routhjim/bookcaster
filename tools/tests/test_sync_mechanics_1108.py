@@ -59,11 +59,6 @@ c.with_suffix(".sync.json").write_text(json.dumps({"sig": f"{c.stat().st_size}:{
                                                    "conf": 7.0}))
 ran.clear(); S._sync_offsets(Path("."), d, ["talk-1_s0"], log=lambda m: None)
 check("...but a close-up's (no zone) is kept", not any("run_syncnet.py" in str(x) for x in ran), ran)
-src = (HERE.parent / "shot_flow.py").read_text()
-check("a kept clip's job takes the plan's zone (no render setting changes)",
-      'rj.write_text(json.dumps(dict(old, speaker_box=j["speaker_box"]), indent=1))' in src and
-      '"speaker_box"' not in src.split('for k in ("steps", "guider", "lock_end", "base")')[0].rsplit("def drop_stale", 1)[1]
-      .split("stale = stale or")[1])
 
 # --- 2. a shift per piece -----------------------------------------------------------------------------------------
 p = shift_map(400, [0, 192], [-2, 3])

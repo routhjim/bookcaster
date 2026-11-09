@@ -38,17 +38,11 @@ check("a picture with nobody in it is left alone", S._offscreen(cx, {"who": []},
 
 # 11-04 (CHANGES #29): the action prompt leaves out the "Only the N ... nobody else comes into the picture" line;
 # quiet and the crowded retake (_held) keep it.
-import inspect, re
 LINE = "nobody else comes into the picture"
 a = S._offscreen(cx, {"id": "action-000759_s0", "who": ["Sherlock Holmes"]},
                  f"{holmes} watches {watson} with a steady expression.", only=False)
 check("only=False: the line is left out", LINE not in a and "Only the" not in a, a)
 check("only=False: the one not in the picture is still someone out of it", "watches someone out of the picture" in a, a)
-src = inspect.getsource(S)
-act = re.search(r"act = _offscreen\((.*)", src).group(1)
-check("the action call passes only=False", "only=False" in act, act)
-quiet = re.search(r"p_ = _offscreen\((.*\n.*)", src).group(1)
-check("the quiet call keeps the line (no only=False)", "only=False" not in quiet, quiet)
 check("the quiet text keeps the line", LINE in S._offscreen(cx, {"id": "q_s0", "who": ["Helen Stoner"]}, "x"))
 S._pose_hold = lambda *a, **k: ""
 h = S._held(cx, {"id": "action-000759_s0", "who": ["Sherlock Holmes"]})

@@ -1,3 +1,4 @@
+# suite: slow
 """11-06 (CHANGES 70): a single action shot's key from its opening staging - one ask per shot after the director
 (opening_staging, the language model stubbed here), the mended row composed as a chain head's, applied to the moments
 after the set sheets (apply_chains). Mechanics on made-up rows, then a CPU replay over every director passage recorded

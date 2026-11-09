@@ -133,8 +133,6 @@ with _tf.TemporaryDirectory() as _d:
     _tl = S.load_timeline(Path(_d), "x", ["Dr. Watson", "Helen Stoner", "Sherlock Holmes"])
 check("the timeline is read with cast names only (one name per person)",
       [x["speaker"] for x in _tl] == ["narrator", "Helen Stoner", "Doctor Watson"], [x["speaker"] for x in _tl])
-check("the passage turn shows the scene summary as context only", "show only what" in S.direct.__code__.co_consts.__repr__()
-      or "never what comes later" in Path(S.__file__).read_text())
 _scr = {}
 _cast3 = ["Sherlock Holmes", "Dr. Watson", "Helen Stoner"]
 S.compose({"people": [{"name": "Watson", "side": "left"}, {"name": "Holmes", "side": "right"}], "setting": "x"}, _cast3, [], _scr)

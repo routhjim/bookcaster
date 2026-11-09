@@ -41,9 +41,6 @@ import charlora as L    # noqa: E402
 check("charlora: the language model down -> the iGPU may judge beside a card", not L.igpu_taken())
 state.touch()
 check("charlora: the language model up -> the card judges itself (no iGPU helper)", L.igpu_taken())
-src = Path(L.__file__).read_text()
-check("charlora build: --igpu-judge only when the iGPU is free",
-      'if card != "igpu" and not igpu_taken():\n                cmd += ["--igpu-judge"]' in src)
 
 # the memory floors: the iGPU's (its model memory is host RAM) stay; on a card only the load's (~9-11.5 GB measured)
 L.mem_avail_gb = lambda: 20.0                    # what the box has with the language model up

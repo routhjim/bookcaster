@@ -1,3 +1,4 @@
+# suite: slow
 """The 10-21 evening fixes to the 3D stage step (synthetic, CPU only, seconds).
 
     ~/tts_reader/.venv/bin/python3 -I tools/tests/test_stage_1021.py
