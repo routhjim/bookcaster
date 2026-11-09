@@ -1916,9 +1916,11 @@ def room_layouts(book: Path, stem: str, log=print) -> dict:
     R_ = RG.Book(book)
     sd = shot_dir(book, stem) / "scenes"
     places = {}
-    for sc in scene_list(book, stem, log):
-        w = sc.get("place") or ""
-        if w and R_.place_look(w) and RG.place_key(w) not in {RG.place_key(x) for x in places}:
+    # 11-09 (E34): the places the scenes CUT to as well (a telling's place), and each side its own picture: keyed by
+    # place only, a house's inside got its outside's layout ("no furniture ... only the exterior of a stone house")
+    for w in [p_ for sc in scene_list(book, stem, log) for p_ in [sc.get("place") or ""] +
+              [c.get("place") or "" for c in sc.get("cutaways") or [] if isinstance(c, dict)]]:
+        if w and R_.place_look(w) and R_.place_id(w) not in {R_.place_id(x) for x in places}:
             sid = "set_" + re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")      # the fixtures its keys will ask
             try:                                                                 # for (the last set sheet's)
                 fx = tuple(json.loads((sd / f"{sid}.json").read_text())["sheet"].get("fixtures") or ())
@@ -1985,12 +1987,12 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     talks = [e for e in es if e["route"] == "talk" and e.get("wav")]
     real = list(dict.fromkeys(e["where"] for e in es if e.get("where") and not NO_PLACE.search(e["where"])))
 
-    lay_ = {RG.place_key(k_): v for k_, v in (layouts or {}).items()}
+    lay_ = {RGB.place_id(k_): v for k_, v in (layouts or {}).items()}     # (by place AND side: E34)
 
     class _Rooms(dict):                 # each place's fixed things: the book's one description of it (the registry;
         def get(self, w, d=None):       # 10-27 audit: the director got "(as the narration says)" for every main place)
             r = RGB.place_look(w) if w else ""
-            ly = lay_.get(RG.place_key(w)) if w else ""    # and where they stand in its picture (10-29)
+            ly = lay_.get(RGB.place_id(w)) if w else ""    # and where they stand in its picture (10-29)
             r = r + (f" As every picture of it is drawn: {ly.rstrip('.')}. People stand and sit only where these "
                      f"things allow." if r and ly else "")
             return {"room": r} if r else d
@@ -2053,11 +2055,7 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     loraed = None                       # the book's people with a built LoRA (told-place shots; asked once)
     scenes = scene_list(book, stem, log)     # the chapter's scenes (shared, cached: the wardrobe reads them too)
     animate_up = subprocess.run(["systemctl", "--user", "is-active", "-q", animate.STRATA_UNIT]).returncode == 0
-    for sc_ in scenes:                  # the breakdown's places have their sheets (the book's looks) where known
-        for w in [sc_["place"]] + [c["place"] for c in sc_["cutaways"]]:
-            base = re.sub(r"\s*\((inside|outside)\)$", "", w)
-            if w not in place_sheet and base in place_sheet:
-                place_sheet[w] = place_sheet[base]
+    # (a side variant's sheet is its own side's description and picture, never its base place's: E34)
     cur = None
     for pa, pb in passages(tl, t_a, t_b, forced=tuple(x["start"] for x in scenes), sent=pts[0]):
         sec = pb - pa
@@ -2583,7 +2581,9 @@ def scene_list(book: Path, stem: str, log=print) -> list:
             if e.get("where") and not NO_PLACE.search(e["where"])]
     known = list({RG.place_key(w): w for w in R_.places() + real}.values())   # each place once, by its one name
     lp = book / "work" / "video" / "look.json"
-    ours = {RG.place_key(w) for w in (json.loads(lp.read_text()).get("_described") or {} if lp.exists() else {})}
+    # (a side described for a place the book already had - "X (inside)" - is not a place a run invented: E34)
+    ours = {RG.place_key(w) for w in (json.loads(lp.read_text()).get("_described") or {} if lp.exists() else {})
+            if not RG.side_of(w)}
     stable = [w for w in known if RG.place_key(w) not in ours]
     return breakdown(book, stem, tl, chars, known, R_.narrator() or "", log, stable=stable)
 
@@ -2799,6 +2799,14 @@ def wardrobe(book: Path, stem: str, log=print) -> None:
         pp.write_text(json.dumps(plan, indent=1, ensure_ascii=False))
 
 
+def _desc_key(places: dict, R_, w: str) -> str:
+    """The key a place's description is marked under in look.json's "_described" (what describe_places wrote): its
+    one name, or for a name with its side ("X (inside)") the entry of that side (11-09, E34: the inside of a house
+    shared the mark - and the description - of its outside)."""
+    base = R_.place(w) or re.sub(r"\s*\((inside|outside)\)$", "", w)
+    return RG.place_slot(places, w)[0] if RG.side_of(w) else base
+
+
 def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> None:
     """A description for every place the shots use that the looks never described (10-24: Outside Hulda's Forge,
     the Barley Fields, the Barren Lands and the Tower had none; their hero pictures were drawn from the name alone and
@@ -2823,7 +2831,7 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
     R_ = RG.Book(book)                  # a place is described ONCE, under its one name (10-27 audit: "Baker Street
     for s in shots:                     # Bedroom (inside)" had a description, so this wrote a second, contradicting one)
         w, room = s.get("place") or "", s.get("room") or ""
-        base = R_.place(w) or re.sub(r"\s*\((inside|outside)\)$", "", w)
+        base = _desc_key(places, R_, w)
         mine = (look.get("_described") or {}).get(base)
         if not w or not room or base in done or R_.place_look(w):
             continue            # 10-28: described once, kept (rewritten from each run's set sheet, it changed the
@@ -2841,7 +2849,7 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
             room = RG.SIDE_PREFIX.sub("", room)        # its own side word only (10-29: they stacked up)
             slot, _ = RG.place_slot(places, w, f"{sd_.capitalize()}: {room}")   # its one entry (10-27 audit)
             places[slot] = f"{sd_.capitalize()}: {room}"
-            look.setdefault("_described", {})[base] = rk
+            look.setdefault("_described", {})[slot if RG.side_of(w) else base] = rk
             log(f"place described (scene sheet): {slot}: {places[slot]}")
     if done:
         lp.write_text(json.dumps(look, indent=1))
@@ -2849,7 +2857,7 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
     R_ = RG.Book(book)
     for s in shots:
         w = s.get("place") or ""
-        base = R_.place(w) or re.sub(r"\s*\((inside|outside)\)$", "", w)
+        base = _desc_key(places, R_, w)
         slug = re.sub(r"[^a-z0-9]+", "_", w.lower()).strip("_")
         # a description this step wrote with older rules is written again (10-24: "a dark blue sword hanging above
         # the door" of Outside Hulda's Forge put the story's sword in every shot there)
@@ -2877,9 +2885,12 @@ def describe_places(book: Path, stem: str, es: list, shots: list, log=print) -> 
                            max_tokens=300) or "").strip().strip('"')
             reply = re.sub(r"(?s)<think>.*?</think>", "", reply).strip().splitlines()[0:1]
             if reply and reply[0].strip():
-                places[base] = f"{sd_.capitalize()}: {reply[0].strip()}"
-                look.setdefault("_described", {})[base] = ask_k
-                log(f"place described: {base}: {places[base]}")
+                d_ = f"{sd_.capitalize()}: {reply[0].strip()}"
+                # its own side's entry (E34: written under the base name, an inside replaced the house's outside)
+                slot = RG.place_slot(places, w, d_)[0] if RG.side_of(w) else base
+                places[slot] = d_
+                look.setdefault("_described", {})[slot] = ask_k
+                log(f"place described: {slot}: {places[slot]}")
     finally:
         subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)
     lp.write_text(json.dumps(look, indent=1))
