@@ -193,8 +193,8 @@ Rules:
   opening picture has the people where it can start: in "people", one who strikes, touches or reaches another, or
   puts a thing into or onto something, is "at" within reach of it: the two close together in the picture, never apart across it.
 - ACTION SHOTS also give "moment": one sentence, the picture at the instant the action BEGINS, the movement already
-  under way - not the calm before it: "Vorgrath's spiked tail sweeps in low from the left as Edric throws himself
-  into a roll beneath it, sword in hand"; "Roylott's hands close on the poker, the iron starting to curve". Name each
+  under way - not the calm before it: the moving part already in motion toward what it reaches, the thing it changes
+  starting to change, the one it reaches already reacting. Name each
   one; say what each holds and where any fire, light or blow comes from; someone sitting or lying stays so. Frame an
   action "medium" or "close", "wide" only to show where everyone is.
 - HANDS ON A THING: when hands change a thing (bend, break, open, pour, write, strike metal, take a pulse), its

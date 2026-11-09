@@ -100,5 +100,10 @@ check("chain: head mended when too far apart", "too far apart" in S.CHAIN_ASK)
 story = re.compile(r"\b(dragon|sword|anvil|hammer|forge|river|quench|knight|armou?r|helm|Edric|Hulda|Vorgrath)\b", re.I)
 new = [x for x in (S.OPENING_ASK, S.CHAIN_ASK) if story.search(x)]
 check("no story content in the opening and chain asks", not new, [story.search(x).group(0) for x in new])
+mom = re.search(r'- ACTION SHOTS also give "moment".*?(?=\n- )', S.SHOT_RULES, re.S).group(0)
+check("the director's moment rule is general: no story names", not re.search(story.pattern + r"|\b(Roylott|poker)\b",
+      mom, re.I), mom)
+check("no knight-story names anywhere in the director rules", not story.search(S.SHOT_RULES),
+      story.search(S.SHOT_RULES) and story.search(S.SHOT_RULES).group(0))
 print({"fails": fails})
 sys.exit(1 if fails else 0)
