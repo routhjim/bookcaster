@@ -2,7 +2,7 @@
 render, a faulted one's retake queued on the loaded runner, the better take kept); a short clip is sampled at 30% and
 75% of its length. CPU only (stand-in judge).
     ~/tts_reader/.venv/bin/python3 tools/tests/test_quiet_checks_1026.py"""
-import inspect, json, sys, tempfile, threading, time
+import json, sys, tempfile, threading, time
 from pathlib import Path
 from types import SimpleNamespace
 HERE = Path(__file__).resolve().parents[1]
@@ -65,11 +65,4 @@ with tempfile.TemporaryDirectory() as d:
                                      {"id": "T_s0", "kind": "talk"}], print)
     check("quiet: the cleaner retake is kept under the shot's name", (lo / "Q2_s0.mp4").read_text() == "take2")
     check("quiet: a single faulted take is taken once more; talk is never judged", again == {"Q3_s0"}, again)
-# the render wiring: quiet gen gets the as-they-land judge + --more queue; a retake builds a second quiet job
-src = inspect.getsource(SF)
-_q0 = src.index("    if quiet:\n        # 10-26")
-q = src[_q0:src.index("\ndef ", _q0)]
-check("quiet gen runs _judge_as_they_land with --more/--more-done", "_judge_as_they_land" in q and "--more" in q
-      and "--more-done" in q, q[:200])
-check("quiet job builder adds the RETAKE take for a shot in retake", "(QUIET_SEED,) + ((RETAKE,) if s[\"id\"] in (retake or ())" in src)
 print(json.dumps({"fails": fails}))

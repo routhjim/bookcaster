@@ -1,3 +1,4 @@
+# suite: pose
 """Generic staging rules on SYNTHETIC data (no book, no story names, CPU only, seconds).
 
     ~/tts-ab/.venv-pose/bin/python -I tools/tests/test_generic_rules.py

@@ -1,3 +1,4 @@
+# suite: manual
 """E19: the fused q/k norm + RoPE stays within one bf16 step of eager's expression, on real-shaped data, and refuses
 what it cannot do. Run with a ROCm venv that has diffusers and Triton; skips (exit 0) without a GPU.
 

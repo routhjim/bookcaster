@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -52,7 +53,10 @@ with tempfile.TemporaryDirectory() as td:
 
     calls = []
     real_run = F.run
-    F.run = lambda cmd, *a, **k: (calls.append(list(map(str, cmd))), lora(vd, "Bo") if "Bo" in map(str, cmd) else None, 0)[2]
+    # each fake build takes a moment, as a real one does: an instant one let the first card's worker take every
+    # character before the second worker started (flaky under a loaded box)
+    F.run = lambda cmd, *a, **k: (calls.append(list(map(str, cmd))), lora(vd, "Bo") if "Bo" in map(str, cmd) else None,
+                                  time.sleep(0.3), 0)[3]
     left = F.ensure_loras(book, log=lambda *a: None)   # Wyrm's build "fails": it stays missing
     F.run = real_run
     check("video step trains before the keys", len(calls) == 3 and all("build" in c for c in calls))

@@ -1,3 +1,4 @@
+# suite: manual
 """Regression test: the forging-strike recipe (approved 2026-10-19; the user's top priority) survives re-staging.
 
     BLOCKOUT_DRY=1 ~/tts-ab/.venv-pose/bin/python -I tools/tests/test_forge_recipe.py <book> <chapter> [<scene> <strike moment>]

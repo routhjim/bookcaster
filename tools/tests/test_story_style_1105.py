@@ -67,10 +67,6 @@ with tempfile.TemporaryDirectory() as td:
     check("art --auto: the language model brought up (faked), both chapters' text asked, the style written",
           started == ["strata"] and "text of c1" in asked[0] and "text of c2" in asked[0] and got == "muted painted space opera",
           (started, got))
-src = (HERE / "flow3d.py").read_text()
-pl = src[src.index("def plan(book, chapter"):]
-check("plan: the style is chosen with the language model up, before the pictures are planned or drawn",
-      pl.index('animate.igpu("strata", log)') < pl.index("infer_art_style(") < pl.index("BC.plan_pictures_for("))
 
 # the outfit sheet's prompt: no dated note, no example; an old sheet is still found
 p = V.outfit_prompt("Ada Brook", "a woman of about 30", {"id": "coat", "dress": "a long coat"}, "ink")

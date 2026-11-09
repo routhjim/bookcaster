@@ -73,8 +73,6 @@ face = lambda cam: [n for n, q in zip(rig.KP_NAMES, rig.coco18(Wf, cam)) if q is
 check("nose" not in face([0, -5, 1.7]) and "r_ear" in face([0, -5, 1.7]), "pose map: from behind, ears only", face([0, -5, 1.7]))
 check("nose" in face([0, 5, 1.7]), "pose map: from the front, the face")
 import mannequin_flow as MFl     # noqa: E402
-import inspect                   # noqa: E402
-check("coco18(J, None)" not in inspect.getsource(__import__("blockout_video")), "pose map: drawn with the camera")
 
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

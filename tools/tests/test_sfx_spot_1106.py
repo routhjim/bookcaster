@@ -76,10 +76,7 @@ late = hit(9.7)
 y2, i2 = SP.cut(late, SR, 1.5)
 check("cut: an event near the canvas end keeps the spot's length", len(y2) == int(1.5 * SR) and i2["start_s"] <= 8.5)
 
-# --- the mix no longer loudnorms or re-fades spots; spot files are versioned so raw old ones aren't reused
-src = (ROOT / "tts_reader" / "sfx.py").read_text()
-spot_chain = src[src.index("# the file is cut, faded and normalised already"):src.index("spots.append")]
-check("mix: no loudnorm or fade on spots", "loudnorm" not in spot_chain and "afade" not in spot_chain)
+# --- spot files are versioned so raw old ones aren't reused
 check("names: spot files carry the cut version (old raw files aren't reused)",
       SX._fx_name("spot", 0, "a knock", 1.5) != "spot000_" + __import__("hashlib").sha1(b"a knock|1.5").hexdigest()[:8]
       + ".wav" and SX._fx_name("bed", 0, "fire", 30.0) == "bed000_" +

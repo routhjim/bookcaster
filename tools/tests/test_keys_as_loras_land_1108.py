@@ -1,3 +1,4 @@
+# suite: slow
 """11-08 user: "the LoRA's in the most shots are made first and then have the iGPU get to work on keyframes as soon as
 Strata/Director is done ... whenever the first XTX card is done with LoRA, kick that one off on key frames too".
 CPU only: the LoRA builds (flow3d.run), qwen_image --serve, the key judge, the place pictures and key_tasks faked;

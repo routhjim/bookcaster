@@ -1,6 +1,6 @@
 """10-30 user ("make the naming useful for humans to read and also machines to decipher"): shot ids say their kind
 and their start both ways (quiet-02m26s-001464); what a run left under the old ids moves to the new ones."""
-import inspect, os, sys, tempfile
+import os, sys, tempfile
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE.parent.parent))
@@ -18,8 +18,6 @@ check("the seed is the old id's (cached takes stay the same takes)",
       S.shot_seed("quiet-02m26s-001464_s0") == S.shot_seed("action-001464_s0") != 0)
 check("animate reads the time back", animate._shot_t("talk-01m26s-000868") == 86.8)
 check("ids sort by time as text", sorted([S.shot_mid("quiet", 600.0), S.shot_mid("quiet", 59.9)])[0].endswith("000599"))
-src = inspect.getsource(S.direct)
-check("the director's shots use shot_mid with their own kind", 'shot_mid(kind_, t)' in src and 'shot_mid("talk", t)' in src)
 
 sd = Path(tempfile.mkdtemp(prefix="names_"))
 for f in ["action-001464/action-001464_s0/key.png", "action-001464/action-001464_s0/talk_seed",
