@@ -61,9 +61,10 @@ with torch.inference_mode():
         else:
             start += seg
         end += seg
-v = outp[m.sources.index("vocals")] * ref.std() + ref.mean()
-subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-", "-c:a", "pcm_s16le",
-                out], input=v.T.contiguous().numpy().astype(np.float32).tobytes(), check=True)
+for name, path in (("vocals", out), ("drums", sys.argv[3])):
+    v = outp[m.sources.index(name)] * ref.std() + ref.mean()
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-", "-c:a",
+                    "pcm_s16le", path], input=v.T.contiguous().numpy().astype(np.float32).tobytes(), check=True)
 """
 
 
@@ -90,18 +91,29 @@ def sections(lines: list) -> list:
     return out
 
 
+def _h(s: str) -> str:
+    import hashlib
+    return hashlib.sha1(s.encode()).hexdigest()[:12]
+
+
 def separate(audio: Path, out: Path, log=print) -> Path:
-    """The song's vocal stem (wav, 44.1 kHz stereo) - cached beside its source's size and time."""
+    """The song's vocal stem (wav, 44.1 kHz stereo), and its percussion stem beside it (drums.wav: the beat a clap or
+    stomp shot follows, 11-08) - cached beside its source's size and time."""
     st = audio.stat()
     mark = out.with_suffix(".src")
     key = f"{audio.resolve()}|{st.st_size}|{st.st_mtime_ns}"
-    if out.exists() and mark.exists() and mark.read_text() == key:
+    drums = out.with_name("drums.wav")
+    if out.exists() and drums.exists() and mark.exists() and mark.read_text() == key:
         return out
     log(f"song: separating the vocals of {audio.name} (Hybrid Demucs, CPU)")
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.stem + ".tmp.wav")
-    subprocess.run([str(SEP_PY), "-I", "-c", _SEP_RUN, str(audio), str(tmp)], check=True)
-    tmp.replace(out)
+    tmp, tmp_d = out.with_name(out.stem + ".tmp.wav"), drums.with_name("drums.tmp.wav")
+    subprocess.run([str(SEP_PY), "-I", "-c", _SEP_RUN, str(audio), str(tmp), str(tmp_d)], check=True)
+    tmp_d.replace(drums)
+    if not out.exists() or out.read_bytes() != tmp.read_bytes():
+        tmp.replace(out)                # (the same vocals kept as they were: their word times stay cached)
+    else:
+        tmp.unlink()
     mark.write_text(key)
     return out
 
@@ -166,6 +178,37 @@ def line_times(word_t: list, line_words: list, env, total: float) -> list:
     return out
 
 
+GROUP_ASK = """A song is being made into a music video. Its lyrics, in their labelled sections, and its recording's style
+notes are below. Which sections are sung by many voices together (the whole group singing the words), rather than by
+one lead voice alone? Judge from the section labels, the lyrics and the style notes. Reply with JSON only:
+{{"group": ["<section label exactly as written>", ...]}}
+
+Style notes: {tags}
+
+Lyrics:
+{lyrics}"""
+
+
+def group_sections(lyrics: str, tags: str, log=print) -> list:
+    """The section labels sung by many voices together (the language model's judgment; [] when it gives none)."""
+    from . import animate
+    from . import bookcaster as BC
+    from .score import _chat
+    animate.igpu("strata", log)
+    labels = {x["section"] for x in parse_lyrics(lyrics)}
+    for _ in range(3):
+        rep = _chat(BC.LLM_URL, BC.LLM_MODEL, GROUP_ASK.format(tags=tags or "(none)", lyrics=lyrics), max_tokens=300)
+        m = re.search(r"\{.*\}", rep or "", re.S)
+        try:
+            got = (json.loads(m.group(0)) if m else {}).get("group")
+        except ValueError:
+            got = None
+        if isinstance(got, list):
+            return [g for g in got if g in labels]
+    log("song: no answer on which sections are sung by many: every line is the lead's")
+    return []
+
+
 SINGER_ASK = """A song is being made into a music video. Its lyrics and its recording's style notes are below.
 Decide who sings the lead on screen. If the lyrics make one of their own people the one singing ("I", or the one who
 leads the others), it is that person; otherwise a new person who fits the lyrics' world and the voice the style notes
@@ -196,13 +239,18 @@ def pick_singer(lyrics: str, tags: str, log=print) -> dict:
     raise RuntimeError("song: the language model named no lead singer")
 
 
-def replan_for_direction(book: Path, log=print) -> list:
+def replan_for_direction(book: Path, log=print, keep_looks: bool = False) -> list:
     """The author's direction changed: what was planned from the old one is planned again (the art style the planner
     chose, the people's looks and the places, the chapter's picture plan and moments). A look or place set by hand
     (look.json "_pinned") stays. The LoRAs, sheets and heroes are not touched here: their own staleness checks (each
     look's and outfit's signature, lora_todo, _plan_sig) retrain and redraw what the new looks change, and the
-    director's caches miss on their changed questions. -> what was reset."""
+    director's caches miss on their changed questions. keep_looks: the style, looks, places and picture plan stay (a
+    note about the shots only: 11-08 "too much of the captain singing at the helm"); the scene breakdown, the set
+    sheets and the director still plan again, their questions carry the direction. -> what was reset."""
     gone = []
+    if keep_looks:
+        log("song: the direction changed: the looks stay; the scenes and shots are planned again from it")
+        return gone
     for f in (book / "art_style.txt",):
         if f.exists():
             f.unlink()
@@ -232,7 +280,7 @@ def replan_for_direction(book: Path, log=print) -> list:
 
 
 def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "", singer: str = "",
-         log=print, direction: str | None = None) -> Path:
+         log=print, direction: str | None = None, keep_looks: bool = False) -> Path:
     """The song's book (see the module's doc); safe to run again (the stem and the word times are cached).
     direction: the author's own words on how the film should look and feel, kept verbatim (song.json) and given to
     every planning prompt (registry.Book.direction); None keeps the one stored, "" clears it."""
@@ -252,9 +300,12 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
     old = json.loads(meta.read_text()) if meta.exists() else {}
     direction = str(old.get("direction") or "") if direction is None else direction.strip()
     if meta.exists() and direction != str(old.get("direction") or ""):
-        replan_for_direction(book, log)
+        replan_for_direction(book, log, keep_looks=keep_looks)
     who = {"name": singer, "who": ""} if singer else (old.get("singer") if old.get("lyrics") == text and old.get("singer")
                                                        else pick_singer(text, tags, log))
+    gkey = _h(text + "|" + (tags or ""))
+    group = old["group_sections"] if old.get("group_key") == gkey and "group_sections" in old else \
+        group_sections(text, tags, log)
     # the chapter: who sings, then each section a paragraph (its label first, as the lyrics have it)
     secs = sections(lines)
     chapter = (f"{title}\n\n{who['name']} sings the lead, the others answering. {who['who']}".rstrip() + "\n\n"
@@ -306,7 +357,7 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
             tl.append({"t": round(prev_end, 3), "kind": "music", "speaker": "narrator", "emotion": "",
                        "text": "(music)", "section": x["section"] if not tl else prev_sec})
         tl.append({"t": a, "kind": "quote", "speaker": who["name"], "emotion": "", "text": x["text"],
-                   "section": x["section"]})
+                   "section": x["section"], **({"group": True} if x["section"] in group else {})})
         prev_end, prev_sec = b, x["section"]
     if total - prev_end > GAP_S:
         tl.append({"t": round(prev_end, 3), "kind": "music", "speaker": "narrator", "emotion": "", "text": "(music)",
@@ -316,7 +367,8 @@ def make(book: Path, audio: Path, lyrics: Path, title: str = "", tags: str = "",
     (work / f"{STEM}.timeline.json").write_text(json.dumps(tl, indent=1, ensure_ascii=False))
     meta.write_text(json.dumps({"title": title, "audio": str(audio), "lyrics": text, "tags": tags, "singer": who,
                                 "direction": direction,
-                                "seconds": round(total, 3), "align": align,
+                                "seconds": round(total, 3), "align": align, "group_sections": group,
+                                "group_key": gkey,
                                 "sections": [{"label": lab, "start": spans[idx[0]][0], "end": spans[idx[-1]][1]}
                                              for lab, idx in secs]}, indent=1, ensure_ascii=False))
     log(f"song: {book} ({len(lines)} lines in {len(secs)} sections, {total:.1f} s; lead: {who['name']})")

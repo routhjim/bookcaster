@@ -2353,6 +2353,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--singer", default="", help="who sings lead on screen (default: the language model picks)")
     s.add_argument("--direction", default=None, help="the author's own direction for the video, verbatim (looks, "
                    "outfits, places, scenes and shots follow it; a change plans them again); default: the one stored")
+    s.add_argument("--keep-looks", action="store_true", help="a changed --direction re-plans the scenes and shots only "
+                   "(the style, looks, places and LoRAs stay)")
     s = sub.add_parser("plan", help="3d stage 0: plan a chapter from the text (pictures, looks, moments, ref sheets)")
     s.add_argument("book")
     s.add_argument("--chapter", required=True)
@@ -2579,7 +2581,8 @@ def main(argv: list[str] | None = None) -> int:
         d = Path(a.dir).expanduser()
         if HOME in d.resolve().parents:
             print(f"(a song book in {HOME} shows up in the library like any book)")
-        song.make(d, Path(a.audio), Path(a.lyrics), title=title, tags=tags, singer=a.singer, direction=a.direction)
+        song.make(d, Path(a.audio), Path(a.lyrics), title=title, tags=tags, singer=a.singer, direction=a.direction,
+                  keep_looks=a.keep_looks)
         print(f"made {d}: now `bookcaster video {d} --level animated --flow shots`")
     elif a.cmd == "plan":
         d = book_dir(a.book)

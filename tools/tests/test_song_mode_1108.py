@@ -1,7 +1,7 @@
 """11-08: song mode (tts_reader/song.py) - a song filmed by the shot flow as a music video. The lyrics' sections and
 lines, each line's span from its words' times, the section starts the director's passages are cut at, the song
 marker, the song-only prompt text (and that a book's prompts are untouched), and the song's own audio in the cut."""
-import inspect, json, sys, tempfile
+import inspect, json, re, sys, tempfile
 from pathlib import Path
 import numpy as np
 HERE = Path(__file__).resolve().parent
@@ -55,8 +55,27 @@ check("the book's passage header is what song mode replaces",
       'Spoken lines say\n"SAYS ALOUD" with their start and end.' in SF.PASSAGE_ASK)
 src = inspect.getsource(SF.direct)
 check("song mode adds its rules to the director's", "SONG_RULES.format(singer=" in src and "SINGS" in src)
-check("the song rules are general (no quoted examples)", '"' not in SF.SONG_RULES.replace('"talk"', ""),
-      SF.SONG_RULES)
+check("the song rules are general (no quoted examples: only the answer's own field names)",
+      '"' not in re.sub(r'"(talk|people|setting|group|beat)"', "", SF.SONG_RULES), SF.SONG_RULES)
+check("a song's talk shots are staged by the director, varied across the song",
+      'gives "people" and "setting"' in SF.SONG_RULES and "never the same picture twice running" in SF.SONG_RULES)
+src_d = inspect.getsource(SF.direct)
+check("... and their staging is what the talk picture holds (not one carried pose)", "if song:" in src_d and
+      'lp[w_] = pose_cat(pl.get("pose"))' in src_d)
+check("a line sung by many is marked ALL SING, and its group shot sings together", "ALL SING" in SF.SONG_RULES and
+      "chorus=True" in src_d)
+check("a chorus clip has everyone singing, no head count, and is measured but not retaken on SyncNet",
+      'if s.get("chorus"):' in inspect.getsource(SF._talk_prompt) and
+      '"people": None if s.get("chorus")' in inspect.getsource(SF.ltx) and
+      "not gated" in inspect.getsource(SF._sync_as_they_land))
+# a fixture is never held in a key: a hand rests on it; a hand prop stays held
+check("the helm the captain stands at is not held", "holding" not in SF.fixed_holds(
+    "The Captain stands behind the helm, holding helm, on the left", {}))
+check("a set fixture is not held", "resting on the ship's rail" in SF.fixed_holds(
+    "Elsie stands by the boat, holding the ship's rail", {"fixtures": ["ship's rail"]}))
+check("a hand prop stays held", SF.fixed_holds("Tom sits on a crate, holding the fiddle", {"fixtures": ["helm"]}) ==
+      "Tom sits on a crate, holding the fiddle")
+check("a talk clip of a song never quotes a [section] label", "\\[[^\\]]*\\]" in inspect.getsource(SF.spoken_words))
 check("a song gets no sound effects and no narration pauses",
       "if not song:" in inspect.getsource(SF.run) and "if not song else []" in inspect.getsource(SF.run))
 check("the cut is muxed on the song's own recording", "song_mux(Path(song[\"audio\"])" in inspect.getsource(SF.assemble))
@@ -161,7 +180,8 @@ src_bd = inspect.getsource(SF.breakdown) + inspect.getsource(SF.direct) + inspec
 check("the breakdown, director, set sheets and place descriptions read the direction",
       src_bd.count("direction()") >= 4, src_bd.count("direction()"))
 check("'(inside)'/'(outside)' are one place's two sides; another room is a place of its own",
-      "a different room" in SF.BREAKDOWN_ASK)
+      "a different room" in SF.SIDES_RULE and "SIDES_RULE" in inspect.getsource(SF.breakdown)
+      and "a different room" not in SF.BREAKDOWN_ASK)     # (song only: no book's cached breakdown changes)
 
 # a place named for one side never takes the other side's description (the cabin drawn as the open deck)
 with tempfile.TemporaryDirectory() as d:
@@ -175,5 +195,22 @@ with tempfile.TemporaryDirectory() as d:
           and R2.place_look("Ship Deck").startswith("Outside:"))
     (b / "work" / "video" / "look.json").write_text(json.dumps({"places": {"Mill": "A mill by the river"}}))
     check("a description with no side serves either side", RGm.Book(b).place_look("Mill (inside)") == "A mill by the river")
+
+# a song's clap/stomp shots follow its beat: the percussion stem, its onsets, an A2Vid clip driven by it (never for a book)
+with tempfile.TemporaryDirectory() as d:
+    w = Path(d) / "beat.wav"
+    SF.subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                       "aevalsrc='if(lt(mod(t,0.5),0.02),0.9*sin(2*PI*900*t),0)+0.02*(random(0)-0.5)':s=44100:d=4", str(w)], check=True)
+    bt = SF.beat_times(w)
+    check("the percussion's onsets are found on its beat", len(bt) >= 6 and all(abs((b % 0.5) - 0) < 0.04 or
+                                                                            abs((b % 0.5) - 0.5) < 0.04 for b in bt), bt)
+check("an impact on a beat counts, one off it does not", SF.on_beat([24, 37], [1.0]) == (1, 2))
+src_l = inspect.getsource(SF.ltx)
+check("a song's beat shot is an A2Vid clip driven by the drums stem", 'elif BEAT_DRIVE and s.get("beat") and key.exists() and '
+      '(BEAT_DRUMS(book)).exists()' in src_l and not SF.BEAT_DRIVE and '"beat": True' in src_l)
+check("the lip-sync checker skips beat clips; the cut trims their lead-in", 'not j.get("beat")' in
+      inspect.getsource(SF._sync_as_they_land) and 'talk_pre(c) if s.get("beat")' in inspect.getsource(SF.assemble))
+check("the separation keeps the percussion stem beside the vocals", '"drums"' in S2._SEP_RUN and
+      'drums.wav' in inspect.getsource(S2.separate))
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)
