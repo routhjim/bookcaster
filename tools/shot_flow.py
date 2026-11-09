@@ -340,6 +340,39 @@ def garments(clothes: str) -> str:
     return ", ".join(parts[:2])
 
 
+def worn_outer(clothes: str, n: int = 3) -> str:
+    """The outer layer of an outfit as its first `n` WHOLE garments, for a key and its judge (E33: garments() split
+    "Dull, unpolished star-iron armour consisting of a breastplate ..., a helm with a narrow eye slit, ..." into "Dull"
+    + the breastplate, so every action key lost the helm (0/5) while the quiet keys, with the whole dress, kept it 5/7).
+    A one-word part is an adjective of the garment after it; what is worn under it ("worn over ...") is left out."""
+    outer = re.split(r",?\s*\bworn\s+(?:over|under|beneath)\b", str(clothes or ""), 1)[0]
+    parts, lone = [], ""
+    for x in re.split(r"[,;]", outer):
+        x = re.sub(r"^and\s+", "", x.strip(), flags=re.I)
+        if not x:
+            continue
+        if " " not in x:                # (an adjective on its own: joined to the next part)
+            lone = f"{lone}, {x}" if lone else x
+            continue
+        parts.append(f"{lone}, {x}" if lone else x)
+        lone = ""
+    if lone:
+        parts.append(lone)
+    return ", ".join(parts[:n])
+
+
+def key_clothes(book: Path, stem: str, mid: str, w: str, look: str, other=None) -> str:
+    """The clothes a shot's key draws on `w`: the wardrobe in force at the shot (MF._dress, the made-outfit shift
+    included), else their look's own. E33: the key judge asked the wardrobe by the raw paragraph time (cx.dress, no
+    shift) - armour while the key drew the jerkin - and 16 keys shipped after 5 rejected seeds. `other()`: the dress
+    to use when the plan's wardrobe cannot be read at all."""
+    try:
+        d = MF._dress(book, stem, mid, [w]).get(w)
+    except Exception:                                   # noqa: BLE001 - no plan files: the caller's dress, or the look's
+        d = other() if other else None
+    return d or clothes_of(look)
+
+
 def pose_cat(text) -> str:
     """'sit' / 'stand' / 'lie' / 'kneel' / 'crouch' for a pose word or phrase, '' when it names none."""
     return next((c for c, rx in POSE_CAT if rx.search(str(text or ""))), "")
@@ -2884,8 +2917,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
                      if z.strip() and z.strip().lower() != "no clothing"]
             if not re.search(r"\b(dragon|creature|beast|wyrm|horse|wolf)\b", lk, re.I):
                 parts = parts[:4]       # a person: age, face, hair; a creature keeps its wings and tail
-            cl = garments(dress.get(w) or clothes_of(lk))
-            cl = ", ".join(z.strip() for z in cl.split(",")[:2]).strip()
+            cl = worn_outer(dress.get(w) or clothes_of(lk))     # (whole garments: E33, the helm)
             ids.append(f"{MF._lora(book, w)[1] or ''} {w}: {', '.join(parts)}{', wearing ' + cl if cl else ''}".strip())
         room = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(s.get("room") or ""), flags=re.I)
         room1 = (re.split(r"(?<=[.;])\s+", room) or [""])[0].rstrip(".")
@@ -2896,7 +2928,7 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
             if not any(re.search(k_, nm, re.I) for nm in th):
                 pic = re.sub(k_, v_, pic, count=1, flags=re.I)
         for nm in sorted(th, key=len, reverse=True):
-            pic = re.sub(rf"\b{re.escape(nm)}\b(?!\s*\()", lambda m_, v=th[nm]: m_.group(0) + f" ({v})", pic, flags=re.I)
+            pic = gloss_once(pic, nm, th[nm])
         return (f"{pic}. {'. '.join(ids)}. In {place}{': ' + room1 if room1 else ''}. "
                 f"{MF.period_line(book)} {style} No text.").replace("..", ".").replace("  ", " ")
     people = []
@@ -2972,6 +3004,31 @@ def _key_prompt(book: Path, stem: str, mid: str, s: dict) -> str:
             ).replace("..", ".").replace("  ", " ")
 
 
+_GLOSS_NEXT = re.compile(r"\s+([A-Za-z-]+)(\W*)(\S*)")
+_FUNC = re.compile(r"^(?:a|an|the|on|in|at|of|by|to|with|from|into|onto|over|under|above|below|beside|near|and|or|as|"
+                   r"that|which|resting|lying|toward|towards|across|through|behind|before|is|are|was|were)$", re.I)
+
+
+def gloss_once(pic: str, nm: str, look: str) -> str:
+    """A thing's look after the FIRST place its name stands as a noun of its own (E33: the river's look went inside
+    "river bank" - "at the river (cold clear water ...) bank" - and again after every later "river"). A name followed
+    by one more word that ends the phrase ("river bank,", "river bank on the left") is that word's modifier: passed
+    over; with no such place, the look follows the whole phrase, named."""
+    rx = re.compile(rf"\b{re.escape(nm)}\b(?!\s*\()", re.I)
+    first = None
+    for m in rx.finditer(pic):
+        nx = _GLOSS_NEXT.match(pic, m.end())
+        if nx and not _FUNC.match(nx.group(1)) and (nx.group(2).strip() or not nx.group(3) or _FUNC.match(nx.group(3))):
+            first = first or (m, nx)    # a modifier: "river bank"
+            continue
+        return pic[:m.end()] + f" ({look})" + pic[m.end():]
+    if first:
+        m, nx = first
+        e = m.end() + len(nx.group(0)) - len(nx.group(2)) - len(nx.group(3))
+        return pic[:e] + f" ({m.group(0)}: {look})" + pic[e:]
+    return pic
+
+
 def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
     """The mannequin flow's talk words (motion_prompts): short, "lips and jaw moving clearly", no style paragraph and
     no "everyone else ... mouth closed" (10-24: R.talk_prompt's long prompt with that sentence froze the lips again in
@@ -3012,6 +3069,45 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
             f"clearly in sync with {pron} voice.{says}{lst} No text anywhere in the picture.")
 
 
+_NOT_A_TARGET = re.compile(r"\b(viewer|camera|audience|forward|ahead|front|away|out|down|up|sky|distance|nothing|"
+                           r"no one|nobody)\b", re.I)
+
+
+def _facing_target(cx, s: dict, w: str) -> str:
+    """What the key judge asks `w` to be turned toward: another one in the picture (by their look's first words), a
+    side of it, or a thing the picture names; "" when the row asks no facing, the shot is a talk shot (the speaker
+    cheats out by design), `w` lies down, or the target is not in the picture (E33: no question asked about facing,
+    and Edric was drawn square to the viewer in 16/16 kept keys with "facing right" / "facing toward the anvil" in
+    the prompt, so best-of-5 could not select for it)."""
+    if s.get("kind") == "talk" or w == s.get("ots"):
+        return ""
+    row = next((p_ for p_ in s.get("placed") or [] if isinstance(p_, dict) and p_.get("name") == w), None)
+    f = str((row or {}).get("facing") or "").strip().rstrip(".")
+    if not f or (row or {}).get("pose") == "lie":
+        return ""
+    who = list(s.get("who") or [])
+    R_ = RG.Book(cx.book)
+
+    def first(o):
+        lk = R_.look(o) or ""
+        return re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk.strip(), maxsplit=1)[0]).strip().rstrip(".")
+    for o in who:                       # someone in the picture, by name or any of its words
+        if o != w and any(re.search(rf"\b{re.escape(t)}\b", f, re.I) for t in [o] + [x for x in o.split() if len(x) > 3]):
+            return first(o) or ""
+    thing = re.sub(r"^(?:facing\s+)?(?:(?:the\s+)?(?:left|right)\s*,?\s*)?(?:toward|towards|to|at)\s+", "", f, flags=re.I)
+    side = re.fullmatch(r"(?:facing\s+)?(?:toward\s+|to\s+)?(?:the\s+)?(left|right)(?:\s+side)?(?:\s+of the (?:picture|frame))?", f, re.I)
+    if side:                            # a bare side: the one other there, else the side itself
+        i = who.index(w) if w in who else -1
+        there = [o for k, o in enumerate(who) if o != w and (k > i if side.group(1).lower() == "right" else k < i)]
+        return first(there[0]) if len(there) == 1 and i >= 0 else f"the {side.group(1).lower()} of the picture"
+    if _NOT_A_TARGET.search(thing):
+        return ""
+    head = (re.findall(r"[A-Za-z-]{3,}", thing) or [""])[-1]
+    seen = re.sub(r"\bfacing\b[^,;.]*", "", str(s.get("picture") or ""), flags=re.I) + " " + str(s.get("room") or "")
+    # (the picture without the facing words themselves, and the place as the key describes it)
+    return thing if head and re.search(rf"\b{re.escape(head)}", seen, re.I) else ""
+
+
 def _key_questions(cx, s: dict) -> tuple:
     """The vision questions for a shot's opening picture, and how many people it should hold."""
     # (10-24: no "does it show the words" question - it only chose between near-identical clean seeds)
@@ -3029,9 +3125,14 @@ def _key_questions(cx, s: dict) -> tuple:
         if first:
             q[f"who{i}"] = f"Answer yes or no: is there {first} in this picture?"
         m_ = re.search(r"-(\d{4,})", s.get("id") or "")     # the shot's time (ids carry it in tenths of a second)
-        cl = clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0) or lk)
+        cl = key_clothes(cx.book, getattr(cx, "stem", ""), str(s.get("id") or "").rsplit("_s", 1)[0], w, lk,
+                         lambda: clothes_of(video_dress(cx, w, int(m_.group(1)) / 10 if m_ else 0.0)))
         if first and cl and s.get("framing") != "close":    # 10-26 user: "outfit changes between clips"
-            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {garments(cl)}?"   # (10-27: cut at 14 words)
+            q[f"who{i}w"] = f"Answer yes or no: is {first} wearing {worn_outer(cl, 2)}?"   # (what the key draws, E33)
+        fc = _facing_target(cx, s, w)
+        if first and fc:
+            q[f"face{i}"] = (f"Answer yes or no: is {first} turned toward {fc}, body and face toward it rather than "
+                             f"toward the viewer?")
         pz = "" if moment(s) else (s.get("pose_held") or {}).get(w, "")   # (a roll, a lunge: not a held pose)
         if first and pz in ("sit", "lie", "kneel", "crouch"):
             q[f"pose{i}"] = f"Answer yes or no: is {first} {POSE_WORDS[pz]} (not standing)?"
@@ -3048,6 +3149,10 @@ def _key_questions(cx, s: dict) -> tuple:
     hum += len(s.get("others") or [])  # (CHANGES 70: the people drawn from words count too)
     if hum and not s.get("crowd"):
         q["count"] = "How many people are in this picture? Answer with a number."
+    st = str(s.get("setting") or "").strip().rstrip(".")
+    if moment(s) and st:                # E33: the drawer left the worked thing out (an empty anvil 5/9) and no question
+        q["obj"] = (f'Answer yes or no: is every object this names in the picture, looking as it says: "{st}"? '
+                    f'(Light, weather and the place itself do not count.)')     # (an action's setting: its things)
     if s.get("kind") == "talk" and len(s.get("who") or []) == 1:   # a one-person talk shot is a close-up (10-27)
         q["close"] = "Answer yes or no: is this a close-up, the person's head and shoulders filling most of the picture?"
     return q, hum
@@ -3179,7 +3284,9 @@ def keys_judged(book: Path, stem: str, shots: list, log=print, tasks: list | Non
         def off(x):
             c = re.search(r"\d+", str(x[1].get("count") or ""))
             return abs(int(c.group(0)) - t["need"]) if c and t["need"] else 0
-        settle(t, min(t["tried"], key=off)[0], False)    # none clean: the nearest head count
+        # none clean: the nearest head count, then the fewest failed questions (E33: the first seed shipped, whatever
+        # else it failed)
+        settle(t, min(t["tried"], key=lambda x: (off(x), _misses(x[1])))[0], False)
         return True
 
     def drawer(card):
@@ -3406,9 +3513,17 @@ def _clean(a: dict, k: Path, need: int) -> bool:
     import characters as CH
     c = re.search(r"\d+", str(a.get("count") or ""))
     return bool(a) and (not CH._yes(a.get("text")) and not MF._blank_edges(k)
-                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close")))
+                        and all(CH._yes(a.get(x)) for x in a if x.startswith(("who", "legs", "pose", "close", "face", "obj")))
                         and not any(CH._yes(a.get(x)) for x in a if x.startswith("chair"))      # (must be "no")
                         and not (need and c and int(c.group(0)) != need))
+
+
+def _misses(a: dict) -> int:
+    """How many of a seed's answers fail (_clean's questions; the head count and the edges aside)."""
+    import characters as CH
+    return (CH._yes(a.get("text")) + sum(not CH._yes(a.get(x)) for x in a
+                                         if x.startswith(("who", "legs", "pose", "close", "face", "obj")))
+            + sum(CH._yes(a.get(x)) for x in a if x.startswith("chair")))
 
 
 def _judge(items: list, ans: dict, first: bool) -> None:
