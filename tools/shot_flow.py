@@ -3666,6 +3666,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 old.get("audio_src") != j.get("audio_src") or \
                 any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end", "base"))
             # (10-27: a new voice cut is a new clip; 10-28: so are other render settings)
+            if not stale and "speaker_box" in j and old.get("speaker_box") != j["speaker_box"]:
+                # SyncNet's zone measures, it draws nothing: a kept clip takes the plan's zone (E29: the over-the-
+                # shoulder zone was wrong) and _sync_offsets measures it again there
+                rj.write_text(json.dumps(dict(old, speaker_box=j["speaker_box"]), indent=1))
         if stale:
             c.unlink()
             if not re.search(r"_t\d+$", j["name"]):    # (10-27 audit: an old _t2 or .judged outlived a new take)
@@ -3871,20 +3875,47 @@ def _talk_score(L: Path, name: str, pieces: int = 1) -> float:
 
 def _keep_best_talk(L: Path, n: str, k: int, log, pieces: int = 1) -> None:
     """Of shot n's k talk takes (<n>.mp4, <n>_t2.mp4, ...) the best SyncNet becomes <n>.mp4, its sync record with it
-    (a tie keeps the earlier). The job file stays the shot's own, so the next run finds the clip current."""
+    (a tie keeps the earlier). The job file stays the shot's own, so the next run finds the clip current. A line in
+    pieces swaps its pieces too (E29: only the join was swapped, so <n>_c*.mp4 stayed take 1's under another take's
+    join - 4 of the books' 8 retaken lines - and a stitch again, or a piece's own shift, read the wrong take)."""
     names = [n] + [f"{n}_t{i}" for i in range(2, k + 1)]
     cs = [_talk_score(L, x, pieces) for x in names]
     best = max(range(len(names)), key=lambda i: (cs[i], -i))
     if best:
-        for ext in (".mp4", ".sync.json"):
-            a, b = L / "out" / f"{n}{ext}", L / "out" / f"{names[best]}{ext}"
-            if a.exists() and b.exists():
-                tmp = a.with_name(a.name + ".swap")
-                os.replace(a, tmp)
-                os.replace(b, a)
-                os.replace(tmp, b)
-    (L / "out" / f"{n}.synced").write_text(json.dumps({x: c for x, c in zip(names, cs)}))
+        _swap_take(L, n, names[best], (".mp4", ".sync.json", ".join.json"))
+        for i in range(pieces if pieces > 1 else 0):
+            _swap_take(L, f"{n}_c{i}", f"{names[best]}_c{i}", (".mp4", ".sync.json"))
+    (L / "out" / f"{n}.synced").write_text(json.dumps({x: c for x, c in zip(names, cs)} |
+                                                      ({"_pieces": names[best]} if pieces > 1 else {})))
     log(f"{n}: lip sync take {best + 1} of {k} kept ({' / '.join(f'{c:.1f}' for c in cs)})")
+
+
+def _swap_take(L: Path, a_: str, b_: str, exts: tuple) -> None:
+    for ext in exts:
+        a, b = L / "out" / f"{a_}{ext}", L / "out" / f"{b_}{ext}"
+        if a.exists() and b.exists():
+            tmp = a.with_name(a.name + ".swap")
+            os.replace(a, tmp)
+            os.replace(b, a)
+            os.replace(tmp, b)
+
+
+def _kept_pieces(L: Path, n: str, pieces: int) -> None:
+    """A line retaken before E29 has the kept take's join as <n>.mp4 over take 1's pieces: the kept take's pieces
+    (the best score in <n>.synced, a tie the earlier, as _keep_best_talk chose) are swapped in, once."""
+    f = L / "out" / f"{n}.synced"
+    try:
+        sc = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return
+    if "_pieces" in sc or pieces < 2:
+        return
+    names = [x for x in sc if not x.startswith("_")]
+    best = max(range(len(names)), key=lambda i: (sc[names[i]], -i)) if names else 0
+    if best and all((L / "out" / f"{names[best]}_c{i}.mp4").exists() for i in range(pieces)):
+        for i in range(pieces):
+            _swap_take(L, f"{n}_c{i}", f"{names[best]}_c{i}", (".mp4", ".sync.json"))
+    f.write_text(json.dumps(dict(sc, _pieces=names[best] if names else n)))
 
 
 def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, log) -> None:
@@ -4357,21 +4388,39 @@ def talk_pre(clip: Path) -> int:
     return 0
 
 
-def sync_shift(clip: Path) -> int:
+def measured_shift(clip: Path) -> int | None:
     """The frames (24 fps) to show a talk clip earlier (+) or later (-) so its lips meet its voice: SyncNet's
-    measured offset when it is confident, else 0."""
+    measured offset when it is confident and current, else None."""
     f = clip.with_suffix(".sync.json")
     try:
         m = json.loads(f.read_text())
+        st = clip.stat()
     except (OSError, ValueError):
-        return 0
-    st = clip.stat()
+        return None
     if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}" or m.get("conf") is None or m["conf"] < SYNC_MIN_CONF:
-        return 0
+        return None
     if abs(m["offset"]) >= SYNC_VSHIFT - 1:     # at the edge of the search: the real offset may lie beyond it, or
-        return 0                                # the match is degenerate (10-28: "Farintosh," read -15 of 15)
+        return None                             # the match is degenerate (10-28: "Farintosh," read -15 of 15)
     sh = round(m["offset"] * FPS / 25)          # SyncNet counts 25 fps frames; + = the picture lags the sound
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
+
+
+def _join_shifts(clip: Path) -> list | None:
+    """The per-piece shifts a joined line was stitched with (<name>.join.json, stitch_talk.py), None for a clip
+    that is not such a join."""
+    try:
+        return json.loads(clip.with_suffix(".join.json").read_text()).get("shifts")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def sync_shift(clip: Path) -> int:
+    """The shift the assembly gives a talk clip (measured_shift, else 0). A line joined from pieces each shifted to
+    its own voice (E29, 11-08: one shift for the whole line left a part of 13 of 37 lines 3+ frames off) takes none:
+    its pieces carry their own; only a join none of whose pieces read confidently falls back to its own reading."""
+    if any(x is not None for x in _join_shifts(clip) or []):
+        return 0
+    return measured_shift(clip) or 0
 
 
 def _speaker_box(s: dict, speaker) -> list | None:
@@ -4381,6 +4430,12 @@ def _speaker_box(s: dict, speaker) -> list | None:
     who = s.get("who") or []
     if len(who) < 2 or speaker not in who:
         return None
+    if s.get("ots") and s["ots"] != speaker and len(who) == 2:
+        # E29 (11-08): an over-the-shoulder shot has no side-by-side halves (talk_layout gives it group_layout's, its
+        # key's LoRA boxes, a zone from x 0.42): its picture (TALK_OTS) puts the listener's back in the outer third
+        # on their side and the speaker, turned toward them, anywhere in the rest - Acts ch.1's Jesus at x 0.34-0.47
+        # (no face found: SyncNet 0); the listeners' heads ended at x 0.30. The zone: all but the listener's third
+        return [1 / 3, 0.0, 1.0, 1.0] if who.index(speaker) == 1 else [0.0, 0.0, 2 / 3, 1.0]
     return talk_layout(s)[who.index(speaker)][0]
 
 
@@ -4410,14 +4465,15 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
             continue
         f, st = c.with_suffix(".sync.json"), c.stat()
         sig = f"{st.st_size}:{st.st_mtime_ns}"
-        try:
-            if json.loads(f.read_text()).get("sig") == sig:
+        bx = _job_speaker_box(L, n)
+        try:                    # measured again when the clip or its zone changed (E29: a reading from before the
+            m = json.loads(f.read_text())       # zone was kept with it is measured once more in its own zone)
+            if m.get("sig") == sig and (m.get("box") == bx or (bx is None and "box" not in m)):
                 continue
         except (OSError, ValueError):
             pass
         v = c
-        bx = _job_speaker_box(L, n)
-        if bx:                  # 10-28 user: SyncNet sees the speaker's own zone only (never a listener's face)
+        if bx:                 # 10-28 user: SyncNet sees the speaker's own zone only (never a listener's face)
             work.mkdir(parents=True, exist_ok=True)
             v = work / f"zone_{n}.mp4"
             x0, y0, x1, y1 = bx
@@ -4434,7 +4490,7 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
         confs = [float(x) for x in re.findall(r"Confidence:\s*([\d.]+)", out)]
         i = max(range(len(confs)), key=confs.__getitem__) if confs and len(confs) == len(offs) else None
         f.write_text(json.dumps({"sig": sig, "offset": offs[i] if i is not None else 0,
-                                 "conf": confs[i] if i is not None else None}))
+                                 "conf": confs[i] if i is not None else None, "box": bx}))
         done += 1
         shifted += bool(sync_shift(c))
     if done and not quiet:
@@ -4513,25 +4569,44 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
         log(f"lip sync as clips land stopped: {e!r}")
 
 
+def _piece_shifts(sh: list) -> list:
+    """Each piece's shift for the join: its own reading; a piece with no confident reading takes the nearest piece's
+    that has one (the one before on a tie: the chain carries on from it), so its stretch is not moved apart from the
+    rest on no evidence. All None when no piece read confidently (the join's own reading is used then)."""
+    got = [i for i, x in enumerate(sh) if x is not None]
+    return [x if x is not None or not got else sh[min(got, key=lambda g: (abs(g - i), g))] for i, x in enumerate(sh)]
+
+
 def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None = None, quiet: bool = False,
                  jobs_file: str = "talk_stitch.json") -> None:
     """Join each pieced talk shot (10-28: the gate read the moment's OLD pieces - the new ones were on a copy - so no
     line was stitched all night, and yesterday's joins of other words were assembled). A join older than any of its
     pieces is dropped and made again; one made from tonight's pieces stays (lines are joined as their pieces land,
-    _sync_as_they_land); a line that didn't come out is a problem, not a silent gap. `only`: these shots."""
+    _sync_as_they_land); a line that didn't come out is a problem, not a silent gap. `only`: these shots.
+    E29 (11-08): each piece is measured first and joined shifted to its own voice (measured_shift; stitch_talk.py
+    ramps between the pieces' shifts at each seam); a join made with other shifts (or before them) is made again."""
     pieces = {}
     for j in talk:
         if len(j.get("chunk") or []) == 4 and j["chunk"][1] > 1:
             pieces.setdefault(j["name"].rsplit("_c", 1)[0], []).append(j)
     names = sorted(n for n in pieces if only is None or n in only)
+    for n in names:
+        pieces[n].sort(key=lambda j: j["chunk"][0])
+        _kept_pieces(L, n, len(pieces[n]))
+    have = [j["name"] for n in names for j in pieces[n] if (L / "out" / f"{j['name']}.mp4").exists()]
+    if have:
+        _sync_offsets(book, L, have, log, quiet=True)
+    shifts = {n: _piece_shifts([measured_shift(L / "out" / f"{j['name']}.mp4") for j in pieces[n]]) for n in names}
     todo = []
     for n in names:
         c = L / "out" / f"{n}.mp4"
         pm = [L / "out" / f"{j['name']}.mp4" for j in pieces[n]]
         newest = max((p_.stat().st_mtime for p_ in pm if p_.exists()), default=float("inf"))
-        if c.exists() and c.stat().st_mtime >= newest and all(p_.exists() for p_ in pm):
+        if c.exists() and c.stat().st_mtime >= newest and all(p_.exists() for p_ in pm) and \
+                _join_shifts(c) == shifts[n]:
             continue
         c.unlink(missing_ok=True)
+        c.with_suffix(".join.json").unlink(missing_ok=True)
         todo.append(n)
     if not todo:
         return
@@ -4539,7 +4614,8 @@ def _stitch_talk(book: Path, R, L: Path, talk: list, log=print, only: set | None
     # 11-07: the pieces always go in their own list - a chained talk shot's pieces are queued late (--more, #148),
     # so they are in neither talk_jobs.json nor hold_jobs.json; reading those, the stitcher found no lines and the
     # shot's key was held as a still (4 talk shots in knight_forged_v3, 1 in Acts ch.3)
-    (L / jobs_file).write_text(json.dumps([j for n in todo for j in pieces[n]], indent=1))
+    (L / jobs_file).write_text(json.dumps([dict(j, sync_shift=sh) for n in todo for j, sh in zip(pieces[n], shifts[n])],
+                                          indent=1))
     r = subprocess.run([str(R.LTX_PY), str(HERE / "ltx_runner" / "stitch_talk.py"), jobs_file, "out", lines],
                        cwd=str(L), capture_output=True, text=True)
     names = todo
