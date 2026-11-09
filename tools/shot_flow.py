@@ -3777,12 +3777,12 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             str(BEAT_DRUMS(book)), "-ac", "2", "-ar", "48000", "-af",
                             f"adelay={int(TALK_PRE / FPS * 1000)}:all=1,apad=whole_dur={nn / FPS:.4f}", str(pad)],
                            check=True)
-            p_ = _offscreen(cx, s, figurative(s["action"] or "") + _pose_hold(cx, s), only=False).strip()   # (no
+            bp = _offscreen(cx, s, figurative(s["action"] or "") + _pose_hold(cx, s), only=False).strip()   # (no
             # "the crowd stays still": the crowd moves to the beat too)
-            p_ = f"Static camera, the framing does not change. {p_} No text anywhere in the picture."
-            emb = f"b_{mid}_{MF._h(p_)}"
-            enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
-            talk.append({"name": s["id"], "emb": emb, "prompt": p_, "width": W, "height": H, "fps": FPS, "frames": nn,
+            bp = f"Static camera, the framing does not change. {bp} No text anywhere in the picture."
+            emb = f"b_{mid}_{MF._h(bp)}"
+            enc_dev += [{"name": emb, "prompt": bp}, {"name": emb + "__neg", "prompt": neg}]
+            talk.append({"name": s["id"], "emb": emb, "prompt": bp, "width": W, "height": H, "fps": FPS, "frames": nn,
                          "audio": str(pad), "audio_mux": str(pad), "seed": 42 + shot_seed(s["id"]), "audio_start": 0.0,
                          "line": mid, "speaker": None, "audio_src": f"{pad}|{t0_:.3f}|{n}", "beat": True,
                          "people": None if s.get("crowd") else len(s.get("who") or []) or None, "speaker_box": None,
@@ -5234,7 +5234,9 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                 src, vf = ["-i", str(c)], "tpad=stop_mode=clone:stop_duration=120"
                 # a talk clip: its silent lead-in dropped (talk_pre), and SyncNet's shift (10-28 user: "version 3
                 # is definitely an improvement") trims a little more (lips late) or less (lips early) of it
-                st_ = talk_pre(c) + sync_shift(c) if s.get("kind") == "talk" else (talk_pre(c) if s.get("beat") else 0)
+                st_ = talk_pre(c) + sync_shift(c) if s.get("kind") == "talk" else 0
+                if s.get("beat") and s.get("kind") != "talk":   # (a song's beat clip: its silent lead-in too)
+                    st_ = talk_pre(c)
                 if st_ > 0:
                     src = ["-ss", f"{st_ / FPS:.4f}", "-i", str(c)]
                 elif st_ < 0:           # (a clip from before the lead-in, lips early: its first frame held)

@@ -209,7 +209,7 @@ src_l = inspect.getsource(SF.ltx)
 check("a song's beat shot is an A2Vid clip driven by the drums stem", 'elif BEAT_DRIVE and s.get("beat") and key.exists() and '
       '(BEAT_DRUMS(book)).exists()' in src_l and not SF.BEAT_DRIVE and '"beat": True' in src_l)
 check("the lip-sync checker skips beat clips; the cut trims their lead-in", 'not j.get("beat")' in
-      inspect.getsource(SF._sync_as_they_land) and 'talk_pre(c) if s.get("beat")' in inspect.getsource(SF.assemble))
+      inspect.getsource(SF._sync_as_they_land) and 'if s.get("beat") and s.get("kind") != "talk"' in inspect.getsource(SF.assemble))
 check("the separation keeps the percussion stem beside the vocals", '"drums"' in S2._SEP_RUN and
       'drums.wav' in inspect.getsource(S2.separate))
 print(json.dumps({"fails": fails}))
