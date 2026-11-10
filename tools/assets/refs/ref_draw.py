@@ -16,6 +16,7 @@ Recipes (see README.md beside this file for the comparison):
   hero      the three-quarter view first, then front/side/top each drawn with the hero picture as a reference input
             (Qwen's multi-reference conditioning). Same design, but the "front" and "side" came out as angled views.
   separate  four independent prompts sharing one description and seed: true views, but four different designs.
+  extras    only the extra views again, beside a set already drawn (its views and source_*.png as references).
 
 Device and lock: the drawer runs on the iGPU (HIP index from the hip-index helper, one CU left for the desktop), from
 the iGPU's Python environment, and holds the iGPU lock file (flock -n, polled, never a blocking wait) from its start
@@ -260,10 +261,8 @@ def sheet_prompt(desc: str, style: str, sourced: bool = False) -> str:
     what = f"{SOURCE_WORDS}: {desc}" if sourced else desc
     return (f"Orthographic turnaround reference sheet of one single object for a 3D modeller: {what}. "
             f"{style + '. ' if style else ''}The same object shown four times in a two-by-two grid with wide empty "
-            f"space between the views: top left an end-on front view looking straight at the object's front end along "
-            f"its length (its long side not visible), top right an exact side view in profile showing its full "
-            f"length, bottom left a plan view from directly above looking straight down, bottom right a three-quarter "
-            f"view from the front left. "
+            f"space between the views: top left a straight-on front view, top right an exact side view in profile, "
+            f"bottom left a top view looking straight down, bottom right a three-quarter view from the front left. "
             f"Identical design, colours and proportions in all four views, each view the same scale. Plain seamless "
             f"light grey background, soft even lighting, no shadows, no text, no labels, no grid lines, no people.")
 
@@ -276,13 +275,15 @@ def material_prompt(material: str) -> str:
 
 # --- one asset ------------------------------------------------------------------------------------------
 
-def extra_prompt(desc: str, style: str, view: str, sourced: bool) -> str:
+def extra_prompt(desc: str, style: str, view: str, sourced: bool, plain: bool = True) -> str:
     """An extra view drawn beside the sheet, with the sheet's views (and the sources) as reference pictures. `view`
-    is a VIEW_WORDS key or free words for the view."""
+    is a VIEW_WORDS key or free words for the view; plain=False leaves out the plain-background studio look (for a
+    view into or out of the object, such as an interior)."""
     words = VIEW_WORDS.get(view, view)
     return (f"The exact same object as in the reference pictures, with the identical design, parts, colours, markings "
             f"and wear{' (the clean turnaround views are its design; the other pictures show it in use)' if sourced else ''}, "
-            f"now shown in a {words[0].lower()}{words[1:]}. The object: {desc}. {style + '. ' if style else ''}{LOOK}")
+            f"now shown in a {words[0].lower()}{words[1:]}. The object: {desc}. {style + '. ' if style else ''}"
+            f"{LOOK if plain else 'No text, no labels, no people.'}")
 
 
 def draw_asset(d: Drawer, aid: str, desc: str, style: str = "", material: str = "", recipe: str = "sheet",
@@ -290,7 +291,7 @@ def draw_asset(d: Drawer, aid: str, desc: str, style: str = "", material: str = 
                sources: list | None = None, extras: list | None = None) -> Path:
     """sources: pictures of the object from elsewhere (a book's keyframes, a video frame): copied in as
     source_<n>_<name>.png and given to the sheet as reference pictures (sheet recipe only). extras: further views
-    [{"name", "view", "refs": ["sources" | "view:<name>" | path, ...]}], each drawn with those reference pictures."""
+    [{"name", "view", "refs": ["sources" | "view:<name>" | path, ...], "plain": true}], each drawn with those reference pictures."""
     out = (out_root or OUT) / aid
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
@@ -313,7 +314,11 @@ def draw_asset(d: Drawer, aid: str, desc: str, style: str = "", material: str = 
         rows.append((name, prompt, [Path(x).name for x in refs], r["seconds"], j["size"]))
         return p
 
-    if recipe == "sheet":
+    if recipe == "extras":          # only the extras again, beside the set already there
+        views = {v: out / f"{v}.png" for v in VIEWS}
+        src = sorted(out.glob("source_*.png"))
+        material = ""
+    elif recipe == "sheet":
         p = job("turnaround", sheet_prompt(desc, style, bool(src)), refs=src, sz=[SIZE * 3 // 2 // 32 * 32] * 2)
         for v, q in cut_sheet(p, raw).items():
             views[v] = out / f"{v}.png"
@@ -330,18 +335,29 @@ def draw_asset(d: Drawer, aid: str, desc: str, style: str = "", material: str = 
                 hero = p
             views[v] = out / f"{v}.png"
             place(p, views[v])
-    make_sheet(views, out / "sheet.png")
+    if recipe != "extras":
+        make_sheet(views, out / "sheet.png")
     for x in extras or ():
         refs = []
         for r in x.get("refs", ["view:three_quarter"]):
             refs += src if r == "sources" else [views[r[5:]]] if r.startswith("view:") else [Path(r)]
-        p = job(x["name"], extra_prompt(desc, style, x.get("view", x["name"]), bool(src)), refs=refs)
+        p = job(x["name"], extra_prompt(desc, style, x.get("view", x["name"]), bool(src), x.get("plain", True)),
+                refs=refs)
         views[x["name"]] = out / f"{x['name']}.png"
         place(p, views[x["name"]])
     if material:
         mp = job("material", material_prompt(material))
         (out / "material.png").write_bytes(mp.read_bytes())
 
+    if recipe == "extras":
+        old = (out / "notes.md").read_text().split("## How far the views agree")
+        new = []
+        for name, prompt, refs, sec, sz in rows:
+            new += [f"### {name}, redrawn ({sz[0]}x{sz[1]}, {sec} s, seed {seed}"
+                    f"{', references: ' + ', '.join(refs) if refs else ''})", "", prompt, ""]
+        (out / "notes.md").write_text(old[0] + "\n".join(new) + "\n## How far the views agree" + "".join(old[1:]))
+        log(f"{aid}: extras redrawn in {out}")
+        return out
     notes = [f"# Reference set: {aid}", "",
              f"- description: {desc}", f"- style: {style or '(none)'}", f"- material: {material or '(none)'}",
              f"- recipe: {recipe}", f"- seed: {seed}", f"- picture size: {size[0]}x{size[1]} "
@@ -377,7 +393,7 @@ def main() -> int:
     a1.add_argument("--desc", required=True)
     a1.add_argument("--style", default="")
     a1.add_argument("--material", default="", help="also draw material.png: a close-up of this surface")
-    a1.add_argument("--recipe", choices=("hero", "separate", "sheet"), default="sheet")
+    a1.add_argument("--recipe", choices=("hero", "separate", "sheet", "extras"), default="sheet")
     a1.add_argument("--seed", type=int, default=11)
     a1.add_argument("--also", nargs="*", default=[], help="other ids to link to this set (a modeller's id)")
     a1.add_argument("--out", default="", help="write under this folder instead of REFS_DIR")

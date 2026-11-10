@@ -18,6 +18,20 @@ cheapest. Its views are ~700 px each (the 1536 px sheet cut in four) and the cut
 since a view often crosses the midline. The edit model (Qwen-Image-Edit-2509) was not tried: the sheet already gives
 one design per picture.
 
+Asking for an "end-on front view along its length" in the sheet prompt was tried on five assets: it gave a real
+end view for a bellows and a poker, but dropped the horn from an anvil's front view; the plain wording was kept.
+What fixed bad sets was the description (name the part's shape and say "one single ..."), not the view words.
+
+## Starting from pictures of the object (`sources`)
+
+When pictures of the object already exist (keyframes or video frames where it appears), crop them to the object and
+pass them as `sources`: they go to the sheet as reference inputs and the sheet redraws the object clean on grey,
+keeping its hull shape, canopy, intakes, colours and wear. Extra views (a rear three-quarter, an interior) are drawn
+afterwards with `extras`, each with the sheet's views or a source picture as references; `--recipe extras` redraws
+only those beside a set already there. A reference picture that shows a different scene leaks into the result
+(an interior drawn with an exterior view as a second reference showed the exterior in a corner), so give an interior
+only the interior picture.
+
 Known limits: the views are drawn, not projected, so proportions agree only roughly (check lengths against the
 spec's `size_m`, not the pictures); light glow or small details can differ between views; a sheet whose layout does
 not come out as 2x2 needs another seed (`--seed`).
