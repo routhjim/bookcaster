@@ -208,6 +208,9 @@ class Job:
         if ph == "start":
             self.setup()
             self.r["setup_s"] = round(time.time() - self.t0, 2)
+            if j.get("stills") is False:                 # import only (run_asset.py --skip-render via the editor)
+                self.r["ok"] = True
+                return True
             log(f"{j['id']}: set up in {self.r['setup_s']} s; warming")
             self.goto("warm")
         elif ph == "warm" and self.waited(j.get("warm_frames", 90), j.get("warm_s", 0)):
@@ -254,7 +257,10 @@ class Job:
         r["cvars"] = {k: cvar(k) for k in ("r.RayTracing", "r.Lumen.HardwareRayTracing",
                                            "r.DynamicGlobalIlluminationMethod", "r.ReflectionMethod", "r.Nanite",
                                            "r.Shadow.Virtual.Enable")}
-        json.dump(r, open(self.j["result"], "w"), indent=1, default=str)
+        tmp = self.j["result"] + ".tmp"
+        with open(tmp, "w") as f:                    # atomic: the scheduler polls for this file
+            json.dump(r, f, indent=1, default=str)
+        os.replace(tmp, self.j["result"])
         log(f"{self.j['id']}: done ok={r['ok']} in {r['elapsed_s']} s")
 
 
@@ -308,8 +314,14 @@ def _tick():
         les.editor_set_game_view(True)
         unreal.AutomationLibrary.set_scalability_quality_to_epic(
             unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
-        S["job"] = Job(FIRST)
-        S["job"].f0 = S["n"]
+        if FIRST.get("id"):
+            S["job"] = Job(FIRST)
+            S["job"].f0 = S["n"]
+        else:                                        # started ahead of work by the scheduler: serve only
+            S["idle_since"] = time.time()
+        if FIRST.get("ready_file"):
+            with open(FIRST["ready_file"], "w") as f:
+                json.dump({"pid": os.getpid(), "t": time.time()}, f)
         log(f"editor ready after {time.time() - S['t0']:.1f} s of Python time")
         return
     job = S["job"]
@@ -325,7 +337,7 @@ def _tick():
     if os.path.exists(os.path.join(d, "quit")) or time.time() - S["idle_since"] > FIRST.get("serve_idle_s", 300):
         quit_editor()
         return
-    if S["n"] % 10 == 0:
+    if S["n"] % 2 == 0:
         nj = next_job()
         if nj:
             S["job"] = Job(nj)

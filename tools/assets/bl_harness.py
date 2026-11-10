@@ -44,8 +44,10 @@ for d in ("source", "export", "textures", "sheet"):
 
 def save_report(status):
     REPORT["status"] = status
-    with open(os.path.join(OUT, "blender_report.json"), "w") as f:
+    p = os.path.join(OUT, "blender_report.json")
+    with open(p + ".tmp", "w") as f:                  # atomic: the scheduler reads it while Blender runs
         json.dump(REPORT, f, indent=1)
+    os.replace(p + ".tmp", p)
 
 
 class Timer:
@@ -300,10 +302,12 @@ def set_device():
         if hit:
             p.use_hiprt = bool(JOB.get("hiprt", False))
             sc.cycles.device = "GPU"
+            if hasattr(sc.cycles, "denoising_use_gpu"):
+                sc.cycles.denoising_use_gpu = True        # OIDN on the card, not the CPU
             REPORT["device"] = f"HIP {want}" + (" hiprt" if p.use_hiprt else "")
             return
-        REPORT["warnings"].append(f"no HIP device {want}; using the CPU")
-    sc.cycles.device = "CPU"
+        raise RuntimeError(f"no HIP device {want}: the chain never bakes or renders on the CPU")
+    sc.cycles.device = "CPU"                              # only when the job asked for "CPU" (manual debugging)
     REPORT["device"] = "CPU"
 
 
@@ -779,12 +783,13 @@ def main():
         bake(ob)
         for o in [o for o in bpy.context.scene.objects if o.name.startswith("stage_")]:
             o.hide_render = False
+        with Timer("export"):
+            REPORT["files"]["export"] = {f: export(ob, f) for f in JOB.get("formats", ["glb"])}
+        save_report("exported")                       # the scheduler starts the UE import now, beside the sheet
         if JOB.get("sheet", True):
             with Timer("sheet"):
                 REPORT["files"]["sheet"] = render_sheet(ob, "sheet", int(JOB.get("sheet_px", 512)),
                                                           int(JOB.get("sheet_samples", 32)))
-        with Timer("export"):
-            REPORT["files"]["export"] = {f: export(ob, f) for f in JOB.get("formats", ["glb"])}
         bp = os.path.join(OUT, "source", f"{AID}.blend")
         bpy.ops.file.pack_all()
         bpy.ops.wm.save_as_mainfile(filepath=bp, compress=True)

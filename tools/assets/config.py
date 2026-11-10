@@ -11,12 +11,12 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_GPU_CARDS    cards UE may use        default "65,05" (PCI bus ids, tried in order; lock files /tmp/gpu-<bus>.lock)
     ASSETS_UE_CARDS     UE card order           default "65,05" (UE on one card, Blender on the other)
     ASSETS_BLENDER_CARDS  Blender card order    default "05,65"
-    ASSETS_UE_IDLE_S    long-lived editor quits after this long without work; default 300
+    ASSETS_UE_IDLE_S    the resident editor quits after this long without work; default 2400 (or --stop-editor)
     ASSETS_LOCK_WAIT_S  give up on a busy card  default 1200
     ASSETS_MIN_FREE_GB  memory guard            default 6 (stop the editor under this MemAvailable)
     ASSETS_THREADS      Blender CPU threads     default 16
-    ASSETS_BLENDER_DEVICE  bake/sheet device    default "auto" (free XTX, else idle iGPU, else CPU); "xtx",
-                                                "igpu", "cpu"
+    ASSETS_BLENDER_DEVICE  bake/sheet device    default "auto" (a GPU: the home card / iGPU; waits for one, never
+                                                the CPU); "xtx", "igpu"; "cpu" only as a manual debugging switch
     ASSETS_IGPU_BUS     iGPU PCI bus            default "c4" (Blender only; never UE)
     ASSETS_IGPU_MAX_BUSY  iGPU busy % to accept default 10
     ASSETS_UE_RAYTRACING  hardware ray tracing  default 1: r.RayTracing + Lumen hardware tracing in the project's
@@ -28,6 +28,27 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_BAKE_VRAM_GB VRAM for a bake beside  default 8
                         the warm editor
     ASSETS_IGPU_LOCK    iGPU lock name          default "igpu" (/tmp/gpu-igpu.lock)
+
+  Scheduler (assetd.py; fixed device homes, GPU only, see README "Scheduler"):
+    ASSETS_SCHED        1 (default): run_asset.py goes through the scheduler; 0 = the in-process path (--local)
+    ASSETS_SCHED_DIR    socket, state           default $ASSETS_UE_HOME/sched
+    ASSETS_SCHED_IDLE_S scheduler exits after   default 60 s with no job and no editor
+    ASSETS_UE_CARD      the UE editor's home    default "65"
+    ASSETS_BLENDER_CARD Blender's home card     default "05" (bakes, sheets; previews too when the iGPU is taken)
+    ASSETS_BLENDER_PER_CARD  Blender jobs at once on a card   default 3
+    ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 4 (the CPU-by-nature parts)
+    ASSETS_BLENDER_LINGER_S  keep the Blender card after the last job   default 120
+    ASSETS_BAKE_SPILL_S  bake on the UE card when an outside job has held the Blender card this long; default -1
+                         (never: an outside holder releases both cards instead, see ASSETS_OUTSIDE_RELEASE_S)
+    ASSETS_OUTSIDE_RELEASE_S  an outside holder of either card for this long = a release (video run); default 20
+    ASSETS_RECLAIM_FREE_S  after a release, both locks free this long (and asset work queued) = reclaim; default 5
+    ASSETS_RELEASE_GRACE_S  after --release-card the card is not retaken for this long   default 120
+    ASSETS_UE_VRAM_GB   free VRAM to start the editor           default 8
+    ASSETS_UE_EDITORS   editors at most          default 1. 2: a second editor starts on the Blender card when the
+                                                UE backlog reaches ASSETS_UE_SECOND_AT (2) and quits after
+                                                ASSETS_UE_IDLE2_S (600) idle; measured 11-10 it made each UE job
+                                                ~3x slower (18-37 s v 6-9 s), so it is off
+    ASSETS_BLENDER_SPARES  warm Blender processes kept on the Blender card while it is in use; default 2 (0 = off)
 
 Stdlib only: imported by the orchestrator, never inside Blender or UE.
 """
@@ -57,7 +78,23 @@ IGPU_MAX_BUSY = int(os.environ.get("ASSETS_IGPU_MAX_BUSY", "10"))
 
 UE_CARDS = [c.strip() for c in os.environ.get("ASSETS_UE_CARDS", "65,05").split(",") if c.strip()]
 BLENDER_CARDS = [c.strip() for c in os.environ.get("ASSETS_BLENDER_CARDS", "05,65").split(",") if c.strip()]
-UE_IDLE_S = float(os.environ.get("ASSETS_UE_IDLE_S", "300"))
+UE_IDLE_S = float(os.environ.get("ASSETS_UE_IDLE_S", "2400"))     # the resident editor: long idle, --stop-editor
+UE_IDLE2_S = float(os.environ.get("ASSETS_UE_IDLE2_S", "600"))   # the second editor (Blender card)
+UE_EDITORS = int(os.environ.get("ASSETS_UE_EDITORS", "1"))   # 2 measured slower (11-10)
+UE_SECOND_AT = int(os.environ.get("ASSETS_UE_SECOND_AT", "2"))
+SCHED_DIR = _p("ASSETS_SCHED_DIR", UE_HOME / "sched")
+SCHED_IDLE_S = float(os.environ.get("ASSETS_SCHED_IDLE_S", "60"))
+UE_CARD = os.environ.get("ASSETS_UE_CARD", "65")
+BLENDER_CARD = os.environ.get("ASSETS_BLENDER_CARD", "05")
+BLENDER_PER_CARD = int(os.environ.get("ASSETS_BLENDER_PER_CARD", "3"))
+BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "4"))
+BLENDER_LINGER_S = float(os.environ.get("ASSETS_BLENDER_LINGER_S", "120"))
+BAKE_SPILL_S = float(os.environ.get("ASSETS_BAKE_SPILL_S", "-1"))
+OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))
+RECLAIM_FREE_S = float(os.environ.get("ASSETS_RECLAIM_FREE_S", "5"))
+RELEASE_GRACE_S = float(os.environ.get("ASSETS_RELEASE_GRACE_S", "120"))
+UE_VRAM_GB = float(os.environ.get("ASSETS_UE_VRAM_GB", "8"))
+BLENDER_SPARES = int(os.environ.get("ASSETS_BLENDER_SPARES", "2"))
 BAKE_WAIT_S = float(os.environ.get("ASSETS_BAKE_WAIT_S", "45"))   # poll for a GPU this long before the CPU
 BAKE_VRAM_GB = float(os.environ.get("ASSETS_BAKE_VRAM_GB", "8"))  # free VRAM to bake beside the warm editor
 IGPU_LOCK_NAME = os.environ.get("ASSETS_IGPU_LOCK", "igpu")        # /tmp/gpu-<name>.lock

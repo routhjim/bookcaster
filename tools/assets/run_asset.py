@@ -68,20 +68,32 @@ def run_logged(cmd, logf, env=None, timeout=None):
 
 
 # ---------------------------------------------------------------- Blender
+def make_blender_job(spec, model, adir, args, mode, ue_follows=True):
+    """The harness job. With UE stills following, the final pass has no Blender sheet unless --sheet (320 px,
+    16 spp), --full-sheet (512 px, 32 spp), --sheet-px or --sheet-samples asks for one; without UE (--skip-render)
+    the 512 px sheet is made as before; --no-sheet drops it always."""
+    full = getattr(args, "full_sheet", False) or not ue_follows
+    sheet_px = getattr(args, "sheet_px", None) or (512 if full else 320)
+    sheet_samples = args.sheet_samples or (32 if full else 16)
+    # with UE stills following, the sheet is off unless asked for (it cost 10-13 s per asset on a shared card)
+    want_sheet = not args.no_sheet and bool(not ue_follows or getattr(args, "sheet", False) or full
+                                            or getattr(args, "sheet_px", None) or args.sheet_samples)
+    return {"spec": spec, "model": str(Path(model).resolve()), "out": str(adir), "mode": mode,
+            "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": want_sheet,
+            "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": args.preview_samples,
+            "sheet_px": sheet_px, "sheet_samples": sheet_samples}
+
+
 def blender_step(spec, model, adir, args, mode="final"):
-    """Run the harness. Device per ASSETS_BLENDER_DEVICE: xtx = wait for an XTX lock; igpu = the 8060S if idle;
-    auto = an XTX whose lock is free right now, else the idle iGPU, else CPU; cpu = never a GPU. An XTX lock is
-    held for the whole Blender run. A failed HIP run is rerun on the CPU."""
-    job = {"spec": spec, "model": str(Path(model).resolve()), "out": str(adir), "mode": mode,
-           "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": not args.no_sheet,
-           "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": args.preview_samples,
-           "sheet_samples": args.sheet_samples}
+    """Run the harness (the --local path). Device per ASSETS_BLENDER_DEVICE: a GPU (an XTX under its lock, or the
+    iGPU), waited for; never the CPU unless --device cpu is asked for by hand."""
+    job = make_blender_job(spec, model, adir, args, mode, ue_follows=not args.skip_render)
     want = args.device or C.BLENDER_DEVICE
     bus, fds, waited, how = take_bake_device(want, preview=(mode == "preview"))
-    fd = fds[0] if fds else None
     log(f"blender {mode}: {how} after {waited}s")
-    tries = [("HIP", bus)] if bus else []
-    tries.append(("CPU", None))
+    if bus is None and want != "cpu":
+        raise SystemExit(f"no GPU free after {waited}s (the chain never bakes on the CPU); try again later")
+    tries = [("HIP", bus)] if bus else [("CPU", None)]
     rep, dt = {}, 0.0
     try:
         for dev, b in tries:
@@ -92,7 +104,7 @@ def blender_step(spec, model, adir, args, mode="final"):
             t = time.time()
             sampler = LoadSampler(b)
             with open(adir / "logs" / f"blender_{mode}.log", "w") as f:
-                r = subprocess.run([str(c) for c in (C.BLENDER, "-b", "--factory-startup", "-t", C.THREADS,
+                r = subprocess.run([str(c) for c in (C.BLENDER, "-b", "--factory-startup", "-t", C.BLENDER_THREADS,
                                                      "--python", HERE / "bl_harness.py", "--", jp)],
                                    stdout=f, stderr=subprocess.STDOUT, timeout=3600, pass_fds=tuple(fds))
             dt = round(time.time() - t, 1)
@@ -101,10 +113,6 @@ def blender_step(spec, model, adir, args, mode="final"):
             rep = json.loads(rp.read_text()) if rp.exists() else {}
             log(f"blender {mode} on {dev}{' card ' + b if b else ''}: rc={r.returncode} {dt}s "
                 f"status={rep.get('status')}")
-            if r.returncode == 0 and rep.get("status") == "ok":
-                break
-            if rep.get("error") and "model" not in rep.get("times_s", {}):
-                break                                   # the model script itself failed: no point retrying
     finally:
         for x in fds:
             os.close(x)
@@ -203,9 +211,10 @@ def take_bake_device(want, preview=False):
     A card is used when its lock is free, or when its lock is held by this chain's warm UE editor and the card has
     ASSETS_BAKE_VRAM_GB free: then only the card's bake slot (/tmp/gpu-<bus>.bake.lock, one Blender job per card) is
     taken, so bakes are not starved by the idle editor (the editor uses ~5-6 GB of the 24). A job holding a card's
-    main lock also takes its bake slot, so two bakes never share a card. Then the iGPU (its lock, when idle). In
-    "auto" these are polled every 2 s for up to ASSETS_BAKE_WAIT_S before the CPU (3-5x slower) is used.
-    Previews try the iGPU first."""
+    main lock also takes its bake slot, so two bakes never share a card. Then the iGPU (its lock, when idle).
+    Polled every 2 s for up to ASSETS_LOCK_WAIT_S; then (None, [], waited, "no GPU free"): the caller fails
+    rather than bake on the CPU (the owner's rule). Previews try the iGPU first. Used by --local runs and
+    paint.py; the scheduler (assetd.py) has its own fixed-home policy."""
     t0 = time.time()
     order = []
     if want in ("xtx", "auto"):
@@ -214,7 +223,7 @@ def take_bake_device(want, preview=False):
         order.insert(0 if preview else len(order), ("igpu", C.IGPU_BUS))
     if want == "cpu" or not order:
         return None, [], 0.0, "cpu (asked)"
-    limit = C.LOCK_WAIT_S if want == "xtx" else C.BAKE_WAIT_S
+    limit = C.LOCK_WAIT_S
     while True:
         srv = None
         for kind, b in order:
@@ -236,7 +245,7 @@ def take_bake_device(want, preview=False):
                 return b, [slot], round(time.time() - t0, 1), f"card {b} beside the warm editor"
             os.close(slot)
         if time.time() - t0 > limit:
-            return None, [], round(time.time() - t0, 1), "cpu (no device free)"
+            return None, [], round(time.time() - t0, 1), "no GPU free"
         time.sleep(2)
 
 
@@ -417,8 +426,27 @@ def editor_cmd(bus):
     env = dict(os.environ, DRI_PRIME=f"pci-0000_{bus}_00_0")
     env.pop("MESA_VK_DEVICE_SELECT", None)     # DRI_PRIME puts the locked card first; adapter 0 is then that card
     cmd = [C.UE_EDITOR, C.UE_PROJECT, C.UE_STAGE_MAP, "-RenderOffscreen", "-graphicsadapter=0", "-vulkan", "-sm6",
-           "-windowed", "-resx=1152", "-resy=640", "-unattended", "-nosplash", "-nosound", "-stdout"]
+           "-windowed", "-resx=1152", "-resy=640", "-unattended", "-nosplash", "-nosound", "-stdout",
+           # never autosave the stage level the stills dirty (and no autosave files from a resident editor)
+           "-ini:EditorPerProjectUserSettings:[/Script/UnrealEd.EditorLoadingSavingSettings]:bAutoSaveEnable=False"]
     return [str(c) for c in cmd], env
+
+
+def ue_render_job(spec, imp_job, adir, args, mannequin):
+    """The editor job for one asset: import + validation stills (ue/ue_render.py)."""
+    return {"map": C.UE_STAGE_MAP, "import": imp_job, "id": spec["id"],
+            "out": str(adir / "ue"), "res": [1152, 640], "warm_s": args.warm_s, "settle_s": args.settle_s,
+            "warm_frames": args.warm_frames, "settle_frames": args.settle_frames,
+            "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef", "mannequin": mannequin,
+            "cameras": {"preset": spec.get("camera_preset", spec["class"]), "custom": spec.get("cameras", []),
+                        "close_target": spec.get("close_target"), "close_width": spec.get("close_width", 0.45)},
+            "result": str(adir / "logs" / "ue_render.json")}
+
+
+def sched_env():
+    """The settings a client and the scheduler must share (else the client runs locally)."""
+    return {k: v for k, v in sorted(os.environ.items())
+            if (k.startswith("ASSETS_") or k == "BLENDER") and k not in ("ASSETS_SCHED", "ASSETS_UE_JOB")}
 
 
 def guard_main(pid, bus):
@@ -440,13 +468,7 @@ def render_step(spec, imp_job, adir, args, mannequin):
     holds its card's lock and quits after ASSETS_UE_IDLE_S without work). --fresh-editor: one editor per asset."""
     out = adir / "ue"
     out.mkdir(exist_ok=True)
-    job = {"map": C.UE_STAGE_MAP, "import": imp_job, "id": spec["id"],
-           "out": str(out), "res": [1152, 640], "warm_s": args.warm_s, "settle_s": args.settle_s,
-           "warm_frames": args.warm_frames, "settle_frames": args.settle_frames,
-           "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef", "mannequin": mannequin,
-           "cameras": {"preset": spec.get("camera_preset", spec["class"]), "custom": spec.get("cameras", []),
-                       "close_target": spec.get("close_target"), "close_width": spec.get("close_width", 0.45)},
-           "result": str(adir / "logs" / "ue_render.json")}
+    job = ue_render_job(spec, imp_job, adir, args, mannequin)
     Path(job["result"]).unlink(missing_ok=True)
     while mem_avail_gb() < C.MIN_FREE_GB + 10:
         log(f"waiting for memory: MemAvailable {mem_avail_gb():.1f} GiB")
@@ -577,13 +599,23 @@ def write_manifest(spec, adir, blend, imp, render, model, times):
     }
     (adir / "asset.json").write_text(json.dumps(entry, indent=1))
     mp = C.LIBRARY / "manifest.json"
-    man = json.loads(mp.read_text()) if mp.exists() else {"assets": {}}
-    man["assets"][spec["id"]] = {"class": spec["class"], "tier": spec["tier"], "dir": rel(adir, C.LIBRARY),
-                                 "ue_path": entry["ue"]["path"], "checks_passed": entry["checks_passed"],
-                                 "tags": entry["tags"], "description": spec["description"]}
-    tmp = mp.with_suffix(".tmp")
-    tmp.write_text(json.dumps(man, indent=1))
-    tmp.replace(mp)
+    lf = os.open(C.LIBRARY / ".manifest.lock", os.O_RDWR | os.O_CREAT, 0o666)
+    while True:                                   # read-modify-write under a lock (several runs finish at once)
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            time.sleep(0.05)
+    try:
+        man = json.loads(mp.read_text()) if mp.exists() else {"assets": {}}
+        man["assets"][spec["id"]] = {"class": spec["class"], "tier": spec["tier"], "dir": rel(adir, C.LIBRARY),
+                                     "ue_path": entry["ue"]["path"], "checks_passed": entry["checks_passed"],
+                                     "tags": entry["tags"], "description": spec["description"]}
+        tmp = mp.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(man, indent=1))
+        tmp.replace(mp)
+    finally:
+        os.close(lf)
     return entry
 
 
@@ -596,16 +628,7 @@ def rel(p, base):
         return str(p)
 
 
-def main():
-    if len(sys.argv) == 4 and sys.argv[1] == "--guard":
-        guard_main(int(sys.argv[2]), sys.argv[3])
-        return 0
-    if len(sys.argv) == 2 and sys.argv[1] == "--stop-editor":
-        st = live_server()
-        if st:
-            (server_dir() / "queue" / "quit").touch()
-            log(f"asked editor {st['pid']} to quit")
-        return 0
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("spec")
     ap.add_argument("model")
@@ -624,14 +647,62 @@ def main():
                     help="start and quit an editor for this asset instead of using the long-lived one")
     ap.add_argument("--preview-px", type=int, default=320, help="preview sheet tile size (px)")
     ap.add_argument("--preview-samples", type=int, default=12, help="preview sheet Cycles samples")
-    ap.add_argument("--sheet-samples", type=int, default=32, help="final contact sheet Cycles samples")
+    ap.add_argument("--sheet-samples", type=int, default=None,
+                    help="final contact sheet Cycles samples (default 16 when UE stills follow, else 32)")
+    ap.add_argument("--sheet-px", type=int, default=None,
+                    help="final contact sheet tile size (default 320 when UE stills follow, else 512)")
+    ap.add_argument("--sheet", action="store_true",
+                    help="final pass with the 320 px, 16 spp contact sheet (off by default when UE stills follow)")
+    ap.add_argument("--full-sheet", action="store_true", help="the 512 px, 32 spp contact sheet")
     ap.add_argument("--no-sheet", action="store_true", help="final pass without the Blender contact sheet")
+    ap.add_argument("--local", action="store_true",
+                    help="run in this process (debugging) instead of through the scheduler")
     ap.add_argument("--paint", action="store_true",
                     help="texture-painting stage (paint.py): image-model detail projected into a second map set")
     ap.add_argument("--hiprt", type=int, choices=(0, 1), default=C.HIPRT,
                     help="Cycles HIP RT (hardware ray tracing; default ASSETS_HIPRT=1)")
     ap.add_argument("--ue-timeout", type=float, default=2400)
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    a1 = sys.argv[1:]
+    if len(a1) == 3 and a1[0] == "--guard":
+        guard_main(int(a1[1]), a1[2])
+        return 0
+    if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards"):
+        import assetd as S
+        if a1[0] == "--status":
+            return S.print_status()
+        if a1[0] == "--release-cards":
+            return S.release_cards()
+        if a1[0] == "--reclaim-cards":
+            return S.reclaim_cards()
+        if a1[0] == "--release-card":
+            if len(a1) != 2:
+                raise SystemExit("usage: run_asset.py --release-card BUS   (the Blender card, e.g. "
+                                 f"{C.BLENDER_CARD})")
+            return S.release_card(a1[1])
+        r = S.client_cmd("stop_editors")
+        if r is not None:
+            log(f"asked the scheduler's editor(s) to quit ({r.get('editors')} alive)")
+        st = live_server()
+        if st:
+            (server_dir() / "queue" / "quit").touch()
+            log(f"asked editor {st['pid']} to quit")
+        return 0
+    args = build_parser().parse_args()
+    if not (args.local or args.fresh_editor) and os.environ.get("ASSETS_SCHED", "1") == "1":
+        spec = json.loads(Path(args.spec).read_text())
+        validate_spec(spec)                               # fail fast, before the scheduler
+        import assetd as S
+        rc = S.client_submit(sys.argv[1:])
+        if rc is not None:
+            return rc
+    return main_local(args)
+
+
+def main_local(args):
     spec = json.loads(Path(args.spec).read_text())
     validate_spec(spec)
     adir = C.LIBRARY / spec["class"] / spec["id"]

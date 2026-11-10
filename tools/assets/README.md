@@ -50,8 +50,9 @@ divides the guide's shading out, projects the paintings back per texel and write
 map set; see the docstring in `paint.py` and "Painted maps" in CONTRACT.md. Spec block `paint` (prompt, views,
 close-up region, strength, projection parameters) and `texture_set`.
 
-Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples); the final sheet is 320 px at 16 spp
-when UE stills follow (`--full-sheet` = 512 px, 32 spp; `--sheet-px`, `--sheet-samples`; `--no-sheet` drops it), `--skip-render` (Blender + import commandlet only), `--source-sheet` (also render the unbaked model),
+Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples); a final pass makes no Blender
+sheet when UE stills follow (`--sheet` = 320 px, 16 spp; `--full-sheet` = 512 px, 32 spp; `--sheet-px`,
+`--sheet-samples`; it ran 10-13 s per asset on a shared card), `--skip-render` (Blender + import only, through the editor), `--source-sheet` (also render the unbaked model),
 `--formats glb,fbx,usd`, `--device auto|xtx|igpu` (`cpu`: manual debugging only), `--hiprt 0|1` (Cycles HIP RT, default on), `--warm-frames`, `--settle-frames`,
 `--warm-s`, `--settle-s`, `--ue-timeout`.
 
@@ -60,7 +61,7 @@ when UE stills follow (`--full-sheet` = 512 px, 32 spp; `--sheet-px`, `--sheet-s
 `run_asset.py` is a thin client of one scheduler per box (`assetd.py`): it sends its command line over
 `$ASSETS_SCHED_DIR/sched.sock`, prints the job's log and exits with the job's code (same outputs as before). The
 scheduler starts on first use (detached, log `$ASSETS_LOGS/assets_sched_<mmdd>.log`) and exits after
-`ASSETS_SCHED_IDLE_S` (60) with no job and no editor. `--local` runs the old in-process path (debugging); a
+`ASSETS_SCHED_IDLE_S` (60) with no job and no editor. `--local` (or `ASSETS_SCHED=0`) runs the old in-process path (debugging); a
 client whose `ASSETS_*` environment differs from the scheduler's runs locally too.
 
 ```
@@ -87,6 +88,7 @@ gets `sched`. A client that is killed cancels its job: queued stages are dropped
 | bake, final contact sheet | card 05 (`ASSETS_BLENDER_CARD`) | up to `ASSETS_BLENDER_PER_CARD` (3) Blender jobs at once; `ASSETS_BLENDER_SPARES` (2) warm Blender processes wait there (Cycles already on the card; one job each, then they exit) |
 | preview | the iGPU (its lock, when idle), else card 05 | keep the iGPU light: it draws the desktop and hosts the image model |
 | UE import + stills | one resident editor on card 65 (`ASSETS_UE_CARD`) | loaded on the first final job, kept for `ASSETS_UE_IDLE_S` (2400) without work or until `--stop-editor`; restarted between jobs when `ue/*.py` changed |
+| UE, second editor | off (`ASSETS_UE_EDITORS`=1) | UE is the bottleneck with one editor (8 serial UE jobs ~65 s of a 72 s batch), but a second editor on card 05 made it worse on this box: each UE job took 18-37 s instead of 6-9 s and previews doubled (two editors tick and import at once). `ASSETS_UE_EDITORS=2` still starts one when the UE backlog reaches `ASSETS_UE_SECOND_AT` (2); it is safe for the project because every job imports its own asset id into its own folder, one id never runs in both, autosave is off and the stage level is never saved |
 
 Nothing is ever baked or rendered on the CPU: with its home busy, a stage waits in the queue (`--device cpu`
 exists only as a manual debugging switch). The harness refuses to fall back to the CPU when its GPU is missing.
