@@ -94,9 +94,22 @@ def prompt_for(spec, p):
 HOLD = Path(os.environ.get("ASSETS_GPU_HOLD", str(C.UE_HOME / "GPU_HOLD")))
 
 
+def sched_active():
+    """The asset scheduler (assetd.py) owns the cards while it runs (tenant files /tmp/gpu-<bus>.tenant); it reads
+    any outside holder of a card for ~20 s as a release and stops its editor, so paint.py stays off the cards then."""
+    for t in Path("/tmp").glob("gpu-*.tenant"):
+        try:
+            pid = json.loads(t.read_text()).get("sched_pid")
+            if pid and Path(f"/proc/{pid}").exists():
+                return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
 def card_hold():
-    """The machine rule: while the hold file exists no new job starts on an XTX card (the iGPU stays usable)."""
-    return HOLD.exists()
+    """No new card job: the machine's hold file exists (the iGPU stays usable), or the scheduler owns the cards."""
+    return HOLD.exists() or sched_active()
 
 
 def try_lock(dev):
