@@ -87,6 +87,14 @@ def prompt_for(spec, p):
 
 
 # ---------------------------------------------------------------- locks
+HOLD = Path(os.environ.get("ASSETS_GPU_HOLD", str(C.UE_HOME / "GPU_HOLD")))
+
+
+def card_hold():
+    """The machine rule: while the hold file exists no new job starts on an XTX card (the iGPU stays usable)."""
+    return HOLD.exists()
+
+
 def try_lock(dev):
     fd = os.open(f"/tmp/gpu-{dev}.lock", os.O_RDWR | os.O_CREAT, 0o666)
     try:
@@ -103,6 +111,8 @@ def take_devices(order, want, wait_s, poll=10):
     while True:
         got = []
         for d in order:
+            if d != "igpu" and card_hold():
+                continue
             fd = try_lock(d)
             if fd is not None:
                 got.append((d, fd))
@@ -162,7 +172,7 @@ def gpu_for_blender():
     t0 = time.time()
     said = False
     while True:
-        for b in C.BLENDER_CARDS:
+        for b in ([] if card_hold() else C.BLENDER_CARDS):
             slot = try_lock(f"{b}.bake")
             if slot is None:
                 continue
