@@ -104,6 +104,51 @@ def character_actor(path):
             comp.set_update_animation_in_editor(True)
         except Exception as e:
             note(f"set_update_animation_in_editor: {e}")
+    if JOB.get("assemble_after_spawn", True):
+        mhs.assemble_for_preview(c)
+    if JOB.get("no_animated_maps"):
+        info_m = []
+        face = a.get_editor_property("face_component")
+        for i, m in enumerate(face.get_materials()):
+            if m is None:
+                continue
+            row = {"slot": i, "class": m.get_class().get_name(), "name": m.get_name()}
+            if not isinstance(m, unreal.MaterialInstanceDynamic):
+                m = face.create_dynamic_material_instance(i, m)
+            if i != 0:
+                continue
+            MEL = unreal.MaterialEditingLibrary
+            try:
+                row["scalars"] = [str(x) for x in MEL.get_scalar_parameter_names(m) if "nimat" in str(x)]
+                row["switches"] = [str(x) for x in MEL.get_static_switch_parameter_names(m) if "nimat" in str(x)]
+                row["textures"] = [str(x) for x in MEL.get_texture_parameter_names(m) if "nimat" in str(x)]
+                names = [str(x) for x in MEL.get_texture_parameter_names(m)]
+                vals = {}
+                for nm in names:
+                    tex = m.get_texture_parameter_value(nm)
+                    vals[nm] = tex.get_path_name() if tex else None
+                row["texture_values"] = vals
+                # The switch is static. Offline the full animated (wrinkle/blood-flow) maps are white/flat
+                # placeholders, which bleach the face as soon as an expression drives them; point them at the
+                # neutral synthesized maps and keep the synthesized deltas (or force one: "animated_delta_texture").
+                base_c = m.get_texture_parameter_value(JOB.get("base_color_param", "Basecolor"))
+                base_n = m.get_texture_parameter_value(JOB.get("base_normal_param", "Normal"))
+                delta = EAL.load_asset(JOB.get("animated_delta_texture", "/Engine/EngineResources/Black"))
+                for nm in names:
+                    if "Animated" not in nm or nm.endswith("VT"):
+                        continue
+                    if "Delta" in nm:
+                        if JOB.get("animated_delta_texture"):
+                            m.set_texture_parameter_value(nm, delta)
+                    elif nm.startswith("Basecolor") and base_c:
+                        m.set_texture_parameter_value(nm, base_c)
+                    elif nm.startswith("Normal") and base_n:
+                        m.set_texture_parameter_value(nm, base_n)
+                row["base"] = [base_c.get_path_name() if base_c else None, base_n.get_path_name() if base_n else None]
+            except Exception as e:
+                row["err"] = str(e)
+            info_m.append(row)
+        S["r"].setdefault("animated_maps", {})[path] = info_m
     S["actors"][path] = a
     info = {"class": a.get_class().get_name(),
             "face_mesh": str(a.face_component.get_skinned_asset().get_path_name()),
@@ -113,6 +158,16 @@ def character_actor(path):
             "face_post_process": str(a.face_component.get_post_process_instance().get_class().get_name()
                                      if a.face_component.get_post_process_instance() else None),
             "components": sorted({c.get_class().get_name() for c in a.get_components_by_class(unreal.ActorComponent)})}
+    info["grooms"] = []
+    for g in a.get_components_by_class(unreal.GroomComponent):
+        gi = {"name": g.get_name(), "visible": g.is_visible()}
+        for prop in ("groom_asset", "binding_asset"):
+            try:
+                v = g.get_editor_property(prop)
+                gi[prop] = v.get_path_name() if v else None
+            except Exception as e:
+                gi[prop] = f"ERR {e}"
+        info["grooms"].append(gi)
     S["r"].setdefault("actors", {})[path] = info
     log(f"spawned {path}: {json.dumps(info)}")
     return a
@@ -182,7 +237,19 @@ def scan_body(anim, kind):
 
 
 def apply_anim(comp, anim, t):
-    comp.override_animation_data(anim, False, False, float(t), 0.0)
+    """Single-node animation paused at time t. override_animation_data alone only took on the first call per
+    component (later shots kept the first pose), so the node is re-set each time."""
+    comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
+    comp.set_animation(anim)
+    comp.play(False)
+    comp.set_position(float(t), False)
+    comp.set_play_rate(0.0)
+    comp.stop()
+
+
+def clear_anim(comp):
+    comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
+    comp.set_animation(None)
 
 
 def camera(name, target, az, el, dist, focal):
@@ -217,7 +284,7 @@ def setup_shot(sh):
         apply_anim(body, banim, t)
         info["body"] = [sh["body_anim"], round(t, 3)]
     else:
-        body.set_animation_mode(unreal.AnimationMode.ANIMATION_CUSTOM_MODE)
+        clear_anim(body)
     if sh.get("face_curves"):
         anim = curve_anim(face.get_skinned_asset().get_editor_property("skeleton"), sh["face_curves"],
                           f"AS_{sh['name']}")
@@ -226,6 +293,8 @@ def setup_shot(sh):
     elif sh.get("face_anim"):
         apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
         info["face"] = [sh["face_anim"], sh.get("face_t", 0.0)]
+    else:
+        clear_anim(face)
     # aim from the head bone as posed now (falls back to a standing height)
     try:
         head = face.get_socket_location("head")
@@ -239,7 +308,7 @@ def setup_shot(sh):
     if fr == "close":
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -8), az, 3, 230, 85)
     elif fr == "full":
-        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.53), az, 5, 520, 35)
+        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.53), az, 5, 340, 35)
     else:
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -8), az, 3, 230, 85)
     return cam, info
