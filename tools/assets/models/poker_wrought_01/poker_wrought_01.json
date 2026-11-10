@@ -1,0 +1,12 @@
+{
+  "id": "poker_wrought_01",
+  "class": "prop",
+  "description": "Fireplace poker, hand-forged wrought iron, 0.75 m: ring handle, upset collars, twisted square grip, thumb-thick round shaft, square spike and a side hook curling back; blackened scale, polished handle, heat colours and soot at the tip. Lies flat on the floor along X, ring to -X.",
+  "tags": ["poker", "fireplace", "hearth", "tool", "iron", "wrought-iron", "forge", "hard-surface"],
+  "tier": "hero",
+  "size_m": [0.75, 0.09, 0.02],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}
