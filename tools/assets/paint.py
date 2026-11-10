@@ -9,8 +9,9 @@ Steps (each timed in <asset>/paint/paint.json):
    each a diffuse render of the baked BaseColor under even light on flat grey, plus mask, depth and the linear
    Image / DiffCol / Position passes. Views are sized so their covered pixels exceed the map's texels.
 2. paint   (Qwen-Image-2.1, tools/qwen_image.py --serve, one session per device, model kept loaded): each view
-   repainted by img2img from the guide (low strength, the object mask as the per-pixel strength mask so the
-   background stays put) under depth ControlNet, with the spec's material prompt and a flat-light instruction.
+   repainted by img2img from the guide (strength 0.65, the object mask as the per-pixel strength mask so the
+   background and outline stay put; optional depth/canny ControlNet), with the spec's material prompt and a
+   flat-light instruction.
    Method "edit" uses Qwen-Image-Edit-2509 (tools/assets/qwen_edit.py) on the guide instead.
 3. project (Blender, bl_paint.py): painted / guide shading -> albedo per view, blended per texel by facing,
    pixel density and edge distance (low and high frequencies separately), gaps filled; detail normal and
