@@ -44,7 +44,7 @@ S = {"t0": time.time(), "busy": False, "n": 0, "job": None, "first_level": True,
 PRESETS = {
     "prop": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 22, 50, 1.12),
              ("close", "detail", 25, 30, 85, 1.0), ("back", "asset", 150, 30, 50, 1.15),
-             ("detail", "detail", 25, 30, 85, 0.4)],
+             ("detail", "detail", 20, 45, 85, 0.4)],
     "vehicle": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 12, 50, 1.1),
                 ("close", "detail", 25, 20, 85, 1.0), ("back", "asset", 155, 8, 50, 1.12),
                 ("side", "asset", 90, 4, 50, 1.1)],

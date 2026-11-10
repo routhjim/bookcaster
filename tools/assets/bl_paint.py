@@ -75,9 +75,8 @@ def set_device(sc):
             sc.cycles.device = "GPU"
             REPORT["device"] = f"HIP {want}"
             return
-        REPORT["warnings"].append(f"no HIP device {want}; CPU")
-    sc.cycles.device = "CPU"
-    REPORT["device"] = "CPU"
+        raise RuntimeError(f"no HIP device {want}: refusing to render on the CPU")
+    raise RuntimeError("no GPU given: bl_paint never renders or bakes on the CPU")
 
 
 def open_asset():

@@ -22,7 +22,8 @@ Spec block (all optional): "paint": {"prompt": material words, "views": {...}, "
 maps exist and paint.use is not false). Scratch (EXR passes, guide pictures) goes under ASSETS_PAINT_SCRATCH
 (default $ASSETS_UE_HOME/lab/paint/<id>).
 
-Devices: Blender on a free XTX (lock polled) else CPU; the image model on whichever of the two XTX locks or the
+Devices: Blender on a free XTX (its lock and bake slot) or the idle iGPU (its lock), waiting until one is free:
+never the CPU (-t 4 for Blender's own CPU-bound parts); the image model on whichever of the two XTX locks or the
 iGPU lock comes free first (polled with flock -n), on a second device too when it is free at once.
 """
 
@@ -122,11 +123,67 @@ def hip_env(dev):
 
 
 # ---------------------------------------------------------------- blender
+def igpu_idle():
+    try:
+        busy = int(Path(f"/sys/bus/pci/devices/0000:{C.IGPU_BUS}:00.0/gpu_busy_percent").read_text())
+    except (OSError, ValueError):
+        return False
+    return busy <= C.IGPU_MAX_BUSY
+
+
+def editor_card():
+    """The card of this chain's warm UE editor (it holds that card's lock but uses ~5-6 GB of the 24)."""
+    sp = Path(C.UE_PROJECT).parent / "Saved" / "AssetServer" / "state.json"
+    try:
+        st = json.loads(sp.read_text())
+        if "UnrealEditor" in Path(f"/proc/{st['pid']}/cmdline").read_text(errors="replace"):
+            return st.get("card")
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
+
+
+def vram_free_gb(bus):
+    for d in Path("/sys/class/drm").glob("card[0-9]*"):
+        if (d / "device").exists() and os.path.realpath(d / "device").endswith(f"0000:{bus}:00.0"):
+            try:
+                return (int((d / "device" / "mem_info_vram_total").read_text())
+                        - int((d / "device" / "mem_info_vram_used").read_text())) / 2**30
+            except (OSError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def gpu_for_blender():
+    """(bus, fds, waited, how): the first free of the Blender cards (main lock + bake slot) or the idle iGPU."""
+    t0 = time.time()
+    said = False
+    while True:
+        for b in C.BLENDER_CARDS:
+            slot = try_lock(f"{b}.bake")
+            if slot is None:
+                continue
+            fd = try_lock(b)
+            if fd is not None:
+                return b, [fd, slot], round(time.time() - t0, 1), f"card {b}"
+            if editor_card() == b and vram_free_gb(b) >= float(os.environ.get('ASSETS_BAKE_VRAM_GB', '8')):
+                return b, [slot], round(time.time() - t0, 1), f"card {b} beside the warm editor"
+            os.close(slot)
+        if igpu_idle():
+            fd = try_lock("igpu")
+            if fd is not None:
+                return C.IGPU_BUS, [fd], round(time.time() - t0, 1), "igpu"
+        if not said:
+            log("waiting for a GPU (cards and iGPU busy; never the CPU)")
+            said = True
+        time.sleep(3)
+
+
 def blender(job, logf, cards=None):
-    """Run bl_paint.py on a GPU by the chain's bake policy (run_asset.take_bake_device), else the CPU."""
-    import run_asset
-    bus, fds, waited, how = run_asset.take_bake_device(C.BLENDER_DEVICE)
-    job = dict(job, device="HIP" if bus else "CPU", hip_bus=bus or "", hiprt=C.HIPRT)
+    """Run bl_paint.py on a GPU, never the CPU (owner's rule): an XTX under its lock (and its bake slot), or the
+    iGPU under /tmp/gpu-igpu.lock when it is idle; polled every 3 s until one is free, however long that takes."""
+    bus, fds, waited, how = gpu_for_blender()
+    job = dict(job, device="HIP", hip_bus=bus, hiprt=C.HIPRT)
     jp = Path(str(logf) + ".job.json")
     rp = Path(str(logf) + ".report.json")
     job["report"] = str(rp)
@@ -135,7 +192,7 @@ def blender(job, logf, cards=None):
     t = time.time()
     try:
         with open(logf, "w") as f:
-            subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", str(C.THREADS), "--python",
+            subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", "4", "--python",
                             str(HERE / "bl_paint.py"), "--", str(jp)], stdout=f, stderr=subprocess.STDOUT,
                            timeout=3600, pass_fds=tuple(fds))
     finally:
@@ -196,7 +253,11 @@ def paint_views(views, out, spec, p, logdir, max_devices=2):
         j = {"id": v["name"], "prompt": prompt, "seed": int(p["seed"]), "path": path, "size": v["size"],
              "init": {"image": f["guide"], "strength": float(p["strength"]), "mask": f["mask"],
                       "strength_bg": 0.0}}
-        if p.get("control"):
+        if p.get("controls"):              # several: [{"type": "depth" | "canny", "scale", "end"}] (canny of the guide)
+            j["control"] = [{"image": f["depth"] if c["type"] == "depth" else f["guide"], "type": c["type"],
+                             "scale": float(c.get("scale", 0.7)), "end": float(c.get("end", 1.0)),
+                             **({"low": c["low"], "high": c["high"]} if "low" in c else {})} for c in p["controls"]]
+        elif p.get("control"):
             j["control"] = {"image": f["depth"], "type": p["control"], "scale": float(p["control_scale"]),
                             "end": float(p.get("control_end", 1.0))}
         if p.get("refs"):
