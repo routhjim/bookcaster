@@ -42,7 +42,12 @@ python tools/assets/metahuman/mh_run.py render render.json          # job["scrip
   single-node animation (`set_animation_mode(SINGLE_NODE)`, `set_animation`, `set_position`, re-set every shot:
   `override_animation_data` only took the first time).
 - **Wrinkle/colour maps**: offline the full animated maps are white placeholders and bleach the face in any
-  expression. `mh_render.py` (`"no_animated_maps": true`) points them at the neutral synthesized maps.
+  expression. With `"no_animated_maps": true` and `"animated_delta_texture":
+  "/MetaHumanCharacter/Lookdev_UHM/Common/Textures/Placeholders/T_Flat_Grey_C"`, `mh_render.py` points the full maps
+  at the neutral synthesized maps and the deltas at flat grey: expressions then keep their skin tone (no wrinkle
+  detail). Black deltas darken the face; the synthesized deltas alone still bleach it.
+- **Known defects offline**: the default garment's neckline tears on the archetype-rigged bodies (fine on presets);
+  a visible tone seam at the neck when the head turns; 1k skin is soft in a tight close-up.
 
 ## What needs the cloud (and so a signed-in editor)
 

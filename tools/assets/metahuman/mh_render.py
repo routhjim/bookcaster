@@ -133,7 +133,7 @@ def character_actor(path):
                 # neutral synthesized maps and keep the synthesized deltas (or force one: "animated_delta_texture").
                 base_c = m.get_texture_parameter_value(JOB.get("base_color_param", "Basecolor"))
                 base_n = m.get_texture_parameter_value(JOB.get("base_normal_param", "Normal"))
-                delta = EAL.load_asset(JOB.get("animated_delta_texture", "/Engine/EngineResources/Black"))
+                delta = EAL.load_asset(JOB.get("animated_delta_texture") or "/Engine/EngineResources/Black")
                 for nm in names:
                     if "Animated" not in nm or nm.endswith("VT"):
                         continue
