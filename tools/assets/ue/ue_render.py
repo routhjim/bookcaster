@@ -1,16 +1,22 @@
-"""UE side, GPU: validation stills of one imported asset on the stage level. Run by the start-up shim
-(ue/init_unreal.py) inside a full editor started with -RenderOffscreen on the stage map; ticks until done, then quits.
+"""UE side, GPU: import (optional) and validation stills of one asset on the stage level, in one editor process.
+Run by the start-up shim (ue/init_unreal.py) inside a full editor started with -RenderOffscreen on the stage map.
 
-Job (env ASSETS_UE_JOB): {"script": this file, "map", "mesh": static mesh path, "id", "out": folder,
-     "res": [1152, 640], "warm_s": 20, "settle_s": 3, "ref_box": "/Game/AssetStage/M_StageRef",
-     "mannequin": skeletal mesh path or null, "result": path}
+Job (env ASSETS_UE_JOB): {"script": this file, "map", "id", "out": folder, "result": path,
+     "import": {ue_import job} or null (then "mesh" names an imported static mesh),
+     "res": [1152, 640], "warm_frames": 90, "settle_frames": 30, "warm_s": 0, "settle_s": 0,
+     "ref_box_material", "mannequin": skeletal mesh path or null,
+     "serve_dir": null | folder}  (serve: after this job, keep the editor and run every <serve_dir>/*.job.json
+                                   the same way; "<serve_dir>/quit" or serve_idle_s without work ends it)
 
 Shots (asset front = UE +Y): wide (asset + 1.8 m box + mannequin), medium 3/4 front, close on the top front edge,
-back 3/4 high. Each shot: pilot the viewport through a CineCamera (36 x 20 mm back = 1152:640, no depth of field),
-let Lumen settle for settle_s, take a high-res screenshot. The tick callback guards against re-entry:
-take_high_res_screenshot pumps Slate, which calls the tick again inside the call (the "logged ten times" fault).
+back 3/4 high. Waits are counted in rendered frames (Lumen converges per frame, not per second); before the
+first shot, finish_loading_before_screenshot() blocks until shaders and streaming are done. The tick callback
+guards against re-entry: take_high_res_screenshot pumps Slate, which calls the tick again inside the call (the
+"logged ten times" fault of the first GPU test).
 """
 
+import glob
+import importlib.util
 import json
 import math
 import os
@@ -19,15 +25,16 @@ import traceback
 
 import unreal
 
-JOB = json.load(open(os.environ["ASSETS_UE_JOB"]))
-RES = JOB.get("res", [1152, 640])
-OUT = JOB["out"]
-os.makedirs(OUT, exist_ok=True)
+HERE = os.path.dirname(os.path.abspath(__file__))
 EAL = unreal.EditorAssetLibrary
 les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
 act = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
-S = {"t0": time.time(), "busy": False, "phase": "start", "n": 0, "shots": [], "i": 0, "t_phase": time.time(),
-     "result": {"ok": False, "shots": []}}
+_spec = importlib.util.spec_from_file_location("assets_ue_import", os.path.join(HERE, "ue_import.py"))
+ue_import = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ue_import)
+
+FIRST = json.load(open(os.environ["ASSETS_UE_JOB"]))
+S = {"t0": time.time(), "busy": False, "n": 0, "job": None, "first_level": True, "idle_since": None}
 
 
 def log(msg):
@@ -41,70 +48,176 @@ def cvar(name):
         return None
 
 
-def look(cam_loc, target):
-    return unreal.MathLibrary.find_look_at_rotation(cam_loc, target)
+class Job:
+    def __init__(self, job):
+        self.j = job
+        self.res_px = job.get("res", [1152, 640])
+        self.r = {"ok": False, "shots": [], "id": job["id"]}
+        self.t0 = time.time()
+        self.phase, self.t_phase, self.f_phase = "start", time.time(), S["n"]
+        self.actors, self.shots, self.i = [], [], 0
+        os.makedirs(job["out"], exist_ok=True)
+
+    # -------------------------------------------------------------- scene
+    def camera(self, name, target, az, el, dist, focal):
+        a, e = math.radians(az), math.radians(el)
+        loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
+        cam = act.spawn_actor_from_class(unreal.CineCameraActor, loc,
+                                         unreal.MathLibrary.find_look_at_rotation(loc, target))
+        cam.set_actor_label(f"cam_{name}")
+        cc = cam.get_cine_camera_component()
+        fb = cc.get_editor_property("filmback")
+        fb.sensor_width, fb.sensor_height = 36.0, 36.0 * self.res_px[1] / self.res_px[0]
+        cc.set_editor_property("filmback", fb)
+        cc.set_editor_property("current_focal_length", focal)
+        fs = cc.get_editor_property("focus_settings")
+        fs.focus_method = unreal.CameraFocusMethod.DISABLE
+        cc.set_editor_property("focus_settings", fs)
+        self.actors.append(cam)
+        return cam
+
+    def fit(self, radius, focal, margin=1.1):
+        hf = 2 * math.atan(18.0 / focal)
+        vf = 2 * math.atan(18.0 * self.res_px[1] / self.res_px[0] / focal)
+        return radius / math.sin(min(hf, vf) / 2) * margin
+
+    def setup(self):
+        j = self.j
+        if j.get("import"):
+            ir = ue_import.import_asset(j["import"])
+            self.r["import"] = {k: ir.get(k) for k in ("ok", "static_mesh", "problems", "time_s", "error")}
+            if not ir.get("ok"):
+                raise RuntimeError(f"import failed: {ir.get('error')}")
+            j["mesh"] = ir["static_mesh"]
+        sm = EAL.load_asset(j["mesh"])
+        a = act.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
+        a.set_actor_label(f"asset_{j['id']}")
+        a.static_mesh_component.set_static_mesh(sm)
+        self.actors.append(a)
+        bb = sm.get_bounding_box()
+        mn, mx = bb.min, bb.max
+        L, W, H = mx.x - mn.x, mx.y - mn.y, mx.z - mn.z
+        self.r["bounds_cm"] = [L, W, H]
+        box = act.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(mn.x - 70, 0, 90),
+                                         unreal.Rotator(0, 0, 0))
+        box.set_actor_label("ref_box_1p8m")
+        box.static_mesh_component.set_static_mesh(EAL.load_asset("/Engine/BasicShapes/Cube"))
+        box.set_actor_scale3d(unreal.Vector(0.4, 0.4, 1.8))
+        if j.get("ref_box_material") and EAL.does_asset_exist(j["ref_box_material"]):
+            box.static_mesh_component.set_material(0, EAL.load_asset(j["ref_box_material"]))
+        self.actors.append(box)
+        right = mx.x
+        if j.get("mannequin") and EAL.does_asset_exist(j["mannequin"]):
+            mq = act.spawn_actor_from_class(unreal.SkeletalMeshActor, unreal.Vector(mx.x + 70, 0, 0),
+                                            unreal.Rotator(0, 0, 0))
+            mq.set_actor_label("ref_mannequin")
+            mq.skeletal_mesh_component.set_skinned_asset_and_update(EAL.load_asset(j["mannequin"]))
+            self.actors.append(mq)
+            right = mx.x + 110
+            self.r["mannequin"] = True
+        c = unreal.Vector(0, 0, H / 2)
+        r_asset = math.sqrt(L * L + W * W + H * H) / 2
+        gl, gr = mn.x - 100, right
+        gc = unreal.Vector((gl + gr) / 2, 0, 95)
+        r_group = math.sqrt(((gr - gl) / 2) ** 2 + 95 ** 2)
+        close_t = unreal.Vector(mx.x * 0.35, mx.y * 0.6, H * 0.85)
+        close_w = max(L, W, H) * 0.45
+        self.shots = [
+            ("wide", self.camera("wide", gc, 15, 8, self.fit(r_group, 35, 1.05), 35)),
+            ("medium", self.camera("medium", c, -35, 22, self.fit(r_asset, 50, 1.12), 50)),
+            ("close", self.camera("close", close_t, 25, 30, close_w / 2 * 85 / 18, 85)),
+            ("back", self.camera("back", c, 150, 30, self.fit(r_asset, 50, 1.15), 50)),
+        ]
+
+    def teardown(self):
+        try:
+            les.eject_pilot_level_actor()
+        except Exception:
+            pass
+        for a in self.actors:
+            try:
+                act.destroy_actor(a)
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------- state machine, one call per tick
+    def waited(self, frames, secs):
+        return S["n"] - self.f_phase >= frames and time.time() - self.t_phase >= secs
+
+    def goto(self, phase):
+        self.phase, self.t_phase, self.f_phase = phase, time.time(), S["n"]
+
+    def step(self):
+        j, ph = self.j, self.phase
+        if ph == "start":
+            self.setup()
+            self.r["setup_s"] = round(time.time() - self.t0, 2)
+            log(f"{j['id']}: set up in {self.r['setup_s']} s; warming")
+            self.goto("warm")
+        elif ph == "warm" and self.waited(j.get("warm_frames", 90), j.get("warm_s", 0)):
+            t = time.time()
+            unreal.AutomationLibrary.finish_loading_before_screenshot()   # blocks on shaders + streaming
+            self.r["finish_loading_s"] = round(time.time() - t, 2)
+            self.r["warm_done_s"] = round(time.time() - self.t0, 2)
+            self.goto("aim")
+        elif ph == "aim":
+            les.pilot_level_actor(self.shots[self.i][1])
+            self.goto("settle")
+        elif ph == "settle" and self.waited(j.get("settle_frames", 30), j.get("settle_s", 0)):
+            name, cam = self.shots[self.i]
+            path = os.path.join(j["out"], f"{j['id']}_{name}.png")
+            if os.path.exists(path):
+                os.remove(path)
+            self.pending = path
+            self.goto("shoot")                       # before the call: it re-enters the tick
+            unreal.AutomationLibrary.take_high_res_screenshot(self.res_px[0], self.res_px[1], path, camera=cam,
+                                                             force_game_view=True)
+        elif ph == "shoot":
+            if os.path.exists(self.pending) and os.path.getsize(self.pending) > 0:
+                name = self.shots[self.i][0]
+                self.r["shots"].append({"name": name, "path": self.pending, "t_s": round(time.time() - self.t0, 2),
+                                        "frames_since_start": S["n"] - self.f0})
+                log(f"shot {name}")
+                les.eject_pilot_level_actor()
+                self.i += 1
+                if self.i >= len(self.shots):
+                    self.r["ok"] = True
+                    return True
+                self.goto("aim")
+            elif time.time() - self.t_phase > 60:
+                raise RuntimeError(f"screenshot not written: {self.pending}")
+        return False
+
+    def finish(self):
+        self.teardown()
+        r = self.r
+        r["elapsed_s"] = round(time.time() - self.t0, 2)
+        r["editor_uptime_s"] = round(time.time() - S["t0"], 2)
+        r["cvars"] = {k: cvar(k) for k in ("r.RayTracing", "r.Lumen.HardwareRayTracing",
+                                           "r.DynamicGlobalIlluminationMethod", "r.ReflectionMethod", "r.Nanite",
+                                           "r.Shadow.Virtual.Enable")}
+        json.dump(r, open(self.j["result"], "w"), indent=1, default=str)
+        log(f"{self.j['id']}: done ok={r['ok']} in {r['elapsed_s']} s")
 
 
-def place_camera(name, target, az, el, dist, focal):
-    a, e = math.radians(az), math.radians(el)
-    loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
-    cam = act.spawn_actor_from_class(unreal.CineCameraActor, loc, look(loc, target))
-    cam.set_actor_label(f"cam_{name}")
-    cc = cam.get_cine_camera_component()
-    fb = cc.get_editor_property("filmback")
-    fb.sensor_width, fb.sensor_height = 36.0, 36.0 * RES[1] / RES[0]
-    cc.set_editor_property("filmback", fb)
-    cc.set_editor_property("current_focal_length", focal)
-    fs = cc.get_editor_property("focus_settings")
-    fs.focus_method = unreal.CameraFocusMethod.DISABLE
-    cc.set_editor_property("focus_settings", fs)
-    return cam
+def next_job():
+    d = FIRST.get("serve_dir")
+    if not d:
+        return None
+    for p in sorted(glob.glob(os.path.join(d, "*.job.json"))):
+        job = json.load(open(p))
+        os.rename(p, p + ".taken")
+        job.setdefault("result", p[:-9] + ".result.json")
+        for k in ("map", "ref_box_material", "mannequin", "res", "warm_frames", "settle_frames"):
+            job.setdefault(k, FIRST.get(k))
+        return job
+    return None
 
 
-def fit_dist(radius, focal, margin=1.1):
-    hf = 2 * math.atan(18.0 / focal)
-    vf = 2 * math.atan(18.0 * RES[1] / RES[0] / focal)
-    return radius / math.sin(min(hf, vf) / 2) * margin
-
-
-def setup():
-    sm = EAL.load_asset(JOB["mesh"])
-    a = act.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
-    a.set_actor_label(f"asset_{JOB['id']}")
-    a.static_mesh_component.set_static_mesh(sm)
-    bb = sm.get_bounding_box()
-    mn, mx = bb.min, bb.max
-    L, W, H = mx.x - mn.x, mx.y - mn.y, mx.z - mn.z
-    S["result"]["bounds_cm"] = [L, W, H]
-    # size references: 1.8 m box at the asset's left (-X), mannequin at its right (+X), both facing +Y
-    box = act.spawn_actor_from_class(unreal.StaticMeshActor, unreal.Vector(mn.x - 70, 0, 0), unreal.Rotator(0, 0, 0))
-    box.set_actor_label("ref_box_1p8m")
-    box.static_mesh_component.set_static_mesh(EAL.load_asset("/Engine/BasicShapes/Cube"))
-    box.set_actor_scale3d(unreal.Vector(0.4, 0.4, 1.8))
-    box.set_actor_location(unreal.Vector(mn.x - 70, 0, 90), False, False)
-    if JOB.get("ref_box_material") and EAL.does_asset_exist(JOB["ref_box_material"]):
-        box.static_mesh_component.set_material(0, EAL.load_asset(JOB["ref_box_material"]))
-    right = mx.x
-    if JOB.get("mannequin") and EAL.does_asset_exist(JOB["mannequin"]):
-        mq = act.spawn_actor_from_class(unreal.SkeletalMeshActor, unreal.Vector(mx.x + 70, 0, 0),
-                                        unreal.Rotator(0, 0, 0))
-        mq.set_actor_label("ref_mannequin")
-        mq.skeletal_mesh_component.set_skinned_asset_and_update(EAL.load_asset(JOB["mannequin"]))
-        right = mx.x + 110
-        S["result"]["mannequin"] = True
-    c = unreal.Vector(0, 0, H / 2)
-    r_asset = math.sqrt(L * L + W * W + H * H) / 2
-    gl, gr = mn.x - 100, right
-    gc = unreal.Vector((gl + gr) / 2, 0, 95)
-    r_group = math.sqrt(((gr - gl) / 2) ** 2 + 95 ** 2)
-    close_t = unreal.Vector(mx.x * 0.35, mx.y * 0.6, H * 0.85)
-    close_w = max(L, W, H) * 0.45
-    S["shots"] = [
-        ("wide", place_camera("wide", gc, 15, 8, fit_dist(r_group, 35, 1.05), 35)),
-        ("medium", place_camera("medium", c, -35, 22, fit_dist(r_asset, 50, 1.12), 50)),
-        ("close", place_camera("close", close_t, 25, 30, close_w / 2 / math.tan(math.atan(18 / 85.0)), 85)),
-        ("back", place_camera("back", c, 150, 30, fit_dist(r_asset, 50, 1.15), 50)),
-    ]
+def quit_editor():
+    unreal.unregister_slate_post_tick_callback(HANDLE)
+    log(f"quitting after {time.time() - S['t0']:.1f} s")
+    unreal.SystemLibrary.quit_editor()
 
 
 def tick(dt):
@@ -114,73 +227,51 @@ def tick(dt):
     try:
         _tick()
     except Exception:
-        S["result"]["error"] = traceback.format_exc()
-        unreal.log_error(S["result"]["error"])
-        finish()
+        err = traceback.format_exc()
+        unreal.log_error(err)
+        if S["job"]:
+            S["job"].r["error"] = err
+            S["job"].finish()
+            S["job"] = None
+        if not FIRST.get("serve_dir"):
+            quit_editor()
     finally:
         S["busy"] = False
 
 
-def finish():
-    r = S["result"]
-    r["frames"] = S["n"]
-    r["elapsed_s"] = round(time.time() - S["t0"], 1)
-    r["cvars"] = {k: cvar(k) for k in ("r.RayTracing", "r.Lumen.HardwareRayTracing", "r.DynamicGlobalIlluminationMethod",
-                                       "r.ReflectionMethod", "r.Nanite", "r.Shadow.Virtual.Enable")}
-    json.dump(r, open(JOB["result"], "w"), indent=1, default=str)
-    log(f"done ok={r['ok']} in {r['elapsed_s']} s")
-    unreal.unregister_slate_post_tick_callback(HANDLE)
-    unreal.SystemLibrary.quit_editor()
-
-
 def _tick():
     S["n"] += 1
-    now = time.time()
-    el = now - S["t_phase"]
-    ph = S["phase"]
-    if ph == "start":
+    if S["first_level"]:
+        S["first_level"] = False
         w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-        if w is None or not w.get_path_name().startswith(JOB["map"]):
-            log(f"loading {JOB['map']}")
-            les.load_level(JOB["map"])
+        if w is None or not w.get_path_name().startswith(FIRST["map"]):
+            log(f"loading {FIRST['map']}")
+            les.load_level(FIRST["map"])
         les.editor_set_game_view(True)
-        # (editor_set_viewport_realtime trips a handled ensure in 5.8.1; the offscreen viewport ticks anyway)
-        w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-        unreal.AutomationLibrary.set_scalability_quality_to_epic(w)
-        setup()
-        S["phase"], S["t_phase"] = "warm", now
-        log("set up; warming")
-    elif ph == "warm" and el > JOB.get("warm_s", 20):
-        unreal.AutomationLibrary.finish_loading_before_screenshot()   # shaders + streaming
-        S["result"]["warm_s"] = round(now - S["t0"], 1)
-        S["phase"], S["t_phase"] = "aim", now
-    elif ph == "aim":
-        name, cam = S["shots"][S["i"]]
-        les.pilot_level_actor(cam)
-        S["phase"], S["t_phase"] = "settle", now
-    elif ph == "settle" and el > JOB.get("settle_s", 3):
-        name, cam = S["shots"][S["i"]]
-        path = os.path.join(OUT, f"{JOB['id']}_{name}.png")
-        if os.path.exists(path):
-            os.remove(path)
-        S["phase"], S["t_phase"] = "shoot", now     # set before the call: it re-enters the tick
-        unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], path, camera=cam, force_game_view=True)
-        S["pending"] = path
-    elif ph == "shoot":
-        path = S["pending"]
-        if os.path.exists(path) and os.path.getsize(path) > 0 and el > 0.5:
-            name = S["shots"][S["i"]][0]
-            S["result"]["shots"].append({"name": name, "path": path, "t_s": round(now - S["t0"], 1)})
-            log(f"shot {name} -> {path}")
-            les.eject_pilot_level_actor()
-            S["i"] += 1
-            if S["i"] >= len(S["shots"]):
-                S["result"]["ok"] = True
-                finish()
-            else:
-                S["phase"], S["t_phase"] = "aim", now
-        elif el > 60:
-            raise RuntimeError(f"screenshot not written: {path}")
+        unreal.AutomationLibrary.set_scalability_quality_to_epic(
+            unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
+        S["job"] = Job(FIRST)
+        S["job"].f0 = S["n"]
+        log(f"editor ready after {time.time() - S['t0']:.1f} s of Python time")
+        return
+    job = S["job"]
+    if job is not None:
+        if job.step():
+            job.finish()
+            S["job"] = None
+            S["idle_since"] = time.time()
+            if not FIRST.get("serve_dir"):
+                quit_editor()
+        return
+    d = FIRST.get("serve_dir")
+    if os.path.exists(os.path.join(d, "quit")) or time.time() - S["idle_since"] > FIRST.get("serve_idle_s", 300):
+        quit_editor()
+        return
+    if S["n"] % 10 == 0:
+        nj = next_job()
+        if nj:
+            S["job"] = Job(nj)
+            S["job"].f0 = S["n"]
 
 
 HANDLE = unreal.register_slate_post_tick_callback(tick)

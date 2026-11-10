@@ -4,30 +4,60 @@ One command takes an asset spec and a Blender model script through the whole cha
 
 ```
 python tools/assets/run_asset.py tools/assets/examples/anvil/anvil.json tools/assets/examples/anvil/anvil.py
+python tools/assets/run_asset.py SPEC.json MODEL.py --preview      # modelling loop: shape + checks + quick sheet
+python tools/assets/run_asset.py --stop-editor                       # ask the long-lived UE editor to quit
 ```
 
-Run long jobs detached (`setsid nohup ... > log 2>&1 &`). Stdlib Python 3 only on the calling side.
+Stdlib Python 3 only on the calling side. Several runs may go at once (see Concurrency).
 
 | Step | Where | What |
 |---|---|---|
-| 1 Blender harness (`bl_harness.py`) | Blender, CPU | runs the model script in an empty scene; applies the contract (one mesh `SM_<id>`, floor-centre origin, transforms applied); checks; Smart-UV; bakes materials to BaseColor / Normal / ORM; 8-view contact sheet (Cycles CPU, 32 spp + denoise); exports `.glb`; saves the `.blend` |
-| 2 UE import (`ue/ue_import.py`) | `UnrealEditor-Cmd -run=pythonscript -nullrhi`, no GPU | Interchange glTF import to `/Game/Assets/<Class>s/<id>/`, mesh renamed `SM_<id>`, Nanite on, texture settings checked |
-| 3 Stage (`ue/ue_stage.py`) | same, once | builds `/Game/AssetStage/L_AssetStage` (floor, physical sky, sun, sky light, fog, post volume) if missing |
-| 4 UE render (`ue/ue_render.py`) | full editor, `-RenderOffscreen`, one XTX | asset at the origin, 1.8 m box and the template mannequin beside it; wide / medium / close / back stills at 1152x640, Lumen |
+| 1 Blender harness (`bl_harness.py`) | Blender 4.5, Cycles on a GPU | runs the model script in an empty scene; applies the contract (one mesh `SM_<id>`, floor-centre origin, transforms applied); checks; Smart-UV; bakes materials to BaseColor / Normal / ORM in 3 passes; 8-view contact sheet (512 px tiles, 32 spp + denoise); exports `.glb`; saves the `.blend` |
+| 2 UE import (`ue/ue_import.py`) | inside the render editor (or `UnrealEditor-Cmd -nullrhi` with `--skip-render`) | Interchange glTF import to `/Game/Assets/<Class>s/<id>/`, mesh renamed `SM_<id>`, Nanite on, texture settings checked |
+| 3 Stage (`ue/ue_stage.py`) | commandlet, once | builds `/Game/AssetStage/L_AssetStage` (floor, physical sky, sun, sky light, fog, post volume with fixed exposure) if missing; `--rebuild-stage` remakes it |
+| 4 UE stills (`ue/ue_render.py`) | editor, `-RenderOffscreen`, one XTX | asset at the origin, 1.8 m box and the template mannequin beside it; wide / medium / close / back at 1152x640, Lumen; waits counted in frames (90 after set-up, 30 per camera) after shaders and streaming finish |
+
+**Modes.** `--preview` (2.6 s on the anvil): model, contract, checks and a 320 px, 12 spp sheet of the *unbaked*
+materials (`sheet/<id>_preview.png`); no bake, export or UE. Default (final): everything.
+
+**Long-lived editor.** The first final run starts a UE editor that stays up, holds its card's lock, and takes
+later jobs from `<project>/Saved/AssetServer/queue/`; it quits after `ASSETS_UE_IDLE_S` (300) without work or on
+`--stop-editor`. A warm editor does import + 4 stills in ~4.5 s instead of ~15 s. `--fresh-editor` starts and
+quits an editor for one asset instead. After editing `ue/*.py`, stop the editor so the next run loads the new code.
 
 Output: `<library>/<class>/<id>/` with `asset.json` (manifest entry), `source/` (model script, spec, `.blend`),
 `export/`, `textures/`, `sheet/<id>_sheet.png`, `ue/<id>_<shot>.png`, `logs/`; `<library>/manifest.json` indexes
 all assets. The rules are in [CONTRACT.md](CONTRACT.md).
 
-Flags: `--skip-render` (CPU-only parts), `--source-sheet` (also render the unbaked model, to see bake loss),
-`--formats glb,fbx,usd` (extra exports), `--warm-s`, `--settle-s`, `--ue-timeout`.
+Other flags: `--skip-render` (Blender + import commandlet only), `--source-sheet` (also render the unbaked model),
+`--formats glb,fbx,usd`, `--device auto|xtx|igpu|cpu`, `--hiprt 0|1`, `--warm-frames`, `--settle-frames`,
+`--warm-s`, `--settle-s`, `--ue-timeout`.
+
+## Devices
+
+| Step | Device |
+|---|---|
+| model script, contract, checks, UV unwrap, glTF export, manifest | CPU (all under 1 s) |
+| bake, contact sheet | Cycles HIP on one XTX under its lock (Blender prefers card 05, UE card 65); preview prefers the idle iGPU; overflow to the iGPU if both locks are held and it is idle, else CPU |
+| UE import | CPU inside the editor |
+| UE stills | one XTX (prefers 65), Vulkan SM6, Lumen (software tracing: `r.RayTracing` is off in the project) |
+
+## Concurrency
+
+- Blender runs are independent (own asset folder, own job files); one per card plus the iGPU plus CPU.
+- Only one UE editor per project: two editors saving into one project can corrupt it. Starting an editor, the
+  stage build and the import commandlet go through `<project>/Saved/AssetServer/project.lock`; jobs from parallel
+  runs queue in the one long-lived editor and run one after another.
+- Two runs of the *same* asset id at once are not supported (same folder).
 
 ## Settings
 
 Environment variables, documented in `config.py`: `ASSETS_BLENDER` (default `$BLENDER`, else
 `~/opt/blender/current/blender`, 4.5 LTS), `ASSETS_UE_HOME` (`~/ue`), `ASSETS_UE_ENGINE`, `ASSETS_UE_PROJECT`
 (`$ASSETS_UE_HOME/proj/AssetLab/AssetLab.uproject`), `ASSETS_LIBRARY` (`$ASSETS_UE_HOME/library`), `ASSETS_LOGS`,
-`ASSETS_GPU_CARDS` (`05,65`), `ASSETS_LOCK_WAIT_S` (1200), `ASSETS_MIN_FREE_GB` (6), `ASSETS_THREADS` (16).
+`ASSETS_GPU_CARDS` (`65,05`), `ASSETS_UE_CARDS` (`65,05`), `ASSETS_BLENDER_CARDS` (`05,65`),
+`ASSETS_BLENDER_DEVICE` (`auto`), `ASSETS_IGPU_BUS` (`c4`), `ASSETS_IGPU_MAX_BUSY` (10), `ASSETS_UE_IDLE_S` (300),
+`ASSETS_LOCK_WAIT_S` (1200), `ASSETS_MIN_FREE_GB` (6), `ASSETS_THREADS` (16), `ASSETS_STAGE_EXPOSURE_EV` (0).
 
 The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, Interchange, InterchangeEditor.
 `run_asset.py` copies `ue/init_unreal.py` into the project's `Content/Python/`; it does nothing unless
@@ -35,12 +65,13 @@ The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, I
 
 ## Machine rules built in
 
-- The render takes one card's lock (`/tmp/gpu-<bus>.lock`) with a non-blocking flock polled every 15 s, holds it
-  for the editor's lifetime only, and gives up after `ASSETS_LOCK_WAIT_S` (the CPU parts are already done).
+- GPU work takes the card's lock (`/tmp/gpu-<bus>.lock`) with a non-blocking flock polled every 15 s (Blender
+  does not wait in `auto`: it moves to the other card, the iGPU or the CPU). Blender holds it for its run; the UE
+  editor for its lifetime (long-lived: until idle). UE gives up after `ASSETS_LOCK_WAIT_S`.
   `DRI_PRIME=pci-0000_<bus>_00_0` puts that card first in Vulkan's list and the editor takes adapter 0; the run
   records VRAM per card to show which one worked.
-- A guard thread stops the editor (its own PID) when MemAvailable falls under `ASSETS_MIN_FREE_GB`; the render
-  waits to start until 10 GiB more than that is free. Shader-compile threads are capped in the project's ini.
+- A guard (a thread, or a detached watchdog for the long-lived editor) stops the editor by its own PID when
+  MemAvailable falls under `ASSETS_MIN_FREE_GB`; a render waits to start until 10 GiB more than that is free. Shader-compile threads are capped in the project's ini.
 
 ## Model scripts
 

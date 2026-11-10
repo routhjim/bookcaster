@@ -43,8 +43,6 @@ try:
     floor_mat = flat_material("M_StageFloor", (0.18, 0.18, 0.18), 0.85)
     flat_material("M_StageRef", (0.45, 0.45, 0.45), 0.6)
     les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
-    if EAL.does_asset_exist(MAP):
-        EAL.delete_asset(MAP)
     if not les.new_level(MAP):
         raise RuntimeError(f"new_level failed for {MAP}")
     act = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)

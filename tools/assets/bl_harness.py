@@ -223,8 +223,9 @@ def set_device():
             d.use = d.type == "HIP" and d.id.endswith(want)
             hit = hit or d.use
         if hit:
+            p.use_hiprt = bool(JOB.get("hiprt", False))
             sc.cycles.device = "GPU"
-            REPORT["device"] = f"HIP {want}"
+            REPORT["device"] = f"HIP {want}" + (" hiprt" if p.use_hiprt else "")
             return
         REPORT["warnings"].append(f"no HIP device {want}; using the CPU")
     sc.cycles.device = "CPU"
@@ -299,7 +300,7 @@ def bake(ob):
     for m in mats:
         m.use_nodes = True
     imgs = {k: _img(f"T_{AID}_{k}", res, k == "BaseColor")
-            for k in ("BaseColor", "Normal", "Rough", "Metal", "AO")}
+            for k in ("BaseColor", "Normal", "RMA")}
     nodes = {}
     for m in mats:
         tn = m.node_tree.nodes.new("ShaderNodeTexImage")
@@ -317,47 +318,71 @@ def bake(ob):
             tn.select = True
             m.node_tree.nodes.active = tn
 
-    def emit_bake(key, socket_name, samples=4):
+    defaults = {"Base Color": (0.5, 0.5, 0.5, 1), "Roughness": 0.6, "Metallic": 0.0}
+
+    def emit_bake(key, source, samples=4):
+        """Bake through an Emission shader. source: a Principled input name (colour), or three entries packed into
+        R, G, B: Principled input names or "AO" (an Ambient Occlusion node). One pass instead of one per map."""
         saved = []
         for m in mats:
             nt = m.node_tree
             out, pr = _principled(m)
             if out is None:
                 out = nt.nodes.new("ShaderNodeOutputMaterial")
+            if pr is None:
+                REPORT["warnings"].append(f"material {m.name} has no Principled BSDF; baked as defaults")
             old = out.inputs["Surface"].links[0].from_socket if out.inputs["Surface"].is_linked else None
             em = nt.nodes.new("ShaderNodeEmission")
             em.inputs["Strength"].default_value = 1.0
-            if pr is None:
-                REPORT["warnings"].append(f"material {m.name} has no Principled BSDF; baked as grey")
-                em.inputs["Color"].default_value = {"BaseColor": (0.5, 0.5, 0.5, 1), "Rough": (0.6,) * 3 + (1,),
-                                                    "Metal": (0, 0, 0, 1)}[key]
-            else:
-                src = pr.inputs[socket_name]
-                if src.is_linked:
-                    nt.links.new(src.links[0].from_socket, em.inputs["Color"])
+            tmp = [em]
+
+            def feed(name, dst):
+                if name == "AO":
+                    ao = nt.nodes.new("ShaderNodeAmbientOcclusion")
+                    ao.samples = int(JOB.get("ao_node_samples") or {"hero": 16, "mid": 8, "background": 4}[tier])
+                    ao.inputs["Distance"].default_value = sc.world.light_settings.distance
+                    tmp.append(ao)
+                    nt.links.new(ao.outputs["AO"], dst)
+                    return
+                src = pr.inputs[name] if pr is not None else None
+                if src is not None and src.is_linked:
+                    nt.links.new(src.links[0].from_socket, dst)
                 else:
-                    v = src.default_value
-                    em.inputs["Color"].default_value = tuple(v) if hasattr(v, "__len__") else (v, v, v, 1)
+                    v = src.default_value if src is not None else defaults[name]
+                    if dst.type == "RGBA":
+                        dst.default_value = tuple(v) if hasattr(v, "__len__") else (v, v, v, 1)
+                    else:
+                        dst.default_value = v if not hasattr(v, "__len__") else v[0]
+
+            if isinstance(source, str):
+                feed(source, em.inputs["Color"])
+            else:
+                cc = nt.nodes.new("ShaderNodeCombineColor")
+                tmp.append(cc)
+                for name, ch in zip(source, ("Red", "Green", "Blue")):
+                    feed(name, cc.inputs[ch])
+                nt.links.new(cc.outputs["Color"], em.inputs["Color"])
             nt.links.new(em.outputs["Emission"], out.inputs["Surface"])
-            saved.append((nt, out, old, em))
+            saved.append((nt, out, old, tmp))
         target(key)
         sc.cycles.samples = samples
         bpy.ops.object.bake(type="EMIT", use_clear=True)
-        for nt, out, old, em in saved:
-            nt.nodes.remove(em)
+        for nt, out, old, tmp in saved:
+            for n in tmp:
+                nt.nodes.remove(n)
             if old is not None:
                 nt.links.new(old, out.inputs["Surface"])
 
+    es = int(JOB.get("bake_samples", 4))
     with Timer("bake"):
-        emit_bake("BaseColor", "Base Color")
-        emit_bake("Rough", "Roughness")
-        emit_bake("Metal", "Metallic")
-        target("Normal")
-        sc.cycles.samples = 4
-        bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_clear=True)
-        target("AO")
-        sc.cycles.samples = int(SPEC.get("ao_samples", {"hero": 32, "mid": 16, "background": 8}[tier]))
-        bpy.ops.object.bake(type="AO", use_clear=True)
+        with Timer("bake_basecolor"):
+            emit_bake("BaseColor", "Base Color", es)
+        with Timer("bake_rough_metal_ao"):      # one pass: R roughness, G metallic, B occlusion (AO node)
+            emit_bake("RMA", ["Roughness", "Metallic", "AO"], es)
+        with Timer("bake_normal"):
+            target("Normal")
+            sc.cycles.samples = es
+            bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_clear=True)
 
     def px(im):
         a = np.empty(res * res * 4, dtype=np.float32)
@@ -366,9 +391,8 @@ def bake(ob):
 
     orm = _img(f"T_{AID}_ORM", res, False)
     o = np.ones((res, res, 4), dtype=np.float32)
-    o[..., 0] = px(imgs["AO"])[..., 0]
-    o[..., 1] = px(imgs["Rough"])[..., 0]
-    o[..., 2] = px(imgs["Metal"])[..., 0]
+    rma = px(imgs["RMA"])
+    o[..., 0], o[..., 1], o[..., 2] = rma[..., 2], rma[..., 0], rma[..., 1]
     orm.pixels.foreach_set(o.ravel())
     files = {}
     for key, im in (("BaseColor", imgs["BaseColor"]), ("Normal", imgs["Normal"]), ("ORM", orm)):
@@ -418,8 +442,7 @@ def bake(ob):
     for m in mats:
         if m.users == 0:
             bpy.data.materials.remove(m)
-    for k in ("Rough", "Metal", "AO"):
-        bpy.data.images.remove(imgs[k])
+    bpy.data.images.remove(imgs["RMA"])
 
 
 # ---------------------------------------------------------------- 5. SHEET

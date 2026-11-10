@@ -7,8 +7,8 @@ asset.json (the manifest entry), source/, export/, textures/, sheet/, ue/ (valid
 <library>/manifest.json indexes every asset. Exit 0 when every step ran (checks may still fail: see asset.json).
 
 GPU rules: the UE render holds one card's lock (/tmp/gpu-<bus>.lock, polled with a non-blocking flock, given up
-after ASSETS_LOCK_WAIT_S) for the editor's lifetime only; Blender runs on the CPU. A guard stops the editor (by its
-own PID) when MemAvailable falls under ASSETS_MIN_FREE_GB.
+after ASSETS_LOCK_WAIT_S) for the editor's lifetime only; Blender bakes and renders on an XTX under its lock (else
+the idle iGPU, else CPU). A guard stops the editor (by its own PID) when MemAvailable falls under ASSETS_MIN_FREE_GB.
 """
 
 import argparse
@@ -73,11 +73,14 @@ def blender_step(spec, model, adir, args, mode="final"):
     auto = an XTX whose lock is free right now, else the idle iGPU, else CPU; cpu = never a GPU. An XTX lock is
     held for the whole Blender run. A failed HIP run is rerun on the CPU."""
     job = {"spec": spec, "model": str(Path(model).resolve()), "out": str(adir), "mode": mode,
-           "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": True}
+           "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": True,
+           "hiprt": args.hiprt}
     want = args.device or C.BLENDER_DEVICE
     bus, fd, waited = (None, None, 0.0)
+    if mode == "preview" and want == "auto" and igpu_free():
+        want = "igpu"                                   # previews go to the iGPU when it is idle; cards stay free
     if want in ("xtx", "auto"):
-        bus, fd, waited = take_card(C.LOCK_WAIT_S if want == "xtx" else 0)
+        bus, fd, waited = take_card(C.LOCK_WAIT_S if want == "xtx" else 0, C.BLENDER_CARDS)
     if bus is None and want in ("igpu", "auto") and igpu_free():
         bus = C.IGPU_BUS
     tries = [("HIP", bus)] if bus else []
@@ -90,11 +93,13 @@ def blender_step(spec, model, adir, args, mode="final"):
             jp.write_text(json.dumps(job, indent=1))
             (adir / "blender_report.json").unlink(missing_ok=True)
             t = time.time()
+            sampler = LoadSampler(b)
             with open(adir / "logs" / f"blender_{mode}.log", "w") as f:
                 r = subprocess.run([str(c) for c in (C.BLENDER, "-b", "--factory-startup", "-t", C.THREADS,
                                                      "--python", HERE / "bl_harness.py", "--", jp)],
                                    stdout=f, stderr=subprocess.STDOUT, timeout=3600, pass_fds=(fd,) if fd else ())
             dt = round(time.time() - t, 1)
+            load = sampler.done()
             rp = adir / "blender_report.json"
             rep = json.loads(rp.read_text()) if rp.exists() else {}
             log(f"blender {mode} on {dev}{' card ' + b if b else ''}: rc={r.returncode} {dt}s "
@@ -111,6 +116,7 @@ def blender_step(spec, model, adir, args, mode="final"):
     rep["wall_s"] = dt
     rep["startup_s"] = round(dt - rep["times_s"].get("total", 0), 1)
     rep["lock_wait_s"] = waited
+    rep["gpu_load"] = load
     (adir / "blender_report.json").write_text(json.dumps(rep, indent=1))
     return rep, dt
 
@@ -136,6 +142,7 @@ def ensure_stage(logdir, rebuild=False):
     umap = project_content() / (C.UE_STAGE_MAP.replace("/Game/", "") + ".umap")
     if umap.exists() and not rebuild:
         return {"built": False}
+    umap.unlink(missing_ok=True)          # new_level refuses to overwrite an existing map, even after delete_asset
     log("building the stage level")
     rc, dt, res = ue_cmdlet(HERE / "ue" / "ue_stage.py", {"map": C.UE_STAGE_MAP, "result": str(logdir / "stage.json"),
                              "exposure_ev": C.STAGE_EXPOSURE_EV},
@@ -159,10 +166,10 @@ def ensure_mannequin():
 
 
 # ---------------------------------------------------------------- GPU lock + render
-def take_card(wait_s):
+def take_card(wait_s, cards=None):
     t0 = time.time()
     while True:
-        for bus in C.GPU_CARDS:
+        for bus in cards or C.GPU_CARDS:
             fd = os.open(f"/tmp/gpu-{bus}.lock", os.O_RDWR | os.O_CREAT, 0o666)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -172,6 +179,49 @@ def take_card(wait_s):
         if time.time() - t0 > wait_s:
             return None, None, round(time.time() - t0, 1)
         time.sleep(15)
+
+
+def _card_dir(bus):
+    for d in Path("/sys/class/drm").glob("card[0-9]*"):
+        if (d / "device").exists() and os.path.realpath(d / "device").endswith(f"0000:{bus}:00.0"):
+            return d / "device"
+    return None
+
+
+def gpu_load(bus):
+    """(busy %, watts) of one card from sysfs."""
+    d = _card_dir(bus)
+    try:
+        busy = int((d / "gpu_busy_percent").read_text())
+        pw = next(iter(d.glob("hwmon/hwmon*/power1_average")), None) or next(iter(d.glob("hwmon/hwmon*/power1_input")),
+                                                                          None)
+        return busy, (int(pw.read_text()) / 1e6 if pw else None)
+    except (OSError, ValueError, TypeError):
+        return None, None
+
+
+def summarize_load(samples):
+    b = [x[0] for x in samples if x[0] is not None]
+    w = [x[1] for x in samples if x[1] is not None]
+    return {"samples": len(samples), "busy_mean": round(sum(b) / len(b), 1) if b else None, "busy_peak": max(b, default=None),
+            "watts_mean": round(sum(w) / len(w), 1) if w else None, "watts_peak": max(w, default=None)}
+
+
+class LoadSampler:
+    def __init__(self, bus):
+        self.bus, self.s, self.stop = bus, [], False
+        self.th = threading.Thread(target=self.run, daemon=True)
+        if bus:
+            self.th.start()
+
+    def run(self):
+        while not self.stop:
+            self.s.append(gpu_load(self.bus))
+            time.sleep(0.25)
+
+    def done(self):
+        self.stop = True
+        return summarize_load(self.s)
 
 
 def igpu_free():
@@ -220,74 +270,170 @@ def ue_phases(text, t_start_utc):
     return out
 
 
-def render_step(spec, sm_path, adir, args, mannequin):
+def server_dir() -> Path:
+    d = Path(C.UE_PROJECT).parent / "Saved" / "AssetServer"
+    (d / "queue").mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class ProjectLock:
+    """One editor per UE project: two editors saving into the same project can corrupt its asset registry and
+    packages, so starting an editor (or the import commandlet) goes through this lock (non-blocking, polled)."""
+
+    def __enter__(self):
+        self.fd = os.open(server_dir() / "project.lock", os.O_RDWR | os.O_CREAT, 0o666)
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                time.sleep(2)
+
+    def __exit__(self, *a):
+        os.close(self.fd)
+
+
+def live_server():
+    sp = server_dir() / "state.json"
+    if not sp.exists():
+        return None
+    st = json.loads(sp.read_text())
+    try:
+        alive = "UnrealEditor" in Path(f"/proc/{st['pid']}/cmdline").read_text(errors="replace")
+    except OSError:
+        alive = False
+    if not alive or (server_dir() / "queue" / "quit").exists():
+        sp.unlink(missing_ok=True)
+        return None
+    return st
+
+
+def install_shim():
+    dst = project_content() / "Python" / "init_unreal.py"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src = (HERE / "ue" / "init_unreal.py").read_bytes()
+    if not dst.exists() or dst.read_bytes() != src:
+        tmp = dst.with_name(f".init_unreal.{os.getpid()}.tmp")
+        tmp.write_bytes(src)
+        tmp.replace(dst)
+
+
+def editor_cmd(bus):
+    env = dict(os.environ, DRI_PRIME=f"pci-0000_{bus}_00_0")
+    env.pop("MESA_VK_DEVICE_SELECT", None)     # DRI_PRIME puts the locked card first; adapter 0 is then that card
+    cmd = [C.UE_EDITOR, C.UE_PROJECT, C.UE_STAGE_MAP, "-RenderOffscreen", "-graphicsadapter=0", "-vulkan", "-sm6",
+           "-windowed", "-resx=1152", "-resy=640", "-unattended", "-nosplash", "-nosound", "-stdout"]
+    return [str(c) for c in cmd], env
+
+
+def guard_main(pid, bus):
+    """Detached watchdog for a long-lived editor: stop it (by PID) when MemAvailable runs low; tidy up after."""
+    while Path(f"/proc/{pid}").exists():
+        if mem_avail_gb() < C.MIN_FREE_GB:
+            (server_dir() / "guard.txt").write_text(f"MemAvailable {mem_avail_gb():.1f} GiB at {time.ctime()}; "
+                                                    f"editor {pid} stopped\n")
+            os.kill(pid, 15)
+        time.sleep(2)
+    sp = server_dir() / "state.json"
+    if sp.exists() and json.loads(sp.read_text()).get("pid") == pid:
+        sp.unlink()
+    (server_dir() / "queue" / "quit").unlink(missing_ok=True)
+
+
+def render_step(spec, imp_job, adir, args, mannequin):
+    """Import + stills in one editor. Default: hand the job to the warm long-lived editor (start one if none; it
+    holds its card's lock and quits after ASSETS_UE_IDLE_S without work). --fresh-editor: one editor per asset."""
     out = adir / "ue"
     out.mkdir(exist_ok=True)
-    shim_dst = project_content() / "Python" / "init_unreal.py"
-    shim_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(HERE / "ue" / "init_unreal.py", shim_dst)
-    job = {"script": str(HERE / "ue" / "ue_render.py"), "map": C.UE_STAGE_MAP, "mesh": sm_path, "id": spec["id"],
+    job = {"map": C.UE_STAGE_MAP, "import": imp_job, "id": spec["id"],
            "out": str(out), "res": [1152, 640], "warm_s": args.warm_s, "settle_s": args.settle_s,
+           "warm_frames": args.warm_frames, "settle_frames": args.settle_frames,
            "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef", "mannequin": mannequin,
            "result": str(adir / "logs" / "ue_render.json")}
-    jp = adir / "logs" / "ue_render_job.json"
-    jp.write_text(json.dumps(job, indent=1))
     Path(job["result"]).unlink(missing_ok=True)
     while mem_avail_gb() < C.MIN_FREE_GB + 10:
         log(f"waiting for memory: MemAvailable {mem_avail_gb():.1f} GiB")
         time.sleep(30)
-    bus, fd, waited = take_card(C.LOCK_WAIT_S)
-    if bus is None:
-        return {"ok": False, "error": f"no card free after {waited}s; CPU-only parts done"}
-    log(f"card {bus} locked after {waited}s")
-    logf = C.LOGS / f"assets_{spec['id']}_render.log"
-    env = dict(os.environ, ASSETS_UE_JOB=str(jp), DRI_PRIME=f"pci-0000_{bus}_00_0")
-    env.pop("MESA_VK_DEVICE_SELECT", None)     # DRI_PRIME puts the locked card first; adapter 0 is then that card
-    cmd = [C.UE_EDITOR, C.UE_PROJECT, C.UE_STAGE_MAP, "-RenderOffscreen", "-graphicsadapter=0", "-vulkan", "-sm6",
-           "-windowed", "-resx=1152", "-resy=640", "-unattended", "-nosplash", "-nosound", "-stdout"]
     t0 = time.time()
-    t0_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    vram = {b: [] for b in C.GPU_CARDS}
-    guard = {"stop": False, "tripped": None}
-    with open(logf, "w") as f:
-        p = subprocess.Popen([str(c) for c in cmd], stdout=f, stderr=subprocess.STDOUT, env=env, pass_fds=(fd,))
-
-        def watch():
-            while p.poll() is None and not guard["stop"]:
-                a = mem_avail_gb()
-                for b in C.GPU_CARDS:
-                    vram[b].append(vram_used(b))
-                if a < C.MIN_FREE_GB:
-                    guard["tripped"] = f"MemAvailable {a:.1f} GiB at {time.time() - t0:.0f}s; editor stopped"
-                    p.terminate()
-                time.sleep(5)
-
-        th = threading.Thread(target=watch, daemon=True)
-        th.start()
+    with ProjectLock():
+        srv = None if args.fresh_editor else live_server()
+        if srv:
+            q = server_dir() / "queue" / f"{spec['id']}.{os.getpid()}.{int(t0)}.job.json"
+            tmp = q.with_suffix(".tmp")
+            tmp.write_text(json.dumps(job, indent=1))
+            tmp.replace(q)
+            log(f"job handed to the running editor (pid {srv['pid']}, card {srv['card']})")
+            bus, p, logf, waited, started = srv["card"], None, Path(srv["log"]), 0.0, False
+        else:
+            install_shim()
+            bus, fd, waited = take_card(C.LOCK_WAIT_S, C.UE_CARDS)
+            if bus is None:
+                return {"ok": False, "error": f"no card free after {waited}s; CPU-only parts done"}
+            log(f"card {bus} locked after {waited}s; starting an editor")
+            job["script"] = str(HERE / "ue" / "ue_render.py")
+            if not args.fresh_editor:
+                job["serve_dir"] = str(server_dir() / "queue")
+                job["serve_idle_s"] = C.UE_IDLE_S
+                (server_dir() / "queue" / "quit").unlink(missing_ok=True)
+            jp = adir / "logs" / "ue_render_job.json"
+            jp.write_text(json.dumps(job, indent=1))
+            cmd, env = editor_cmd(bus)
+            env["ASSETS_UE_JOB"] = str(jp)
+            logf = C.LOGS / (f"assets_{spec['id']}_render.log" if args.fresh_editor
+                             else f"assets_ue_server_{time.strftime('%m%d_%H%M%S')}.log")
+            f = open(logf, "w")
+            p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, pass_fds=(fd,),
+                                 start_new_session=not args.fresh_editor)
+            f.close()
+            os.close(fd)                                   # the editor holds the card lock from here on
+            started = True
+            if not args.fresh_editor:
+                (server_dir() / "state.json").write_text(json.dumps({"pid": p.pid, "card": bus, "log": str(logf),
+                                                                    "started": time.ctime()}))
+                subprocess.Popen([sys.executable, __file__, "--guard", str(p.pid), bus], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0_utc = datetime.datetime.fromtimestamp(t0, datetime.timezone.utc).timestamp()
+    util, vram = [], {b: [] for b in C.GPU_CARDS}
+    rp = Path(job["result"])
+    deadline = t0 + args.ue_timeout
+    rc = None
+    while not rp.exists():
+        util.append(gpu_load(bus))
+        for b in C.GPU_CARDS:
+            vram[b].append(vram_used(b))
+        if p is not None and args.fresh_editor:
+            if p.poll() is not None:
+                break
+            if mem_avail_gb() < C.MIN_FREE_GB:
+                p.terminate()
+        elif not Path(f"/proc/{p.pid if p else srv['pid']}").exists():
+            break                                          # the editor died: no result will come
+        if time.time() > deadline:
+            if p is not None:
+                p.terminate()
+            break
+        time.sleep(0.25)
+    if p is not None and args.fresh_editor:
         try:
-            rc = p.wait(timeout=args.ue_timeout)
+            rc = p.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            p.terminate()
-            try:
-                rc = p.wait(60)
-            except subprocess.TimeoutExpired:
-                p.kill()
-                rc = p.wait()
-        guard["stop"] = True
-    os.close(fd)                                          # release the card as soon as the editor is gone
+            p.kill()
+            rc = p.wait()
     dt = round(time.time() - t0, 1)
-    res = json.loads(Path(job["result"]).read_text()) if Path(job["result"]).exists() else {"ok": False}
-    text = logf.read_text(errors="replace")
+    time.sleep(0.05)
+    res = json.loads(rp.read_text()) if rp.exists() else {"ok": False}
+    text = logf.read_text(errors="replace") if logf.exists() else ""
     gpu = re.findall(r'Metadata set : gpu="([^"]+)"', text)
     rt = re.findall(r'Metadata set : raytracing="(\d)"', text)
     res.update({"rc": rc, "time_s": dt, "card": bus, "lock_wait_s": waited, "log": str(logf),
+                "editor": "fresh" if args.fresh_editor else ("started" if started else "warm"),
                 "gpu_name": gpu[-1] if gpu else None, "raytracing_metadata": rt[-1] if rt else None,
                 "vram_peak_mib": {b: max([v for v in vram[b] if v is not None], default=None) for b in vram},
-                "guard": guard["tripped"], "phases_s": ue_phases(text, t0_utc),
-                "shader_jobs_logged": len(re.findall(r"LogShaderCompilers: Display: .*[Cc]ompil", text))})
+                "gpu_load": summarize_load(util),
+                "phases_s": ue_phases(text, t0_utc) if started else None})
     if not res.get("ok") and not res.get("error"):
-        res["error"] = f"editor rc={rc}; no result; see {logf}"
-    log(f"render rc={rc} {dt}s ok={res.get('ok')} card={bus} vram_peak={res['vram_peak_mib']}")
+        res["error"] = f"no result from the editor; see {logf}"
+    log(f"render {dt}s ok={res.get('ok')} card={bus} editor={res['editor']}")
     return res
 
 
@@ -312,7 +458,8 @@ def write_manifest(spec, adir, blend, imp, render, model, times):
         "check_details": blend["checks"],
         "rig": None,
         "render": {k: (render or {}).get(k) for k in ("ok", "card", "gpu_name", "raytracing_metadata", "cvars",
-                                                      "time_s", "error")},
+                                                      "time_s", "phases_s", "gpu_load", "error")},
+        "blender_run": {k: blend.get(k) for k in ("device", "wall_s", "startup_s", "times_s", "gpu_load")},
         "times_s": times,
         "updated": datetime.datetime.now().isoformat(timespec="seconds"),
     }
@@ -338,6 +485,15 @@ def rel(p, base):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--guard":
+        guard_main(int(sys.argv[2]), sys.argv[3])
+        return 0
+    if len(sys.argv) == 2 and sys.argv[1] == "--stop-editor":
+        st = live_server()
+        if st:
+            (server_dir() / "queue" / "quit").touch()
+            log(f"asked editor {st['pid']} to quit")
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("spec")
     ap.add_argument("model")
@@ -348,8 +504,13 @@ def main():
     ap.add_argument("--preview", action="store_true",
                     help="modelling loop: model + checks + small unbaked sheet only (no bake, export or UE)")
     ap.add_argument("--device", choices=("auto", "xtx", "igpu", "cpu"), help="Blender bake/sheet device (default config)")
-    ap.add_argument("--warm-s", type=float, default=20)
-    ap.add_argument("--settle-s", type=float, default=3)
+    ap.add_argument("--warm-frames", type=int, default=90, help="frames after set-up before the first still")
+    ap.add_argument("--settle-frames", type=int, default=30, help="frames after each camera move")
+    ap.add_argument("--warm-s", type=float, default=0, help="minimum seconds on top of --warm-frames")
+    ap.add_argument("--settle-s", type=float, default=0)
+    ap.add_argument("--fresh-editor", action="store_true",
+                    help="start and quit an editor for this asset instead of using the long-lived one")
+    ap.add_argument("--hiprt", type=int, choices=(0, 1), default=0, help="Cycles HIP RT (hardware ray tracing)")
     ap.add_argument("--ue-timeout", type=float, default=2400)
     args = ap.parse_args()
     spec = json.loads(Path(args.spec).read_text())
@@ -372,23 +533,36 @@ def main():
     if failed:
         log(f"checks failed: {failed} (continuing; recorded in asset.json)")
     glb = blend["files"]["export"].get("glb")
-    log("UE import")
     dest = f"{C.UE_ASSET_ROOT}/{spec['class'].capitalize()}s/{spec['id']}"   # Interchange adds <file name>/ inside
-
-    rc, times["ue_import"], imp = ue_cmdlet(HERE / "ue" / "ue_import.py",
-                                            {"file": glb, "dest": dest, "id": spec["id"], "nanite": True,
-                                             "result": str(adir / "logs" / "ue_import.json")},
-                                            adir / "logs" / "ue_import.log")
-    log(f"import ok={imp.get('ok')} {times['ue_import']}s -> {imp.get('static_mesh')} problems={imp.get('problems')}")
-    if not imp.get("ok"):
-        raise SystemExit(f"UE import failed: {imp.get('error')}")
+    imp_job = {"file": glb, "dest": dest, "id": spec["id"], "nanite": True,
+               "result": str(adir / "logs" / "ue_import.json")}
+    Path(imp_job["result"]).unlink(missing_ok=True)
     render = None
-    if not args.skip_render:
-        st = ensure_stage(adir / "logs", args.rebuild_stage)
+    if args.skip_render:
+        # import only: the no-GPU commandlet (a second editor start, ~7 s, so the render path imports in-process)
+        log("UE import (commandlet)")
+        with ProjectLock():
+            if live_server():
+                raise SystemExit("a long-lived editor owns the project; run without --skip-render to import through it")
+            rc, times["ue_import"], imp = ue_cmdlet(HERE / "ue" / "ue_import.py", imp_job,
+                                                    adir / "logs" / "ue_import.log")
+    else:
+        with ProjectLock():
+            if args.rebuild_stage and live_server():
+                raise SystemExit("stop the long-lived editor first (run_asset.py --stop-editor), then rebuild")
+            st = ensure_stage(adir / "logs", args.rebuild_stage) if not live_server() else {"built": False}
+            mannequin = ensure_mannequin()
         if st.get("built"):
             times["ue_stage"] = st["time_s"]
-        render = render_step(spec, imp["static_mesh"], adir, args, ensure_mannequin())
+        log("UE import + render (one editor)")
+        render = render_step(spec, imp_job, adir, args, mannequin)
         times["ue_render"] = render.get("time_s")
+        rp = Path(imp_job["result"])
+        imp = json.loads(rp.read_text()) if rp.exists() else {"ok": False, "error": render.get("error")}
+        times["ue_import_in_editor"] = imp.get("time_s")
+    log(f"import ok={imp.get('ok')} -> {imp.get('static_mesh')} problems={imp.get('problems')}")
+    if not imp.get("ok"):
+        raise SystemExit(f"UE import failed: {imp.get('error')}")
     times["total"] = round(time.time() - t0, 1)
     entry = write_manifest(spec, adir, blend, imp, render, args.model, times)
     log(f"done in {times['total']}s; checks_passed={entry['checks_passed']}; render ok={(render or {}).get('ok')}")
