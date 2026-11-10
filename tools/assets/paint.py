@@ -54,7 +54,10 @@ SCRATCH = Path(os.path.expanduser(os.environ.get("ASSETS_PAINT_SCRATCH", str(C.U
 
 DEFAULTS = {
     "views": {"ring": 8, "ring_el": 12, "upper": 4, "upper_el": 50, "top": True, "area_px": 1536 * 1024},
-    "method": "img2img", "strength": 0.5, "control": "depth", "control_scale": 0.7, "control_end": 1.0,
+    # method test 11-10 (anvil, 3 views): no ControlNet at 0.65 gave the most surface character with the outline
+    # held (silhouette IoU 0.989; the mask keeps the background); depth/canny control flattened the surface into
+    # plain CG paint, and at 0.85 slid edges; the edit model invented holes and rivets (IoU 0.937) at ~80 s a view
+    "method": "img2img", "strength": 0.65, "control": None, "control_scale": 0.7, "control_end": 1.0,
     "seed": 7, "samples": 48,
     "params": {"anchor": 0.0, "normal_strength": 1.5, "rough_strength": 0.25, "gain_match": True},
 }
