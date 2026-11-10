@@ -47,6 +47,7 @@ QWEN_IMAGE = Path(os.environ.get("ASSETS_QWEN_IMAGE", HERE.parent / "qwen_image.
 EDIT_PY = Path(os.path.expanduser(os.environ.get("ASSETS_EDIT_PY", "~/tts-ab/.venv-hyworld/bin/python")))
 HIP_INDEX = Path(os.path.expanduser(os.environ.get("ASSETS_HIP_INDEX", "~/bin/hip-index")))
 PAINT_CARDS = [c.strip() for c in os.environ.get("ASSETS_PAINT_DEVICES", "05,65,igpu").split(",") if c.strip()]
+PAINT_WAIT_S = float(os.environ.get("ASSETS_PAINT_WAIT_S", "1e9"))   # wait for a device (default: as long as it takes)
 SCRATCH = Path(os.path.expanduser(os.environ.get("ASSETS_PAINT_SCRATCH", str(C.UE_HOME / "lab" / "paint"))))
 
 DEFAULTS = {
@@ -245,12 +246,23 @@ class Server:
 
 def paint_views(views, out, spec, p, logdir, max_devices=2):
     """img2img + depth control for every view, spread over up to max_devices drawers."""
+    jobs = []
+    variants = p.get("variants") or [{}]     # method tests: [{"tag", ...overrides}] in one loaded session
+    for var in variants:
+        jobs += view_jobs(views, out.parent / f"views_{var['tag']}" if var.get("tag") else out, spec,
+                          dict(p, **{k: v for k, v in var.items() if k != "tag"}), var.get("tag"))
+    return draw_jobs(jobs, p, logdir, max_devices)
+
+
+def view_jobs(views, out, spec, p, tag=None):
     prompt = prompt_for(spec, p)
+    out.mkdir(parents=True, exist_ok=True)
     jobs = []
     for v in views:
         f = v["files"]
         path = str(out / f"{v['name']}.png")
-        j = {"id": v["name"], "prompt": prompt, "seed": int(p["seed"]), "path": path, "size": v["size"],
+        j = {"id": f"{tag}/{v['name']}" if tag else v["name"], "prompt": prompt, "seed": int(p["seed"]),
+             "path": path, "size": v["size"],
              "init": {"image": f["guide"], "strength": float(p["strength"]), "mask": f["mask"],
                       "strength_bg": 0.0}}
         if p.get("controls"):              # several: [{"type": "depth" | "canny", "scale", "end"}] (canny of the guide)
@@ -263,11 +275,15 @@ def paint_views(views, out, spec, p, logdir, max_devices=2):
         if p.get("refs"):
             j["refs"] = p["refs"]
         jobs.append(j)
+    return jobs
+
+
+def draw_jobs(jobs, p, logdir, max_devices):
     todo = [j for j in jobs if not Path(j["path"]).exists()]
     times = {"jobs": len(jobs), "drawn": len(todo)}
     if not todo:
         return times
-    got, waited = take_devices(PAINT_CARDS, min(max_devices, max(1, len(todo) // 4)), C.LOCK_WAIT_S)
+    got, waited = take_devices(PAINT_CARDS, min(max_devices, max(1, len(todo) // 4)), PAINT_WAIT_S)
     if not got:
         raise SystemExit(f"no device for the image model after {waited}s")
     times["lock_wait_s"] = waited
@@ -326,7 +342,7 @@ def edit_views(views, out, spec, p, logdir):
     times = {"jobs": len(jobs), "drawn": len(todo)}
     if not todo:
         return times
-    got, waited = take_devices([d for d in PAINT_CARDS if d != "igpu"], 1, C.LOCK_WAIT_S)
+    got, waited = take_devices([d for d in PAINT_CARDS if d != "igpu"], 1, PAINT_WAIT_S)
     if not got:
         raise SystemExit(f"no card for the edit model after {waited}s")
     (d, fd), = got
@@ -415,7 +431,8 @@ def run(adir, spec, stages=("guides", "paint", "project"), overrides=None):
             r = paint_views(V["views"], pdir, spec, p, logdir, int(p.get("devices", 2)))
         rep["times_s"]["paint"] = r.get("paint_s", 0)
         rep["paint"] = r
-        contact(V["views"], adir / "paint" / f"{aid}_paint_views{'_' + tag if tag else ''}.jpg", pdir)
+        if not p.get("variants"):
+            contact(V["views"], adir / "paint" / f"{aid}_paint_views{'_' + tag if tag else ''}.jpg", pdir)
     if "project" in stages:
         tdir = adir / "textures" / (f"painted_{tag}" if tag else "painted")
         glb = adir / "export" / f"{aid}_painted{'_' + tag if tag else ''}.glb"
