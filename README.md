@@ -174,8 +174,9 @@ Useful options for the shots flow:
 - `--keys-only` draws and checks the keyframes and makes a preview video without animating.
 - `--from` and `--to` limit the job to a stretch of the chapter. `--render a-b` directs that
   whole stretch but draws and animates only the window, which makes a short test cycle.
-- `--review user` (or `agent`) holds each action line's takes on a review card so that a person
-  (or an agent) picks one. After 10 minutes the vision judge's pick is used.
+- Each action line's takes wait on a review card for an agent to pick one (`--review agent`, the
+  default). `--review user` holds them for a person, and `--review off` leaves every pick to the
+  vision judge. A card unanswered for 10 minutes takes the judge's pick.
 
 The other flows, chosen with `--flow`:
 
@@ -266,7 +267,7 @@ language:
 | `BOOKCASTER_PACE` | `1.25` | Default listening speed. |
 | `BOOKCASTER_EXCLUDE_VOICES` | `ears_` | Voice-name prefixes left out of casting, comma-separated. |
 | `BOOKCASTER_VIDEO_CODEC`, `BOOKCASTER_VIDEO_BITRATE` | `libopenh264`, `2500k` | Video encoding. |
-| `BOOKCASTER_REVIEW` | `off` | Review cards for action takes: `off`, `agent` or `user`. |
+| `BOOKCASTER_REVIEW` | `agent` | Review cards for action takes: `off`, `agent` or `user`. |
 | `BOOKCASTER_SFX_PYTHON`, `BOOKCASTER_WHISPER_PYTHON` | reference-machine paths | Interpreters for the sound-effect model and Whisper. |
 
 `tools/fish_stack.sh` has its own variables for venvs and GPU pins, listed in its header.

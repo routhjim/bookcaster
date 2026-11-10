@@ -2391,7 +2391,8 @@ def main(argv: list[str] | None = None) -> int:
                    "assemble only this window, e.g. 1:06-2:06 (10-27 user: a minute per learning cycle)")
     s.add_argument("--review", choices=["off", "agent", "user"], default=None,
                    help="shots: each action chain line's 3 takes wait on a review card (shots/review/<chain>/<line>/"
-                        "card.json -> choice.json: pick, accept or override; 600 s, then the vision judge's pick)")
+                        "card.json -> choice.json: pick, accept or override; 600 s, then the vision judge's pick). "
+                        "Default: agent; off leaves every pick to the judge")
     s.add_argument("--chapter", help="3d: the chapter number (default: every recorded chapter)")
     s.add_argument("--auto-approve", action="store_true", help="3d: the automated QA gates instead of the review")
     s.add_argument("--jellyfin", action="store_true", help="3d: send the finished video to Jellyfin")
