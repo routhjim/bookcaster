@@ -318,6 +318,42 @@ def install_shim():
         tmp.replace(dst)
 
 
+def ensure_rt_ini():
+    """Write the ray-tracing renderer settings into the project's DefaultEngine.ini (ASSETS_UE_RAYTRACING: 1 =
+    hardware ray tracing + Lumen hardware tracing, 0 = software Lumen). Called before an editor starts; an editor
+    already running keeps what it started with. Returns True when the file changed (the start recompiles shaders)."""
+    ini = Path(C.UE_PROJECT).parent / "Config" / "DefaultEngine.ini"
+    want = dict(C.UE_RT_SETTINGS)
+    if not C.UE_RAYTRACING:
+        want.update({"r.RayTracing": "False", "r.Lumen.HardwareRayTracing": "False"})
+    lines = ini.read_text().splitlines() if ini.exists() else []
+    sec = "[/Script/Engine.RendererSettings]"
+    if sec not in lines:
+        lines += ["", sec]
+    out, inside, done = [], False, set()
+    for ln in lines:
+        if ln.strip().startswith("["):
+            if inside:                                     # leaving the section: add what was missing
+                out += [f"{k}={v}" for k, v in want.items() if k not in done]
+                done |= set(want)
+            inside = ln.strip() == sec
+        elif inside and "=" in ln and ln.split("=", 1)[0].strip() in want:
+            k = ln.split("=", 1)[0].strip()
+            out.append(f"{k}={want[k]}")
+            done.add(k)
+            continue
+        out.append(ln)
+    if inside:
+        out += [f"{k}={v}" for k, v in want.items() if k not in done]
+    new = "\n".join(out) + "\n"
+    if ini.exists() and ini.read_text() == new:
+        return False
+    tmp = ini.with_name(f".DefaultEngine.{os.getpid()}.tmp")
+    tmp.write_text(new)
+    tmp.replace(ini)
+    return True
+
+
 def editor_cmd(bus):
     env = dict(os.environ, DRI_PRIME=f"pci-0000_{bus}_00_0")
     env.pop("MESA_VK_DEVICE_SELECT", None)     # DRI_PRIME puts the locked card first; adapter 0 is then that card
@@ -366,6 +402,9 @@ def render_step(spec, imp_job, adir, args, mannequin):
             bus, p, logf, waited, started = srv["card"], None, Path(srv["log"]), 0.0, False
         else:
             install_shim()
+            if ensure_rt_ini():
+                log(f"project renderer settings written (hardware ray tracing {'on' if C.UE_RAYTRACING else 'off'});"
+                    " this start compiles shaders")
             bus, fd, waited = take_card(C.LOCK_WAIT_S, C.UE_CARDS)
             if bus is None:
                 return {"ok": False, "error": f"no card free after {waited}s; CPU-only parts done"}
@@ -510,7 +549,8 @@ def main():
     ap.add_argument("--settle-s", type=float, default=0)
     ap.add_argument("--fresh-editor", action="store_true",
                     help="start and quit an editor for this asset instead of using the long-lived one")
-    ap.add_argument("--hiprt", type=int, choices=(0, 1), default=0, help="Cycles HIP RT (hardware ray tracing)")
+    ap.add_argument("--hiprt", type=int, choices=(0, 1), default=C.HIPRT,
+                    help="Cycles HIP RT (hardware ray tracing; default ASSETS_HIPRT=1)")
     ap.add_argument("--ue-timeout", type=float, default=2400)
     args = ap.parse_args()
     spec = json.loads(Path(args.spec).read_text())

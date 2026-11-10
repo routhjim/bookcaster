@@ -19,6 +19,10 @@ Every location comes from an environment variable; the defaults below are the do
                                                 "igpu", "cpu"
     ASSETS_IGPU_BUS     iGPU PCI bus            default "c4" (Blender only; never UE)
     ASSETS_IGPU_MAX_BUSY  iGPU busy % to accept default 10
+    ASSETS_UE_RAYTRACING  hardware ray tracing  default 1: r.RayTracing + Lumen hardware tracing in the project's
+                                                DefaultEngine.ini (written before an editor starts); 0 = software
+                                                Lumen (the next editor start recompiles shaders either way)
+    ASSETS_HIPRT        Cycles HIP RT default   default 1 (run_asset.py --hiprt 0 turns it off for one run)
 
 Stdlib only: imported by the orchestrator, never inside Blender or UE.
 """
@@ -49,6 +53,12 @@ IGPU_MAX_BUSY = int(os.environ.get("ASSETS_IGPU_MAX_BUSY", "10"))
 UE_CARDS = [c.strip() for c in os.environ.get("ASSETS_UE_CARDS", "65,05").split(",") if c.strip()]
 BLENDER_CARDS = [c.strip() for c in os.environ.get("ASSETS_BLENDER_CARDS", "05,65").split(",") if c.strip()]
 UE_IDLE_S = float(os.environ.get("ASSETS_UE_IDLE_S", "300"))
+UE_RAYTRACING = os.environ.get("ASSETS_UE_RAYTRACING", "1") == "1"
+HIPRT = int(os.environ.get("ASSETS_HIPRT", "1"))
+# Renderer settings the project needs for hardware ray tracing (measured on both XTX cards, 11-10: initialises,
+# first start ~67 s of shader compile, later starts ~24 s v ~15 s software). Shadows stay virtual shadow maps.
+UE_RT_SETTINGS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.HardwareRayTracing": "True",
+                  "r.SkinCache.CompileShaders": "True"}
 
 UE_BIN = UE_ENGINE / "Engine" / "Binaries" / "Linux"
 UE_EDITOR = UE_BIN / "UnrealEditor"

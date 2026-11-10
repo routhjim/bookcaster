@@ -20,6 +20,13 @@ Stdlib Python 3 only on the calling side. Several runs may go at once (see Concu
 **Modes.** `--preview` (2.6 s on the anvil): model, contract, checks and a 320 px, 12 spp sheet of the *unbaked*
 materials (`sheet/<id>_preview.png`); no bake, export or UE. Default (final): everything.
 
+**Ray tracing.** Hardware ray tracing is the default in both tools: `run_asset.py` writes `r.RayTracing`,
+`r.Lumen.HardwareRayTracing` and the skin-cache shader setting into the project's `DefaultEngine.ini` before it
+starts an editor (`ASSETS_UE_RAYTRACING=0` writes them off: software Lumen), and Cycles runs with HIP RT
+(`--hiprt 0` or `ASSETS_HIPRT=0` turns it off). Cost: the first editor start after a switch compiles shaders
+(~67 s measured in a copy project); later fresh starts ~24 s instead of ~15 s. The long-lived editor pays this
+once. The stills record `raytracing_metadata` and the ray-tracing console variables.
+
 **Long-lived editor.** The first final run starts a UE editor that stays up, holds its card's lock, and takes
 later jobs from `<project>/Saved/AssetServer/queue/`; it quits after `ASSETS_UE_IDLE_S` (300) without work or on
 `--stop-editor`. A warm editor does import + 4 stills in ~4.5 s instead of ~15 s. `--fresh-editor` starts and
@@ -30,7 +37,7 @@ Output: `<library>/<class>/<id>/` with `asset.json` (manifest entry), `source/` 
 all assets. The rules are in [CONTRACT.md](CONTRACT.md).
 
 Other flags: `--skip-render` (Blender + import commandlet only), `--source-sheet` (also render the unbaked model),
-`--formats glb,fbx,usd`, `--device auto|xtx|igpu|cpu`, `--hiprt 0|1`, `--warm-frames`, `--settle-frames`,
+`--formats glb,fbx,usd`, `--device auto|xtx|igpu|cpu`, `--hiprt 0|1` (Cycles HIP RT, default on), `--warm-frames`, `--settle-frames`,
 `--warm-s`, `--settle-s`, `--ue-timeout`.
 
 ## Devices
@@ -40,7 +47,7 @@ Other flags: `--skip-render` (Blender + import commandlet only), `--source-sheet
 | model script, contract, checks, UV unwrap, glTF export, manifest | CPU (all under 1 s) |
 | bake, contact sheet | Cycles HIP on one XTX under its lock (Blender prefers card 05, UE card 65); preview prefers the idle iGPU; overflow to the iGPU if both locks are held and it is idle, else CPU |
 | UE import | CPU inside the editor |
-| UE stills | one XTX (prefers 65), Vulkan SM6, Lumen (software tracing: `r.RayTracing` is off in the project) |
+| UE stills | one XTX (prefers 65), Vulkan SM6, Lumen with hardware ray tracing (`r.RayTracing`, `r.Lumen.HardwareRayTracing`; `ASSETS_UE_RAYTRACING=0` for software Lumen) |
 
 ## Concurrency
 
@@ -57,7 +64,8 @@ Environment variables, documented in `config.py`: `ASSETS_BLENDER` (default `$BL
 (`$ASSETS_UE_HOME/proj/AssetLab/AssetLab.uproject`), `ASSETS_LIBRARY` (`$ASSETS_UE_HOME/library`), `ASSETS_LOGS`,
 `ASSETS_GPU_CARDS` (`65,05`), `ASSETS_UE_CARDS` (`65,05`), `ASSETS_BLENDER_CARDS` (`05,65`),
 `ASSETS_BLENDER_DEVICE` (`auto`), `ASSETS_IGPU_BUS` (`c4`), `ASSETS_IGPU_MAX_BUSY` (10), `ASSETS_UE_IDLE_S` (300),
-`ASSETS_LOCK_WAIT_S` (1200), `ASSETS_MIN_FREE_GB` (6), `ASSETS_THREADS` (16), `ASSETS_STAGE_EXPOSURE_EV` (0).
+`ASSETS_LOCK_WAIT_S` (1200), `ASSETS_MIN_FREE_GB` (6), `ASSETS_THREADS` (16), `ASSETS_STAGE_EXPOSURE_EV` (0),
+`ASSETS_UE_RAYTRACING` (1), `ASSETS_HIPRT` (1).
 
 The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, Interchange, InterchangeEditor.
 `run_asset.py` copies `ue/init_unreal.py` into the project's `Content/Python/`; it does nothing unless
