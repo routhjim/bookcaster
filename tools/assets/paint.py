@@ -458,7 +458,7 @@ def run(adir, spec, stages=("guides", "paint", "project"), overrides=None):
                      "res": tex_px, "out_dir": str(tdir), "glb": str(glb), "params": p["params"]},
                     logdir / "paint_project.log")
         rep["times_s"]["project"] = r["wall_s"]
-        rep["project"] = {k: r.get(k) for k in ("texels", "seen_fraction", "seams", "views_per_texel", "global_gain",
+        rep["project"] = {k: r.get(k) for k in ("texels", "seen_fraction", "seams", "bg_painted_fraction", "views_per_texel", "global_gain",
                                                 "view_gains", "times_s", "card", "warnings")}
         rep["files"] = {"textures": {k: str(Path(v).relative_to(adir)) for k, v in r["files"].items()
                                      if k != "glb"}, "glb": str(glb.relative_to(adir))}

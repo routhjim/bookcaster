@@ -576,6 +576,15 @@ def project():
             e1 = blur(inside.astype(np.float32), edge_r, 1)
             e2 = 1 - np.clip(blur(step.astype(np.float32), edge_r, 1) * 4, 0, 1)
             wimg = np.clip((e1 - 0.5) * 2, 0, 1) * e2 * conf * inside
+            # the painter sometimes paints background inside the outline (a limb drawn thinner): flat pixels at the
+            # background grey carry no surface; drop them (and a margin) from this view
+            bgv = float(v.get("bg_grey", 0.5))
+            near_bg = np.abs(pain - bgv).max(-1) < float(P.get("bg_tol", 0.035))
+            flat = blur(np.abs(pain.mean(-1) - blur(pain.mean(-1), 2)), 2) < 0.012
+            bgpaint = (near_bg & flat & inside).astype(np.float32)
+            wimg *= 1 - np.clip(blur(bgpaint, 3, 1) * 3, 0, 1)
+            REPORT.setdefault("bg_painted_fraction", {})[v["name"]] = round(
+                float(bgpaint.sum()) / max(float(inside.sum()), 1), 4)
             low = masked_blur(alb, inside, low_r)
             high = alb - low
             per_view.append(dict(v=v, Mi=Mi, Mw=Mw, W=W, H=H, f=f, posv=posv, wimg=wimg, low=low, high=high,
