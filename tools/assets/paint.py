@@ -43,6 +43,8 @@ sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
 
 QWEN_PY = Path(os.path.expanduser(os.environ.get("ASSETS_QWEN_PY", "~/tts-ab/.venv-qwenimage/bin/python")))
+# the iGPU (gfx1151) needs a torch built for it: the drawer venv's torch has no kernels for it
+QWEN_PY_IGPU = Path(os.path.expanduser(os.environ.get("ASSETS_QWEN_PY_IGPU", "~/tts-ab/.venv-charlora-igpu/bin/python")))
 QWEN_IMAGE = Path(os.environ.get("ASSETS_QWEN_IMAGE", HERE.parent / "qwen_image.py"))
 EDIT_PY = Path(os.path.expanduser(os.environ.get("ASSETS_EDIT_PY", "~/tts-ab/.venv-hyworld/bin/python")))
 HIP_INDEX = Path(os.path.expanduser(os.environ.get("ASSETS_HIP_INDEX", "~/bin/hip-index")))
@@ -216,7 +218,8 @@ class Server:
         self.dev, self.fd = dev, fd
         self.t0 = time.time()
         self.err = open(logf, "w")
-        self.p = subprocess.Popen([str(QWEN_PY), "-I", str(QWEN_IMAGE), "--serve"], stdin=subprocess.PIPE,
+        py = QWEN_PY_IGPU if dev == "igpu" else QWEN_PY
+        self.p = subprocess.Popen([str(py), "-I", str(QWEN_IMAGE), "--serve"], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=self.err, text=True, env=hip_env(dev),
                                   pass_fds=(fd,))
         line = self.p.stdout.readline()
@@ -446,9 +449,32 @@ def run(adir, spec, stages=("guides", "paint", "project"), overrides=None):
         rep["files"] = {"textures": {k: str(Path(v).relative_to(adir)) for k, v in r["files"].items()
                                      if k != "glb"}, "glb": str(glb.relative_to(adir))}
         log(f"project: seen {r.get('seen_fraction')}, {r['wall_s']} s on {r['card']}")
+    if "stills" in stages:
+        # before/after in Blender (Cycles, the real PBR maps, the harness's light): four sides and close-ups
+        cb = (p["views"].get("close") or {}).get("box")
+        ct = [(cb[0] + cb[3]) / 2, (cb[1] + cb[4]) / 2, (cb[2] + cb[5]) / 2] if cb else [0.5, 0.3, 0.8]
+        shots = p.get("stills") or (
+            [{"name": n, "az": az, "el": 10, "span": 1.05, "target": [0.5, 0.5, 0.5], "px": [1024, 1024]}
+             for n, az in (("front", 0), ("right", 90), ("back", 180), ("left", 270))]
+            + [{"name": "close", "az": 25, "el": 25, "span": 0.18, "target": ct, "px": [1280, 800], "lens": 85},
+               {"name": "macro", "az": 25, "el": 25, "span": 0.07, "target": ct, "px": [1280, 800], "lens": 85}])
+        t1 = time.time()
+        for maps, sub in (("procedural", "procedural"),
+                          (str(adir / "textures" / (f"painted_{tag}" if tag else "painted")), "painted")):
+            if p.get("stills_only") and sub not in p["stills_only"]:
+                continue
+            out = adir / "paint" / f"stills_{sub}{'_' + tag if tag else ''}"
+            blender({"mode": "stills", "blend": str(blend), "id": aid, "maps": maps, "out": str(out),
+                     "shots": shots, "samples": int(p.get("stills_samples", 64))}, logdir / f"paint_stills_{sub}.log")
+        rep["times_s"]["stills"] = round(time.time() - t1, 1)
     rep["times_s"]["total"] = round(time.time() - t0, 1)
-    (adir / "paint" / f"paint{'_' + tag if tag else ''}.json").write_text(json.dumps(rep, indent=1))
-    return rep
+    rp = adir / "paint" / f"paint{'_' + tag if tag else ''}.json"
+    old = json.loads(rp.read_text()) if rp.exists() else {}
+    times = dict(old.get("times_s", {}), **rep["times_s"])      # a run of some stages keeps the others' record
+    old.update(rep)
+    old["times_s"] = times
+    rp.write_text(json.dumps(old, indent=1))
+    return old
 
 
 def main():
