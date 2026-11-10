@@ -4288,7 +4288,8 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
 # ---- action chains: each line in CHAIN_TAKES seeds; the next line starts on the picked take's last frame (11-05)
 CHAIN_FRAMES = 97                       # every chain line is one 4 s clip (P48)
 CHAIN_SEEDS = (42, 1042, 2042)
-REVIEW = os.environ.get("BOOKCASTER_REVIEW", "off")       # off | agent | user (run(review=...) sets it)
+# 11-10 user: agent review is the default (the judge alone picked poorly); `off` leaves every pick to the judge
+REVIEW = os.environ.get("BOOKCASTER_REVIEW", "agent")     # off | agent | user (run(review=...) sets it)
 REVIEW_TIMEOUT = 600.0                  # a review card unanswered this long takes the judge's pick
 CHAIN_POLL = 3.0
 

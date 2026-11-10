@@ -8,7 +8,7 @@ vision judge faked):
   - the narration gap: the pause at a sentence break inside the chain's slot, never inside a spoken line, the times
     after it moved, the silence sample-exact.
     ~/tts_reader/.venv/bin/python3 tools/tests/test_action_chains_1105.py"""
-import json, subprocess, sys, tempfile, threading, time
+import json, os, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
@@ -108,6 +108,11 @@ if BOOK.exists():
     s.pop("things")
     got = S._key_prompt(BOOK, "01_chapter_1", "action-05m16s-003162", s)
     check("key text without things: as before (the gloss)", "hooked tip" in got and "(a straight" not in got, got)
+
+# 11-10: with no BOOKCASTER_REVIEW set, the action chains wait on an agent's review card
+r_ = subprocess.run([sys.executable, "-c", "import shot_flow as S; print(S.REVIEW)"], cwd=str(HERE), capture_output=True,
+                    text=True, env={k: v for k, v in os.environ.items() if k != "BOOKCASTER_REVIEW"})
+check("the review default is agent", r_.stdout.strip().splitlines()[-1:] == ["agent"], (r_.stdout[-200:], r_.stderr[-300:]))
 
 # the chain thread, end to end on fake clips (review: agent)
 with tempfile.TemporaryDirectory() as td:
