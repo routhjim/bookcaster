@@ -123,13 +123,9 @@ def hip_env(dev):
 
 # ---------------------------------------------------------------- blender
 def blender(job, logf, cards=None):
-    """Run bl_paint.py on a free XTX (non-blocking), else the CPU."""
-    fd = bus = None
-    for b in cards or C.BLENDER_CARDS:
-        fd = try_lock(b)
-        if fd is not None:
-            bus = b
-            break
+    """Run bl_paint.py on a GPU by the chain's bake policy (run_asset.take_bake_device), else the CPU."""
+    import run_asset
+    bus, fds, waited, how = run_asset.take_bake_device(C.BLENDER_DEVICE)
     job = dict(job, device="HIP" if bus else "CPU", hip_bus=bus or "", hiprt=C.HIPRT)
     jp = Path(str(logf) + ".job.json")
     rp = Path(str(logf) + ".report.json")
@@ -141,13 +137,14 @@ def blender(job, logf, cards=None):
         with open(logf, "w") as f:
             subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", str(C.THREADS), "--python",
                             str(HERE / "bl_paint.py"), "--", str(jp)], stdout=f, stderr=subprocess.STDOUT,
-                           timeout=3600, pass_fds=(fd,) if fd else ())
+                           timeout=3600, pass_fds=tuple(fds))
     finally:
-        if fd:
-            os.close(fd)
+        for x in fds:
+            os.close(x)
     rep = json.loads(rp.read_text()) if rp.exists() else {"status": "error", "error": f"no report; see {logf}"}
     rep["wall_s"] = round(time.time() - t, 1)
     rep["card"] = bus or "cpu"
+    rep["device_choice"] = f"{how} after {waited}s"
     if rep.get("status") != "ok":
         raise SystemExit(f"bl_paint {job['mode']} failed: {rep.get('error')}")
     return rep

@@ -56,7 +56,7 @@ Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples
 | Step | Device |
 |---|---|
 | model script, contract, checks, UV unwrap, glTF export, manifest | CPU (all under 1 s) |
-| bake, contact sheet | Cycles HIP on one XTX under its lock (Blender prefers card 05, UE card 65); preview prefers the idle iGPU; overflow to the iGPU if both locks are held and it is idle, else CPU |
+| bake, contact sheet | Cycles HIP on an XTX: its lock when free, or its bake slot beside this chain's warm UE editor (see Concurrency); else the idle iGPU under its lock; polled every 2 s for up to `ASSETS_BAKE_WAIT_S` (45) before the CPU; previews try the iGPU first |
 | UE import | CPU inside the editor |
 | UE stills | one XTX (prefers 65), Vulkan SM6, Lumen with hardware ray tracing (`r.RayTracing`, `r.Lumen.HardwareRayTracing`; `ASSETS_UE_RAYTRACING=0` for software Lumen) |
 
@@ -65,7 +65,15 @@ Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples
 - Blender runs are independent (own asset folder, own job files); one per card plus the iGPU plus CPU.
 - Only one UE editor per project: two editors saving into one project can corrupt it. Starting an editor, the
   stage build and the import commandlet go through `<project>/Saved/AssetServer/project.lock`; jobs from parallel
-  runs queue in the one long-lived editor and run one after another.
+  runs queue in the one long-lived editor and run one after another. The project lock is held only for the
+  hand-over or the editor start, never while a run waits for a card: a waiting run polls the card locks outside
+  it and hands its job to an editor another run started meanwhile.
+- **Bake slots.** The warm editor holds its card's lock for its lifetime but uses ~5-6 GB of the 24. A Blender job
+  may share that card: it then takes only `/tmp/gpu-<bus>.bake.lock` (one Blender job per card) when the card has
+  `ASSETS_BAKE_VRAM_GB` (8) free. A Blender job that takes a card's main lock also takes its bake slot, so two
+  bakes never share a card. Other holders of a card lock (other tools) stay exclusive.
+- **One editor, one card.** A second warm editor on the other card would need its own project copy, and every
+  asset would then exist in two projects (the library's `ue.path` names one); not done.
 - Two runs of the *same* asset id at once are not supported (same folder).
 
 ## Settings
@@ -84,8 +92,8 @@ The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, I
 
 ## Machine rules built in
 
-- GPU work takes the card's lock (`/tmp/gpu-<bus>.lock`) with a non-blocking flock polled every 15 s (Blender
-  does not wait in `auto`: it moves to the other card, the iGPU or the CPU). Blender holds it for its run; the UE
+- GPU work takes the card's lock (`/tmp/gpu-<bus>.lock`) with a non-blocking flock, polled (UE every 3 s,
+  Blender every 2 s across both cards, their bake slots and the iGPU's lock `/tmp/gpu-igpu.lock`). Blender holds it for its run; the UE
   editor for its lifetime (long-lived: until idle). UE gives up after `ASSETS_LOCK_WAIT_S`.
   `DRI_PRIME=pci-0000_<bus>_00_0` puts that card first in Vulkan's list and the editor takes adapter 0; the run
   records VRAM per card to show which one worked.
@@ -93,6 +101,12 @@ The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, I
   MemAvailable falls under `ASSETS_MIN_FREE_GB`; a render waits to start until 10 GiB more than that is free. Shader-compile threads are capped in the project's ini.
 
 ## Model scripts
+
+**UVs.** The default Smart UV Project (60 degrees) leaves seams along swept round parts and aliases on very thin
+faces. A model script that needs better UVs makes its own (one UV map, non-overlapping, inside 0-1; e.g. a
+cylinder unwrapped by `bpy.ops.uv.cylinder_project` or by seams + `bpy.ops.uv.unwrap`) and sets `"keep_uvs": true`
+in the spec. The degenerate-face check names the part (object of the model script) and the world positions of up
+to three zero-area faces.
 
 A model script is plain `bpy` code run in an empty scene (metric, 1 unit = 1 m) with `SPEC` (the spec dict) in its
 globals. It builds the asset with its front facing -Y and its base on Z = 0, and gives every face a Principled-BSDF

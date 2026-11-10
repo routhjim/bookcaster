@@ -76,7 +76,7 @@ class Job:
         self.r = {"ok": False, "shots": [], "id": job["id"]}
         self.t0 = time.time()
         self.phase, self.t_phase, self.f_phase = "start", time.time(), S["n"]
-        self.actors, self.shots, self.i = [], [], 0
+        self.actors, self.shots, self.i, self.refs, self.hide = [], [], 0, [], set()
         os.makedirs(job["out"], exist_ok=True)
 
     # -------------------------------------------------------------- scene
@@ -127,6 +127,7 @@ class Job:
         if j.get("ref_box_material") and EAL.does_asset_exist(j["ref_box_material"]):
             box.static_mesh_component.set_material(0, EAL.load_asset(j["ref_box_material"]))
         self.actors.append(box)
+        self.refs = [box]
         right = mx.x
         if j.get("mannequin") and EAL.does_asset_exist(j["mannequin"]):
             mq = act.spawn_actor_from_class(unreal.SkeletalMeshActor, unreal.Vector(mx.x + 70, 0, 0),
@@ -134,6 +135,7 @@ class Job:
             mq.set_actor_label("ref_mannequin")
             mq.skeletal_mesh_component.set_skinned_asset_and_update(EAL.load_asset(j["mannequin"]))
             self.actors.append(mq)
+            self.refs.append(mq)
             right = mx.x + 110
             self.r["mannequin"] = True
         c = unreal.Vector(0, 0, H / 2)
@@ -144,8 +146,13 @@ class Job:
         close_t = unreal.Vector(mx.x * 0.35, mx.y * 0.6, H * 0.85)
         close_w = max(L, W, H) * 0.45
         cams = j.get("cameras") or {}
+        ct = cams.get("close_target")      # fractions of the bounding box in the Blender frame (x right, y back, z up)
+        if ct:
+            close_t = unreal.Vector(mn.x + L * ct[0], mx.y - W * ct[1], mn.z + H * ct[2])
+            close_w = max(L, W, H) * float(cams.get("close_width", 0.45))
         preset = PRESETS.get(cams.get("preset") or "prop", PRESETS["prop"])
         self.shots = []
+        self.hide = set()          # shots of the asset alone: the reference box and mannequin are hidden
         for s in preset:
             name, kind, az, el, focal, k = s
             if kind == "group":
@@ -155,6 +162,8 @@ class Job:
             else:                      # detail: a frame k x close_w wide on the top front edge
                 cam = self.camera(name, close_t, az, el, close_w * k / 2 * focal / 18, focal)
             self.shots.append((name, cam))
+            if kind != "group":
+                self.hide.add(name)
         for s in cams.get("custom", []):
             # spec cameras in the asset's Blender frame (metres, front -Y): UE x = 100 x, y = -100 y, z = 100 z
             P_, T_ = s["position"], s["target"]
@@ -173,6 +182,8 @@ class Job:
             cc.set_editor_property("focus_settings", fs)
             self.actors.append(cam)
             self.shots.append((s["name"], cam))
+            if not s.get("show_refs"):
+                self.hide.add(s["name"])
 
     def teardown(self):
         try:
@@ -206,6 +217,8 @@ class Job:
             self.r["warm_done_s"] = round(time.time() - self.t0, 2)
             self.goto("aim")
         elif ph == "aim":
+            for a in self.refs:
+                a.set_actor_hidden_in_game(self.shots[self.i][0] in self.hide)
             les.pilot_level_actor(self.shots[self.i][1])
             self.goto("settle")
         elif ph == "settle" and self.waited(j.get("settle_frames", 30), j.get("settle_s", 0)):

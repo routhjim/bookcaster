@@ -77,13 +77,9 @@ def blender_step(spec, model, adir, args, mode="final"):
            "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": args.preview_samples,
            "sheet_samples": args.sheet_samples}
     want = args.device or C.BLENDER_DEVICE
-    bus, fd, waited = (None, None, 0.0)
-    if mode == "preview" and want == "auto" and igpu_free():
-        want = "igpu"                                   # previews go to the iGPU when it is idle; cards stay free
-    if want in ("xtx", "auto"):
-        bus, fd, waited = take_card(C.LOCK_WAIT_S if want == "xtx" else 0, C.BLENDER_CARDS)
-    if bus is None and want in ("igpu", "auto") and igpu_free():
-        bus = C.IGPU_BUS
+    bus, fds, waited, how = take_bake_device(want, preview=(mode == "preview"))
+    fd = fds[0] if fds else None
+    log(f"blender {mode}: {how} after {waited}s")
     tries = [("HIP", bus)] if bus else []
     tries.append(("CPU", None))
     rep, dt = {}, 0.0
@@ -98,7 +94,7 @@ def blender_step(spec, model, adir, args, mode="final"):
             with open(adir / "logs" / f"blender_{mode}.log", "w") as f:
                 r = subprocess.run([str(c) for c in (C.BLENDER, "-b", "--factory-startup", "-t", C.THREADS,
                                                      "--python", HERE / "bl_harness.py", "--", jp)],
-                                   stdout=f, stderr=subprocess.STDOUT, timeout=3600, pass_fds=(fd,) if fd else ())
+                                   stdout=f, stderr=subprocess.STDOUT, timeout=3600, pass_fds=tuple(fds))
             dt = round(time.time() - t, 1)
             load = sampler.done()
             rp = adir / "blender_report.json"
@@ -110,13 +106,14 @@ def blender_step(spec, model, adir, args, mode="final"):
             if rep.get("error") and "model" not in rep.get("times_s", {}):
                 break                                   # the model script itself failed: no point retrying
     finally:
-        if fd:
-            os.close(fd)
+        for x in fds:
+            os.close(x)
     if rep.get("status") != "ok":
         raise SystemExit(f"blender step failed; see {adir / 'logs' / f'blender_{mode}.log'}\n{rep.get('error', '')}")
     rep["wall_s"] = dt
     rep["startup_s"] = round(dt - rep["times_s"].get("total", 0), 1)
     rep["lock_wait_s"] = waited
+    rep["device_choice"] = how
     rep["gpu_load"] = load
     (adir / "blender_report.json").write_text(json.dumps(rep, indent=1))
     return rep, dt
@@ -180,6 +177,67 @@ def take_card(wait_s, cards=None):
         if time.time() - t0 > wait_s:
             return None, None, round(time.time() - t0, 1)
         time.sleep(15)
+
+
+def try_flock(path):
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
+
+
+def vram_free_gb(bus):
+    d = _card_dir(bus)
+    try:
+        return (int((d / "mem_info_vram_total").read_text()) - int((d / "mem_info_vram_used").read_text())) / 2**30
+    except (OSError, ValueError, TypeError):
+        return 0.0
+
+
+def take_bake_device(want, preview=False):
+    """A device for a Blender bake/render: (bus | None, fds to hold, seconds waited, how).
+
+    A card is used when its lock is free, or when its lock is held by this chain's warm UE editor and the card has
+    ASSETS_BAKE_VRAM_GB free: then only the card's bake slot (/tmp/gpu-<bus>.bake.lock, one Blender job per card) is
+    taken, so bakes are not starved by the idle editor (the editor uses ~5-6 GB of the 24). A job holding a card's
+    main lock also takes its bake slot, so two bakes never share a card. Then the iGPU (its lock, when idle). In
+    "auto" these are polled every 2 s for up to ASSETS_BAKE_WAIT_S before the CPU (3-5x slower) is used.
+    Previews try the iGPU first."""
+    t0 = time.time()
+    order = []
+    if want in ("xtx", "auto"):
+        order += [("card", b) for b in C.BLENDER_CARDS]
+    if want in ("igpu", "auto"):
+        order.insert(0 if preview else len(order), ("igpu", C.IGPU_BUS))
+    if want == "cpu" or not order:
+        return None, [], 0.0, "cpu (asked)"
+    limit = C.LOCK_WAIT_S if want == "xtx" else C.BAKE_WAIT_S
+    while True:
+        srv = None
+        for kind, b in order:
+            if kind == "igpu":
+                if igpu_free():
+                    fd = try_flock(f"/tmp/gpu-{C.IGPU_LOCK_NAME}.lock")
+                    if fd is not None:
+                        return b, [fd], round(time.time() - t0, 1), "igpu"
+                continue
+            slot = try_flock(f"/tmp/gpu-{b}.bake.lock")
+            if slot is None:
+                continue                                   # a bake already runs on this card
+            fd = try_flock(f"/tmp/gpu-{b}.lock")
+            if fd is not None:
+                return b, [fd, slot], round(time.time() - t0, 1), f"card {b}"
+            if srv is None:
+                srv = live_server() or {}
+            if srv.get("card") == b and vram_free_gb(b) >= C.BAKE_VRAM_GB:
+                return b, [slot], round(time.time() - t0, 1), f"card {b} beside the warm editor"
+            os.close(slot)
+        if time.time() - t0 > limit:
+            return None, [], round(time.time() - t0, 1), "cpu (no device free)"
+        time.sleep(2)
 
 
 def _card_dir(bus):
@@ -386,53 +444,66 @@ def render_step(spec, imp_job, adir, args, mannequin):
            "out": str(out), "res": [1152, 640], "warm_s": args.warm_s, "settle_s": args.settle_s,
            "warm_frames": args.warm_frames, "settle_frames": args.settle_frames,
            "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef", "mannequin": mannequin,
-           "cameras": {"preset": spec.get("camera_preset", spec["class"]), "custom": spec.get("cameras", [])},
+           "cameras": {"preset": spec.get("camera_preset", spec["class"]), "custom": spec.get("cameras", []),
+                       "close_target": spec.get("close_target"), "close_width": spec.get("close_width", 0.45)},
            "result": str(adir / "logs" / "ue_render.json")}
     Path(job["result"]).unlink(missing_ok=True)
     while mem_avail_gb() < C.MIN_FREE_GB + 10:
         log(f"waiting for memory: MemAvailable {mem_avail_gb():.1f} GiB")
         time.sleep(30)
     t0 = time.time()
-    with ProjectLock():
-        srv = None if args.fresh_editor else live_server()
-        if srv:
-            q = server_dir() / "queue" / f"{spec['id']}.{os.getpid()}.{int(t0)}.job.json"
-            tmp = q.with_suffix(".tmp")
-            tmp.write_text(json.dumps(job, indent=1))
-            tmp.replace(q)
-            log(f"job handed to the running editor (pid {srv['pid']}, card {srv['card']})")
-            bus, p, logf, waited, started = srv["card"], None, Path(srv["log"]), 0.0, False
-        else:
-            install_shim()
-            if ensure_rt_ini():
-                log(f"project renderer settings written (hardware ray tracing {'on' if C.UE_RAYTRACING else 'off'});"
-                    " this start compiles shaders")
-            bus, fd, waited = take_card(C.LOCK_WAIT_S, C.UE_CARDS)
-            if bus is None:
+    # The project lock is held only for the short hand-over / editor start, never while waiting for a card: a run
+    # that waits for a card polls without it, and hands its job to an editor someone else started meanwhile.
+    fd, bus, waited = None, None, 0.0
+    while True:
+        with ProjectLock():
+            srv = None if args.fresh_editor else live_server()
+            if srv:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                q = server_dir() / "queue" / f"{spec['id']}.{os.getpid()}.{int(t0)}.job.json"
+                tmp = q.with_suffix(".tmp")
+                tmp.write_text(json.dumps(job, indent=1))
+                tmp.replace(q)
+                log(f"job handed to the running editor (pid {srv['pid']}, card {srv['card']})")
+                bus, p, logf, started = srv["card"], None, Path(srv["log"]), False
+                break
+            if fd is not None:
+                install_shim()
+                if ensure_rt_ini():
+                    log(f"project renderer settings written (hardware ray tracing "
+                        f"{'on' if C.UE_RAYTRACING else 'off'}); this start compiles shaders")
+                log(f"card {bus} locked after {waited}s; starting an editor")
+                job["script"] = str(HERE / "ue" / "ue_render.py")
+                if not args.fresh_editor:
+                    job["serve_dir"] = str(server_dir() / "queue")
+                    job["serve_idle_s"] = C.UE_IDLE_S
+                    (server_dir() / "queue" / "quit").unlink(missing_ok=True)
+                jp = adir / "logs" / "ue_render_job.json"
+                jp.write_text(json.dumps(job, indent=1))
+                cmd, env = editor_cmd(bus)
+                env["ASSETS_UE_JOB"] = str(jp)
+                logf = C.LOGS / (f"assets_{spec['id']}_render.log" if args.fresh_editor
+                                 else f"assets_ue_server_{time.strftime('%m%d_%H%M%S')}.log")
+                f = open(logf, "w")
+                p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, pass_fds=(fd,),
+                                     start_new_session=not args.fresh_editor)
+                f.close()
+                os.close(fd)                               # the editor holds the card lock from here on
+                started = True
+                if not args.fresh_editor:
+                    (server_dir() / "state.json").write_text(json.dumps({"pid": p.pid, "card": bus,
+                                                                        "log": str(logf), "started": time.ctime()}))
+                    subprocess.Popen([sys.executable, __file__, "--guard", str(p.pid), bus], start_new_session=True,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                break
+        bus, fd, _ = take_card(0, C.UE_CARDS)               # non-blocking, outside the project lock
+        waited = round(time.time() - t0, 1)
+        if fd is None:
+            if waited > C.LOCK_WAIT_S:
                 return {"ok": False, "error": f"no card free after {waited}s; CPU-only parts done"}
-            log(f"card {bus} locked after {waited}s; starting an editor")
-            job["script"] = str(HERE / "ue" / "ue_render.py")
-            if not args.fresh_editor:
-                job["serve_dir"] = str(server_dir() / "queue")
-                job["serve_idle_s"] = C.UE_IDLE_S
-                (server_dir() / "queue" / "quit").unlink(missing_ok=True)
-            jp = adir / "logs" / "ue_render_job.json"
-            jp.write_text(json.dumps(job, indent=1))
-            cmd, env = editor_cmd(bus)
-            env["ASSETS_UE_JOB"] = str(jp)
-            logf = C.LOGS / (f"assets_{spec['id']}_render.log" if args.fresh_editor
-                             else f"assets_ue_server_{time.strftime('%m%d_%H%M%S')}.log")
-            f = open(logf, "w")
-            p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env, pass_fds=(fd,),
-                                 start_new_session=not args.fresh_editor)
-            f.close()
-            os.close(fd)                                   # the editor holds the card lock from here on
-            started = True
-            if not args.fresh_editor:
-                (server_dir() / "state.json").write_text(json.dumps({"pid": p.pid, "card": bus, "log": str(logf),
-                                                                    "started": time.ctime()}))
-                subprocess.Popen([sys.executable, __file__, "--guard", str(p.pid), bus], start_new_session=True,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(3)
     t0_utc = datetime.datetime.fromtimestamp(t0, datetime.timezone.utc).timestamp()
     util, vram = [], {b: [] for b in C.GPU_CARDS}
     rp = Path(job["result"])

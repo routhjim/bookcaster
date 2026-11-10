@@ -121,6 +121,24 @@ def keep_coordinates(objs):
     REPORT["coords_rewired"] = rewired
 
 
+def degenerate_by_part(objs):
+    """Which part (object of the model script) has zero-area faces, and where (world centres of up to 3)."""
+    out = []
+    for o in objs:
+        me = o.data
+        n = len(me.polygons)
+        if not n:
+            continue
+        area = np.empty(n, dtype=np.float32)
+        me.polygons.foreach_get("area", area)
+        bad = np.nonzero(area < 1e-10)[0]
+        if len(bad):
+            M = o.matrix_world
+            out.append({"part": o.name, "faces": int(len(bad)),
+                        "at": [[round(x, 4) for x in (M @ me.polygons[int(i)].center)] for i in bad[:3]]})
+    REPORT["degenerate_by_part"] = out
+
+
 def apply_contract():
     sc = bpy.context.scene
     # modifiers first, while every object they may reference (empties for Mirror/Array, hidden boolean cutters)
@@ -150,6 +168,7 @@ def apply_contract():
         o.matrix_world = world[o.name]
     bpy.context.view_layer.update()
     keep_coordinates(objs)
+    degenerate_by_part(objs)
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
@@ -240,7 +259,9 @@ def run_checks(ob):
     check("normals_outward", vol > 0, round(vol, 6), "> 0", "signed volume of the mesh (negative = inside out)")
     REPORT["non_manifold_edges"] = nonman
     degen = sum(1 for f in bm.faces if f.calc_area() < 1e-10)
-    check("degenerate_faces", degen == 0, degen, 0)
+    check("degenerate_faces", degen == 0, degen, 0,
+          "; ".join(f"{d['part']}: {d['faces']} at {d['at']}" for d in REPORT.get("degenerate_by_part", []))
+          + (" (world positions before recentring)" if REPORT.get("degenerate_by_part") else ""))
     comps = islands(bm)
     boxes = []
     for c in comps:

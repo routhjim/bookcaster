@@ -23,6 +23,11 @@ Every location comes from an environment variable; the defaults below are the do
                                                 DefaultEngine.ini (written before an editor starts); 0 = software
                                                 Lumen (the next editor start recompiles shaders either way)
     ASSETS_HIPRT        Cycles HIP RT default   default 1 (run_asset.py --hiprt 0 turns it off for one run)
+    ASSETS_BAKE_WAIT_S  GPU wait before the CPU default 45 (Blender polls the cards, a card's bake slot beside the
+                                                warm editor, and the iGPU every 2 s)
+    ASSETS_BAKE_VRAM_GB VRAM for a bake beside  default 8
+                        the warm editor
+    ASSETS_IGPU_LOCK    iGPU lock name          default "igpu" (/tmp/gpu-igpu.lock)
 
 Stdlib only: imported by the orchestrator, never inside Blender or UE.
 """
@@ -53,6 +58,9 @@ IGPU_MAX_BUSY = int(os.environ.get("ASSETS_IGPU_MAX_BUSY", "10"))
 UE_CARDS = [c.strip() for c in os.environ.get("ASSETS_UE_CARDS", "65,05").split(",") if c.strip()]
 BLENDER_CARDS = [c.strip() for c in os.environ.get("ASSETS_BLENDER_CARDS", "05,65").split(",") if c.strip()]
 UE_IDLE_S = float(os.environ.get("ASSETS_UE_IDLE_S", "300"))
+BAKE_WAIT_S = float(os.environ.get("ASSETS_BAKE_WAIT_S", "45"))   # poll for a GPU this long before the CPU
+BAKE_VRAM_GB = float(os.environ.get("ASSETS_BAKE_VRAM_GB", "8"))  # free VRAM to bake beside the warm editor
+IGPU_LOCK_NAME = os.environ.get("ASSETS_IGPU_LOCK", "igpu")        # /tmp/gpu-<name>.lock
 UE_RAYTRACING = os.environ.get("ASSETS_UE_RAYTRACING", "1") == "1"
 HIPRT = int(os.environ.get("ASSETS_HIPRT", "1"))
 # Renderer settings the project needs for hardware ray tracing (measured on both XTX cards, 11-10: initialises,
