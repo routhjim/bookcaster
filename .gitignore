@@ -14,4 +14,5 @@ venv/
 *.onnx
 *.onnx.json
 models/
+!tools/assets/models/
 voices/

@@ -8,8 +8,9 @@ Job (env ASSETS_UE_JOB): {"script": this file, "map", "id", "out": folder, "resu
      "serve_dir": null | folder}  (serve: after this job, keep the editor and run every <serve_dir>/*.job.json
                                    the same way; "<serve_dir>/quit" or serve_idle_s without work ends it)
 
-Shots (asset front = UE +Y): wide (asset + 1.8 m box + mannequin), medium 3/4 front, close on the top front edge,
-back 3/4 high. Waits are counted in rendered frames (Lumen converges per frame, not per second); before the
+Shots (asset front = UE +Y): a preset per class (job "cameras": {"preset": class, "custom": [{"name", "position",
+"target" (metres, the asset's Blender frame), "focal"}]}); see PRESETS (prop: wide, medium, close, back, detail;
+vehicle: low medium, close, low rear 3/4 back, side). Waits are counted in rendered frames (Lumen converges per frame, not per second); before the
 first shot, finish_loading_before_screenshot() blocks until shaders and streaming are done. The tick callback
 guards against re-entry: take_high_res_screenshot pumps Slate, which calls the tick again inside the call (the
 "logged ten times" fault of the first GPU test).
@@ -35,6 +36,26 @@ _spec.loader.exec_module(ue_import)
 
 FIRST = json.load(open(os.environ["ASSETS_UE_JOB"]))
 S = {"t0": time.time(), "busy": False, "n": 0, "job": None, "first_level": True, "idle_since": None}
+
+
+# Camera presets per asset class: (name, kind, azimuth, elevation, focal mm, margin or frame scale). kind "group" =
+# asset + 1.8 m box + mannequin, "asset" = the asset's bounding sphere, "detail" = a frame k x 0.45 x the largest
+# side wide on the top front edge. Azimuth 0 = the asset's front (UE +Y), positive toward +X.
+PRESETS = {
+    "prop": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 22, 50, 1.12),
+             ("close", "detail", 25, 30, 85, 1.0), ("back", "asset", 150, 30, 50, 1.15),
+             ("detail", "detail", 25, 30, 85, 0.4)],
+    "vehicle": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 12, 50, 1.1),
+                ("close", "detail", 25, 20, 85, 1.0), ("back", "asset", 155, 8, 50, 1.12),
+                ("side", "asset", 90, 4, 50, 1.1)],
+    "set": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 18, 35, 1.05),
+            ("close", "detail", 25, 20, 50, 1.0), ("back", "asset", 150, 18, 35, 1.05)],
+    "creature": [("wide", "group", 15, 8, 35, 1.05), ("medium", "asset", -35, 10, 50, 1.1),
+                 ("close", "detail", 25, 15, 85, 1.0), ("back", "asset", 150, 10, 50, 1.12),
+                 ("detail", "detail", 25, 15, 85, 0.4)],
+}
+PRESETS["character"] = PRESETS["creature"]
+PRESETS["outfit"] = PRESETS["creature"]
 
 
 def log(msg):
@@ -122,12 +143,36 @@ class Job:
         r_group = math.sqrt(((gr - gl) / 2) ** 2 + 95 ** 2)
         close_t = unreal.Vector(mx.x * 0.35, mx.y * 0.6, H * 0.85)
         close_w = max(L, W, H) * 0.45
-        self.shots = [
-            ("wide", self.camera("wide", gc, 15, 8, self.fit(r_group, 35, 1.05), 35)),
-            ("medium", self.camera("medium", c, -35, 22, self.fit(r_asset, 50, 1.12), 50)),
-            ("close", self.camera("close", close_t, 25, 30, close_w / 2 * 85 / 18, 85)),
-            ("back", self.camera("back", c, 150, 30, self.fit(r_asset, 50, 1.15), 50)),
-        ]
+        cams = j.get("cameras") or {}
+        preset = PRESETS.get(cams.get("preset") or "prop", PRESETS["prop"])
+        self.shots = []
+        for s in preset:
+            name, kind, az, el, focal, k = s
+            if kind == "group":
+                cam = self.camera(name, gc, az, el, self.fit(r_group, focal, k), focal)
+            elif kind == "asset":
+                cam = self.camera(name, c, az, el, self.fit(r_asset, focal, k), focal)
+            else:                      # detail: a frame k x close_w wide on the top front edge
+                cam = self.camera(name, close_t, az, el, close_w * k / 2 * focal / 18, focal)
+            self.shots.append((name, cam))
+        for s in cams.get("custom", []):
+            # spec cameras in the asset's Blender frame (metres, front -Y): UE x = 100 x, y = -100 y, z = 100 z
+            P_, T_ = s["position"], s["target"]
+            loc = unreal.Vector(P_[0] * 100, -P_[1] * 100, P_[2] * 100)
+            tgt = unreal.Vector(T_[0] * 100, -T_[1] * 100, T_[2] * 100)
+            cam = act.spawn_actor_from_class(unreal.CineCameraActor, loc,
+                                             unreal.MathLibrary.find_look_at_rotation(loc, tgt))
+            cam.set_actor_label(f"cam_{s['name']}")
+            cc = cam.get_cine_camera_component()
+            fb = cc.get_editor_property("filmback")
+            fb.sensor_width, fb.sensor_height = 36.0, 36.0 * self.res_px[1] / self.res_px[0]
+            cc.set_editor_property("filmback", fb)
+            cc.set_editor_property("current_focal_length", float(s.get("focal", 50)))
+            fs = cc.get_editor_property("focus_settings")
+            fs.focus_method = unreal.CameraFocusMethod.DISABLE
+            cc.set_editor_property("focus_settings", fs)
+            self.actors.append(cam)
+            self.shots.append((s["name"], cam))
 
     def teardown(self):
         try:

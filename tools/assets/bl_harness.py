@@ -74,28 +74,82 @@ def run_model():
 
 
 # ---------------------------------------------------------------- 2. CONTRACT
+GEOM = ("MESH", "CURVE", "SURFACE", "META", "FONT")
+
+
+def keep_coordinates(objs):
+    """Shader coordinates survive the contract: before transforms are applied, the parts joined and the mesh
+    recentred, every part stores its own Object, Generated and world-Position coordinates as vertex attributes,
+    and material links from Texture Coordinate (Object, Generated; no other object set) and Geometry (Position)
+    are rewired to those attributes. Masks and decals placed by position bake where the model script put them."""
+    rewired = 0
+    for o in objs:
+        me = o.data
+        n = len(me.vertices)
+        if not n:
+            continue
+        co = np.empty(n * 3, dtype=np.float32)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        lo, hi = co.min(0), co.max(0)
+        gen = (co - lo) / np.maximum(hi - lo, 1e-9)
+        M = np.array(o.matrix_world)
+        wc = co @ M[:3, :3].T + M[:3, 3]
+        for name, arr in (("_obj_co", co), ("_gen_co", gen), ("_world_co", wc)):
+            a = me.attributes.get(name) or me.attributes.new(name, "FLOAT_VECTOR", "POINT")
+            a.data.foreach_set("vector", arr.astype(np.float32).ravel())
+    mats = {s.material for o in objs for s in o.material_slots if s.material and s.material.use_nodes}
+    for m in mats:
+        nt = m.node_tree
+        for n in list(nt.nodes):
+            if n.type == "TEX_COORD" and getattr(n, "object", None) is None:
+                outs = {"Object": "_obj_co", "Generated": "_gen_co"}
+            elif n.type == "NEW_GEOMETRY":
+                outs = {"Position": "_world_co"}
+            else:
+                continue
+            for sock_name, attr in outs.items():
+                sock = n.outputs[sock_name]
+                if not sock.is_linked:
+                    continue
+                at = nt.nodes.new("ShaderNodeAttribute")
+                at.attribute_type = "GEOMETRY"
+                at.attribute_name = attr
+                for lk in list(sock.links):
+                    nt.links.new(at.outputs["Vector"], lk.to_socket)
+                    rewired += 1
+    REPORT["coords_rewired"] = rewired
+
+
 def apply_contract():
     sc = bpy.context.scene
-    for o in list(sc.objects):
-        if o.type not in ("MESH", "CURVE", "SURFACE", "META", "FONT"):
-            if o.type != "EMPTY":
-                REPORT["warnings"].append(f"removed non-mesh object {o.name} ({o.type})")
-            bpy.data.objects.remove(o, do_unlink=True)
-    objs = [o for o in sc.objects if o.visible_get()]
-    for o in list(sc.objects):
-        if o not in objs:
-            REPORT["warnings"].append(f"removed hidden object {o.name}")
-            bpy.data.objects.remove(o, do_unlink=True)
+    # modifiers first, while every object they may reference (empties for Mirror/Array, hidden boolean cutters)
+    # still exists; then everything that is not a visible part goes
+    objs = [o for o in sc.objects if o.type in GEOM and o.visible_get()]
     if not objs:
         raise RuntimeError("the model script made no visible mesh")
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
     bpy.context.view_layer.objects.active = objs[0]
+    names = {o.name for o in objs}
     bpy.ops.object.convert(target="MESH")              # applies modifiers, curves -> mesh
-    objs = [o for o in sc.objects if o.type == "MESH"]
+    objs = [o for o in sc.objects if o.type == "MESH" and (o.name in names or o.select_get())]
+    if not objs:
+        raise RuntimeError("the model script made no visible mesh")
+    bpy.context.view_layer.update()
+    world = {o.name: o.matrix_world.copy() for o in objs}       # before parents (empties) go
+    for o in list(sc.objects):
+        if o not in objs:
+            if o.type != "EMPTY":
+                REPORT["warnings"].append(f"removed {'hidden' if o.type in GEOM else 'non-mesh'} object "
+                                          f"{o.name} ({o.type})")
+            bpy.data.objects.remove(o, do_unlink=True)
     for o in objs:
         o.parent = None
+        o.matrix_world = world[o.name]
+    bpy.context.view_layer.update()
+    keep_coordinates(objs)
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
@@ -285,6 +339,43 @@ def _img(name, res, color):
     return im
 
 
+def _linked_or(pr, name, test):
+    """True if the Principled input is linked, or its default passes test."""
+    if pr is None or name not in pr.inputs:
+        return False
+    i = pr.inputs[name]
+    return i.is_linked or test(i.default_value)
+
+
+def is_glass(m):
+    """A glass slot: spec "glass_materials" names it, the material has a custom property asset_glass, or its
+    Principled transmission is >= 0.5 (unlinked). Glass is not baked: it exports as its own transmissive
+    material (KHR_materials_transmission) with constant factors."""
+    if m.name in SPEC.get("glass_materials", []) or m.get("asset_glass"):
+        return True
+    _, pr = _principled(m)
+    if pr is None or "Transmission Weight" not in pr.inputs:
+        return False
+    t = pr.inputs["Transmission Weight"]
+    return (not t.is_linked) and t.default_value >= 0.5
+
+
+def has_emission(m):
+    _, pr = _principled(m)
+    if pr is None:
+        return False
+    col = _linked_or(pr, "Emission Color", lambda v: max(v[:3]) > 1e-4)
+    stren = _linked_or(pr, "Emission Strength", lambda v: v > 1e-4)
+    return col and stren
+
+
+def has_normal_detail(m):
+    """Anything that bends the shading normal: a linked Principled Normal input or a material displacement."""
+    out, pr = _principled(m)
+    return bool((pr is not None and pr.inputs["Normal"].is_linked)
+                or (out is not None and out.inputs["Displacement"].is_linked))
+
+
 def bake(ob):
     sc = bpy.context.scene
     tier = SPEC.get("tier", "mid")
@@ -297,6 +388,9 @@ def bake(ob):
         sc.world = bpy.data.worlds.new("World")
     sc.world.light_settings.distance = 0.15 * max(REPORT["dims_m"])
     mats = [s.material for s in ob.material_slots if s.material]
+    glass = [m for m in mats if is_glass(m)]
+    emissive = any(has_emission(m) for m in mats if m not in glass)
+    REPORT["glass_materials"] = [m.name for m in glass]
     for m in mats:
         m.use_nodes = True
     imgs = {k: _img(f"T_{AID}_{k}", res, k == "BaseColor")
@@ -318,7 +412,8 @@ def bake(ob):
             tn.select = True
             m.node_tree.nodes.active = tn
 
-    defaults = {"Base Color": (0.5, 0.5, 0.5, 1), "Roughness": 0.6, "Metallic": 0.0}
+    defaults = {"Base Color": (0.5, 0.5, 0.5, 1), "Roughness": 0.6, "Metallic": 0.0,
+                "Emission Color": (0, 0, 0, 1), "Emission Strength": 0.0}
 
     def emit_bake(key, source, samples=4):
         """Bake through an Emission shader. source: a Principled input name (colour), or three entries packed into
@@ -354,7 +449,10 @@ def bake(ob):
                     else:
                         dst.default_value = v if not hasattr(v, "__len__") else v[0]
 
-            if isinstance(source, str):
+            if source == "Emission":                  # colour x strength (HDR: baked to a float image)
+                feed("Emission Color", em.inputs["Color"])
+                feed("Emission Strength", em.inputs["Strength"])
+            elif isinstance(source, str):
                 feed(source, em.inputs["Color"])
             else:
                 cc = nt.nodes.new("ShaderNodeCombineColor")
@@ -380,9 +478,36 @@ def bake(ob):
         with Timer("bake_rough_metal_ao"):      # one pass: R roughness, G metallic, B occlusion (AO node)
             emit_bake("RMA", ["Roughness", "Metallic", "AO"], es)
         with Timer("bake_normal"):
-            target("Normal")
-            sc.cycles.samples = es
-            bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_clear=True)
+            if any(has_normal_detail(m) for m in mats if m not in glass):
+                target("Normal")
+                sc.cycles.samples = es
+                bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_clear=True)
+            else:                                 # nothing bends the normal: a flat map, no bake (saves ~1/3)
+                flat = np.empty((res, res, 4), dtype=np.float32)
+                flat[...] = (0.5, 0.5, 1.0, 1.0)
+                imgs["Normal"].pixels.foreach_set(flat.ravel())
+                REPORT["normal_bake"] = "flat (no normal input linked)"
+        emis_strength = 0.0
+        if emissive:
+            with Timer("bake_emissive"):
+                imgs["Emissive"] = bpy.data.images.new(f"T_{AID}_Emissive_f", res, res, alpha=False,
+                                                       float_buffer=True)
+                imgs["Emissive"].colorspace_settings.name = "Linear Rec.709"
+                emit_bake("Emissive", "Emission", es)
+                e = np.empty(res * res * 4, dtype=np.float32)
+                imgs["Emissive"].pixels.foreach_get(e)
+                e = e.reshape(res, res, 4)
+                emis_strength = float(max(e[..., :3].max(), 1e-6))
+                em8 = _img(f"T_{AID}_Emissive", res, True)
+                lin = np.clip(e[..., :3] / emis_strength, 0, 1)
+                enc = np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * np.power(lin, 1 / 2.4) - 0.055)
+                o8 = np.ones((res, res, 4), dtype=np.float32)
+                o8[..., :3] = enc
+                em8.colorspace_settings.name = "Non-Color"    # write the encoded values as they are...
+                em8.pixels.foreach_set(o8.ravel())
+                bpy.data.images.remove(imgs["Emissive"])
+                imgs["Emissive"] = em8
+                REPORT["emission_strength"] = round(emis_strength, 4)
 
     def px(im):
         a = np.empty(res * res * 4, dtype=np.float32)
@@ -395,11 +520,16 @@ def bake(ob):
     o[..., 0], o[..., 1], o[..., 2] = rma[..., 2], rma[..., 0], rma[..., 1]
     orm.pixels.foreach_set(o.ravel())
     files = {}
-    for key, im in (("BaseColor", imgs["BaseColor"]), ("Normal", imgs["Normal"]), ("ORM", orm)):
+    maps = [("BaseColor", imgs["BaseColor"]), ("Normal", imgs["Normal"]), ("ORM", orm)]
+    if "Emissive" in imgs:
+        maps.append(("Emissive", imgs["Emissive"]))
+    for key, im in maps:
         p = os.path.join(OUT, "textures", f"T_{AID}_{key}.png")
         im.filepath_raw = p
         im.file_format = "PNG"
         im.save()
+        if key == "Emissive":
+            im.colorspace_settings.name = "sRGB"            # ...then read them back as colour
         im.source = "FILE"
         im.filepath = p
         files[key] = p
@@ -435,10 +565,36 @@ def bake(ob):
     gn = nt.nodes.new("ShaderNodeGroup")
     gn.node_tree = grp
     nt.links.new(sep.outputs["Red"], gn.inputs["Occlusion"])
+    if "Emissive" in imgs:
+        te = nt.nodes.new("ShaderNodeTexImage")
+        te.image = imgs["Emissive"]
+        nt.links.new(te.outputs["Color"], pr.inputs["Emission Color"])
+        pr.inputs["Emission Strength"].default_value = emis_strength
+    glass_idx = {i for i, s in enumerate(ob.material_slots) if s.material in glass}
+    gmat = None
+    if glass:
+        # one glass material from the first glass slot's constant factors (transmissive, not baked)
+        _, gp = _principled(glass[0])
+        gmat = bpy.data.materials.new(f"M_{AID}_Glass")
+        gmat.use_nodes = True
+        gpr = gmat.node_tree.nodes["Principled BSDF"]
+        for k in ("Base Color", "Roughness", "IOR", "Transmission Weight", "Metallic", "Alpha"):
+            if gp is not None and k in gp.inputs and not gp.inputs[k].is_linked:
+                gpr.inputs[k].default_value = gp.inputs[k].default_value
+        if gpr.inputs["Transmission Weight"].default_value < 0.5:
+            gpr.inputs["Transmission Weight"].default_value = 1.0
+        REPORT["glass"] = {k: (list(gpr.inputs[k].default_value) if hasattr(gpr.inputs[k].default_value, "__len__")
+                               else gpr.inputs[k].default_value) for k in ("Base Color", "Roughness", "IOR",
+                                                                         "Transmission Weight")}
+    old_idx = np.empty(len(ob.data.polygons), dtype=np.int32)
+    ob.data.polygons.foreach_get("material_index", old_idx)
     ob.data.materials.clear()
     ob.data.materials.append(mat)
-    for p in ob.data.polygons:
-        p.material_index = 0
+    if gmat is not None:
+        ob.data.materials.append(gmat)
+    new_idx = np.isin(old_idx, list(glass_idx)).astype(np.int32) if glass_idx else np.zeros_like(old_idx)
+    ob.data.polygons.foreach_set("material_index", new_idx)
+    REPORT["glass_faces"] = int(new_idx.sum())
     for m in mats:
         if m.users == 0:
             bpy.data.materials.remove(m)
@@ -508,13 +664,25 @@ def render_sheet(ob, tag, px=512, samples=32):
     sc.render.image_settings.file_format = "PNG"
     sc.view_settings.view_transform = "AgX"
     centre = Vector((0, 0, dims.z / 2))
+    cam.data.lens = 50
     fov = 2 * math.atan(18 / cam.data.lens)
     dist = r / math.sin(fov / 2) * 1.05
+    hx, hy = dims.x / 2, dims.y / 2
+    corners = [Vector((x, y, z)) for x in (-hx, hx) for y in (-hy, hy) for z in (0, dims.z)]
     tiles = []
     for name, az, el in VIEWS:
         a, e = math.radians(az), math.radians(el)
         cam.location = centre + dist * Vector((math.sin(a) * math.cos(e), -math.cos(a) * math.cos(e), math.sin(e)))
         cam.rotation_euler = (centre - cam.location).to_track_quat("-Z", "Y").to_euler()
+        bpy.context.view_layer.update()
+        # frame the tile on the bounding box as seen from here (a long, flat asset fills the tile)
+        inv = cam.matrix_world.inverted()
+        t = 0.0
+        for cn in corners:
+            q = inv @ cn
+            if q.z < -1e-6:
+                t = max(t, abs(q.x / -q.z), abs(q.y / -q.z))
+        cam.data.lens = 18.0 / max(t * 1.06, 1e-4)
         p = os.path.join(OUT, "sheet", f"{tag}_{name}.png")
         sc.render.filepath = p
         bpy.ops.render.render(write_still=True)
@@ -592,7 +760,8 @@ def main():
             o.hide_render = False
         if JOB.get("sheet", True):
             with Timer("sheet"):
-                REPORT["files"]["sheet"] = render_sheet(ob, "sheet")
+                REPORT["files"]["sheet"] = render_sheet(ob, "sheet", int(JOB.get("sheet_px", 512)),
+                                                          int(JOB.get("sheet_samples", 32)))
         with Timer("export"):
             REPORT["files"]["export"] = {f: export(ob, f) for f in JOB.get("formats", ["glb"])}
         bp = os.path.join(OUT, "source", f"{AID}.blend")

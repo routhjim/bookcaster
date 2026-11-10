@@ -80,7 +80,7 @@ def import_asset(job):
                 info = {"path": a.get_path_name(), "srgb": bool(a.srgb), "compression": str(a.compression_settings),
                         "flip_green": bool(a.flip_green_channel)}
                 res["assets"][n] = info
-                if n.endswith("_BaseColor") and not a.srgb:
+                if (n.endswith("_BaseColor") or n.endswith("_Emissive")) and not a.srgb:
                     res["problems"].append(f"{n} is not sRGB")
                 if n.endswith("_ORM") and a.srgb:
                     a.srgb = False

@@ -19,6 +19,8 @@ UE) for glTF, FBX and USD alike: X and Z carry over, Y flips (right- to left-han
   centred in X and Y, lowest point at Z = 0. The harness moves the mesh there. Held props (`placement: held`, for
   later) put the grip at the origin with the handle along +X, as the repo's props library already does.
 - **Transforms:** applied (location 0, rotation 0, scale 1) before export. One mesh object per static asset.
+  Modifiers are applied first, while every object they reference (empties for Mirror/Array, hidden boolean
+  cutters) still exists; parented parts keep their world placement; then non-part objects are removed.
 - **Size:** `size_m` = [x, y, z] in metres = [width left-right, depth front-back, height]. The built mesh must match
   each axis within `size_tolerance` (default 15 %).
 
@@ -39,7 +41,24 @@ UE) for glTF, FBX and USD alike: X and Z carry over, Y flips (right- to left-han
     glTF import sets `flip_green_channel` and `TC_NORMALMAP` (checked on import).
   - `T_<id>_ORM` linear: R = ambient occlusion, G = roughness, B = metallic (the glTF packing; UE reads it as is).
 - Texture size by tier: hero 2048, mid 1024, background 512 (override with `texture_px`). Bake margin res/128 px.
-- Translucent, emissive and masked materials are not covered by v1.
+  - `T_<id>_Emissive` sRGB, only when a material emits (Principled Emission Color x Strength, either linked or
+    non-zero): baked to a float image, stored normalised to its peak, the peak written as the material's emission
+    strength (glTF `emissiveFactor` + `KHR_materials_emissive_strength`; UE's glTF master material reads both).
+- **Glass**: a material slot is glass when the spec lists it in `glass_materials`, the material has the custom
+  property `asset_glass`, or its Principled Transmission Weight is >= 0.5 (unlinked). Glass is not baked: its faces
+  go to a second material `M_<id>_Glass` with the first glass slot's constant base colour, roughness, IOR and
+  transmission, exported as `KHR_materials_transmission` (Interchange: its Transmission master material,
+  translucent). One mesh, two slots. Nanite does not draw translucent sections, so an asset with glass imports with
+  Nanite off. Tinted dark glass that must hide an interior: a dark base colour (transmission tints by it).
+- **Painted maps** (optional, `run_asset.py --paint`, see README): a second set `textures/painted/T_<id>_BaseColor
+  / Normal / ORM.png` and `export/<id>_painted.glb` on the same UVs; the procedural set is never overwritten. The
+  spec's `texture_set` (`painted` | `procedural`) picks the set imported into UE (default: painted when this run
+  painted and `paint.use` is not false). UE texture names stay `T_<id>_<map>` either way.
+- Shader coordinates are preserved: the harness stores every part's Object, Generated and world-Position
+  coordinates as vertex attributes before applying transforms, joining and recentring, and rewires Texture
+  Coordinate (Object, Generated) and Geometry (Position) links to them, so position-based masks and decals bake
+  where the model script placed them.
+- Masked (alpha-cut) materials are not covered by v1.
 
 ## UVs
 

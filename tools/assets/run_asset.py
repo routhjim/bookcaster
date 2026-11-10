@@ -73,8 +73,9 @@ def blender_step(spec, model, adir, args, mode="final"):
     auto = an XTX whose lock is free right now, else the idle iGPU, else CPU; cpu = never a GPU. An XTX lock is
     held for the whole Blender run. A failed HIP run is rerun on the CPU."""
     job = {"spec": spec, "model": str(Path(model).resolve()), "out": str(adir), "mode": mode,
-           "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": True,
-           "hiprt": args.hiprt}
+           "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": not args.no_sheet,
+           "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": args.preview_samples,
+           "sheet_samples": args.sheet_samples}
     want = args.device or C.BLENDER_DEVICE
     bus, fd, waited = (None, None, 0.0)
     if mode == "preview" and want == "auto" and igpu_free():
@@ -385,6 +386,7 @@ def render_step(spec, imp_job, adir, args, mannequin):
            "out": str(out), "res": [1152, 640], "warm_s": args.warm_s, "settle_s": args.settle_s,
            "warm_frames": args.warm_frames, "settle_frames": args.settle_frames,
            "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef", "mannequin": mannequin,
+           "cameras": {"preset": spec.get("camera_preset", spec["class"]), "custom": spec.get("cameras", [])},
            "result": str(adir / "logs" / "ue_render.json")}
     Path(job["result"]).unlink(missing_ok=True)
     while mem_avail_gb() < C.MIN_FREE_GB + 10:
@@ -549,6 +551,12 @@ def main():
     ap.add_argument("--settle-s", type=float, default=0)
     ap.add_argument("--fresh-editor", action="store_true",
                     help="start and quit an editor for this asset instead of using the long-lived one")
+    ap.add_argument("--preview-px", type=int, default=320, help="preview sheet tile size (px)")
+    ap.add_argument("--preview-samples", type=int, default=12, help="preview sheet Cycles samples")
+    ap.add_argument("--sheet-samples", type=int, default=32, help="final contact sheet Cycles samples")
+    ap.add_argument("--no-sheet", action="store_true", help="final pass without the Blender contact sheet")
+    ap.add_argument("--paint", action="store_true",
+                    help="texture-painting stage (paint.py): image-model detail projected into a second map set")
     ap.add_argument("--hiprt", type=int, choices=(0, 1), default=C.HIPRT,
                     help="Cycles HIP RT (hardware ray tracing; default ASSETS_HIPRT=1)")
     ap.add_argument("--ue-timeout", type=float, default=2400)
@@ -573,8 +581,25 @@ def main():
     if failed:
         log(f"checks failed: {failed} (continuing; recorded in asset.json)")
     glb = blend["files"]["export"].get("glb")
+    paint_rep = None
+    if args.paint:
+        import paint                                       # the texture-painting stage (paint.py)
+        log("paint: guide views -> image model -> projection")
+        paint_rep = paint.run(adir, spec)
+        times["paint"] = paint_rep["times_s"]
+    painted_glb = adir / "export" / f"{spec['id']}_painted.glb"
+    tset = spec.get("texture_set") or ("painted" if paint_rep and (spec.get("paint") or {}).get("use", True)
+                                       else "procedural")
+    if tset == "painted":
+        if not painted_glb.exists():
+            raise SystemExit("texture_set painted but no painted maps: run with --paint")
+        if not paint_rep:
+            log("texture_set painted: using the maps of an earlier --paint run (same model script assumed)")
+        glb = str(painted_glb)
+    log(f"texture set for UE: {tset}")
     dest = f"{C.UE_ASSET_ROOT}/{spec['class'].capitalize()}s/{spec['id']}"   # Interchange adds <file name>/ inside
-    imp_job = {"file": glb, "dest": dest, "id": spec["id"], "nanite": True,
+    # Nanite does not draw translucent sections: an asset with a glass slot imports without it
+    imp_job = {"file": glb, "dest": dest, "id": spec["id"], "nanite": not blend.get("glass_materials"),
                "result": str(adir / "logs" / "ue_import.json")}
     Path(imp_job["result"]).unlink(missing_ok=True)
     render = None
@@ -605,6 +630,13 @@ def main():
         raise SystemExit(f"UE import failed: {imp.get('error')}")
     times["total"] = round(time.time() - t0, 1)
     entry = write_manifest(spec, adir, blend, imp, render, args.model, times)
+    entry["texture_set"] = tset
+    pj = adir / "paint" / "paint.json"
+    if pj.exists():
+        pr = json.loads(pj.read_text())
+        entry["textures_painted"] = (pr.get("files") or {}).get("textures")
+        entry["export_painted"] = (pr.get("files") or {}).get("glb")
+    (adir / "asset.json").write_text(json.dumps(entry, indent=1))
     log(f"done in {times['total']}s; checks_passed={entry['checks_passed']}; render ok={(render or {}).get('ok')}")
     log(f"asset folder: {adir}")
     return 0 if (render is None or render.get("ok")) else 3

@@ -12,10 +12,10 @@ Stdlib Python 3 only on the calling side. Several runs may go at once (see Concu
 
 | Step | Where | What |
 |---|---|---|
-| 1 Blender harness (`bl_harness.py`) | Blender 4.5, Cycles on a GPU | runs the model script in an empty scene; applies the contract (one mesh `SM_<id>`, floor-centre origin, transforms applied); checks; Smart-UV; bakes materials to BaseColor / Normal / ORM in 3 passes; 8-view contact sheet (512 px tiles, 32 spp + denoise); exports `.glb`; saves the `.blend` |
+| 1 Blender harness (`bl_harness.py`) | Blender 4.5, Cycles on a GPU | runs the model script in an empty scene; applies the contract (one mesh `SM_<id>`, floor-centre origin, transforms applied); checks; Smart-UV; bakes materials to BaseColor / Normal / ORM (+ Emissive when a material emits; the normal pass is skipped when no material bends the normal); glass slots kept as a transmissive second material; 8-view contact sheet (512 px tiles framed on the bounds, 32 spp + denoise); exports `.glb`; saves the `.blend` |
 | 2 UE import (`ue/ue_import.py`) | inside the render editor (or `UnrealEditor-Cmd -nullrhi` with `--skip-render`) | Interchange glTF import to `/Game/Assets/<Class>s/<id>/`, mesh renamed `SM_<id>`, Nanite on, texture settings checked |
 | 3 Stage (`ue/ue_stage.py`) | commandlet, once | builds `/Game/AssetStage/L_AssetStage` (floor, physical sky, sun, sky light, fog, post volume with fixed exposure) if missing; `--rebuild-stage` remakes it |
-| 4 UE stills (`ue/ue_render.py`) | editor, `-RenderOffscreen`, one XTX | asset at the origin, 1.8 m box and the template mannequin beside it; wide / medium / close / back at 1152x640, Lumen; waits counted in frames (90 after set-up, 30 per camera) after shaders and streaming finish |
+| 4 UE stills (`ue/ue_render.py`) | editor, `-RenderOffscreen`, one XTX | asset at the origin, 1.8 m box and the template mannequin beside it; a camera preset per class at 1152x640 (prop: wide / medium / close / back / detail; vehicle: wide / low medium / close / low rear 3/4 back / side; set; creature) plus the spec's own `cameras`, Lumen; waits counted in frames (90 after set-up, 30 per camera) after shaders and streaming finish |
 
 **Modes.** `--preview` (2.6 s on the anvil): model, contract, checks and a 320 px, 12 spp sheet of the *unbaked*
 materials (`sheet/<id>_preview.png`); no bake, export or UE. Default (final): everything.
@@ -36,7 +36,18 @@ Output: `<library>/<class>/<id>/` with `asset.json` (manifest entry), `source/` 
 `export/`, `textures/`, `sheet/<id>_sheet.png`, `ue/<id>_<shot>.png`, `logs/`; `<library>/manifest.json` indexes
 all assets. The rules are in [CONTRACT.md](CONTRACT.md).
 
-Other flags: `--skip-render` (Blender + import commandlet only), `--source-sheet` (also render the unbaked model),
+**Cameras.** The spec may set `camera_preset` (default: its class) and `cameras`: a list of `{"name", "position":
+[x, y, z], "target": [x, y, z], "focal": mm}` in the asset's Blender frame (metres, front -Y, base on Z = 0); each
+adds a still `ue/<id>_<name>.png`.
+
+**Painting (optional, `--paint`).** `paint.py` (also runnable alone on a finished asset folder) renders guide views
+of the baked asset, has Qwen-Image-2.1 repaint each (img2img from the guide at low strength with the object mask
+and depth ControlNet), divides the guide's shading out, projects the paintings back per texel and writes a second
+map set; see the docstring in `paint.py` and "Painted maps" in CONTRACT.md. Spec block `paint` (prompt, views,
+close-up region, strength, projection parameters) and `texture_set`.
+
+Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples), `--sheet-samples`, `--no-sheet`
+(final pass without the Blender sheet when only the UE stills matter), `--skip-render` (Blender + import commandlet only), `--source-sheet` (also render the unbaked model),
 `--formats glb,fbx,usd`, `--device auto|xtx|igpu|cpu`, `--hiprt 0|1` (Cycles HIP RT, default on), `--warm-frames`, `--settle-frames`,
 `--warm-s`, `--settle-s`, `--ue-timeout`.
 
@@ -85,7 +96,8 @@ The UE project needs the plugins PythonScriptPlugin, EditorScriptingUtilities, I
 
 A model script is plain `bpy` code run in an empty scene (metric, 1 unit = 1 m) with `SPEC` (the spec dict) in its
 globals. It builds the asset with its front facing -Y and its base on Z = 0, and gives every face a Principled-BSDF
-material (procedural nodes are fine; they are baked). Modifiers are applied by the harness. Target Blender 4.5.
+material (procedural nodes are fine; they are baked). Modifiers are applied by the harness (before any object is
+removed, so modifier targets may be empties or hidden objects); position-based shader masks keep their place. Target Blender 4.5.
 
 ## Export format test (UE 5.8.1, Interchange, same anvil)
 

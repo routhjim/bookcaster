@@ -1,12 +1,39 @@
 {
-  "id": "anvil_london_01",
-  "class": "prop",
-  "description": "Blacksmith's anvil, London pattern: horn to +X, heel with hardy and pritchel holes to -X, polished striking face, dark forged steel with worn bright edges.",
-  "tags": ["anvil", "blacksmith", "forge", "metal", "tool", "hard-surface"],
-  "tier": "hero",
-  "size_m": [0.6, 0.2, 0.3],
-  "size_tolerance": 0.15,
-  "placement": "floor",
-  "source": "scripted",
-  "licence": "CC0 (original script)"
+ "id": "anvil_london_01",
+ "class": "prop",
+ "description": "Blacksmith's anvil, London pattern: horn to +X, heel with hardy and pritchel holes to -X, polished striking face, dark forged steel with worn bright edges.",
+ "tags": [
+  "anvil",
+  "blacksmith",
+  "forge",
+  "metal",
+  "tool",
+  "hard-surface"
+ ],
+ "tier": "hero",
+ "size_m": [
+  0.6,
+  0.2,
+  0.3
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "paint": {
+  "prompt": "dark hand-forged steel: hammer marks and shallow dents on every face, fine pitting, patches of dark mill scale, orange-brown rust in the crevices and around the holes, edges worn bright silver, a polished striking face with fine scratches",
+  "close": {
+   "box": [
+    0.1,
+    0.0,
+    0.6,
+    0.9,
+    1.0,
+    1.0
+   ],
+   "ring": 4,
+   "el": 40,
+   "top": true
+  }
+ }
 }
