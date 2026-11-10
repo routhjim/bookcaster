@@ -1,0 +1,1620 @@
+{
+ "id": "hangar_bay_01",
+ "description": "A vast industrial space with high steel ceilings, exposed pipes, and large observation windows along one wall, lit by harsh overhead fluorescent lights.",
+ "style": "Worn, functional, decades old: dark grey painted steel, milky gridded glass, scuffed concrete with yellow paint, cold strip light against warm low sun through the windows.",
+ "tags": [
+  "hangar",
+  "industrial",
+  "spacecraft",
+  "steel",
+  "trusses",
+  "windows"
+ ],
+ "size_m": [
+  30,
+  60,
+  14
+ ],
+ "exposure_ev100": 8.0,
+ "materials": {
+  "concrete_floor": {
+   "preset": "worn_concrete",
+   "color": "#5d5b56",
+   "color2": "#7b786f",
+   "grime": 0.5,
+   "grime_color": "#2c2a26",
+   "roughness": [
+    0.2,
+    0.85
+   ]
+  },
+  "ground": {
+   "preset": "worn_concrete",
+   "color": "#5f5d58",
+   "color2": "#77746d",
+   "panel_m": [
+    8,
+    8,
+    0
+   ]
+  },
+  "wall_steel": {
+   "preset": "painted_steel",
+   "color": "#686a64",
+   "panel_m": [
+    1.5,
+    1.5,
+    1.2
+   ],
+   "joint_m": 0.01,
+   "grime": 0.4
+  },
+  "wall_lower": {
+   "preset": "painted_steel",
+   "color": "#585a53",
+   "panel_m": [
+    1.2,
+    1.2,
+    1.0
+   ],
+   "grime": 0.55
+  },
+  "steel_frame": {
+   "preset": "painted_steel",
+   "color": "#4a4c48",
+   "grime": 0.35
+  },
+  "truss_steel": {
+   "preset": "painted_steel",
+   "color": "#434541",
+   "grime": 0.3
+  },
+  "window_frame": {
+   "preset": "painted_steel",
+   "color": "#50524e"
+  },
+  "window_glass": {
+   "preset": "glass",
+   "tint": "#e9eeec",
+   "opacity": 0.32,
+   "roughness": 0.1
+  },
+  "door_panel": {
+   "preset": "painted_steel",
+   "color": "#5e605a",
+   "panel_m": [
+    1.5,
+    1.5,
+    1.5
+   ],
+   "grime": 0.45
+  },
+  "door_frame": {
+   "preset": "painted_steel",
+   "color": "#3f413d"
+  },
+  "roof_deck": {
+   "preset": "painted_steel",
+   "color": "#5b5d5a",
+   "panel_m": [
+    0.22,
+    0,
+    0
+   ],
+   "joint_m": 0.04,
+   "joint_darken": 0.55
+  },
+  "catwalk": {
+   "preset": "galvanized_steel"
+  },
+  "railing_yellow": {
+   "preset": "painted_steel",
+   "color": "#c49a1d",
+   "grime": 0.3
+  },
+  "pipe_grey": {
+   "preset": "painted_steel",
+   "color": "#61635e"
+  },
+  "pipe_steel": {
+   "preset": "bare_steel"
+  },
+  "line_yellow": {
+   "preset": "paint_line"
+  },
+  "rail_steel": {
+   "preset": "bare_steel",
+   "color": "#55585b",
+   "roughness": [
+    0.2,
+    0.4
+   ]
+  },
+  "light_housing": {
+   "preset": "painted_steel",
+   "color": "#9a9c98",
+   "grime": 0.15
+  },
+  "light_tube": {
+   "preset": "emissive",
+   "color": "#f0f4ff",
+   "nits": 12000
+  },
+  "cabinet": {
+   "preset": "painted_steel",
+   "color": "#6b7066",
+   "panel_m": [
+    0.6,
+    0.6,
+    0.7
+   ]
+  },
+  "annex_wall": {
+   "preset": "painted_steel",
+   "color": "#73766f",
+   "panel_m": [
+    1.2,
+    1.2,
+    1.0
+   ],
+   "grime": 0.45
+  },
+  "annex_floor": {
+   "preset": "galvanized_steel",
+   "color": "#6d706f"
+  }
+ },
+ "structure": [
+  {
+   "kind": "ground",
+   "material": "ground",
+   "extent_m": 400
+  },
+  {
+   "kind": "floor",
+   "material": "concrete_floor",
+   "thickness_m": 0.4,
+   "extend_m": 1.0
+  },
+  {
+   "kind": "wall",
+   "side": "east",
+   "material": "wall_steel",
+   "thickness_m": 0.35,
+   "dado": {
+    "height_m": 3.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "window_band",
+     "from_m": -28,
+     "to_m": 28,
+     "sill_m": 3.0,
+     "head_m": 11.4,
+     "bay_m": 4.0,
+     "panes": [
+      2,
+      4
+     ],
+     "mullion_m": [
+      0.3,
+      0.6
+     ],
+     "bar_m": 0.06,
+     "frame_material": "window_frame",
+     "glass_material": "window_glass",
+     "brace_bays": [
+      1,
+      4,
+      9,
+      12
+     ],
+     "brace_z_m": [
+      3.0,
+      7.2
+     ],
+     "brace_material": "steel_frame"
+    }
+   ],
+   "trim": [
+    {
+     "z_m": 2.9,
+     "height_m": 0.12,
+     "depth_m": 0.25,
+     "material": "steel_frame"
+    }
+   ]
+  },
+  {
+   "kind": "wall",
+   "side": "west",
+   "material": "wall_steel",
+   "thickness_m": 0.35,
+   "dado": {
+    "height_m": 3.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "window_band",
+     "from_m": -26,
+     "to_m": 26,
+     "sill_m": 8.0,
+     "head_m": 11.0,
+     "bay_m": 4.0,
+     "panes": [
+      2,
+      2
+     ],
+     "mullion_m": [
+      0.25,
+      0.5
+     ],
+     "bar_m": 0.06,
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    }
+   ],
+   "trim": [
+    {
+     "z_m": 2.9,
+     "height_m": 0.12,
+     "depth_m": 0.25,
+     "material": "steel_frame"
+    }
+   ]
+  },
+  {
+   "kind": "wall",
+   "side": "south",
+   "material": "wall_steel",
+   "thickness_m": 0.35,
+   "dado": {
+    "height_m": 3.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "door",
+     "from_m": -12,
+     "to_m": 12,
+     "sill_m": 0.0,
+     "head_m": 10.5,
+     "panel_m": [
+      3.0,
+      2.6
+     ],
+     "material": "door_panel",
+     "frame_material": "door_frame",
+     "brace_material": "door_frame",
+     "frame_m": 0.25
+    }
+   ]
+  },
+  {
+   "kind": "wall",
+   "side": "north",
+   "material": "wall_steel",
+   "thickness_m": 0.35,
+   "dado": {
+    "height_m": 3.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "window_band",
+     "from_m": -11,
+     "to_m": -4,
+     "sill_m": 5.5,
+     "head_m": 7.5,
+     "bay_m": 1.75,
+     "panes": [
+      1,
+      2
+     ],
+     "mullion_m": [
+      0.15,
+      0.45
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    },
+    {
+     "kind": "door",
+     "from_m": -2.5,
+     "to_m": 2.5,
+     "sill_m": 0.0,
+     "head_m": 4.5,
+     "panel_m": [
+      2.5,
+      1.5
+     ],
+     "material": "door_panel",
+     "frame_material": "door_frame",
+     "braced": false,
+     "header_m": [
+      0.35,
+      0.3
+     ]
+    },
+    {
+     "kind": "window_band",
+     "from_m": 4,
+     "to_m": 11,
+     "sill_m": 5.5,
+     "head_m": 7.5,
+     "bay_m": 1.75,
+     "panes": [
+      1,
+      2
+     ],
+     "mullion_m": [
+      0.15,
+      0.45
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    }
+   ]
+  },
+  {
+   "kind": "trusses",
+   "span_axis": "x",
+   "spacing_m": 6.0,
+   "bottom_m": 11.8,
+   "top_m": 13.4,
+   "chord_m": [
+    0.35,
+    0.25
+   ],
+   "web_m": 0.12,
+   "panel_m": 2.5,
+   "material": "truss_steel",
+   "columns": true,
+   "column_m": [
+    0.5,
+    0.35
+   ],
+   "purlins": {
+    "spacing_m": 2.5,
+    "size_m": [
+     0.25,
+     0.12
+    ]
+   },
+   "bottom_ties": {
+    "at_m": [
+     -7.5,
+     0,
+     7.5
+    ]
+   },
+   "roof_bracing": {
+    "every": 2
+   },
+   "deck": {
+    "material": "roof_deck",
+    "thickness_m": 0.2
+   }
+  },
+  {
+   "kind": "platform",
+   "name": "door_catwalk",
+   "from": [
+    -14.8,
+    -29.9
+   ],
+   "to": [
+    14.8,
+    -28.4
+   ],
+   "height_m": 11.2,
+   "thickness_m": 0.15,
+   "material": "catwalk",
+   "edge_material": "steel_frame",
+   "railing": {
+    "sides": [
+     "north"
+    ],
+    "height_m": 1.1,
+    "material": "railing_yellow",
+    "post_spacing_m": 1.8
+   }
+  },
+  {
+   "kind": "platform",
+   "name": "west_mezzanine",
+   "from": [
+    -14.8,
+    -20
+   ],
+   "to": [
+    -11.0,
+    14
+   ],
+   "height_m": 4.2,
+   "thickness_m": 0.3,
+   "material": "catwalk",
+   "edge_material": "steel_frame",
+   "supports": {
+    "spacing_m": 6.0,
+    "lines": [
+     "east"
+    ],
+    "material": "steel_frame",
+    "size_m": 0.3
+   },
+   "railing": {
+    "sides": [
+     "east",
+     "north",
+     "south"
+    ],
+    "height_m": 1.1,
+    "material": "railing_yellow",
+    "post_spacing_m": 1.7
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "east_main",
+   "points": [
+    [
+     14.3,
+     -30,
+     12.2
+    ],
+    [
+     14.3,
+     30,
+     12.2
+    ]
+   ],
+   "diameter_m": 0.4,
+   "material": "pipe_grey",
+   "hangers": {
+    "spacing_m": 6.0,
+    "to_z_m": 13.4,
+    "material": "steel_frame"
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "east_small",
+   "points": [
+    [
+     13.7,
+     -30,
+     12.0
+    ],
+    [
+     13.7,
+     30,
+     12.0
+    ]
+   ],
+   "diameter_m": 0.2,
+   "material": "pipe_steel",
+   "hangers": {
+    "spacing_m": 6.0,
+    "to_z_m": 13.4,
+    "material": "steel_frame"
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_pair_a",
+   "points": [
+    [
+     -14.5,
+     -30,
+     9.4
+    ],
+    [
+     -14.5,
+     30,
+     9.4
+    ]
+   ],
+   "diameter_m": 0.3,
+   "material": "pipe_grey"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_pair_b",
+   "points": [
+    [
+     -14.5,
+     -30,
+     8.9
+    ],
+    [
+     -14.5,
+     30,
+     8.9
+    ]
+   ],
+   "diameter_m": 0.2,
+   "material": "pipe_steel"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_drop",
+   "points": [
+    [
+     -14.55,
+     8,
+     9.4
+    ],
+    [
+     -14.55,
+     8,
+     4.4
+    ],
+    [
+     -13.5,
+     8,
+     4.4
+    ]
+   ],
+   "diameter_m": 0.2,
+   "material": "pipe_grey"
+  },
+  {
+   "kind": "duct_run",
+   "name": "roof_duct",
+   "points": [
+    [
+     -15,
+     18,
+     11.0
+    ],
+    [
+     -6,
+     18,
+     11.0
+    ],
+    [
+     -6,
+     -26,
+     11.0
+    ]
+   ],
+   "size_m": [
+    1.0,
+    0.7
+   ],
+   "material": "pipe_steel"
+  },
+  {
+   "kind": "partition",
+   "name": "annex_west_front",
+   "from": [
+    -15,
+    24
+   ],
+   "to": [
+    -4.5,
+    24
+   ],
+   "height_m": 8.0,
+   "thickness_m": 0.25,
+   "material": "annex_wall",
+   "dado": {
+    "height_m": 1.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "window_band",
+     "from_m": 0.6,
+     "to_m": 6.5,
+     "sill_m": 1.0,
+     "head_m": 2.6,
+     "bay_m": 1.6,
+     "panes": [
+      1,
+      1
+     ],
+     "mullion_m": [
+      0.1,
+      0.35
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    },
+    {
+     "kind": "door",
+     "from_m": 7.3,
+     "to_m": 8.7,
+     "sill_m": 0.0,
+     "head_m": 2.3,
+     "panel_m": [
+      1.4,
+      2.3
+     ],
+     "material": "door_panel",
+     "frame_material": "door_frame",
+     "braced": false,
+     "frame_m": 0.08,
+     "header_m": [
+      0.12,
+      0.1
+     ]
+    },
+    {
+     "kind": "window_band",
+     "from_m": 0.6,
+     "to_m": 9.9,
+     "sill_m": 5.0,
+     "head_m": 6.8,
+     "bay_m": 1.6,
+     "panes": [
+      1,
+      2
+     ],
+     "mullion_m": [
+      0.1,
+      0.35
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    }
+   ]
+  },
+  {
+   "kind": "partition",
+   "name": "annex_west_side",
+   "from": [
+    -4.5,
+    30
+   ],
+   "to": [
+    -4.5,
+    24
+   ],
+   "height_m": 8.0,
+   "thickness_m": 0.25,
+   "material": "annex_wall"
+  },
+  {
+   "kind": "box",
+   "name": "annex_west_floor2",
+   "base": [
+    -9.75,
+    27,
+    3.8
+   ],
+   "size_m": [
+    10.5,
+    6,
+    0.3
+   ],
+   "material": "annex_floor"
+  },
+  {
+   "kind": "box",
+   "name": "annex_west_roof",
+   "base": [
+    -9.75,
+    27,
+    8.0
+   ],
+   "size_m": [
+    10.5,
+    6,
+    0.3
+   ],
+   "material": "annex_floor"
+  },
+  {
+   "kind": "platform",
+   "name": "annex_west_balcony",
+   "from": [
+    -15,
+    22.6
+   ],
+   "to": [
+    -4.8,
+    23.75
+   ],
+   "height_m": 4.1,
+   "thickness_m": 0.15,
+   "material": "catwalk",
+   "edge_material": "steel_frame",
+   "railing": {
+    "sides": [
+     "south"
+    ],
+    "height_m": 1.1,
+    "material": "railing_yellow",
+    "post_spacing_m": 1.5
+   }
+  },
+  {
+   "kind": "partition",
+   "name": "annex_east_front",
+   "from": [
+    4.5,
+    24
+   ],
+   "to": [
+    15,
+    24
+   ],
+   "height_m": 8.0,
+   "thickness_m": 0.25,
+   "material": "annex_wall",
+   "dado": {
+    "height_m": 1.0,
+    "material": "wall_lower"
+   },
+   "openings": [
+    {
+     "kind": "window_band",
+     "from_m": 0.6,
+     "to_m": 6.5,
+     "sill_m": 1.0,
+     "head_m": 2.6,
+     "bay_m": 1.6,
+     "panes": [
+      1,
+      1
+     ],
+     "mullion_m": [
+      0.1,
+      0.35
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    },
+    {
+     "kind": "door",
+     "from_m": 7.3,
+     "to_m": 8.7,
+     "sill_m": 0.0,
+     "head_m": 2.3,
+     "panel_m": [
+      1.4,
+      2.3
+     ],
+     "material": "door_panel",
+     "frame_material": "door_frame",
+     "braced": false,
+     "frame_m": 0.08,
+     "header_m": [
+      0.12,
+      0.1
+     ]
+    },
+    {
+     "kind": "window_band",
+     "from_m": 0.6,
+     "to_m": 9.9,
+     "sill_m": 5.0,
+     "head_m": 6.8,
+     "bay_m": 1.6,
+     "panes": [
+      1,
+      2
+     ],
+     "mullion_m": [
+      0.1,
+      0.35
+     ],
+     "frame_material": "window_frame",
+     "glass_material": "window_glass"
+    }
+   ]
+  },
+  {
+   "kind": "partition",
+   "name": "annex_east_side",
+   "from": [
+    4.5,
+    24
+   ],
+   "to": [
+    4.5,
+    30
+   ],
+   "height_m": 8.0,
+   "thickness_m": 0.25,
+   "material": "annex_wall"
+  },
+  {
+   "kind": "box",
+   "name": "annex_east_floor2",
+   "base": [
+    9.75,
+    27,
+    3.8
+   ],
+   "size_m": [
+    10.5,
+    6,
+    0.3
+   ],
+   "material": "annex_floor"
+  },
+  {
+   "kind": "box",
+   "name": "annex_east_roof",
+   "base": [
+    9.75,
+    27,
+    8.0
+   ],
+   "size_m": [
+    10.5,
+    6,
+    0.3
+   ],
+   "material": "annex_floor"
+  },
+  {
+   "kind": "platform",
+   "name": "annex_east_balcony",
+   "from": [
+    4.8,
+    22.6
+   ],
+   "to": [
+    15,
+    23.75
+   ],
+   "height_m": 4.1,
+   "thickness_m": 0.15,
+   "material": "catwalk",
+   "edge_material": "steel_frame",
+   "railing": {
+    "sides": [
+     "south"
+    ],
+    "height_m": 1.1,
+    "material": "railing_yellow",
+    "post_spacing_m": 1.5
+   }
+  },
+  {
+   "kind": "box",
+   "name": "panel_e0",
+   "base": [
+    14.825,
+    -25,
+    1.2
+   ],
+   "size_m": [
+    0.35,
+    0.8,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e1",
+   "base": [
+    14.825,
+    -17,
+    1.6
+   ],
+   "size_m": [
+    0.35,
+    1.1,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e2",
+   "base": [
+    14.825,
+    -13,
+    1.2
+   ],
+   "size_m": [
+    0.35,
+    1.4,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e3",
+   "base": [
+    14.825,
+    -1,
+    1.6
+   ],
+   "size_m": [
+    0.35,
+    0.8,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e4",
+   "base": [
+    14.825,
+    3,
+    1.2
+   ],
+   "size_m": [
+    0.35,
+    1.1,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e5",
+   "base": [
+    14.825,
+    14,
+    1.6
+   ],
+   "size_m": [
+    0.35,
+    1.4,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e6",
+   "base": [
+    14.825,
+    18,
+    1.2
+   ],
+   "size_m": [
+    0.35,
+    0.8,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_e7",
+   "base": [
+    14.825,
+    26,
+    1.6
+   ],
+   "size_m": [
+    0.35,
+    1.1,
+    0.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_w0",
+   "base": [
+    -14.825,
+    -27,
+    1.0
+   ],
+   "size_m": [
+    0.35,
+    0.7,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_w1",
+   "base": [
+    -14.825,
+    -23.5,
+    1.5
+   ],
+   "size_m": [
+    0.35,
+    1.0,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_w2",
+   "base": [
+    -14.825,
+    -15,
+    1.0
+   ],
+   "size_m": [
+    0.35,
+    0.7,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_w3",
+   "base": [
+    -14.825,
+    15.5,
+    1.5
+   ],
+   "size_m": [
+    0.35,
+    1.0,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "panel_w4",
+   "base": [
+    -14.825,
+    19,
+    1.0
+   ],
+   "size_m": [
+    0.35,
+    0.7,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "east_conduit",
+   "points": [
+    [
+     14.88,
+     -30,
+     2.75
+    ],
+    [
+     14.88,
+     30,
+     2.75
+    ]
+   ],
+   "diameter_m": 0.08,
+   "material": "pipe_steel"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_conduit",
+   "points": [
+    [
+     -14.88,
+     -30,
+     2.75
+    ],
+    [
+     -14.88,
+     30,
+     2.75
+    ]
+   ],
+   "diameter_m": 0.08,
+   "material": "pipe_steel"
+  },
+  {
+   "kind": "floor_lines",
+   "lines": [
+    {
+     "points": [
+      [
+       -9,
+       -29.5
+      ],
+      [
+       -9,
+       29.5
+      ]
+     ],
+     "width_m": 0.15,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       9,
+       -29.5
+      ],
+      [
+       9,
+       29.5
+      ]
+     ],
+     "width_m": 0.15,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -9,
+       -16
+      ],
+      [
+       9,
+       -16
+      ]
+     ],
+     "width_m": 0.15,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -9,
+       18
+      ],
+      [
+       9,
+       18
+      ]
+     ],
+     "width_m": 0.15,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -7.5,
+       -6
+      ],
+      [
+       3.5,
+       -6
+      ],
+      [
+       3.5,
+       10
+      ],
+      [
+       -7.5,
+       10
+      ]
+     ],
+     "width_m": 0.1,
+     "material": "line_yellow",
+     "closed": true
+    },
+    {
+     "points": [
+      [
+       -12.0,
+       -29.8
+      ],
+      [
+       -12.0,
+       29.8
+      ]
+     ],
+     "width_m": 0.07,
+     "material": "rail_steel",
+     "thickness_m": 0.012
+    },
+    {
+     "points": [
+      [
+       -10.6,
+       -29.8
+      ],
+      [
+       -10.6,
+       29.8
+      ]
+     ],
+     "width_m": 0.07,
+     "material": "rail_steel",
+     "thickness_m": 0.012
+    },
+    {
+     "points": [
+      [
+       11.0,
+       -29.8
+      ],
+      [
+       11.0,
+       29.8
+      ]
+     ],
+     "width_m": 0.07,
+     "material": "rail_steel",
+     "thickness_m": 0.012
+    },
+    {
+     "points": [
+      [
+       12.4,
+       -29.8
+      ],
+      [
+       12.4,
+       29.8
+      ]
+     ],
+     "width_m": 0.07,
+     "material": "rail_steel",
+     "thickness_m": 0.012
+    }
+   ]
+  },
+  {
+   "kind": "box",
+   "name": "cabinet_e1",
+   "base": [
+    14.725,
+    -21,
+    0.0
+   ],
+   "size_m": [
+    0.55,
+    1.2,
+    1.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "cabinet_e2",
+   "base": [
+    14.725,
+    -6,
+    0.0
+   ],
+   "size_m": [
+    0.55,
+    0.9,
+    1.5
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "cabinet_e3",
+   "base": [
+    14.725,
+    9,
+    0.0
+   ],
+   "size_m": [
+    0.55,
+    1.2,
+    1.9
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "cabinet_e4",
+   "base": [
+    14.725,
+    22,
+    0.0
+   ],
+   "size_m": [
+    0.55,
+    0.9,
+    1.5
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "cart_w1",
+   "base": [
+    -13.0,
+    20.5,
+    0.0
+   ],
+   "size_m": [
+    1.2,
+    0.8,
+    1.0
+   ],
+   "material": "cabinet"
+  },
+  {
+   "kind": "box",
+   "name": "crate_w2",
+   "base": [
+    -13.6,
+    24.0,
+    0.0
+   ],
+   "size_m": [
+    1.0,
+    1.4,
+    0.9
+   ],
+   "material": "door_frame"
+  }
+ ],
+ "lights": [
+  {
+   "type": "sun",
+   "toward_sun": [
+    1.0,
+    -0.35,
+    0.7
+   ],
+   "lux": 6000,
+   "kelvin": 5200,
+   "volumetric": 2.0
+  },
+  {
+   "type": "sky",
+   "intensity": 1.0
+  },
+  {
+   "type": "fog",
+   "density": 0.008,
+   "falloff": 0.01,
+   "volumetric": true,
+   "extinction": 1.0,
+   "distance_m": 80
+  },
+  {
+   "type": "strip_lights",
+   "z_m": 11.3,
+   "hang_to_m": 11.8,
+   "length_m": 1.5,
+   "along": "x",
+   "lumens": 12000,
+   "kelvin": 5600,
+   "radius_m": 40,
+   "fixture_material": "light_housing",
+   "tube_material": "light_tube",
+   "rows": [
+    {
+     "from": [
+      -9,
+      -27
+     ],
+     "to": [
+      -9,
+      27
+     ],
+     "count": 10
+    },
+    {
+     "from": [
+      -3,
+      -27
+     ],
+     "to": [
+      -3,
+      27
+     ],
+     "count": 10
+    },
+    {
+     "from": [
+      3,
+      -27
+     ],
+     "to": [
+      3,
+      27
+     ],
+     "count": 10
+    },
+    {
+     "from": [
+      9,
+      -27
+     ],
+     "to": [
+      9,
+      27
+     ],
+     "count": 10
+    }
+   ]
+  },
+  {
+   "type": "rect",
+   "position": [
+    -9.7,
+    27,
+    3.7
+   ],
+   "toward": [
+    -9.7,
+    27,
+    0
+   ],
+   "size_m": [
+    3,
+    1
+   ],
+   "lumens": 20000,
+   "kelvin": 4200,
+   "radius_m": 10
+  },
+  {
+   "type": "rect",
+   "position": [
+    9.7,
+    27,
+    3.7
+   ],
+   "toward": [
+    9.7,
+    27,
+    0
+   ],
+   "size_m": [
+    3,
+    1
+   ],
+   "lumens": 20000,
+   "kelvin": 4200,
+   "radius_m": 10
+  },
+  {
+   "type": "rect",
+   "position": [
+    -9.7,
+    27,
+    7.9
+   ],
+   "toward": [
+    -9.7,
+    27,
+    4
+   ],
+   "size_m": [
+    3,
+    1
+   ],
+   "lumens": 15000,
+   "kelvin": 4200,
+   "radius_m": 10
+  },
+  {
+   "type": "rect",
+   "position": [
+    9.7,
+    27,
+    7.9
+   ],
+   "toward": [
+    9.7,
+    27,
+    4
+   ],
+   "size_m": [
+    3,
+    1
+   ],
+   "lumens": 15000,
+   "kelvin": 4200,
+   "radius_m": 10
+  }
+ ],
+ "fixtures": [
+  {
+   "asset": "starfighter_twin_01",
+   "name": "parked_fighter",
+   "position": [
+    -2.0,
+    2.0
+   ],
+   "facing": [
+    0,
+    -1
+   ]
+  }
+ ],
+ "props": [],
+ "validation": {
+  "figures": [
+   {
+    "position": [
+     3.0,
+     -4.0
+    ],
+    "facing": [
+     -1,
+     0
+    ]
+   },
+   {
+    "position": [
+     -7.0,
+     16.0
+    ],
+    "facing": [
+     0,
+     -1
+    ]
+   }
+  ]
+ },
+ "cameras": [
+  {
+   "name": "wide_south",
+   "position": [
+    -6,
+    -28.5,
+    1.7
+   ],
+   "target": [
+    2,
+    10,
+    4.5
+   ],
+   "focal_mm": 18
+  },
+  {
+   "name": "wide_north",
+   "position": [
+    7,
+    28.5,
+    2.0
+   ],
+   "target": [
+    -2,
+    -10,
+    5.0
+   ],
+   "focal_mm": 18
+  },
+  {
+   "name": "medium_person",
+   "position": [
+    7,
+    -9,
+    1.65
+   ],
+   "target": [
+    -1,
+    1,
+    1.4
+   ],
+   "focal_mm": 35
+  },
+  {
+   "name": "low",
+   "position": [
+    3.5,
+    -6.5,
+    0.3
+   ],
+   "target": [
+    -2,
+    2,
+    2.6
+   ],
+   "focal_mm": 24
+  },
+  {
+   "name": "above",
+   "position": [
+    -13.5,
+    -25,
+    9.5
+   ],
+   "target": [
+    1,
+    4,
+    0.5
+   ],
+   "focal_mm": 20
+  }
+ ]
+}
