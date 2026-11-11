@@ -313,6 +313,12 @@ class DispatchTest(unittest.TestCase):
                                                                     "log_dir": str(root / "log")}})
         cj, _ = S.add_entry({"type": "cmd", "id": "shape0", "station": "engine", "kind": "shape", "cmd": ["true"]})
         cj.stages[0].state = "ready"
+        ej.stages[0].state = "wait"                         # its dependencies are not done: it cannot run yet
+        S.dispatch()
+        self.assertIn(("shape0", f"card{D.C.UE_CARD}", "shape"), S.started)   # a waiting engine stage does not block
+        S.started.clear()
+        cj.stages[0].state = "ready"
+        ej.stages[0].state = "ready"
         S.dispatch()
         self.assertEqual([s for s in S.started if s[0] == "shape0"], [])   # an engine job waits: no borrow
         ej.stages[0].state = "done"

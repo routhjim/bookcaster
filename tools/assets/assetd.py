@@ -794,9 +794,11 @@ class Sched:
         here). True when the card is free for the command now. While the command runs, the card's cmd_busy keeps
         the editor from loading (Card.hold); the next engine job loads it again afterwards."""
         c = self.cards[self.ue_bus]
-        if self.ue_backlog() or c.blender:
+        if c.blender:
             return False
-        if any(s.kind == "ue" and s.state == "run" for j in self.jobs for s in j.stages):
+        # engine work that can start now (or runs): an asset whose bake has not finished yet ("wait") does not hold
+        # the card, else a bake queued behind a long job elsewhere keeps the engine card idle and unlent
+        if any(s.kind == "ue" and s.state in ("ready", "run") for j in self.jobs if not j.cancelled for s in j.stages):
             return False
         live = [e for e in self.editors if e.state != "dead" and e.card is c]
         for e in live:
