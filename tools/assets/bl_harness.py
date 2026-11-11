@@ -542,6 +542,10 @@ def bake(ob):
     orm = _img(f"T_{AID}_ORM", res, False)
     o = np.ones((res, res, 4), dtype=np.float32)
     rma = px(imgs["RMA"])
+    # a failed bake comes back all zeros (seen 11-10 when many bakes shared the cards: every map black); real
+    # occlusion is never zero everywhere, so fail the job instead of shipping a black asset
+    if float(rma[..., 2].max()) <= 0.0 and float(px(imgs["BaseColor"])[..., :3].max()) <= 0.0:
+        raise RuntimeError("bake came back empty (BaseColor and occlusion all zero): GPU bake failed, re-run")
     o[..., 0], o[..., 1], o[..., 2] = rma[..., 2], rma[..., 0], rma[..., 1]
     orm.pixels.foreach_set(o.ravel())
     files = {}

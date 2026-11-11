@@ -28,27 +28,39 @@ def hgt(x, y):
     return PEAK * (1 - d ** 1.25) ** 1.2 + 0.012 * noise.noise(Vector((x * 9, y * 9, 1.0)))
 
 
+def edge_scale(a):
+    """The heap's outline in direction a (d = 1 there, the same noise hgt() uses)."""
+    return 1.0 / (1 + 0.12 * noise.noise(Vector((math.cos(a) * 1.5, math.sin(a) * 1.5, 0.3))))
+
+
+# the body follows the mound's own outline (a polar grid out to a thin dust skirt at the foot); a square grid
+# here left a flat square sheet around the mound
+NA, NR, SKIRT = 96, 30, 1.08
 bm = bmesh.new()
-n = 40
-top, bot = [], []
-for i in range(n + 1):
-    rt, rb = [], []
-    for j in range(n + 1):
-        x, y = K.lerp(-AX * 1.15, AX * 1.15, i / n), K.lerp(-AY * 1.15, AY * 1.15, j / n)
-        edge = i in (0, n) or j in (0, n)
-        rt.append(bm.verts.new((x, y, 0.002 if edge else max(0.002, hgt(x, y)))))
-        rb.append(bm.verts.new((x, y, 0.0)))
-    top.append(rt)
-    bot.append(rb)
-for i in range(n):
-    for j in range(n):
-        bm.faces.new((top[i][j], top[i + 1][j], top[i + 1][j + 1], top[i][j + 1]))
-        bm.faces.new((bot[i][j], bot[i][j + 1], bot[i + 1][j + 1], bot[i + 1][j]))
-ring = [(i, 0) for i in range(n)] + [(n, j) for j in range(n)] + [(i, n) for i in range(n, 0, -1)] + \
-       [(0, j) for j in range(n, 0, -1)]
-for k in range(len(ring)):
-    (a, b), (c, d) = ring[k], ring[(k + 1) % len(ring)]
-    bm.faces.new((top[a][b], top[c][d], bot[c][d], bot[a][b]))
+apex = bm.verts.new((0.0, 0.0, hgt(0.0, 0.0)))
+rings = []
+for i in range(1, NR + 1):
+    u = SKIRT * i / NR
+    row = []
+    for j in range(NA):
+        a = math.tau * j / NA
+        e = edge_scale(a)
+        x, y = u * e * AX * math.cos(a), u * e * AY * math.sin(a)
+        if i == NR:
+            z = 0.0
+        elif u < 1.0:
+            z = max(0.004, hgt(x, y))
+        else:                                       # dust at the foot thinning to the floor
+            z = 0.004 * (SKIRT - u) / (SKIRT - 1.0)
+        row.append(bm.verts.new((x, y, z)))
+    rings.append(row)
+for j in range(NA):
+    bm.faces.new((apex, rings[0][j], rings[0][(j + 1) % NA]))
+for r0, r1 in zip(rings, rings[1:]):
+    for j in range(NA):
+        bm.faces.new((r0[j], r1[j], r1[(j + 1) % NA], r0[(j + 1) % NA]))
+bm.faces.new(list(reversed(rings[-1])))
+bm.normal_update()
 body = K.from_bm("heap", bm)
 K.shade(body, 80)
 

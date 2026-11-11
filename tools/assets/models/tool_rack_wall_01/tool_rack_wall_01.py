@@ -47,7 +47,8 @@ def hammer(x, size, peen=1):
     L = 0.36 * size
     z0 = zt - hw / 2
     path = [(x, BY - 0.035, z0 - L * t / 10) for t in range(11)]
-    handles.append(K.tube("handle", path, 0.0125 * size, seg=12, r_fn=lambda t: 1.0 if t < 0.75 else 1.1))
+    r = 0.0125 * size                    # K.tube r_fn returns the radius itself, not a factor
+    handles.append(K.tube("handle", path, r, seg=12, r_fn=lambda t: r if t < 0.75 else r * 1.1))
 
 
 hammer(-0.52, 1.1, 1)

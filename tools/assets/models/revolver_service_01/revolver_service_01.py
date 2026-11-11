@@ -45,9 +45,9 @@ for k in range(6):
     parts.append(along_x(ch, 0.0408, BZ + 0.0115 * math.sin(a + math.pi / 6), 0.0115 * math.cos(a + math.pi / 6)))
 # frame: top strap over the cylinder, recoil shield, standing breech, lower frame to the grip
 frame_o = [(0.055, BZ - 0.012), (0.050, BZ - 0.020), (0.010, BZ - 0.024), (-0.004, BZ - 0.030), (-0.020, BZ - 0.034),
-           (-0.034, BZ - 0.030), (-0.040, BZ - 0.016), (-0.036, BZ + 0.004), (-0.020, BZ + 0.014), (0.000, BZ + 0.019),
-           (0.004, BZ + 0.024), (0.050, BZ + 0.024), (0.052, BZ + 0.012), (0.044, BZ + 0.012), (0.044, BZ + 0.020),
-           (0.003, BZ + 0.020), (0.0025, BZ - 0.020), (0.044, BZ - 0.020), (0.044, BZ - 0.012)]
+           (-0.034, BZ - 0.030), (-0.040, BZ - 0.016), (-0.036, BZ + 0.004), (-0.020, BZ + 0.014), (-0.004, BZ + 0.019),
+           (0.000, BZ + 0.024), (0.050, BZ + 0.024), (0.052, BZ + 0.012), (0.044, BZ + 0.012), (0.044, BZ + 0.020),
+           (0.0035, BZ + 0.020), (0.0035, BZ - 0.020), (0.044, BZ - 0.020), (0.044, BZ - 0.012)]
 parts.append(K.plate("frame", frame_o, 0.024, mat=steel, bev=0.0015))
 # grip frame + walnut panels (bird's head), lanyard ring
 grip_o = [(-0.010, BZ - 0.028), (-0.012, BZ - 0.050), (-0.022, BZ - 0.080), (-0.034, BZ - 0.100), (-0.052, BZ - 0.108),
@@ -84,5 +84,6 @@ parts.append(K.plate("latch", [(-0.012, BZ + 0.018), (-0.002, BZ + 0.024), (-0.0
 import bpy  # noqa: E402
 from mathutils import Matrix  # noqa: E402
 R = Matrix.Rotation(math.pi / 2, 4, "X")
+bpy.context.view_layer.update()            # parts placed by .location / .rotation_euler: refresh matrix_world first
 for o in parts:
     o.matrix_world = R @ o.matrix_world

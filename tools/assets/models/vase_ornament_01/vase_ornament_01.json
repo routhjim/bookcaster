@@ -1,7 +1,7 @@
 {
  "id": "vase_ornament_01",
  "class": "prop",
- "description": "Small Victorian porcelain vase, 0.21 m: baluster body, waisted neck and flared lip, dark blue glaze with gilt bands at lip and foot (worn) and a pale panel for a painted flower spray on the front (-Y).",
+ "description": "Small Victorian porcelain vase, 0.21 m: baluster body, waisted neck and flared lip, dark blue glaze with gilt bands at lip and foot (worn).",
  "tags": [
   "vase",
   "ornament",
@@ -39,7 +39,7 @@
   }
  ],
  "paint": {
-  "prompt": "small Victorian dark blue porcelain vase with worn gilt bands and a painted flower spray on a white panel",
+  "prompt": "small Victorian dark blue porcelain vase with worn gilt bands",
   "views": {
    "ring": 6,
    "upper": 3,

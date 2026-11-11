@@ -12,7 +12,8 @@ ebony = K.wood("ebonised", "Z", wear=0.5, gloss=0.7, grime=0.5)
 lensg = K.glass((0.95, 0.96, 0.94), 0.005, name="lens_glass")
 R, Z = 0.0375, 0.008
 rim = K.lathe("rim", K.keys([(-0.006, R - 0.001, "c"), (-0.006, R + 0.004, "c"), (-0.004, R + 0.006), (0.004, R + 0.006),
-                             (0.006, R + 0.004, "c"), (0.006, R - 0.001, "c")], 0.001), seg=64, cap0=True, cap1=True, mat=brass)
+                             (0.006, R + 0.004, "c"), (0.006, R - 0.001, "c"), (-0.006, R - 0.001, "c")], 0.001), seg=64, cap0=False,
+              cap1=False, mat=brass)   # a closed ring section: caps here would be brass discs over the lens
 rim.location = (0.08, 0.0, Z)
 lens = K.lathe("lens", [(0.0001, -0.0045), (R * 0.5, -0.004), (R, -0.0015), (R, 0.0015), (R * 0.5, 0.004), (0.0001, 0.0045)],
                seg=64, mat=lensg, cap0=False, cap1=False)
