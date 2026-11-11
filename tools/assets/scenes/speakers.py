@@ -242,10 +242,20 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
         z = cam["position"][2]
         grid = [[x / 10.0, y / 10.0, z] for x in range(-int(W * 5), int(W * 5) + 1, 2)
                 for y in range(-int(D * 5), int(D * 5) + 1, 2)]
+        ms = [v["measured"] for v in subjects.values()]
+        mid = [sum(x["pelvis_xy"][0] for x in ms) / len(ms), sum(x["pelvis_xy"][1] for x in ms) / len(ms),
+               sum((x["feet_z"] + x["head_top_z"]) / 2 for x in ms) / len(ms)]
+        f0 = cam["focal_mm"]
         for p in sorted(grid, key=lambda p: math.dist(p, cam["position"])):
-            q = {"position": [round(v, 3) for v in p], "target": cam["target"], "focal_mm": cam["focal_mm"]}
-            if all_in_frame(q, subjects, res):
-                out.append(q)
+            for tgt in (cam["target"], [round(v, 3) for v in mid]):   # the same aim, else the people's middle
+                for f in sorted({f0, max(18.0, round(f0 * 0.8)), max(18.0, round(f0 * 0.65))}, reverse=True):
+                    q = {"position": [round(v, 3) for v in p], "target": tgt, "focal_mm": f}
+                    if all_in_frame(q, subjects, res):
+                        out.append(q)
+                        break
+                else:
+                    continue
+                break
     keep = []
     for q in out:
         p = q["position"]
