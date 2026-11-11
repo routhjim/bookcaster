@@ -114,6 +114,7 @@ def main():
             if best is not None:
                 q["iou"] = round(iou(best, b), 3)
                 q["h_ratio"] = round((best[3] - best[1]) / max(1e-6, b[3] - b[1]), 3)
+                q["w_ratio"] = round((best[2] - best[0]) / max(1e-6, b[2] - b[0]), 3)
             faces = [f for f in det.get("face", []) if iou(f, b) > 0 and
                      b[0] - 0.02 <= (f[0] + f[2]) / 2 <= b[2] + 0.02 and b[1] - 0.02 <= (f[1] + f[3]) / 2 <= b[3]]
             q["face_boxes"] = len(faces)

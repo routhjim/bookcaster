@@ -134,7 +134,7 @@ def set_words(shot: dict) -> str:
     if lit:
         out += " " + " ".join(
             (f"The fire in {t['words'].split(' with ')[0]} burns brightly with real flames, as in Picture 1."
-             if t.get("fire") else f"{t['words'].split(',')[0].capitalize()} is lit, its flame glowing, as in Picture 1.")
+             if t.get("fire") else f"{t['words'].split(',')[0].capitalize()} is lit and glows warmly, as in Picture 1.")
             for t in lit)
     return out.strip()
 
@@ -199,9 +199,9 @@ def main():
                         img = g / f"{cam}_{'depth' if c['type'] == 'depth' else 'lines'}.png"
                         j["control"] = {"image": str(img), "type": c["type"], "scale": c.get("scale", 0.8),
                                         "end": c.get("end", 1.0), "prepared": True}
-                    if run.get("mask_people") and ppl:
-                        j["init"]["mask"] = str(out / "masks" / f"{sd.name}__{cam}.png")
-                        j["init"]["strength_bg"] = run.get("strength_bg", 0.5)
+                    if run.get("mask_people") and ppl:      # people redrawn harder than the room
+                        j["init"]["mask"] = str(g / f"{cam}_mask_people.png")
+                        j["init"]["strength_bg"] = run.get("strength_bg", 0.6)
                     jobs.append(j)
     if run["method"] == "edit":
         p = out / "edit_jobs.json"

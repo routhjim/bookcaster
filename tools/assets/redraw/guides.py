@@ -202,6 +202,12 @@ def one_scene(sd: Path, dev, things=None, day=None):
                        round((xs.max().item() + 1) / w, 4), round((ys.max().item() + 1) / h, 4)]
             people[key] = {"box": box, "area": round(nv / (w * h), 5), "visible_frac": round(nv / nd, 3) if nd else 0.0,
                            **(sh.get("truth") or {}).get(key, {})}
+        if people:                       # all people at once, grown a little: the per-pixel strength mask
+            allp = torch.zeros_like(d, dtype=torch.bool)
+            for key in people:
+                allp |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
+            allp = F.max_pool2d(allp.float()[None, None], 9, 1, 4)[0, 0] > 0.5
+            save(allp.float() * 255, g / f"{cam}_mask_people.png")
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,
