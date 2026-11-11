@@ -46,7 +46,7 @@ MEAN = torch.tensor([123.675, 116.28, 103.53]).view(3, 1, 1)
 STD = torch.tensor([58.395, 57.12, 57.375]).view(3, 1, 1)
 SCORE = 0.35             # a confident key point (RTMW SimCC score)
 ARM_TOL = 0.09           # of the person's height in frame
-NECK_TOL = 1.25          # longer than the reference by more than this factor fails (and shorter than 1/1.6)
+NECK_TOL = 1.2           # longer than a reference by more than this factor fails
 BODY = {"l_sh": 5, "r_sh": 6, "l_el": 7, "r_el": 8, "l_wr": 9, "r_wr": 10, "nose": 0, "l_eye": 1, "r_eye": 2}
 CHIN = 23 + 8            # the 68-point face contour's chin, after the 23 body and feet points
 HAND_L, HAND_R = slice(91, 112), slice(112, 133)
@@ -54,7 +54,7 @@ HAND_L, HAND_R = slice(91, 112), slice(112, 133)
 OUTFIT_Q = ("Picture 1 is a costume reference sheet. Picture 2 shows the same character in a film frame. Compare "
             "the shirt collar and neckwear in Picture 2 with Picture 1. Answer with one word: same, larger, open, "
             "turned, missing.")
-OUTFIT_MIN_HEAD = 0.08   # head top to chin, of the frame's height: smaller heads are not asked about
+OUTFIT_MIN_HEAD = 0.15   # head top to chin, of the frame's height: smaller heads are not asked about
 
 
 class Pose:
@@ -135,11 +135,14 @@ def arm_hand(m: dict, j2: dict, box) -> dict:
         if shown(f"hand_{side}"):
             res["hands_shown"] += 1
             hp = (j2[f"hand_{side}"][0], j2[f"hand_{side}"][1])
-            if any(near(hp, q, tol * 1.2) for q in (m.get("l_wr"), m.get("r_wr"), m.get("l_hand"), m.get("r_hand"))):
+            # a hand is its own points (five confident ones), not a wrist: the pose model puts a wrist at the end of
+            # a coat's side where no hand is drawn (11-11, the armless key scored 2 of 2 wrists)
+            if any(near(hp, q, tol * 1.2) for q in (m.get("l_hand"), m.get("r_hand"))):
                 res["hands_found"] += 1
             else:
                 res["missing"].append(f"{side} hand")
-    res["arms_ok"] = res["arms_found"] == res["arms_shown"]
+    # an arm the engine shows with its hand counts only with that hand found (elbows alone were guessed too)
+    res["arms_ok"] = res["arms_found"] == res["arms_shown"] and not any(x.endswith("hand") for x in res["missing"])
     res["hands_ok"] = res["hands_found"] == res["hands_shown"]
     return res
 
@@ -219,7 +222,9 @@ def main():
                 v["neck_ok"] = None
                 continue
             refs = [x for x in (e, med.get(k)) if x]
-            v["neck_ok"] = all(n <= x * NECK_TOL and n >= x / 1.6 for x in refs)
+            # longer than the engine's own or the character's median by more than NECK_TOL fails; shorter only
+            # against the character's median (the engine figure's own neck is the long one, 11-11)
+            v["neck_ok"] = all(n <= x * NECK_TOL for x in refs) and (not med.get(k) or n >= med[k] / 1.6)
             v["neck_refs"] = {"engine": e, "character_median": round(med.get(k, 0), 3)}
     Path(cfg["out"]).write_text(json.dumps(out, indent=1))
     print(json.dumps({"done": len(out), "s": round(time.time() - t0, 1)}), flush=True)
