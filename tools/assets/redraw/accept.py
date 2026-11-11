@@ -1,0 +1,176 @@
+"""Accepting redrawn keys: build the key checks from a redraw run, write one re-draw for each failure, pick (stdlib +
+Pillow for reading masks).
+
+    python tools/assets/redraw/accept.py checks RUN.json CHECK.json [--ids-from JOBS.jsonl] [--pose-model P]
+    python tools/assets/redraw/accept.py retry  RUN.json CHECKED.json RETRY_JOBS.jsonl
+    python tools/assets/redraw/accept.py pick   RUN.json CHECKED.json [RETRY_CHECKED.json] ACCEPTED.json
+
+checks: one item per redraw in the run's meta.json (or only the ids of a jobs file): the redraw, its engine still and
+        depth picture, and per person the scene's truth (box, angles, the joints in the frame and whether the engine
+        sees them: guides.py "joints2d", else computed here from the scene's measured joints and the person mask)
+        with the cast's clothes words and sheet. keycheck.py runs it at a card station.
+retry:  for each key that fails a check (arms, hands, neck, outfit), the same job with another seed and the failed
+        fact said once more (the cast's own words; nothing per shot), as "<id>__x".
+pick:   per key, the first that passes every check (the draw, else its re-draw), else the one with fewer failures.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[0] / "scenes"))
+import framing  # noqa: E402
+import redraw as RD  # noqa: E402
+
+JOINTS = ("head", "FACIAL_L_Eye", "FACIAL_R_Eye", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r",
+          "hand_l", "hand_r", "thigh_l", "thigh_r")
+
+
+def joints2d_from(res: dict, key: str, cam: dict, mask_path: Path) -> dict:
+    from PIL import Image
+    m = (res.get("subjects", {}).get(key) or {}).get("measured") or {}
+    j = dict(m.get("joints") or {})
+    if m.get("eye_xy"):
+        j["chin"] = [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]]
+        j["head_top"] = [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]]
+    mk = Image.open(mask_path).convert("L") if mask_path.exists() else None
+    out = {}
+    for n in JOINTS + ("chin", "head_top"):
+        if n not in j:
+            continue
+        q = framing.project(cam, j[n], (1152, 640))
+        if not q:
+            continue
+        seen = False
+        if 0 <= q[0] < 1 and 0 <= q[1] < 1 and mk is not None:
+            x, y = int(q[0] * mk.width), int(q[1] * mk.height)
+            seen = mk.crop((max(0, x - 2), max(0, y - 2), x + 3, y + 3)).getextrema()[1] > 127
+        out[n] = [round(q[0], 4), round(q[1], 4), seen]
+    return out
+
+
+def failures(v: dict) -> list:
+    r = v.get("redraw", {})
+    f = []
+    if not r.get("arms_ok", True):
+        f.append("arms")
+    if not r.get("hands_ok", True):
+        f.append("hands")
+    if v.get("neck_ok") is False:
+        f.append("neck")
+    if v.get("outfit_ok") is False:
+        f.append("outfit")
+    return f
+
+
+def item_fails(rec: dict) -> dict:
+    return {k: failures(v) for k, v in rec.get("people", {}).items() if failures(v)}
+
+
+def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
+    out = Path(run["out"])
+    meta = json.loads((out / "meta.json").read_text())
+    ids = None
+    if ids_from:
+        ids = [json.loads(ln)["id"] for ln in Path(ids_from).read_text().splitlines() if ln.strip()]
+        jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in Path(ids_from).read_text().splitlines() if ln.strip()}
+    scenes = {Path(s).name: Path(s) for s in run["scenes"]}
+    cast = run.get("cast") or {}
+    items = []
+    for iid in (ids if ids is not None else list(meta)):
+        m = meta[iid[:-3] if iid.endswith("__x") else iid]
+        sd = scenes[m["scene"]]
+        truth = json.loads((sd / "truth.json").read_text())["shots"][m["cam"]]
+        res = json.loads((sd / "result.json").read_text())
+        ppl = []
+        for p in m["people"]:
+            tp = truth["people"].get(p["key"]) or {}
+            j2 = tp.get("joints2d") or joints2d_from(res, p["key"], truth["camera"],
+                                                      sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")
+            c = cast.get(p["key"]) or {}
+            ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun")))
+        path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
+        items.append({"id": iid, "redraw": path, "engine": m["still"],
+                      "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl})
+    out_p.write_text(json.dumps({"out": str(out_p.with_suffix("")) + "_result.json", "pose_model": pose_model,
+                                 "judge": True, "items": items}, indent=1))
+    print(out_p, len(items))
+
+
+FIX = {"arms": "{Who}'s arms hang in their sleeves clear of the body, both sleeves and hands drawn.",
+       "hands": "{Who}'s hands are drawn where the engine frame shows them.",
+       "neck": "{Who}'s neck is of natural length, the collar standing close under the jaw.",
+       "outfit": ""}
+
+
+def cmd_retry(run: dict, checked: dict, out_jobs: Path):
+    out = Path(run["out"])
+    jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
+    meta = json.loads((out / "meta.json").read_text())
+    cast = run.get("cast") or {}
+    lines = []
+    for iid, rec in checked.items():
+        f = item_fails(rec)
+        if not f or iid not in jobs:
+            continue
+        j = dict(jobs[iid])
+        ppl = [(p["key"], p["box"], p["head_to_camera_deg"], p["posture"], p["body_to_camera_deg"], p["nearer_shoulder"])
+               for p in meta[iid]["people"]]
+        nm = RD.names(ppl, cast)
+        add = []
+        for k, fs in f.items():
+            who = nm.get(k, "the person")
+            w = RD.who_of(cast, k)
+            for x in fs:
+                if x == "outfit":
+                    add.append(RD.neck_words(w))
+                else:
+                    add.append(FIX[x].format(Who=who[0].upper() + who[1:]))
+        j["prompt"] = j["prompt"] + " " + " ".join(a for a in add if a)
+        j["seed"] = int(j["seed"]) + 1000
+        j["id"] = iid + "__x"
+        j["path"] = str(Path(j["path"]).with_name(j["id"] + ".png"))
+        j["_fails"] = f
+        lines.append(json.dumps(j))
+    out_jobs.write_text("".join(x + "\n" for x in lines))
+    print(out_jobs, len(lines))
+
+
+def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
+    out = Path(run["out"])
+    acc = {}
+    for iid, rec in checked.items():
+        f0 = item_fails(rec)
+        x = retry.get(iid + "__x")
+        choice = (iid, f0)
+        if f0 and x is not None:
+            f1 = item_fails(x)
+            n0 = sum(len(v) for v in f0.values())
+            n1 = sum(len(v) for v in f1.values())
+            if n1 < n0:
+                choice = (iid + "__x", f1)
+        acc[iid] = {"path": str(out / f"{choice[0]}.png"), "id": choice[0], "fails": choice[1],
+                    "first_fails": f0, "redrawn": iid + "__x" in retry}
+    out_p.write_text(json.dumps(acc, indent=1))
+    print(out_p, sum(1 for v in acc.values() if not v["fails"]), "of", len(acc), "pass")
+
+
+def main():
+    a = sys.argv[1:]
+    run = json.loads(Path(a[1]).read_text())
+    if a[0] == "checks":
+        ids = a[a.index("--ids-from") + 1] if "--ids-from" in a else None
+        pm = a[a.index("--pose-model") + 1] if "--pose-model" in a else str(Path(run["out"]).parent / "models" / "rtmw_x_256x192.pt")
+        cmd_checks(run, Path(a[2]), ids, pm)
+    elif a[0] == "retry":
+        cmd_retry(run, json.loads(Path(a[2]).read_text()), Path(a[3]))
+    elif a[0] == "pick":
+        retry = json.loads(Path(a[3]).read_text()) if len(a) > 4 and Path(a[3]).exists() else {}
+        cmd_pick(run, json.loads(Path(a[2]).read_text()), retry, Path(a[-1]))
+
+
+if __name__ == "__main__":
+    main()

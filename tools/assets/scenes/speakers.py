@@ -205,10 +205,46 @@ def frame_facts(cam, m, res):
                                          ("top", top)) if b]}
 
 
-def framing_why(cam, kind, speaker, listener, ots, show, subjects, res):
-    """The framing rules' failures for one camera (empty: it passes), from the measured people."""
+def mask_facts(shot, key, nx=72, ny=40):
+    """From a rendered still's own depth passes: the share of the frame where this person is what the camera sees,
+    and which frame edges their visible part touches. Joints alone missed a coat's side or a skirt past the edge,
+    and a listener hidden behind a high chair back (11-11)."""
+    g = shot.get("guides") or {}
+    if not (g.get("depth") and g.get(f"depth_{key}")):
+        return None
+    sc, sp = Exr(g["depth"]), Exr(g[f"depth_{key}"])
+
+    def vis(u, v):
+        ds, dp = sc.at(u, v), sp.at(u, v)
+        return ds is not None and dp is not None and dp < 5e4 and abs(dp - ds) <= max(3.0, 0.015 * ds)
+    n = sum(vis((i + 0.5) / nx, (j + 0.5) / ny) for i in range(nx) for j in range(ny))
+    edge = lambda pts: any(vis(u, v) for u, v in pts)
+    rows = [(j + 0.5) / ny for j in range(ny)]
+    cols = [(i + 0.5) / nx for i in range(nx)]
+    return {"area": round(n / (nx * ny), 4), "left": edge([(0.002, v) for v in rows]),
+            "right": edge([(0.998, v) for v in rows]), "top": edge([(u, 0.002) for u in cols])}
+
+
+LISTENER_AREA = {"two": 0.01, "ots": 0.03}      # a listener's visible share of the frame
+
+
+def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=None):
+    """The framing rules' failures for one camera (empty: it passes), from the measured people; with a rendered
+    shot, its own depth passes decide edge cuts and whether the listener is really seen."""
     why = []
     facts = {k: frame_facts(cam, v["measured"], res) for k, v in subjects.items()}
+    if shot is not None:
+        for k, f in facts.items():
+            mf = mask_facts(shot, k)
+            if mf is None:
+                continue
+            f["mask"] = mf
+            # cut: the person's visible part reaches the left or right edge (any of it), or the top edge with the
+            # head (a medium's waist at the bottom edge is the shot, not a cut)
+            f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))
+            f["cut_edges"] = [e for e in ("left", "right", "top") if mf[e]]
+            if mf["area"] < LISTENER_AREA["two"] * 0.3:
+                f["head_in"] = f["head_any"] = f["shoulder_in"] = False      # hidden (behind a chair, a person)
     if speaker and kind != "close":
         m = subjects[speaker]["measured"]
         top = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], res)
@@ -224,7 +260,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res):
                 why.append(f"the listener's head ({lc[1] - lt[1]:.3f}) is bigger than the speaker's ({fh:.3f})")
         if listener:
             f = facts[listener]
-            if ots and not (f["shoulder_in"] or f["head_any"]):
+            ma = (f.get("mask") or {}).get("area")
+            if ots and (not (f["shoulder_in"] or f["head_any"]) or (ma is not None and ma < LISTENER_AREA["ots"])):
                 why.append("the listener's shoulder is not in the over-the-shoulder frame")
             elif ots:                        # the listener's shoulder at one side, the speaker toward the middle
                 lm = subjects[listener]["measured"]
@@ -234,7 +271,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res):
                     why.append(f"the listener's head is in the middle of the frame ({le[0]:.2f}), not at its side")
                 if se and not 0.25 < se[0] < 0.75:
                     why.append(f"the speaker's face is at the frame's side ({se[0]:.2f})")
-            elif not ots and not f["head_in"]:
+            elif not ots and (not f["head_in"] or (ma is not None and ma < LISTENER_AREA["two"])):
                 why.append("the listener is not in view")
     for k in show or []:
         if k in facts and not facts[k]["head_in"]:
@@ -307,7 +344,7 @@ def in_room(p, room):
 # ------------------------------------------------------------------ the check
 def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None, ots=False, show=None):
     if not speaker:                          # a shot without a speaker: only the framing rules
-        why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res)
+        why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res, shot)
         return {"speaker": None, "ok": not why, "why": why, "framing": why, "frame_facts": facts}
     m = subjects[speaker]["measured"]
     cam = shot["camera"]
@@ -344,7 +381,7 @@ def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None
         why.append(f"face {out['face_h']:.3f} of the frame height")
     if est_side and kind not in ("wide", "full") and out["side"] and out["side"] != est_side:
         why.append("across the line")
-    fw, facts = framing_why(cam, kind, speaker, listener, ots, show, subjects, res)
+    fw, facts = framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot)
     out["framing"] = fw
     out["frame_facts"] = facts
     why += fw
@@ -435,7 +472,7 @@ def run_scene(spec_path, cams=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("spec")
-    ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--rounds", type=int, default=5)
     a = ap.parse_args()
     t0 = time.time()
     spec = json.loads(Path(a.spec).read_text())

@@ -17,8 +17,9 @@ Per person whose body is within 100 deg of the camera:
   neck    (face within 60 deg) the chin-to-shoulder-line distance over the eyes-to-chin distance, from the pose
           model, within NECK_TOL of the same measure on the engine still and of the median over this character's
           keys in the run (the accepted set);
-  outfit  the judge, with the character's sheet and the person's crop: do the collar, the neckwear and the front of
-          the coat or dress agree with the sheet and the character's own clothes words.
+  outfit  (head at least OUTFIT_MIN_HEAD of the frame) the judge, with the character's sheet and the crop of the
+          neck and chest around the engine's chin: the collar and neckwear the same as on the sheet, or larger,
+          open, turned or missing (a forced choice: asked "do they agree", the judge said yes to everything).
 The same pose measures on the engine still (and its depth picture) are reported too: an arm the still itself does
 not show cleanly is the guide's fault, not the redraw's.
 """
@@ -50,11 +51,10 @@ BODY = {"l_sh": 5, "r_sh": 6, "l_el": 7, "r_el": 8, "l_wr": 9, "r_wr": 10, "nose
 CHIN = 23 + 8            # the 68-point face contour's chin, after the 23 body and feet points
 HAND_L, HAND_R = slice(91, 112), slice(112, 133)
 
-OUTFIT_Q = ("Picture 1 is a costume reference sheet of a character. Picture 2 shows the same character in a film "
-            "frame. The character's clothes are: {wear}. Look only at the collar, the neckwear and the front of the "
-            "coat or dress in Picture 2. Do they agree with Picture 1 and those words (the same kind of collar, worn "
-            "the same way, the same neckwear, the coat or dress closed or open the same way)? Answer 'same' if they "
-            "agree, otherwise name what differs in a few words.")
+OUTFIT_Q = ("Picture 1 is a costume reference sheet. Picture 2 shows the same character in a film frame. Compare "
+            "the shirt collar and neckwear in Picture 2 with Picture 1. Answer with one word: same, larger, open, "
+            "turned, missing.")
+OUTFIT_MIN_HEAD = 0.08   # head top to chin, of the frame's height: smaller heads are not asked about
 
 
 class Pose:
@@ -98,6 +98,8 @@ def measures(k, s, W, H) -> dict:
     P = lambda i: (float(k[i][0]) / W, float(k[i][1]) / H) if s[i] >= SCORE else None
     out = {n: P(i) for n, i in BODY.items()}
     out["chin"] = P(CHIN)
+    out["scores"] = {n: round(float(s[i]), 2) for n, i in BODY.items() if n[2:] in ("el", "wr")}
+    out["hand_scores"] = {side: round(float(np.sort(s[sl])[-5]), 2) for side, sl in (("l", HAND_L), ("r", HAND_R))}
     for side, sl in (("l", HAND_L), ("r", HAND_R)):
         hk, hs = k[sl], s[sl]
         good = hk[hs >= 0.3]
@@ -179,20 +181,21 @@ def main():
                 k, s = pose(im, bp)
                 m = measures(k, s, 1152, 640)
                 ah = arm_hand(m, p.get("joints2d") or {}, b)
-                q[kk] = dict(ah, neck_ratio=m.get("neck_ratio"))
-            if judge is not None and p.get("sheet") and p.get("wear") and (p.get("head_to_camera_deg") or 0) < 100:
-                j2 = p.get("joints2d") or {}
-                if "chin" in j2 and j2["chin"][2] or ("chin" in j2 and 0 <= j2["chin"][1] < 1):
-                    W, H = 1152, 640
-                    im = Image.open(it["redraw"]).convert("RGB").resize((W, H))
-                    top = max(0, int((b[1] - 0.02) * H))
-                    cy = j2["chin"][1]
-                    bot = min(H, int(min(b[3], cy + (cy - b[1]) * 2.2 + 0.1) * H))
-                    c = im.crop((max(0, int((b[0] - 0.02) * W)), top, min(W, int((b[2] + 0.02) * W)), max(top + 16, bot)))
-                    a = judge.ask_images([Image.open(p["sheet"]).convert("RGB"), c],
-                                         OUTFIT_Q.format(wear=p["wear"]), 24, 768).strip()
-                    q["outfit"] = a
-                    q["outfit_ok"] = a.lower().startswith("same")
+                q[kk] = dict(ah, neck_ratio=m.get("neck_ratio"), scores=m["scores"], hand_scores=m["hand_scores"])
+            j2 = p.get("joints2d") or {}
+            hh = (j2["chin"][1] - j2["head_top"][1]) if "chin" in j2 and "head_top" in j2 else 0.0
+            if (judge is not None and p.get("sheet") and (p.get("head_to_camera_deg") or 0) < 100
+                    and hh >= OUTFIT_MIN_HEAD and 0 <= j2["chin"][1] < 1):
+                # the neck and the top of the chest only, around the engine's chin: in a wide the judge saw a
+                # collar "turned" in a few pixels, so only a head big enough in the frame is asked about
+                W, H = 1152, 640
+                cx, cy = j2["chin"][0], j2["chin"][1]
+                im = Image.open(it["redraw"]).convert("RGB").resize((W, H))
+                c = im.crop((int(max(0.0, cx - 1.3 * hh * H / W) * W), int(max(0.0, cy - 0.5 * hh) * H),
+                             int(min(1.0, cx + 1.3 * hh * H / W) * W), int(min(1.0, cy + 1.1 * hh) * H)))
+                a = judge.ask_images([Image.open(p["sheet"]).convert("RGB"), c], OUTFIT_Q, 6, 768).strip().lower()
+                q["outfit"] = a
+                q["outfit_ok"] = a.startswith("same")
             r["people"][p["key"]] = q
         out[it["id"]] = r
         print(json.dumps({"id": it["id"], "people": {k: {"arms": (v["redraw"]["arms_found"], v["redraw"]["arms_shown"]),
