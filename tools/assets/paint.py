@@ -15,7 +15,7 @@ Steps (each timed in <asset>/paint/paint.json):
    Method "edit" uses Qwen-Image-Edit-2509 (tools/assets/qwen_edit.py) on the guide instead.
 3. project (Blender, bl_paint.py): painted / guide shading -> albedo per view, blended per texel by facing,
    pixel density and edge distance (low and high frequencies separately), gaps filled; detail normal and
-   roughness from the painted colour; writes <asset>/textures/painted/T_<id>_*.png and export/<id>_painted.glb.
+   roughness from the painted colour; writes <asset>/textures/painted/T_<id>_*.png and export/painted/<id>.glb.
 
 Spec block (all optional): "paint": {"prompt": material words, "views": {...}, "close": {"box": [...]},
 "method": "img2img" | "edit", "strength": 0.5, "control_scale": 0.7, "seed": 7, "params": {projection},
@@ -465,7 +465,8 @@ def run(adir, spec, stages=("guides", "paint", "project"), overrides=None):
             contact(V["views"], adir / "paint" / f"{aid}_paint_views{'_' + tag if tag else ''}.jpg", pdir)
     if "project" in stages:
         tdir = adir / "textures" / (f"painted_{tag}" if tag else "painted")
-        glb = adir / "export" / f"{aid}_painted{'_' + tag if tag else ''}.glb"
+        glb = adir / "export" / (f"painted_{tag}" if tag else "painted") / f"{aid}.glb"   # UE names its folder after the file
+        glb.parent.mkdir(parents=True, exist_ok=True)
         r = blender({"mode": "project", "blend": str(blend), "id": aid, "views_json": str(gdir_src / "views.json"),
                      "painted": {v["name"]: str(pdir / f"{v['name']}.png") for v in V["views"]},
                      "res": tex_px, "out_dir": str(tdir), "glb": str(glb), "params": p["params"]},

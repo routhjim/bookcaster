@@ -670,8 +670,13 @@ def main():
     if len(a1) == 3 and a1[0] == "--guard":
         guard_main(int(a1[1]), a1[2])
         return 0
-    if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards"):
+    if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards",
+                        "--ue-job"):
         import assetd as S
+        if a1[0] == "--ue-job":
+            if len(a1) != 2:
+                raise SystemExit("usage: run_asset.py --ue-job JOB.json   (see assetd.client_ue_job)")
+            return S.client_ue_job(a1[1])
         if a1[0] == "--status":
             return S.print_status()
         if a1[0] == "--release-cards":
@@ -729,7 +734,7 @@ def main_local(args):
         log("paint: guide views -> image model -> projection")
         paint_rep = paint.run(adir, spec)
         times["paint"] = paint_rep["times_s"]
-    painted_glb = adir / "export" / f"{spec['id']}_painted.glb"
+    painted_glb = adir / "export" / "painted" / f"{spec['id']}.glb"   # same file name: UE's folder is named after it
     tset = spec.get("texture_set") or ("painted" if paint_rep and (spec.get("paint") or {}).get("use", True)
                                        else "procedural")
     if tset == "painted":

@@ -51,7 +51,7 @@ UE) for glTF, FBX and USD alike: X and Z carry over, Y flips (right- to left-han
   translucent). One mesh, two slots. Nanite does not draw translucent sections, so an asset with glass imports with
   Nanite off. Tinted dark glass that must hide an interior: a dark base colour (transmission tints by it).
 - **Painted maps** (optional, `run_asset.py --paint`, see README): a second set `textures/painted/T_<id>_BaseColor
-  / Normal / ORM.png` and `export/<id>_painted.glb` on the same UVs; the procedural set is never overwritten. The
+  / Normal / ORM.png` and `export/painted/<id>.glb` (same file name, so UE imports it to the same folder) on the same UVs; the procedural set is never overwritten. The
   spec's `texture_set` (`painted` | `procedural`) picks the set imported into UE (default: painted when this run
   painted and `paint.use` is not false). UE texture names stay `T_<id>_<map>` either way.
 - Shader coordinates are preserved: the harness stores every part's Object, Generated and world-Position
