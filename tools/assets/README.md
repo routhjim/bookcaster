@@ -155,8 +155,8 @@ limit is `ASSETS_UE_JOB_TIMEOUT_S` (300 s) unless the job sets `timeout_s`. A ki
 script that blocks in one call cannot be interrupted until it returns. The job's stage record is `<log_dir>/logs/sched.json`.
 
 One editor serves one project at a time: when the oldest queued UE work is for another project and the current
-project has nothing queued, the editor quits and restarts on that project (the swap costs one editor start,
-measured below). A project keeps its own start-up shim (`Content/Python/init_unreal.py`): the job file is passed
+project has nothing queued (or that work has waited `ASSETS_UE_SWAP_AFTER_S`, 60 s), the editor quits and
+restarts on that project. A swap measured 12.1-12.9 s from quit to ready (AssetLab <-> CharLab, warm caches). A project keeps its own start-up shim (`Content/Python/init_unreal.py`): the job file is passed
 as both `ASSETS_UE_JOB` and `MH_JOB`, so the asset chain's shim and the character tools' shim both start the
 scheduler's server loop (`ue/ue_render.py`); a project without a shim gets the chain's. Other projects are not
 given the stage level, ray-tracing settings or mannequin.

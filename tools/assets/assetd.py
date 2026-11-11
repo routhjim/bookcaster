@@ -430,6 +430,7 @@ class Sched:
             if job.state in ("done", "failed", "cancelled"):
                 return
             job.cancelled = True
+            job.cancel_why = why
             for st in job.stages:
                 if st.state in ("wait", "ready"):
                     st.state = "cancel"
@@ -639,7 +640,7 @@ class Sched:
         if job.pending:
             self.finish_job(job, *job.pending)
         elif job.cancelled:
-            self.finish_job(job, "cancelled", {"rc": 130, "error": "cancelled (client gone)"})
+            self.finish_job(job, "cancelled", {"rc": 130, "error": getattr(job, "cancel_why", "cancelled")})
         elif all(s.state in ("done", "cancel") for s in job.stages):
             self.finish_job(job, "done", job.result or {"rc": 0})
 
@@ -886,6 +887,17 @@ class Sched:
                     n += 1
         return n
 
+    def oldest_wait(self, project):
+        """Seconds the oldest queued UE stage of a project has been ready."""
+        t, w = now(), 0.0
+        for j in self.jobs:
+            if (getattr(j, "project", None) or str(C.UE_PROJECT)) != project:
+                continue
+            for s in j.stages:
+                if s.kind == "ue" and s.state == "ready" and s.t_ready:
+                    w = max(w, t - s.t_ready)
+        return w
+
     def next_project(self):
         """The project of the oldest queued UE stage (the editor serves one project at a time)."""
         for j in self.jobs:
@@ -912,7 +924,8 @@ class Sched:
                 print("[sched] newer chain code: unloading the idle editor so the next scheduler loads it", flush=True)
                 e.quit()
                 continue
-            if e.state == "ready" and need and e.project != need and self.ue_backlog(e.project) == 0:
+            if e.state == "ready" and need and e.project != need and (
+                    self.ue_backlog(e.project) == 0 or self.oldest_wait(need) > C.UE_SWAP_AFTER_S):
                 print(f"[sched] editor on {e.card.bus}: swapping project {Path(e.project).stem} -> "
                       f"{Path(need).stem}", flush=True)
                 self.swap_t = t
