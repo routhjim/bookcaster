@@ -197,7 +197,8 @@ def main():
         facem = mk.copy()
         facem[int(0.35 * H):] = False
         still_rel = float(np.median(im[torso].mean(1))) / max(float(np.median(im[facem].mean(1))), 1e-3)
-        C["colour"] = {"ok": lightness_class(still_rel) == lightness_class(sheet_rel),
+        # advisory: a drawing's ink against a lit render's pixels does not compare (black cloth inks as mid grey)
+        C["colour"] = {"ok": None, "advisory": True, "same_class": lightness_class(still_rel) == lightness_class(sheet_rel),
                        "still_rel": round(still_rel, 3), "sheet_rel": round(sheet_rel, 3)}
     # height
     r = json.loads((Path(a.relaxed) / "result.json").read_text())
