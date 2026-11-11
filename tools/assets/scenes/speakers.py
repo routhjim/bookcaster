@@ -342,7 +342,11 @@ def in_room(p, room):
 
 
 # ------------------------------------------------------------------ the check
-def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None, ots=False, show=None):
+COVER_CM = 6.0               # a veil over the face: the face counts as shown through it, this far in front of it
+
+
+def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None, ots=False, show=None,
+               covered=False):
     if not speaker:                          # a shot without a speaker: only the framing rules
         why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res, shot)
         return {"speaker": None, "ok": not why, "why": why, "framing": why, "frame_facts": facts}
@@ -363,8 +367,8 @@ def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None
             ds, dp = sc.at(pr[0], pr[1]), sp.at(pr[0], pr[1])
             if ds is None or dp is None or dp > 5e4:
                 continue                     # off the frame, or the speaker is not drawn there (the face turned away)
-            if abs(dp - ds) <= max(3.0, 0.015 * ds):
-                vis += 1                     # what the camera sees there is the speaker
+            if abs(dp - ds) <= max(3.0, 0.015 * ds) or (covered and 0 <= dp - ds <= COVER_CM):
+                vis += 1                     # what the camera sees there is the speaker (or the veil over her face)
         out["face_visible"] = round(vis / n, 2) if n else 0.0
     else:
         out["face_visible"] = None
@@ -540,7 +544,8 @@ def main():
             tried[c["name"]].append(sh["camera"]["position"])
             lis = listener_of(c, keys, c.get("speaker"))
             chk = check_shot(sh, c.get("speaker"), subjects, res, c["kind"], line, est_side, lis, bool(c.get("ots")),
-                             c.get("show"))
+                             c.get("show"),
+                             bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")))
             sh["speaker_check"] = chk
             report["shots"].setdefault(c["name"], {"history": []})
             report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"]))

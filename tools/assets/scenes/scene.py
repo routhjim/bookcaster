@@ -103,7 +103,12 @@ def resolve(spec, cams_wanted=None):
         pos = list(c["position"]) + ([0.0] if len(c["position"]) == 2 else [])
         f = c.get("facing", [0, -1])
         n = (f[0] ** 2 + f[1] ** 2) ** 0.5
-        chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": cj.get("garments", []),
+        garments = list(cj.get("garments", []))
+        if c.get("wear_from"):          # another wardrobe variant's extra garments (all after its first, the base
+            wj = json.loads((lib / "character" / c["wear_from"] / "character.json").read_text())   # outfit) on top
+            garments += [g for g in wj.get("garments", [])[1:] if g not in garments]
+        chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": garments,
+                      "wear_add": c.get("wear_add"), "face_covered": bool(c.get("face_covered")),
                       "body_swap": cj.get("body_swap"), "hide_body": bool(cj.get("hide_body")),
                       "hide_face": bool(cj.get("hide_face")),       # a whole generated figure: no face mesh shown
                       "rebuild_from": cj.get("rebuild_from"),

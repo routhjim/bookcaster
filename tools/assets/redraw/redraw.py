@@ -160,6 +160,18 @@ def scene_poses(sd: Path) -> dict:
     return out
 
 
+def scene_wear(sd: Path) -> dict:
+    """Per person, this scene's own wardrobe facts from its job (scene spec "wear_add": words for what this scene
+    adds, e.g. a veil; "face_covered": the face is behind it, so no face reference and no face words)."""
+    jp = sd / "job.json"
+    if not jp.exists():
+        return {}
+    j = json.loads(jp.read_text())
+    j = j.get("job", j)
+    return {k: {"wear_add": v.get("wear_add"), "face_covered": bool(v.get("face_covered"))}
+            for k, v in (j.get("characters") or {}).items() if v.get("wear_add") or v.get("face_covered")}
+
+
 def kind_of(cam: str, shot: dict) -> str:
     for k in ("close", "medium", "wide"):
         if cam.startswith(k):
@@ -511,6 +523,14 @@ def main():
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
                 cast = run.get("cast") or {}
                 cast = {k: (dict(v, seat=seats[k]) if k in seats else v) for k, v in cast.items()}
+                for k, wv in scene_wear(sd).items():       # this scene's wardrobe on top of the cast's
+                    if k in cast:
+                        c2 = dict(cast[k])
+                        if wv.get("wear_add"):
+                            c2["wear"] = c2.get("wear", "") + "; " + wv["wear_add"]
+                        if wv.get("face_covered"):
+                            c2.pop("face_ref", None)
+                        cast[k] = c2
                 if cast:          # each person's own LoRA on their own region; their sheets as references
                     loras, sheets = [], []
                     for k, b, *_ in ppl:
