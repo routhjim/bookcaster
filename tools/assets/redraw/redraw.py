@@ -8,6 +8,7 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "sheet": "/abs/character sheet.png",    identity picture (both models)
       "lora": "/abs/char.safetensors", "trigger": "chr_x", "lora_w": {"1": 0.8, "2": 0.63},   (method image)
       "wear": "what the character wears",     (words; the scene tool does not know clothes yet)
+      "wear_back": "what shows from behind",  (method image: said instead of "wear" for a person turned away)
       "set_words": "what the room holds",     (the set's library description)
       "strengths": [0.55, 0.7],               (method image: img2img strength of the engine still)
       "control": {"type": "depth", "scale": 0.8, "end": 1.0} | null,    (method image: the engine's own guide)
@@ -134,7 +135,7 @@ def set_words(shot: dict) -> str:
     if lit:
         out += " " + " ".join(
             (f"The fire in {t['words'].split(' with ')[0]} burns brightly with real flames, as in Picture 1."
-             if t.get("fire") else f"{t['words'].split(',')[0].capitalize()} is lit and glows warmly, as in Picture 1.")
+             if t.get("fire") else f"{t['words'].split(',')[0].capitalize()} is lit, its flame burning, as in Picture 1.")
             for t in lit)
     return out.strip()
 
@@ -148,11 +149,25 @@ def room_words(kind: str, room: str, room_all: bool = False) -> str:
             "focus as it is there; do not widen the view, do not show more of the room, add nothing to the walls.")
 
 
-def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "") -> str:
+def wear_words(ppl: list, wear: str, wear_back: str | None) -> str:
+    """Clothes for the people who show their front; a person turned away (>= 115 deg) is given only what shows
+    from behind (wear_back), when the run has it: with the full list a strong redraw put the cravat and waistcoat
+    on the back of a man seen from behind (11-11, strengths 0.8-0.95)."""
+    if not wear_back:
+        return f"He wears {wear}." if len(ppl) <= 1 else f"Each wears {wear}."
+    out = []
+    for k, box, ang, *_ in ppl:
+        who = "He" if len(ppl) == 1 else f"The man {place_words(box).split(',')[0]}"
+        out.append(f"{who} is seen from behind: we see only {wear_back}." if ang >= 115 else f"{who} wears {wear}.")
+    return " ".join(out)
+
+
+def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
+                 wear_back: str | None = None) -> str:
     return " ".join([
         f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl).replace(
             "One man", f"One man, {trigger},").replace("men are in the picture", f"men, each {trigger}, are in the picture"),
-        f"He wears {wear}." if len(ppl) <= 1 else f"Each wears {wear}.",
+        wear_words(ppl, wear, wear_back),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
         "Real skin and hair, woven cloth with natural folds, natural light, film grain."])
 
@@ -179,7 +194,7 @@ def main():
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q} for k, b, a, q in ppl]}
             if run["method"] == "edit":
                 jobs.append({"id": f"{sd.name}__{cam}", "prompt": edit_prompt(kind, ppl, run["wear"], room, run.get("room_all", False),
-                                                     set_words(sh) if run.get("set_facts") else ""),
+                                                     set_words(sh) if run.get("set_facts") else "", run.get("wear_back")),
                              "images": [sh["still"], run["sheet"]], "seed": seed,
                              "path": str(out / f"{sd.name}__{cam}.png"), "size": [1152, 640], "_meta": base})
             else:
@@ -189,7 +204,7 @@ def main():
                 for st in run.get("strengths", [0.7]):
                     j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
                          "prompt": image_prompt(kind, ppl, run["wear"], room, run["trigger"],
-                                                set_words(sh) if run.get("set_facts") else ""),
+                                                set_words(sh) if run.get("set_facts") else "", run.get("wear_back")),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": [run["sheet"]],
                          "loras": [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]],

@@ -95,7 +95,7 @@ def things(set_dir) -> list:
         if t["fire"]:
             t["words"] += " with a fire burning in the grate, flames and glowing coals"
         elif t["lit"]:
-            t["words"] += ", lit, glowing warmly"
+            t["words"] += ", lit, its flame burning"
     return out
 
 
