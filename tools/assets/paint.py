@@ -444,7 +444,7 @@ def run(adir, spec, stages=("guides", "paint", "project"), overrides=None):
     tag = p.get("tag", "")
     scratch = SCRATCH / aid / (tag or "run")
     gdir = scratch / "views"
-    pdir = adir / "paint" / (f"views_{tag}" if tag else "views")
+    pdir = Path(p["painted_from"]) if p.get("painted_from") else adir / "paint" / (f"views_{tag}" if tag else "views")
     logdir = adir / "logs"
     for d in (gdir, pdir, logdir):
         d.mkdir(parents=True, exist_ok=True)
