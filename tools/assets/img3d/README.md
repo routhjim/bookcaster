@@ -95,6 +95,22 @@ shoulder cap is Taubin-smoothed (`shoulder_round_m` 0.15, 12 rounds). `report.js
 Long skirts: `"turn_legs": false` (the hem is no ankle), `"shoe_top_m": 0.03` and `"skirt_min_z_m": 0.03` (the hem
 is skirt, not shoe), `"skirt_pelvis": 1.0`. `skirt_idx.npy` lists the loose cloth for the settle step.
 
+## A cast by the same route (11-11): what a new character takes
+
+Per character, from its sheet: (1) a MetaHuman from a preset near the sheet through the character tools (`make` +
+`cloud` + `export_geometry` in one char_render job, ~2.5 min; body constraints are now really applied); (2) the
+spread drawing with the character's LoRA and an OpenPose control map of a 40-degree spread pose drawn from fixed
+proportions (no detector), gated by pose_gate.py; (3) TRELLIS.2 on a card (~3.5 min incl. the inner wall);
+(4) bl_combo.py (~12 s, ~35 s for a long dress); (5) import (~8 s); (6) per stance that moves the legs: one scene
+run for the joints, bl_settle.py (~5 s), an import, its own library id.
+Hands are found at the far end of each arm (brown cloth passes the skin test); neck-skin and nape-hair removal only
+touches what lies on or inside the MetaHuman's own neck and head; floating pieces above the collarbones off the
+neck's axis (a drawn bun) are dropped.
+
+Hair indoors: groom strands take the sky light's cubemap with no room occlusion, so black hair shows the outdoor
+sky's blue in a room. char_render's job key `"interior": true` turns `r.HairStrands.SkyLighting` off for the job and
+restores it (the scene tool should pass the set's own interior flag); exteriors are unchanged.
+
 ## Loose cloth per stance: bl_settle.py
 
 Pelvis-only weights hang a skirt straight whatever the legs do. Per stance (iGPU station, Blender, ~3 s of numpy):
