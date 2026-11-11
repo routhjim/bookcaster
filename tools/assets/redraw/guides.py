@@ -1,6 +1,6 @@
 """Guide passes for an image model from a scene's engine depth (GPU, torch): run at the image station.
 
-    python -I tools/assets/redraw/guides.py SCENE_OUT_DIR [SCENE_OUT_DIR ...]
+    python -I tools/assets/redraw/guides.py [--set LIBRARY_SET_DIR] SCENE_OUT_DIR [SCENE_OUT_DIR ...]
 
 The scene tool (tools/assets/scenes, spec "guides": true) writes per still the camera's linear depth (UE cm, .exr)
 and each person's own depth (only that person drawn). From those, per still, into <scene>/guides/:
@@ -10,7 +10,9 @@ and each person's own depth (only that person drawn). From those, per still, int
   <cam>_mask_<key>.png the person's visible part (where their own depth meets the scene's)
 and <scene>/truth.json: per still, per person the visible box (0-1, x0 y0 x1 y1), area, the fraction of the
 person that is visible, with the scene's angles (head and body to the camera) and camera distance copied from
-result.json. Device: cuda (pin it with HIP_VISIBLE_DEVICES); it refuses to run on the CPU.
+result.json. With --set (the scene's library set): the set's things (setfacts.py) seen in each still, each with its
+visible box, the visible fraction of its sample points (occlusion from the depth) and whether it is lit or a fire.
+Device: cuda (pin it with HIP_VISIBLE_DEVICES); it refuses to run on the CPU.
 """
 from __future__ import annotations
 
@@ -25,6 +27,11 @@ import cv2  # noqa: E402
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scenes"))
+import framing  # noqa: E402
+import setfacts  # noqa: E402
 
 FAR_CM = 1.0e5          # a person's own depth is cleared to the far value where they are not drawn
 VIS_TOL = 0.015         # visible where the person's depth is within 1.5 % (or 2 cm) of the scene's
@@ -111,7 +118,43 @@ def edges_bool(m: torch.Tensor) -> torch.Tensor:
     return (mx - mn)[0, 0] > 0
 
 
-def one_scene(sd: Path, dev):
+def seen_things(things, cam: dict, d: torch.Tensor, n: int = 7) -> list:
+    """The set's things in this still: sample points over each thing's box projected through the camera, kept where
+    the engine depth says nothing nearer covers them."""
+    h, w = d.shape
+    out = []
+    for t in things:
+        c, hf = t["center"], t["half"]
+        pts = [[c[0] + hf[0] * (2 * i / (n - 1) - 1), c[1] + hf[1] * (2 * j / (n - 1) - 1), c[2] + hf[2] * (2 * k / (n - 1) - 1)]
+               for i in range(n) for j in range(n) for k in range(n)]
+        pr = [framing.project(cam, q, (w, h)) for q in pts]
+        inside = [q for q in pr if q and 0 <= q[0] < 1 and 0 <= q[1] < 1]
+        if not inside:
+            continue
+        uv = torch.tensor([[q[0] * w, q[1] * h, q[2] * 100.0] for q in inside], device=d.device)
+        dm = d[uv[:, 1].long().clamp(0, h - 1), uv[:, 0].long().clamp(0, w - 1)]
+        vis = dm >= uv[:, 2] - torch.clamp(uv[:, 2] * 0.04, min=6.0)
+        nv = int(vis.sum())
+        if nv < 3:
+            continue
+        v = uv[vis]
+        box = [round(float(v[:, 0].min()) / w, 3), round(float(v[:, 1].min()) / h, 3),
+               round(float(v[:, 0].max()) / w, 3), round(float(v[:, 1].max()) / h, 3)]
+        flame = None
+        if t.get("light_pos"):                     # is the light's own source (flame, grate) in view and uncovered
+            q = framing.project(cam, t["light_pos"], (w, h))
+            if q and 0 <= q[0] < 1 and 0 <= q[1] < 1:
+                dd = float(d[min(h - 1, int(q[1] * h)), min(w - 1, int(q[0] * w))])
+                flame = dd >= q[2] * 100.0 - max(q[2] * 100.0 * 0.06, 10.0)
+            else:
+                flame = False
+        out.append({"name": t["name"], "kind": t["kind"], "words": t["words"], "lit": t["lit"], "fire": t["fire"],
+                    "flame_in_view": flame,
+                    "box": box, "visible_frac": round(nv / len(pts), 3)})
+    return out
+
+
+def one_scene(sd: Path, dev, things=None, day=None):
     res = json.loads((sd / "result.json").read_text())
     g = sd / "guides"
     truth = {"scene": sd.name, "shots": {}}
@@ -163,6 +206,9 @@ def one_scene(sd: Path, dev):
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,
                                "depth_range_cm": [round(float(d[valid].min()), 1), round(float(d[valid].max()), 1)]}
+        if things is not None:
+            truth["shots"][cam]["things"] = seen_things(things, sh["camera"], d)
+            truth["shots"][cam]["daylight"] = day
     (sd / "truth.json").write_text(json.dumps(truth, indent=1))
     return truth
 
@@ -171,10 +217,15 @@ def main():
     if not torch.cuda.is_available():
         raise SystemExit("no GPU visible: guides run on a card (HIP_VISIBLE_DEVICES), never on the CPU")
     dev = torch.device("cuda")
-    for a in sys.argv[1:]:
-        t = one_scene(Path(a), dev)
+    args = sys.argv[1:]
+    things = day = None
+    if args and args[0] == "--set":
+        things, day = setfacts.things(args[1]), setfacts.daylight(args[1])
+        args = args[2:]
+    for a in args:
+        t = one_scene(Path(a), dev, things, day)
         for cam, s in t["shots"].items():
-            print(cam, s["depth_range_cm"], {k: (v["box"], v["area"], v.get("head_to_camera_deg")) for k, v in s["people"].items()},
+            print(cam, [(x["name"], x["visible_frac"]) for x in s.get("things", [])], s["depth_range_cm"], {k: (v["box"], v["area"], v.get("head_to_camera_deg")) for k, v in s["people"].items()},
                   flush=True)
 
 

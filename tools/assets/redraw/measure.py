@@ -16,6 +16,11 @@ Per picture (counts are built from these by the caller):
            detections in both (each class found in the engine still: held when a box overlaps >= 0.4).
   identity DINOv2 cosine between the largest face crop in each scene person's box and the sheet's face crop.
   look     the judge: "photograph or computer render".
+  lights   each lit thing of the set in frame (item "things": guides.py --set): the judge on its box, in the engine
+           still and the redraw: is a flame / fire burning there.
+  light    per person (item "people"[i]["mask"]: the engine's visible mask): which side of the person is brighter
+           (left / right / even: mean luminance of the mask's left and right halves, ratio past 1.15), engine v
+           redraw; held when they agree.
 """
 from __future__ import annotations
 
@@ -62,8 +67,26 @@ ROOM_Q = ("Picture 1 is the original frame and Picture 2 a redrawn version of it
           "object that is not in Picture 1, remove or move one, or cover one (for example with a cloth)? Answer "
           "'same' if the room's objects are all still there in the same places, else name what changed in a few "
           "words.")
+LIT_Q = ("Is there a lit flame or a burning fire in this picture (flames, glowing coals, or a lamp's lit flame)? "
+         "Answer yes or no.")
 FRAME_Q = ("Picture 1 is the original frame and Picture 2 a redrawn version of it. Is the camera the same: the "
            "same viewpoint, framing and distance to the people? Answer yes or no.")
+
+
+def light_side(im, mask_path):
+    """'left' / 'right' / 'even': which half of the person (by the engine's visible mask) is brighter."""
+    import numpy as np
+    m = torch.from_numpy(np.asarray(Image.open(mask_path).convert("L"))).cuda() > 127
+    if int(m.sum()) < 200:
+        return None
+    x = torch.from_numpy(np.asarray(im.convert("RGB").resize((m.shape[1], m.shape[0])))).cuda().float()
+    lum = (0.2126 * x[..., 0] + 0.7152 * x[..., 1] + 0.0722 * x[..., 2])
+    ys, xs = torch.nonzero(m, as_tuple=True)
+    mid = float(torch.median(xs.float()))
+    left = lum[m & (torch.arange(m.shape[1], device=m.device)[None, :] < mid)]
+    right = lum[m & (torch.arange(m.shape[1], device=m.device)[None, :] >= mid)]
+    a, b = float(left.mean()) + 1, float(right.mean()) + 1
+    return "left" if a / b > 1.15 else "right" if b / a > 1.15 else "even"
 
 
 def main():
@@ -104,6 +127,14 @@ def main():
                     q["face_sim"] = round(float(e @ sheet_emb), 3)
                     q["_emb"] = e.tolist()
             r["people"][p["key"]] = q
+        for p in it["people"]:
+            if p.get("mask"):
+                r["people"][p["key"]]["light_side"] = light_side(im, p["mask"])
+        r["lit"] = {}
+        for t in it.get("things", []):
+            if t.get("lit") or t.get("fire"):
+                a = judge.ask(crop(im, t["box"], 0.03), LIT_Q, 3).strip().lower()
+                r["lit"][t["name"]] = "yes" if "yes" in a else "no" if "no" in a else a[:10]
         r["room_dets"] = {k: det.get(k, []) for k in ROOM}
         a = judge.ask(im, LOOK_Q, 3).strip().lower()
         r["look"] = "photo" if "photo" in a else "render" if "render" in a else a[:12]

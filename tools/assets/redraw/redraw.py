@@ -13,6 +13,8 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "control": {"type": "depth", "scale": 0.8, "end": 1.0} | null,    (method image: the engine's own guide)
       "mask_people": false,                   (method image: the still's people masks as the per-pixel strength,
                                                "strength_bg" for the room)
+      "set_facts": true,                      (name the set's things the frame holds, lit ones as lit: guides.py --set)
+      "room_all": false,                      (the room's contents for every shot; default: wide shots only)
       "seed": 7, "only": ["scene/cam", ...]}
 Outputs: method edit -> edit_jobs.json for tools/assets/qwen_edit.py; method image -> image_jobs.jsonl for
 tools/qwen_image.py --serve (one JSON line per picture). Each job id is "<scene>__<cam>[__s<strength>]".
@@ -57,10 +59,13 @@ def place_words(box) -> str:
     return side + (", " + near if near else "")
 
 
-def people(shot: dict) -> list:
-    """[(key, box, angle)] of the people visible in the still, left to right."""
-    out = [(k, v["box"], v.get("head_to_camera_deg", 0.0)) for k, v in shot["people"].items() if v.get("box")
-           and v.get("area", 0) > 0.002]
+def people(shot: dict, poses: dict | None = None) -> list:
+    """[(key, box, angle, posture)] of the people visible in the still, left to right; posture "sitting" when the
+    scene posed them seated (pose name), else "standing"."""
+    poses = poses or {}
+    out = [(k, v["box"], v.get("head_to_camera_deg", 0.0),
+            "sitting" if any(w in (poses.get(k) or "") for w in ("sit", "seat")) else "standing")
+           for k, v in shot["people"].items() if v.get("box") and v.get("area", 0) > 0.002]
     return sorted(out, key=lambda x: (x[1][0] + x[1][2]) / 2)
 
 
@@ -77,18 +82,18 @@ def people_words(ppl: list) -> str:
     n = len(ppl)
     head = "One man is in the picture." if n == 1 else f"{n} men are in the picture, dressed alike."
     parts = [head]
-    for k, box, ang in ppl:
+    for k, box, ang, post in ppl:
         who = "The man" if n == 1 else f"The man {place_words(box).split(',')[0]}"
-        parts.append(f"{who} is {place_words(box)} and {facing_words(ang)}." if n == 1 else
-                     f"{who} {facing_words(ang)}.")
+        parts.append(f"{who} is {post} {place_words(box)} and {facing_words(ang)}." if n == 1 else
+                     f"{who} is {post} and {facing_words(ang)}.")
     return " ".join(parts)
 
 
 def any_away(ppl: list) -> bool:
-    return any(a >= 115 for _, _, a in ppl)
+    return any(p[2] >= 115 for p in ppl)
 
 
-def edit_prompt(kind: str, ppl: list, wear: str, room: str) -> str:
+def edit_prompt(kind: str, ppl: list, wear: str, room: str, room_all: bool = False, things: str = "") -> str:
     away = any_away(ppl)
     ident = ("Picture 2 shows who he is: his face, his hair and his clothes"
              + (" (use it for his hair, build and clothes; where he is turned away, keep him turned away exactly "
@@ -101,15 +106,55 @@ def edit_prompt(kind: str, ppl: list, wear: str, room: str) -> str:
         "Change only how it looks: make it a photographed frame from a period film, with real skin and hair, woven "
         "wool and linen with natural folds, real wood, plaster, fabric and brass, the light coming from the same "
         "directions, film grain.",
-        SHOT[kind], people_words(ppl), ident, f"The room: {room}"])
+        SHOT[kind], people_words(ppl), ident,
+        room_words(kind, room, room_all) if not things or kind != "wide" else f"{room.split(':')[0]}.", things])
 
 
-def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str) -> str:
+def frame_place(box) -> str:
+    cx = (box[0] + box[2]) / 2
+    return "on the left" if cx < 0.35 else "on the right" if cx > 0.65 else "in the middle"
+
+
+def set_words(shot: dict) -> str:
+    """The set's things the engine sees in this frame (guides.py --set), with their place and whether they burn or
+    are lit, plus where the daylight comes from. Nothing that is out of frame is named, except the daylight."""
+    th = [t for t in shot.get("things") or [] if t["visible_frac"] >= 0.05 and t["kind"] != "prop" or
+          (t.get("lit") and t["visible_frac"] >= 0.02)]
+    th = [t for t in th if t["name"] != "rug" or t["visible_frac"] >= 0.2]
+    parts = []
+    for t in sorted(th, key=lambda t: (t["box"][0] + t["box"][2]) / 2):
+        w = t["words"] if t.get("flame_in_view", True) else t["words"].split(" with ")[0].split(",")[0]
+        if t["kind"] == "window" and shot.get("daylight"):
+            w += ", bright with " + shot["daylight"] + " outside"
+        parts.append(f"{w} {frame_place(t['box'])}")
+    out = ("In the frame: " + "; ".join(parts) + ".") if parts else ""
+    if shot.get("daylight") and not any(t["kind"] == "window" for t in th):
+        out += f" Soft {shot['daylight']} comes from a window out of frame."
+    lit = [t for t in th if (t.get("fire") or t.get("lit")) and t.get("flame_in_view", True)]
+    if lit:
+        out += " " + " ".join(
+            (f"The fire in {t['words'].split(' with ')[0]} burns brightly with real flames, as in Picture 1."
+             if t.get("fire") else f"{t['words'].split(',')[0].capitalize()} is lit, its flame glowing, as in Picture 1.")
+            for t in lit)
+    return out.strip()
+
+
+def room_words(kind: str, room: str, room_all: bool = False) -> str:
+    """The room's contents only for a wide shot: given the list for a closer shot, the edit model widened the
+    view to show it all (11-11 run a: every medium and close redraw pulled back and rebuilt the room)."""
+    if kind == "wide" or room_all:
+        return f"The room: {room}"
+    return ("Behind him keep exactly the part of the room that Picture 1 shows, at the same scale and as out of "
+            "focus as it is there; do not widen the view, do not show more of the room, add nothing to the walls.")
+
+
+def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "") -> str:
     return " ".join([
         f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl).replace(
             "One man", f"One man, {trigger},").replace("men are in the picture", f"men, each {trigger}, are in the picture"),
         f"He wears {wear}." if len(ppl) <= 1 else f"Each wears {wear}.",
-        f"The room: {room}", "Real skin and hair, woven cloth with natural folds, natural light, film grain."])
+        (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
+        "Real skin and hair, woven cloth with natural folds, natural light, film grain."])
 
 
 def main():
@@ -128,11 +173,13 @@ def main():
             if only and sid not in only:
                 continue
             kind = kind_of(cam, sh)
-            ppl = people(sh)
+            poses = {k: ((v.get("body_pose") or {}).get("pose") or "") for k, v in res.get("subjects", {}).items()}
+            ppl = people(sh, poses)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
-                    "people": [{"key": k, "box": b, "head_to_camera_deg": a} for k, b, a in ppl]}
+                    "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q} for k, b, a, q in ppl]}
             if run["method"] == "edit":
-                jobs.append({"id": f"{sd.name}__{cam}", "prompt": edit_prompt(kind, ppl, run["wear"], room),
+                jobs.append({"id": f"{sd.name}__{cam}", "prompt": edit_prompt(kind, ppl, run["wear"], room, run.get("room_all", False),
+                                                     set_words(sh) if run.get("set_facts") else ""),
                              "images": [sh["still"], run["sheet"]], "seed": seed,
                              "path": str(out / f"{sd.name}__{cam}.png"), "size": [1152, 640], "_meta": base})
             else:
@@ -141,7 +188,8 @@ def main():
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
                 for st in run.get("strengths", [0.7]):
                     j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
-                         "prompt": image_prompt(kind, ppl, run["wear"], room, run["trigger"]),
+                         "prompt": image_prompt(kind, ppl, run["wear"], room, run["trigger"],
+                                                set_words(sh) if run.get("set_facts") else ""),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": [run["sheet"]],
                          "loras": [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]],
