@@ -40,6 +40,13 @@ from mathutils import Matrix, Quaternion, Vector
 
 JOB = json.load(open(sys.argv[sys.argv.index("--") + 1]))
 OUT = JOB["out"]
+# mode "statue": the whole figure (its own head and hands) rigged to the body's skeleton, the body and head hidden
+# under it; mode "outfit" (default): its clothes only, on the MetaHuman head and hands
+STATUE = JOB.get("mode") == "statue"
+if STATUE:
+    JOB.setdefault("keep_figure_hands", True)
+    JOB.setdefault("hair_cap", False)
+    JOB.setdefault("head_ease_m", 0.025)
 os.makedirs(os.path.join(OUT, "textures"), exist_ok=True)
 REP = {"times": {}}
 T0 = time.time()
@@ -156,6 +163,8 @@ cnt = np.zeros(nv)
 np.add.at(col, lv, lc)
 np.add.at(cnt, lv, 1)
 col /= np.maximum(cnt, 1)[:, None]
+at = me.attributes.new("fcol", "FLOAT_COLOR", "POINT")     # the colour survives the cuts and welds below
+at.data.foreach_set("color", np.c_[col, np.ones(nv)].astype(np.float32).ravel())
 co = np.empty(nv * 3)
 me.vertices.foreach_get("co", co)
 co = co.reshape(-1, 3)
@@ -281,9 +290,13 @@ mark("fit", t)
 
 # ------------------------------------------------------------------ 4. cut head and hands
 t = time.time()
-cut_z = J("neck_02").z + float(JOB.get("neck_cut_m", 0.03))
-gone = co[:, 2] > cut_z
-gone |= skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (np.abs(co[:, 0] - J("neck_01").x) < 0.12)
+cut_z = J("neck_02").z + float(JOB.get("neck_cut_m", 0.01))
+# the head goes by one clean tilted plane (below); here only the figure's own neck skin inside the collar (a tube
+# round the neck axis) and, below, the hands
+nr = np.linalg.norm(co[:, :2] - np.array(J("neck_01"))[:2], axis=1)
+gone = skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.085)))
+if STATUE:
+    gone[:] = False
 if not JOB.get("keep_figure_hands"):
     for side, sg in (("l", 1), ("r", -1)):
         S0 = np.array(pose_head(f"upperarm_{side}"))
@@ -292,10 +305,35 @@ if not JOB.get("keep_figure_hands"):
         p = (co - S0) @ axis
         radial = np.linalg.norm((co - S0) - p[:, None] * axis[None, :], axis=1)
         gone |= (p > np.linalg.norm(hw - S0) - 0.01) & (radial < 0.16) & (sg * co[:, 0] > 0)
+tilt = math.radians(float(JOB.get("collar_tilt_deg", 20)))
+above = (co[:, 2] - cut_z) * math.cos(tilt) - (co[:, 1] - J("neck_01").y) * math.sin(tilt) > 0
+HAIR = None
+if JOB.get("hair_cap", True):
+    # the figure's own hair, kept for the back and sides of the head (dark, not skin, above the collar line)
+    lum = col @ np.array([0.3, 0.59, 0.11])
+    hair = above & ~skin & (lum < float(JOB.get("hair_lum_max", 0.22)))
+    if hair.sum() > 500:
+        HAIR = fig.copy()
+        HAIR.data = fig.data.copy()
+        bpy.context.scene.collection.objects.link(HAIR)
+        hb = bmesh.new()
+        hb.from_mesh(HAIR.data)
+        hb.verts.ensure_lookup_table()
+        bmesh.ops.delete(hb, geom=[hb.verts[i] for i in np.nonzero(~hair)[0]], context="VERTS")
+        hb.to_mesh(HAIR.data)
+        hb.free()
+        HAIR["src_head_lo"] = co[above].min(0).tolist()
+        HAIR["src_head_hi"] = co[above].max(0).tolist()
 bm = bmesh.new()
 bm.from_mesh(fig.data)
 bm.verts.ensure_lookup_table()
 bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.nonzero(gone)[0]], context="VERTS")
+# the collar line: a plane through the neck at cut_z, tilted so it runs lower at the front (as a collar does)
+pc = Vector((J("neck_01").x, J("neck_01").y, cut_z))
+pn = Vector((0.0, -math.sin(tilt), math.cos(tilt)))
+if not STATUE:
+    bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], dist=1e-5, plane_co=pc, plane_no=pn,
+                           clear_outer=True)
 # crumbs the cut leaves (finger tips, hair ends): islands under 300 vertices (the .glb splits vertices at UV seams:
 # weld them first, the UVs live on the loops)
 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
@@ -337,58 +375,119 @@ dt.layers_vgroup_select_dst = "NAME"
 bpy.context.view_layer.objects.active = fig
 bpy.ops.object.modifier_apply(modifier=dt.name)
 
-# only the sleeves follow the arms: coat panels beside the arms (below the armpits, off the sleeve tubes) that took
-# arm weights get the weights of the body without its arms instead
+# weights by region: only the sleeves follow the arms. A vertex is sleeve when it lies within a sleeve's reach of
+# the arm's centre line, past the armhole, and nearer that line than the torso's surface; everything else (coat
+# body, lapels, skirt, waistcoat) takes the weights of the body without its arms (nearest torso surface), so the coat
+# hangs from the shoulders and spine and the armhole is the one place where the two meet (smoothed below).
+from mathutils.bvhtree import BVHTree  # noqa: E402
 ARMB = ("clavicle", "upperarm", "lowerarm", "hand", "thumb", "index", "middle", "ring", "pinky")
-gname = {g.index: g.name for g in fig.vertex_groups}
-fco = np.array([v.co[:] for v in fig.data.vertices])
+
+
 def is_arm(n):
     return n.startswith(ARMB) and "toe" not in n     # the feet have index/middle/ring toes
 
 
+fco = np.array([v.co[:] for v in fig.data.vertices])
+torso = body.copy()
+torso.data = body.data.copy()
+bpy.context.scene.collection.objects.link(torso)
+tg = {g.index: g.name for g in torso.vertex_groups}
+bm = bmesh.new()
+bm.from_mesh(torso.data)
+dl = bm.verts.layers.deform.active
+bm.verts.ensure_lookup_table()
+drop = [v for v in bm.verts if v[dl] and is_arm(tg[max(v[dl].items(), key=lambda kv: kv[1])[0]])]
+bmesh.ops.delete(bm, geom=drop, context="VERTS")
+bm.to_mesh(torso.data)
+bm.free()
+dg = bpy.context.evaluated_depsgraph_get()
+tbvh = BVHTree.FromObject(torso, dg)
+d_torso = np.array([(tbvh.find_nearest(Vector(p))[3] or 9.0) for p in fco])
+gname = {g.index: g.name for g in fig.vertex_groups}
 armw = np.array([sum(g.weight for g in v.groups if is_arm(gname[g.group]) and not gname[g.group].startswith("clavicle"))
                  for v in fig.data.vertices])
-sleeve = np.zeros(len(fco), bool)
+near_sh = np.zeros(len(fco), bool)
 for side in ("l", "r"):
     S0 = np.array(pose_head(f"upperarm_{side}"))
     hw = np.array(pose_head(f"hand_{side}"))
     L = np.linalg.norm(hw - S0)
-    ax = (hw - S0) / L
-    p = (fco - S0) @ ax
-    rad = np.linalg.norm((fco - S0) - p[:, None] * ax[None, :], axis=1)
-    sleeve |= (p > 0.22 * L) & (p < L + 0.05) & (rad < float(JOB.get("sleeve_radius_m", 0.085)))
-zw = min(LM["wrist_l"][2], LM["wrist_r"][2])
-ramp = np.clip((zw + 0.20 - fco[:, 2]) / 0.10, 0, 1)     # full below the wrists + 10 cm, none 20 cm above them
-strip = (~sleeve) & (armw > 0.05) & (ramp > 0)
-REP["coat_verts_off_arms"] = int(strip.sum())
-if strip.any():
-    torso = body.copy()
-    torso.data = body.data.copy()
-    bpy.context.scene.collection.objects.link(torso)
-    tg = {g.index: g.name for g in torso.vertex_groups}
-    bm = bmesh.new()
-    bm.from_mesh(torso.data)
-    dl = bm.verts.layers.deform.active
-    bm.verts.ensure_lookup_table()
-    drop = [v for v in bm.verts if v[dl] and is_arm(tg[max(v[dl].items(), key=lambda kv: kv[1])[0]])]
-    bmesh.ops.delete(bm, geom=drop, context="VERTS")
-    bm.to_mesh(torso.data)
-    bm.free()
-    mask = fig.vertex_groups.new(name="_strip")
-    for i in np.nonzero(strip)[0]:
-        mask.add([int(i)], float(ramp[i]), "REPLACE")
-    d2 = fig.modifiers.new("dt2", "DATA_TRANSFER")
-    d2.object = torso
-    d2.use_vert_data = True
-    d2.data_types_verts = {"VGROUP_WEIGHTS"}
-    d2.vert_mapping = "POLYINTERP_NEAREST"
-    d2.layers_vgroup_select_src = "ALL"
-    d2.layers_vgroup_select_dst = "NAME"
-    d2.mix_mode = "REPLACE"
-    d2.vertex_group = "_strip"
-    bpy.ops.object.modifier_apply(modifier=d2.name)
-    fig.vertex_groups.remove(fig.vertex_groups["_strip"])
-    bpy.data.objects.remove(torso)
+    p = (fco - S0) @ ((hw - S0) / L)
+    near_sh |= (p < float(JOB.get("armhole_frac", 0.25)) * L) & (np.linalg.norm(fco - S0, axis=1) < 0.18)
+OFF = float(JOB.get("sleeve_off_torso_m", 0.035))
+armo = body.copy()
+armo.data = body.data.copy()
+bpy.context.scene.collection.objects.link(armo)
+bm = bmesh.new()
+bm.from_mesh(armo.data)
+dl = bm.verts.layers.deform.active
+bm.verts.ensure_lookup_table()
+bmesh.ops.delete(bm, geom=[v for v in bm.verts if not (v[dl] and is_arm(tg[max(v[dl].items(), key=lambda kv: kv[1])[0]])
+                                                       and not tg[max(v[dl].items(), key=lambda kv: kv[1])[0]]
+                                                       .startswith("clavicle"))], context="VERTS")
+bm.to_mesh(armo.data)
+bm.free()
+abvh = BVHTree.FromObject(armo, bpy.context.evaluated_depsgraph_get())
+d_arm = np.array([(abvh.find_nearest(Vector(p))[3] or 9.0) for p in fco])
+bpy.data.objects.remove(armo)
+# a sleeve vertex is nearer the arm's surface than the torso's (the sleeve's underside too), or clear of the torso
+sleeve = (armw >= 0.3) & ((d_arm < d_torso) | (d_torso > OFF) | near_sh)
+REP["sleeve_verts"] = int(sleeve.sum())
+mask = fig.vertex_groups.new(name="_coat")
+mask.add([int(i) for i in np.nonzero(~sleeve)[0]], 1.0, "REPLACE")
+d2 = fig.modifiers.new("dt2", "DATA_TRANSFER")
+d2.object = torso
+d2.use_vert_data = True
+d2.data_types_verts = {"VGROUP_WEIGHTS"}
+d2.vert_mapping = "POLYINTERP_NEAREST"
+d2.layers_vgroup_select_src = "ALL"
+d2.layers_vgroup_select_dst = "NAME"
+d2.mix_mode = "REPLACE"
+d2.vertex_group = "_coat"
+bpy.context.view_layer.objects.active = fig
+bpy.ops.object.modifier_apply(modifier=d2.name)
+fig.vertex_groups.remove(fig.vertex_groups["_coat"])
+bpy.data.objects.remove(torso)
+
+# skirt rule: cloth below the waist that is off the legs (a coat's skirt, a long dress) does not split with the
+# legs: it follows the pelvis by SKIRT_PELVIS and the nearer thigh by the rest (1.0 = hangs from the pelvis only)
+SKIRT_PELVIS = float(JOB.get("skirt_pelvis", 0.6))
+LEG_OFF = float(JOB.get("skirt_off_leg_m", 0.05))
+legs = body.copy()
+legs.data = body.data.copy()
+bpy.context.scene.collection.objects.link(legs)
+lgn = {g.index: g.name for g in legs.vertex_groups}
+bm = bmesh.new()
+bm.from_mesh(legs.data)
+dl = bm.verts.layers.deform.active
+bm.verts.ensure_lookup_table()
+bmesh.ops.delete(bm, geom=[v for v in bm.verts if not (v[dl] and lgn[max(v[dl].items(), key=lambda kv: kv[1])[0]]
+                                                       .startswith(("thigh", "calf")))], context="VERTS")
+bm.to_mesh(legs.data)
+bm.free()
+for m in list(legs.modifiers):
+    if m.type != "ARMATURE":
+        legs.modifiers.remove(m)
+lbvh = BVHTree.FromObject(legs, bpy.context.evaluated_depsgraph_get())
+d_leg = np.array([(lbvh.find_nearest(Vector(p))[3] or 9.0) for p in fco])
+bpy.data.objects.remove(legs)
+legd = []
+for side in ("l", "r"):
+    a_ = np.array(arm.pose.bones[f"thigh_{side}"].head)
+    b_ = np.array(arm.pose.bones[f"foot_{side}"].head)
+    ab = b_ - a_
+    tt = np.clip(((fco - a_) @ ab) / (ab @ ab), 0, 1)
+    legd.append(np.linalg.norm(fco - (a_ + tt[:, None] * ab[None, :]), axis=1))
+legd = np.array(legd)
+skirt = (fco[:, 2] < J("pelvis").z - 0.05) & (fco[:, 2] > 0.14) & (d_leg > LEG_OFF) & ~sleeve
+for gname_ in [g.name for g in fig.vertex_groups]:
+    fig.vertex_groups[gname_].remove([int(i) for i in np.nonzero(skirt)[0]])
+for i in np.nonzero(skirt)[0]:
+    (fig.vertex_groups.get("pelvis") or fig.vertex_groups.new(name="pelvis")).add([int(i)], SKIRT_PELVIS, "ADD")
+    if SKIRT_PELVIS < 1:
+        side = "l" if legd[0, i] < legd[1, i] else "r"
+        tgn = f"thigh_{side}"
+        (fig.vertex_groups.get(tgn) or fig.vertex_groups.new(name=tgn)).add([int(i)], 1 - SKIRT_PELVIS, "ADD")
+REP["skirt_verts"] = int(skirt.sum())
 
 # shoes are rigid: everything under the ankle follows its foot bone only
 zank = float(JOB.get("shoe_top_m", 0.11))
@@ -406,10 +505,37 @@ if len(low):
 # nothing of the outfit inside the body (the head mesh's neck and chest skin follow the body's surface and would
 # show through): every vertex nearer than EASE to the body, or inside it, goes out along the body's normal
 from mathutils.bvhtree import BVHTree  # noqa: E402
+if STATUE and HEAD is not None and JOB.get("statue_head_fit", True):
+    # the statue's head must enclose the hidden head (whose face would show through): map the statue's head box
+    # (above the collar line) onto the head mesh's box grown by the head ease, fading in over 6 cm below the line
+    P = np.array([v.co[:] for v in fig.data.vertices])
+    hv = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    hv = hv[hv[:, 2] > J("neck_02").z + 0.02]
+    he = float(JOB.get("head_ease_m", 0.025))
+    mlo, mhi = hv.min(0) - he, hv.max(0) + he
+    sd = (P[:, 2] - cut_z) * math.cos(tilt) - (P[:, 1] - J("neck_01").y) * math.sin(tilt)
+    hm_ = sd > 0
+    slo, shi = P[hm_].min(0), P[hm_].max(0)
+    slo[2] = mlo[2] = cut_z
+    if JOB.get("statue_head_uniform", True):
+        # one scale for all axes (the drawn head keeps its shape), large enough to hold the hidden head's box,
+        # centred on it in x and y, its chin at the collar line
+        k = float(np.max((mhi - mlo) / np.maximum(shi - slo, 1e-6)))
+        c_s, c_m = (slo + shi) / 2, (mlo + mhi) / 2
+        tgt = (P - c_s) * k + c_m
+        tgt[:, 2] = (P[:, 2] - slo[2]) * k + mlo[2]
+    else:
+        tgt = mlo + (P - slo) * (mhi - mlo) / np.maximum(shi - slo, 1e-6)
+    w = np.clip((sd + 0.06) / 0.06, 0, 1)[:, None]
+    P = P * (1 - w) + tgt * w
+    fig.data.vertices.foreach_set("co", P.ravel())
+    fig.data.update()
+    REP["head_fit_scale"] = [round(float(x), 3) for x in (mhi - mlo) / np.maximum(shi - slo, 1e-6)]
 dg = bpy.context.evaluated_depsgraph_get()
 bvhs = [BVHTree.FromObject(o, dg) for o in (body, HEAD) if o is not None]
 fco = np.array([v.co[:] for v in fig.data.vertices])
 EASE_ALL = float(JOB.get("body_ease_m", 0.014))
+HEAD_EASE = float(JOB.get("head_ease_m", 0.014))      # the statue's head must cover the hidden head and its hair
 disp = np.zeros_like(fco)
 zfeet = float(JOB.get("push_above_m", 0.14))          # shoes stay as drawn (the body's feet are bigger)
 for i, p in enumerate(fco):
@@ -421,10 +547,50 @@ for i, p in enumerate(fco):
         if loc is None:
             continue
         s_ = (q - loc).dot(nrm)
-        if s_ < EASE_ALL:
-            disp[i] = disp[i] + np.array(nrm) * (EASE_ALL - s_)
+        ease = HEAD_EASE if (STATUE and p[2] > J("neck_02").z) else EASE_ALL
+        if s_ < ease:
+            disp[i] = disp[i] + np.array(nrm) * (ease - s_)
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
+# shoulders: the drawn coat's shoulders stand off the body's narrower ones; pull what stands more than SH_GAP off the
+# body back toward it (half the excess), fading out 22 cm from the shoulder joint
+SH_GAP = float(JOB.get("shoulder_gap_m", 0.025))
+fco2 = fco + disp
+for side in ("l", "r"):
+    S0 = np.array(pose_head(f"upperarm_{side}"))
+    dd = np.linalg.norm(fco2 - S0, axis=1)
+    zone = np.nonzero((dd < 0.22) & (fco2[:, 2] > S0[2] - 0.12))[0]
+    for i in zone:
+        q = Vector(fco2[i])
+        loc, nrm, _, dist = bvhs[0].find_nearest(q, 0.3)
+        if loc is None or dist <= SH_GAP:
+            continue
+        f = (1 - dd[i] / 0.22) * 0.5
+        fco2[i] = fco2[i] + (np.array(loc) - fco2[i]) * f * (dist - SH_GAP) / dist
+disp = fco2 - fco
+fig.data.vertices.foreach_set("co", (fco + disp).ravel())
+fig.data.update()
+# the cravat: the drawn one is crumpled; smooth its surface (light, unsaturated cloth in front of the neck)
+fc = np.empty(len(fig.data.vertices) * 4, np.float32)
+fig.data.attributes["fcol"].data.foreach_get("color", fc)
+fc = fc.reshape(-1, 4)[:, :3]
+nc2 = np.array(J("neck_01"))
+P = fco + disp
+cm = ((fc.min(1) > 0.30) & (fc.max(1) - fc.min(1) < 0.12) & (P[:, 2] > J("spine_04").z) & (P[:, 1] < nc2[1])
+      & (np.abs(P[:, 0] - nc2[0]) < 0.10))
+if cm.sum() > 50:
+    ed = np.array([e.vertices[:] for e in fig.data.edges])
+    deg = np.bincount(ed.ravel(), minlength=len(P)).astype(np.float64)
+    for _ in range(int(JOB.get("cravat_smooth", 15))):
+        acc = np.zeros_like(P)
+        np.add.at(acc, ed[:, 0], P[ed[:, 1]])
+        np.add.at(acc, ed[:, 1], P[ed[:, 0]])
+        avg = acc / np.maximum(deg, 1)[:, None]
+        P[cm] = 0.5 * P[cm] + 0.5 * avg[cm]
+    disp = P - fco
+    fig.data.vertices.foreach_set("co", P.ravel())
+    fig.data.update()
+REP["cravat_verts_smoothed"] = int(cm.sum())
 REP["pushed_out_verts"] = int((np.linalg.norm(disp, axis=1) > 1e-4).sum())
 REP["push_max_m"] = round(float(np.linalg.norm(disp, axis=1).max()), 3)
 
@@ -446,6 +612,16 @@ for _ in range(int(JOB.get("weight_smooth", 8))):
     np.add.at(acc, ed[:, 0], Wm[ed[:, 1]])
     np.add.at(acc, ed[:, 1], Wm[ed[:, 0]])
     Wm = 0.5 * Wm + 0.5 * acc / np.maximum(deg, 1)[:, None]
+# the armholes take extra rounds, so the coat's shoulder bends round the joint instead of folding into a bump
+fP = np.array([v.co[:] for v in fig.data.vertices])
+shm = np.zeros(nvx, bool)
+for side in ("l", "r"):
+    shm |= np.linalg.norm(fP - np.array(pose_head(f"upperarm_{side}")), axis=1) < float(JOB.get("armhole_smooth_m", 0.20))
+for _ in range(int(JOB.get("armhole_smooth", 25))):
+    acc = np.zeros_like(Wm)
+    np.add.at(acc, ed[:, 0], Wm[ed[:, 1]])
+    np.add.at(acc, ed[:, 1], Wm[ed[:, 0]])
+    Wm[shm] = 0.5 * Wm[shm] + 0.5 * (acc / np.maximum(deg, 1)[:, None])[shm]
 fz = np.array([v.co.z for v in fig.data.vertices])
 for k, gi in enumerate(used):
     grp = fig.vertex_groups[gi]
@@ -458,10 +634,37 @@ bpy.ops.object.mode_set(mode="WEIGHT_PAINT")
 bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
 bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
 bpy.ops.object.mode_set(mode="OBJECT")
+if STATUE:
+    # the statue's head is rigid on the head bone above the collar line; its hands rigid on the hand bones past
+    # the wrists (fused fingers, no finger bones)
+    P = np.array([v.co[:] for v in fig.data.vertices])
+    rig = {}
+    hd = (P[:, 2] - cut_z) * math.cos(tilt) - (P[:, 1] - J("neck_01").y) * math.sin(tilt) > 0
+    rig["head"] = np.nonzero(hd)[0]
+    for side in ("l", "r"):
+        S0 = np.array(pose_head(f"upperarm_{side}"))
+        hw = np.array(pose_head(f"hand_{side}"))
+        L = np.linalg.norm(hw - S0)
+        ax = (hw - S0) / L
+        p = (P - S0) @ ax
+        rad = np.linalg.norm((P - S0) - p[:, None] * ax[None, :], axis=1)
+        rig[f"hand_{side}"] = np.nonzero((p > L - 0.01) & (rad < 0.16) & ~hd)[0]
+    names = [g.name for g in fig.vertex_groups]
+    for bone, ids in rig.items():
+        ids = [int(i) for i in ids]
+        for gn in names:
+            fig.vertex_groups[gn].remove(ids)
+        (fig.vertex_groups.get(bone) or fig.vertex_groups.new(name=bone)).add(ids, 1.0, "REPLACE")
+    REP["rigid_verts"] = {k: len(v) for k, v in rig.items()}
 mark("weights", t)
 
 # the body's hands, posed, as the outfit's skin slot
 t = time.time()
+hands = None
+if STATUE:
+    body_hands = False
+else:
+    body_hands = True
 hands = body.copy()
 hands.data = body.data.copy()
 bpy.context.scene.collection.objects.link(hands)
@@ -492,6 +695,45 @@ mark("hands", t)
 
 # ------------------------------------------------------------------ 6. this pose becomes the rest pose; join; export
 t = time.time()
+if HAIR is not None and HEAD is not None:
+    # fit the figure's hair cap to the head: its head box (above the collar line) onto the head mesh's box above
+    # the neck, then out of the head by HAIR_EASE; the front (forehead and face) is dropped so the head's own
+    # hairline shows; it follows the head bone rigidly
+    hv = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    hv = hv[hv[:, 2] > J("neck_02").z + 0.03]
+    mlo, mhi = hv.min(0), hv.max(0)
+    slo, shi = np.array(HAIR["src_head_lo"]), np.array(HAIR["src_head_hi"])
+    slo[2] = max(slo[2], cut_z)
+    P = np.array([v.co[:] for v in HAIR.data.vertices])
+    P = mlo + (P - slo) * (mhi - mlo) / np.maximum(shi - slo, 1e-6)
+    keep = (P[:, 1] > mlo[1] + float(JOB.get("hair_front_frac", 0.35)) * (mhi[1] - mlo[1])) | \
+        (P[:, 2] > mhi[2] - float(JOB.get("hair_top_m", 0.035)))
+    hbvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+    HE = float(JOB.get("hair_ease_m", 0.004))
+    for i, p in enumerate(P):
+        loc, nrm, _, dist = hbvh.find_nearest(Vector(p), 0.1)
+        if loc is not None:
+            sd = (Vector(p) - loc).dot(nrm)
+            if sd < HE:
+                P[i] = P[i] + np.array(nrm) * (HE - sd)
+    HAIR.data.vertices.foreach_set("co", P.ravel())
+    hb = bmesh.new()
+    hb.from_mesh(HAIR.data)
+    hb.verts.ensure_lookup_table()
+    bmesh.ops.delete(hb, geom=[hb.verts[i] for i in np.nonzero(~keep)[0]], context="VERTS")
+    hb.to_mesh(HAIR.data)
+    hb.free()
+    HAIR.vertex_groups.clear()
+    hg = HAIR.vertex_groups.new(name="head")
+    hg.add(list(range(len(HAIR.data.vertices))), 1.0, "REPLACE")
+    REP["hair_cap_verts"] = len(HAIR.data.vertices)
+    bpy.ops.object.select_all(action="DESELECT")
+    fig.select_set(True)
+    HAIR.select_set(True)
+    bpy.context.view_layer.objects.active = fig
+    bpy.ops.object.join()
+elif HAIR is not None:
+    bpy.data.objects.remove(HAIR)
 bpy.data.objects.remove(body)
 if HEAD is not None:
     bpy.data.objects.remove(HEAD)
@@ -506,16 +748,20 @@ tn.image = img
 mo.node_tree.links.new(tn.outputs["Color"], mo.node_tree.nodes["Principled BSDF"].inputs["Base Color"])
 fig.data.materials.clear()
 fig.data.materials.append(mo)
-for o in (fig, hands):
+if not body_hands:
+    bpy.data.objects.remove(hands)
+    hands = None
+for o in [x for x in (fig, hands) if x is not None]:
     for i, u in enumerate(o.data.uv_layers):
         u.name = "UVMap" if i == 0 else f"UV{i}"
     while len(o.data.uv_layers) > 1:
         o.data.uv_layers.remove(o.data.uv_layers[-1])
-bpy.ops.object.select_all(action="DESELECT")
-fig.select_set(True)
-hands.select_set(True)
-bpy.context.view_layer.objects.active = fig
-bpy.ops.object.join()
+if hands is not None:
+    bpy.ops.object.select_all(action="DESELECT")
+    fig.select_set(True)
+    hands.select_set(True)
+    bpy.context.view_layer.objects.active = fig
+    bpy.ops.object.join()
 # the character tools' outfit FBX carries centimetre values (no unit conversion on export or import): scale both
 for o in (arm, fig):
     o.scale = (100.0, 100.0, 100.0)
