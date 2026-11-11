@@ -40,6 +40,11 @@ FAR_CM = 1.0e5          # a person's own depth is cleared to the far value where
 VIS_TOL = 0.015         # visible where the person's depth is within 1.5 % (or 2 cm) of the scene's
 CREASE_DEG = 35.0
 JUMP = 0.04             # a depth jump of 4 % between neighbours is an outline
+FLAME_R_M = {"fire": 0.22, "lamp": 0.04}     # half-size of a light's source: a grate's fire, a lamp's flame
+SIDE_DEG = 60.0         # a body turned this far from the camera is side-on: drawn at the lighter tier
+REGION_PX = 0.06        # a person's own region (their LoRA, their words) reaches this far (frame widths) past them
+JOINTS2D = ("head", "FACIAL_L_Eye", "FACIAL_R_Eye", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l",
+            "lowerarm_r", "hand_l", "hand_r", "thigh_l", "thigh_r")
 
 
 def read_exr(p: Path) -> dict:
@@ -144,13 +149,21 @@ def seen_things(things, cam: dict, d: torch.Tensor, n: int = 7) -> list:
         box = [round(float(v[:, 0].min()) / w, 3), round(float(v[:, 1].min()) / h, 3),
                round(float(v[:, 0].max()) / w, 3), round(float(v[:, 1].max()) / h, 3)]
         flame = None
-        if t.get("light_pos"):                     # is the light's own source (flame, grate) in view and uncovered
-            q = framing.project(cam, t["light_pos"], (w, h))
-            if q and 0 <= q[0] < 1 and 0 <= q[1] < 1:
-                dd = float(d[min(h - 1, int(q[1] * h)), min(w - 1, int(q[0] * w))])
-                flame = dd >= q[2] * 100.0 - max(q[2] * 100.0 * 0.06, 10.0)
-            else:
-                flame = False
+        if t.get("light_pos"):                     # is any part of the light's source (flame, grate) in view
+            # points over the source, not only its centre: with one point a fire whose grate showed only at the
+            # frame's edge or behind the fender was said to be out, and the redraw drew a cold grate (11-11)
+            lp = t["light_pos"]
+            r = FLAME_R_M.get("fire" if t.get("fire") else "lamp", 0.04)
+            pts_f = [[lp[0] + r * a, lp[1] + r * b, lp[2] + r * 0.6 * c]
+                     for a in (-1, -0.5, 0, 0.5, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)]
+            flame = False
+            for qq in pts_f:
+                q = framing.project(cam, qq, (w, h))
+                if q and 0 <= q[0] < 1 and 0 <= q[1] < 1:
+                    dd = float(d[min(h - 1, int(q[1] * h)), min(w - 1, int(q[0] * w))])
+                    if dd >= q[2] * 100.0 - max(q[2] * 100.0 * 0.06, 10.0):
+                        flame = True
+                        break
         out.append({"name": t["name"], "kind": t["kind"], "words": t["words"], "lit": t["lit"], "fire": t["fire"],
                     "flame_in_view": flame,
                     "box": box, "visible_frac": round(nv / len(pts), 3), **({"view": t["view"]} if t.get("view") else {})})
@@ -223,6 +236,52 @@ def pose_picture(res: dict, cam: dict, w: int, h: int, path: Path):
     return n
 
 
+def regions(masks: dict, w: int, h: int, dev) -> dict:
+    """Each person's own region: the pixels nearer to their visible mask than to anyone else's, up to REGION_PX of
+    the frame's width past it (grown one pixel ring at a time; a pixel goes to the first mask that reaches it). With
+    padded boxes as LoRA regions two people standing close shared one region, and the redraw put one man's coat on
+    the other (11-11)."""
+    keys = list(masks)
+    lab = torch.full((h, w), -1, dtype=torch.long, device=dev)
+    grown = []
+    for i, k in enumerate(keys):
+        m = masks[k]
+        lab[m & (lab < 0)] = i
+        grown.append(m.clone())
+    for _ in range(max(1, int(REGION_PX * w))):
+        new = []
+        for i, g in enumerate(grown):
+            gg = F.max_pool2d(g.float()[None, None], 3, 1, 1)[0, 0] > 0.5
+            lab[gg & (lab < 0)] = i
+            new.append(gg & (lab == i))
+        grown = new
+    return {k: lab == i for i, k in enumerate(keys)}
+
+
+def joints2d(sub: dict, cam: dict, mask: torch.Tensor | None, w: int, h: int) -> dict:
+    """The person's joints in the frame: {name: [u, v, seen]} (seen: the person's own surface is what the camera
+    sees there, the visible mask within 2 px), plus the chin from the measured head; None when behind the camera."""
+    m = sub.get("measured") or {}
+    j = dict(m.get("joints") or {})
+    if m.get("eye_xy") and m.get("chin_z") is not None:
+        j["chin"] = [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]]
+        j["head_top"] = [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]]
+    out = {}
+    for n in JOINTS2D + ("chin", "head_top"):
+        if n not in j:
+            continue
+        q = framing.project(cam, j[n], (w, h))
+        if not q:
+            continue
+        inside = 0 <= q[0] < 1 and 0 <= q[1] < 1
+        seen = False
+        if inside and mask is not None:
+            x, y = int(q[0] * w), int(q[1] * h)
+            seen = bool(mask[max(0, y - 2):y + 3, max(0, x - 2):x + 3].any())
+        out[n] = [round(q[0], 4), round(q[1], 4), seen]
+    return out
+
+
 def one_scene(sd: Path, dev, things=None, day=None):
     res = json.loads((sd / "result.json").read_text())
     g = sd / "guides"
@@ -271,6 +330,12 @@ def one_scene(sd: Path, dev, things=None, day=None):
                        round((xs.max().item() + 1) / w, 4), round((ys.max().item() + 1) / h, 4)]
             people[key] = {"box": box, "area": round(nv / (w * h), 5), "visible_frac": round(nv / nd, 3) if nd else 0.0,
                            **(sh.get("truth") or {}).get(key, {})}
+        if people:                       # each person's own region (their LoRA and words), not overlapping
+            ms = {k: torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{k}.png"), 0) > 127).to(dev) for k in people}
+            for k, rg in regions(ms, w, h, dev).items():
+                save(rg.float() * 255, g / f"{cam}_region_{k}.png")
+                people[k]["region"] = str(g / f"{cam}_region_{k}.png")
+                people[k]["joints2d"] = joints2d(res.get("subjects", {}).get(k, {}), sh["camera"], ms[k], w, h)
         if people:                       # all people at once, grown a little: the per-pixel strength mask
             for name, keep in (("people", lambda v: True),
                                ("front", lambda v: (v.get("body_to_camera_deg") or 0) <= 100)):
@@ -283,9 +348,12 @@ def one_scene(sd: Path, dev, things=None, day=None):
             # three levels for a per-pixel strength (qwen_image reads the grey as a blend of its two strengths):
             # people facing within 100 deg white, the room mid grey, people turned past 100 deg black (they keep the
             # guide's body: at higher strength the model swung a turned-away body to profile, 11-11 round 1)
+            # people side-on (60-100 deg) a quarter of the way up from the room's strength to the people's: at the
+            # full strength the redraw swung two men in profile in a wide round to face the camera (11-11)
             tier = torch.full_like(d, 128.0)
-            for val, keep in ((255.0, lambda v: (v.get("body_to_camera_deg") or 0) <= 100),
-                              (0.0, lambda v: (v.get("body_to_camera_deg") or 0) > 100)):
+            bd = lambda v: v.get("body_to_camera_deg") or 0
+            for val, keep in ((255.0, lambda v: bd(v) < SIDE_DEG), (64.0, lambda v: SIDE_DEG <= bd(v) <= 100),
+                              (0.0, lambda v: bd(v) > 100)):
                 for key, v in people.items():
                     if keep(v):
                         m = torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)

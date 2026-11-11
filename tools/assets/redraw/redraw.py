@@ -252,6 +252,42 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
     return out
 
 
+NECKWEAR = ("collar", "cravat", "tie", "stock", "neckcloth", "frill", "ruff", "scarf")
+
+
+def neck_words(w: dict) -> str:
+    """The person's own collar and neckwear words, repeated as a fixed fact where their front shows: drawn from
+    the sheet alone, a close redraw opened the man's wing collar into a wide spread collar (11-11)."""
+    parts = [x.strip() for x in w.get("wear", "").replace(";", ",").split(",")]
+    neck = [x for x in parts if any(n in x for n in NECKWEAR)]
+    if not neck:
+        return ""
+    return (f"At {w['pos']} neck, exactly as on {w['pos']} character sheet and worn the same way: "
+            + ", ".join(neck) + ".")
+
+
+def limb_words(ppl: list, shot: dict, cast: dict) -> str:
+    """Each person's arms and hands the engine shows (the guides' joints in the frame and seen), said as a fact:
+    with a coat's sides over the arms in the still, the redraw drew a man with no arms (11-11)."""
+    nm = names(ppl, cast)
+    out = []
+    for k, box, ang, post, bdeg, near in ppl:
+        if bdeg > 100:
+            continue
+        j2 = (shot.get("people", {}).get(k) or {}).get("joints2d") or {}
+        arms = sum(1 for s in ("l", "r") if any(n in j2 and j2[n][2] for n in (f"lowerarm_{s}", f"hand_{s}")))
+        hands = sum(1 for s in ("l", "r") if f"hand_{s}" in j2 and j2[f"hand_{s}"][2])
+        if not arms:
+            continue
+        w = who_of(cast, k)
+        who = nm[k][0].upper() + nm[k][1:]
+        a = "both of " + w["pos"] + " arms are" if arms == 2 else "one of " + w["pos"] + " arms is"
+        h = (", with both hands" if hands == 2 else ", with its hand" if hands == 1 and arms == 1 else
+             ", with one hand" if hands == 1 else "")
+        out.append(f"{who}: {a} visible in their sleeves{h} in view, as in the engine frame.")
+    return " ".join(out)
+
+
 def any_away(ppl: list) -> bool:
     return any(p[2] >= 115 for p in ppl)
 
@@ -326,7 +362,7 @@ def room_words(kind: str, room: str, room_all: bool = False) -> str:
             "focus as it is there; do not widen the view, do not show more of the room, add nothing to the walls.")
 
 
-def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = None) -> str:
+def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = None, neck: bool = False) -> str:
     """Clothes for the people who show their front; a person turned away (> 100 deg) is given only what shows
     from behind (wear_back), when the run has it: with the full list a strong redraw put the cravat and waistcoat
     on the back of a man seen from behind (11-11, strengths 0.8-0.95). Each person's own clothes from the cast."""
@@ -345,16 +381,19 @@ def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = 
             return f"Each wears {wr}."
         out.append(f"{who} is seen from behind: we see only {wb}." if wb and max(ang, bdeg) > 100
                    else f"{who} wears {wr}.")
-    return " ".join(out)
+        if neck and max(ang, bdeg) <= 100 and w.get("wear"):
+            out.append(neck_words(w))
+    return " ".join(x for x in out if x)
 
 
 def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
                  wear_back: str | None = None, with_body: bool = False, cast: dict | None = None,
-                 look: str = "", speaker: str | None = None) -> str:
+                 look: str = "", speaker: str | None = None, shot: dict | None = None, facts: bool = False) -> str:
     cast = cast or {"*": {"trigger": trigger}}
     return " ".join(x for x in [
         f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body, cast, speaker),
-        wear_words(ppl, wear, wear_back, cast),
+        limb_words(ppl, shot, cast) if facts and shot else "",
+        wear_words(ppl, wear, wear_back, cast, neck=facts and kind != "wide"),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
@@ -441,25 +480,32 @@ def main():
                         w = who_of(cast, k)
                         if w.get("lora"):
                             pad = run.get("lora_pad", 0.06)
-                            loras.append([w["lora"], float(w.get("lora_w", lw)),
-                                          [max(0.0, b[0] - pad), max(0.0, b[1] - pad), min(1.0, b[2] + pad),
-                                           min(1.0, b[3] + pad)] if len(ppl) > 1 else [0.0, 0.0, 1.0, 1.0]])
+                            reg = (sh["people"].get(k) or {}).get("region")
+                            if len(ppl) <= 1:
+                                area = [0.0, 0.0, 1.0, 1.0]
+                            elif run.get("regions") and reg and Path(reg).exists():
+                                area = reg      # the person's own region: nearer them than anyone else (guides.py)
+                            else:
+                                area = [max(0.0, b[0] - pad), max(0.0, b[1] - pad), min(1.0, b[2] + pad),
+                                        min(1.0, b[3] + pad)]
+                            loras.append([w["lora"], float(w.get("lora_w", lw)), area])
                         if w.get("sheet") and w["sheet"] not in sheets:
                             sheets.append(w["sheet"])
                 else:
                     loras, sheets = [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]], [run["sheet"]]
-                for st in run.get("strengths", [0.7]):
-                    j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
+                for st, seed in [(a, b) for a in run.get("strengths", [0.7]) for b in (run.get("seeds") or [seed])]:
+                    tag = f"__s{int(round(st * 100))}" + (f"__r{seed}" if run.get("seeds") else "")
+                    j = {"id": f"{sd.name}__{cam}{tag}",
                          "prompt": image_prompt(kind, ppl, run.get("wear", ""), room, run.get("trigger", ""),
                                                 set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
                                                 run.get("body_words", False), cast or None,
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
-                                                sh.get("speaker")) + edge_words(edge),
-                         "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
+                                                sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge),
+                         "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or []),
                          "loras": loras,
-                         "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st)}
+                         "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st, seed=seed)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
