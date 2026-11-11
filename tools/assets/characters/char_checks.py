@@ -158,8 +158,12 @@ def main():
     if cb:
         frac = round((cb["chin_z"] - cb["collar_top_front_z"]) / cb["head_h"], 3)
         C["neck"] = {"ok": abs(frac - a.neck_sheet) <= 0.03, "visible_frac": frac, "sheet": a.neck_sheet}
+    elif rep.get("bare_neck_cm") is not None:
+        # the generated collar after the fit's collar lift: bare neck between its front top and the chin (rest pose)
+        C["neck"] = {"ok": rep["bare_neck_cm"] <= 2.0, "bare_neck_cm": rep["bare_neck_cm"],
+                     "lift_cm": (rep.get("collar_height") or {}).get("lift_cm")}
     else:
-        C["neck"] = {"ok": None, "why": "no built collar in this fit (a generated neckline is not measured)"}
+        C["neck"] = {"ok": None, "why": "no collar measure in this fit"}
     # the neckwear reads as the sheet's: the white share in the neck region of the close still
     nw = neck_white(a.relaxed, framing)
     if nw is not None and a.neck_white_sheet is not None:

@@ -986,6 +986,44 @@ if DSM > 0 and not STATUE:
                 disp[i] = disp[i] + np.array(nrm) * (EASE_ALL - s_)
                 nfix += 1
         REP["disp_smooth"] = {"rounds": DSM, "head_refix_verts": nfix}
+# the collar's height: a generated figure's collar and cravat reach its chin, but its neck is shorter than the
+# MetaHuman's, so after the fit they can end centimetres under the jaw (a bare neck). Measured: the front top of the
+# cloth round the neck against the head mesh's chin; the collar-and-cravat region above the shoulder line is lifted
+# by one smooth displacement (full at the top, nothing at the shoulder line, fading out away from the neck) so its
+# top sits COLLAR_UNDER_CHIN under the chin. REP["bare_neck_cm"] is what remains.
+if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
+    P_ = fco + disp
+    nc_ = np.array(J("neck_01"))
+    hv_ = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    prof_ = hv_[np.abs(hv_[:, 0] - nc_[0]) < 0.012]
+    zs_ = np.arange(J("neck_02").z - 0.03, J("head").z + 0.02, 0.003)
+    fy_ = np.array([prof_[np.abs(prof_[:, 2] - z) < 0.0015, 1].min() if (np.abs(prof_[:, 2] - z) < 0.0015).any()
+                    else np.nan for z in zs_])
+    ok_ = ~np.isnan(fy_)
+    chin_ = float(zs_[ok_][int(np.argmin(np.diff(fy_[ok_])))]) if ok_.sum() > 3 else float(J("head").z - 0.07)
+    rr_ = np.linalg.norm(P_[:, :2] - nc_[:2], axis=1)
+    front_ = (np.abs(P_[:, 0] - nc_[0]) < 0.03) & (P_[:, 1] < nc_[1] - 0.02) & (rr_ < 0.13)
+    z_sh = float(J("clavicle_l").z) - 0.02
+    top0 = float(P_[front_ & (P_[:, 2] < chin_), 2].max()) if (front_ & (P_[:, 2] < chin_)).any() else None
+    REP["collar_height"] = {"chin_z": round(chin_, 3), "collar_top_front_z": round(top0, 3) if top0 else None}
+    if top0 is not None:
+        lift = (chin_ - float(JOB.get("collar_under_chin_m", 0.012))) - top0
+        if lift > 0.003 and top0 > z_sh + 0.02:
+            t_ = np.clip((P_[:, 2] - z_sh) / (top0 - z_sh), 0, 1)
+            t_ = t_ * t_ * (3 - 2 * t_)
+            rw = np.clip((0.15 - rr_) / 0.06, 0, 1)
+            dz = lift * t_ * rw
+            disp[:, 2] += dz
+            # anything the lift took into the head mesh goes out again
+            hb2 = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+            for i in np.nonzero(dz > 1e-4)[0]:
+                q = Vector(fco[i] + disp[i])
+                loc, nrm, _, dist = hb2.find_nearest(q, 0.05)
+                if loc is not None and (q - loc).dot(nrm) < EASE_ALL:
+                    disp[i] = disp[i] + np.array(nrm) * (EASE_ALL - (q - loc).dot(nrm))
+            REP["collar_height"]["lift_cm"] = round(lift * 100, 1)
+            top0 = top0 + lift
+        REP["bare_neck_cm"] = round((chin_ - top0) * 100, 1)
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
 # the cravat: the drawn one is crumpled; smooth its surface (light, unsaturated cloth in front of the neck)
