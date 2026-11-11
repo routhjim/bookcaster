@@ -273,9 +273,10 @@ for side in ("l", "r"):
     a = turn(f"upperarm_{side}", pose_head(f"hand_{side}") - pose_head(f"upperarm_{side}"),
              Vector(LM[f"wrist_{side}"]) - pose_head(f"upperarm_{side}"))
     REP["pose_deg"][f"upperarm_{side}"] = round(a, 1)
-    a = turn(f"thigh_{side}", pose_head(f"foot_{side}") - pose_head(f"thigh_{side}"),
-             Vector(LM[f"ankle_{side}"]) - pose_head(f"thigh_{side}"))
-    REP["pose_deg"][f"thigh_{side}"] = round(a, 1)
+    if JOB.get("turn_legs", True):       # a floor-length skirt hides the shoes: its hem is no ankle
+        a = turn(f"thigh_{side}", pose_head(f"foot_{side}") - pose_head(f"thigh_{side}"),
+                 Vector(LM[f"ankle_{side}"]) - pose_head(f"thigh_{side}"))
+        REP["pose_deg"][f"thigh_{side}"] = round(a, 1)
 bpy.ops.object.mode_set(mode="OBJECT")
 # stretch the figure's arms along the arm so the sleeve end meets the body's (posed) wrist
 REP["arm_stretch"] = {}
@@ -513,7 +514,11 @@ for side in ("l", "r"):
     tt = np.clip(((fco - a_) @ ab) / (ab @ ab), 0, 1)
     legd.append(np.linalg.norm(fco - (a_ + tt[:, None] * ab[None, :]), axis=1))
 legd = np.array(legd)
-skirt = (fco[:, 2] < J("pelvis").z - 0.05) & (fco[:, 2] > 0.14) & (d_leg > LEG_OFF) & ~sleeve
+skirt = (fco[:, 2] < J("pelvis").z - 0.05) & (fco[:, 2] > float(JOB.get("skirt_min_z_m", 0.14))) & (d_leg > LEG_OFF) & ~sleeve
+if JOB.get("long_skirt"):
+    # a floor-length skirt: all the cloth below the waist hangs from the pelvis (none of it is trouser legs; what
+    # lies close to the legs is the skirt's back and inner side, or the generator's legs inside, dropped below)
+    skirt = (fco[:, 2] < J("pelvis").z - 0.05) & ~sleeve
 for gname_ in [g.name for g in fig.vertex_groups]:
     fig.vertex_groups[gname_].remove([int(i) for i in np.nonzero(skirt)[0]])
 for i in np.nonzero(skirt)[0]:
@@ -525,6 +530,43 @@ for i in np.nonzero(skirt)[0]:
 REP["skirt_verts"] = int(skirt.sum())
 # the loose cloth's vertex ids (the outfit's first vertices keep their ids through the joins below), for the
 # per-stance settle (bl_settle.py)
+if JOB.get("long_skirt"):
+    # a floor-length skirt: whatever the generator built inside it below the waist (legs, a lining, the skirt's
+    # inner face) is dropped;
+    # it is never seen standing and pokes through the cloth once the legs move
+    # inner = below the waist, not skirt, and enclosed: a ray outward from the body's axis meets more cloth
+    # (the skirt's own inner face and the hem's bottom cap are enclosed too: one surface per column for the settle)
+    # the skirt's own inner face (normal toward the body's axis) and the hem's bottom cap (normal down) go by their
+    # normals (a ray would also catch the valleys of the skirt's folds)
+    cand = np.nonzero((fco[:, 2] < J("pelvis").z - 0.05) & (d_leg <= LEG_OFF) & ~sleeve)[0]
+    fn_ = np.array([v.normal[:] for v in fig.data.vertices])
+    rad_ = fco[:, :2] - np.array(J("pelvis"))[:2]
+    rad_ /= np.maximum(np.linalg.norm(rad_, axis=1), 1e-6)[:, None]
+    skin_in = skirt & (fco[:, 2] < J("pelvis").z - float(JOB.get("inner_face_below_m", 0.15))) & ((np.sum(fn_[:, :2] * rad_, 1) < -0.3) | (fn_[:, 2] < -0.7))
+    fbvh = BVHTree.FromObject(fig, bpy.context.evaluated_depsgraph_get())
+    inner = np.zeros(len(fco), bool)
+    pc_ = np.array(J("pelvis"))
+    for i in cand:
+        dv = fco[i] - pc_
+        dv[2] = 0
+        n_ = np.linalg.norm(dv)
+        if n_ < 1e-6:
+            continue
+        hit = fbvh.ray_cast(Vector(fco[i] + dv / n_ * 0.01), Vector(dv / n_), 0.6)
+        inner[i] = hit[0] is not None
+    inner |= skin_in
+    sg_ = fig.vertex_groups.new(name="_skirt")
+    sg_.add([int(i) for i in np.nonzero(skirt)[0]], 1.0, "REPLACE")
+    bm = bmesh.new()
+    bm.from_mesh(fig.data)
+    bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.nonzero(inner)[0]], context="VERTS")
+    bm.to_mesh(fig.data)
+    bm.free()
+    gi_ = sg_.index
+    skirt = np.array([any(g.group == gi_ for g in v.groups) for v in fig.data.vertices])
+    fig.vertex_groups.remove(sg_)
+    REP["inner_dropped_verts"] = int(inner.sum())
 np.save(os.path.join(OUT, "skirt_idx.npy"), np.nonzero(skirt)[0].astype(np.int32))
 
 # shoes are rigid: everything under the ankle follows its foot bone only

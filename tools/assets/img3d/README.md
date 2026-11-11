@@ -83,6 +83,30 @@ Region rules (in `bl_combo.py`, general; the numbers are job keys):
 - mode statue: the head (above the collar plane) is rigid on the head bone and scaled to enclose the hidden
   MetaHuman head (else its face shows through); the hands past the wrists are rigid on the hand bones.
 
+What the outfit covers (job keys `liner*`, `flap_*`): the MetaHuman head mesh reaches down over the trapezius and
+collarbones (weighted to spine_04, the clavicles and the arms' corrective joints) and showed through the coat's
+shoulder seams. bl_combo copies the part of that skin the outfit covers (outward ray meets the outfit within 10 cm,
+or, away from the neck, outfit lies within 5 cm all round a hole), grown two edge rings below the collar line, as a
+liner 4 mm outside the skin, painted with one even texel of the cloth's shoulder colour and carrying the skin's own
+weights; it joins the outfit. Outfit vertices within 5 cm of that skin blend in the skin's weights. The coat's
+shoulder cap is Taubin-smoothed (`shoulder_round_m` 0.15, 12 rounds). `report.json`: `liner`, `flap_follow_verts`,
+`head_skin_below_collar` (rays that meet no cloth; the open shirt front counts too).
+
+Long skirts: `"turn_legs": false` (the hem is no ankle), `"shoe_top_m": 0.03` and `"skirt_min_z_m": 0.03` (the hem
+is skirt, not shoe), `"skirt_pelvis": 1.0`. `skirt_idx.npy` lists the loose cloth for the settle step.
+
+## Loose cloth per stance: bl_settle.py
+
+Pelvis-only weights hang a skirt straight whatever the legs do. Per stance (iGPU station, Blender, ~3 s of numpy):
+the combo's armature is posed to the stance's joints (the scene tool's `result.json`, `subjects.<key>.measured.
+joints`, with the scene's mark and facing), the loose cloth is laid column by column from its pinned top over the
+thigh and hip volumes (capsules), the seat box and the floor (`"mode": "drape"`, seated; the cloth behind the hips
+that reaches the seat stays under the body), or pushed out of the legs along its own outward direction (`"push"`,
+walking), relaxed (edge lengths of the standing outfit, gravity, collisions, top edge pinned), and the outfit is
+exported with that stance as its bind pose. A library entry per stance (`<id>_seated`, `<id>_walk`) names that
+outfit; the scene must use the same pose and parameters it was settled for. Cost per stance: one scene run for the
+joints, ~3 s settle (+ ~15 s Blender load/export), one engine import (~15 s).
+
 Specific to the first figure (a frock coat, cravat, black hair) and to check on the next one: the colour tests
 (skin, white collar, dark hair, dark shoes) in `is_skin` and the collar/hair thresholds; the cravat smoothing
 (light unsaturated cloth in front of the neck); the shoulder pull-in (`shoulder_gap_m`). A woman in a long dress:

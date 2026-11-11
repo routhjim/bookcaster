@@ -100,6 +100,12 @@ dg = bpy.context.evaluated_depsgraph_get()
 ev = fig.evaluated_get(dg)
 P = np.array([v.co[:] for v in ev.data.vertices]) / CM          # metres, character frame
 R = np.array([v.co[:] for v in fig.data.vertices]) / CM          # the standing (bind) shape
+_E0 = np.array([e.vertices[:] for e in fig.data.edges])
+_le = np.linalg.norm(P[_E0[:, 0]] - P[_E0[:, 1]], axis=1)
+_far = np.unique(_E0[_le > 0.25].ravel())
+if len(_far):
+    gn_ = {g.index: g.name for g in fig.vertex_groups}
+    REP["far_verts"] = {"n": int(len(_far)), "groups": sorted({gn_[g.group] for i in _far[:50] for g in fig.data.vertices[int(i)].groups if g.weight > 0.05})}
 nv = len(P)
 sk = np.load(os.path.join(JOB["combo"], "skirt_idx.npy"))
 sk = sk[sk < nv]
@@ -128,7 +134,22 @@ caps = []                                    # (a, b, ra, rb)
 for s in ("l", "r"):
     caps.append((J[f"thigh_{s}"], J[f"calf_{s}"], RAD["thigh"], RAD["knee"]))
     caps.append((J[f"calf_{s}"], J[f"foot_{s}"], RAD["knee"], RAD["calf"]))
-caps.append((J["thigh_l"] + np.array([0, 0.02, 0.03]), J["thigh_r"] + np.array([0, 0.02, 0.03]), RAD["hips"], RAD["hips"]))
+if JOB.get("mode") == "drape":                # seated: the hips and seat of the body under the skirt's back
+    caps.append((J["thigh_l"] + np.array([0, 0.02, 0.03]), J["thigh_r"] + np.array([0, 0.02, 0.03]), RAD["hips"],
+                 RAD["hips"]))
+if JOB.get("mode") == "drape":
+    # the lap: cloth spans from thigh to thigh as a sheet, not down between them; horizontal rungs between
+    # matching points of the two thighs (the drape rule lays cloth over their tops)
+    for fr in (0.2, 0.4, 0.6, 0.8, 1.0):
+        a_ = J["thigh_l"] + fr * (J["calf_l"] - J["thigh_l"])
+        b_ = J["thigh_r"] + fr * (J["calf_r"] - J["thigh_r"])
+        rr = RAD["thigh"] + (RAD["knee"] - RAD["thigh"]) * fr
+        caps.append((a_, b_, rr, rr))
+    # and from knee to knee down the shins: the skirt falls from the knees as one sheet in front of the shins
+    for fr in (0.25, 0.5, 0.75, 0.95):
+        a_ = J["calf_l"] + fr * (J["foot_l"] - J["calf_l"])
+        b_ = J["calf_r"] + fr * (J["foot_r"] - J["calf_r"])
+        caps.append((a_, b_, RAD["calf"], RAD["calf"]))
 SEAT = JOB.get("seat")
 hip_y = (J["thigh_l"][1] + J["thigh_r"][1]) / 2
 hip_x = (J["thigh_l"][0] + J["thigh_r"][0]) / 2
@@ -167,8 +188,11 @@ def collide(X, outward=None):
             B = 2 * np.sum(q * u2, 1)
             Cc = np.sum(q * q, 1) - (r[hit] + CLR) ** 2
             disc = np.maximum(B * B - 4 * A * Cc, 0)
-            s_ = (-B + np.sqrt(disc)) / np.maximum(2 * A, 1e-9)
-            X[hit] += np.maximum(s_, 0)[:, None] * u
+            s_ = np.clip((-B + np.sqrt(disc)) / np.maximum(2 * A, 1e-9), 0, 0.3)
+            par = A < 0.1                    # the direction runs along the capsule: out radially instead
+            mv = s_[:, None] * u
+            mv[par] = (nr[hit] * (CLR - sd[hit])[:, None])[par]
+            X[hit] += mv
         else:
             X[hit] += nr[hit] * (CLR - sd[hit])[:, None]
     if SEAT:
@@ -186,46 +210,75 @@ mode = JOB.get("mode", "push")
 if mode == "drape" and mov.any():
     # lay each free vertex along its column's path: down from its pinned top, over what lies under it, then down
     # to the floor; the path length to it is its distance below the top in the standing outfit
+    # columns by angle round the waist: each bin's path is marched once from its pinned top (down while nothing is
+    # under it, outward over what is: thighs, hips, seat; on the floor or on the seat behind the hips it stays), and
+    # every free vertex is placed on its bin's path (interpolated between neighbouring bins) at its distance below
+    # the top in the standing outfit: smooth across columns by construction
     ids = np.nonzero(mov)[0]
     top_ids = np.nonzero(pin)[0]
     cx_, cy_ = R[top_ids, 0].mean(), R[top_ids, 1].mean()
     th_r = np.arctan2(R[:, 0] - cx_, -(R[:, 1] - cy_))
-    dth = np.abs(np.angle(np.exp(1j * (th_r[ids][:, None] - th_r[top_ids][None, :]))))
-    k = top_ids[np.argmin(dth, axis=1)]                # the pinned vertex at the top of each one's column
-    s_left = np.maximum(R[k, 2] - R[ids, 2], 0.0)
-    p = X[k].copy()
+    NB = int(JOB.get("lay_bins", 144))
+    fb = (th_r + np.pi) / (2 * np.pi) * NB
+    bt = np.floor(fb[top_ids]).astype(int) % NB
+    topP = np.zeros((NB, 3))
+    topR = np.zeros(NB)
+    have = np.zeros(NB, bool)
+    for bb in range(NB):
+        m_ = bt == bb
+        if m_.any():
+            topP[bb] = P[top_ids[m_]].mean(0)
+            topR[bb] = R[top_ids[m_], 2].mean()
+            have[bb] = True
+    hv_ = np.nonzero(have)[0]
+    for bb in np.nonzero(~have)[0]:                 # empty bins (an open coat front): the nearest filled bin
+        k_ = hv_[np.argmin(np.abs(((hv_ - bb + NB // 2) % NB) - NB // 2))]
+        topP[bb], topR[bb] = topP[k_], topR[k_]
     c0 = J.get("pelvis", np.array([hip_x, hip_y, 0.9]))
-    d = np.c_[X[ids, 0] - c0[0], X[ids, 1] - c0[1], np.zeros(len(ids))]
-    nd = np.linalg.norm(d, axis=1)
-    d = np.where(nd[:, None] > 1e-6, d / np.maximum(nd, 1e-9)[:, None], np.array([0, -1.0, 0]))
+    ang = (np.arange(NB) + 0.5) / NB * 2 * np.pi - np.pi
+    d = np.c_[np.sin(ang), -np.cos(ang), np.zeros(NB)]     # th = atan2(x, -y): x = sin, y = -cos
     step = float(JOB.get("lay_step_m", 0.01))
-    for _ in range(int(2.0 / step)):
-        act = s_left > 0
-        if not act.any():
-            break
+    smax = float(max(topR.max() - R[ids, 2].min(), 0.05))
+    nst = int(smax / step) + 2
+    path = np.zeros((NB, nst, 3))
+    p = topP.copy()
+    path[:, 0] = p
+    for k_ in range(1, nst):
         down = p.copy()
         down[:, 2] -= step
-        q = collide(down.copy())
+        q = collide(down.copy(), d)
         sup = (q[:, 2] > down[:, 2] + 1e-6) | (q[:, 2] <= 0.0041)
-        nxt = collide(p + d * step)
-        # behind the hips the cloth that reaches the seat is sat on: it stays where it lands (under the body)
-        on_seat = sup & (np.abs(q[:, 2] - (float(SEAT["z"]) + CLR)) < 0.003) if SEAT else np.zeros(len(q), bool)
-        stay = on_seat & (d[:, 1] > float(JOB.get("sat_on_dir", 0.3)))
-        newp = np.where(sup[:, None], np.where(stay[:, None], q, nxt), q)
-        p[act] = newp[act]
-        s_left[act] -= step
-    X[ids] = p
+        nxt = collide(p + d * step, d)
+        stay = q[:, 2] <= 0.0041
+        if SEAT:
+            on_seat = sup & (np.abs(q[:, 2] - (float(SEAT["z"]) + CLR)) < 0.003)
+            stay |= on_seat & (d[:, 1] > float(JOB.get("sat_on_dir", 0.3)))
+        p = np.where(sup[:, None], np.where(stay[:, None], q, nxt), q)
+        path[:, k_] = p
+    sv = np.maximum(topR[np.floor(fb[ids]).astype(int) % NB] - R[ids, 2], 0) / step
+    b0 = np.floor(fb[ids] - 0.5).astype(int) % NB
+    b1 = (b0 + 1) % NB
+    wb = (fb[ids] - 0.5) - np.floor(fb[ids] - 0.5)
+    k0 = np.clip(np.floor(sv).astype(int), 0, nst - 2)
+    ws = np.clip(sv - k0, 0, 1)
+
+    def at(bi):
+        return path[bi, k0] * (1 - ws)[:, None] + path[bi, k0 + 1] * ws[:, None]
+    X[ids] = at(b0) * (1 - wb)[:, None] + at(b1) * wb[:, None]
+    REP["laid"] = int(len(ids))
     # the columns were laid one by one: smooth their displacement over the cloth so neighbours agree (no comb
     # of strips at the hem), then clear the colliders again
     Dp = X - P
     Ea = ED[mov[ED[:, 0]] | mov[ED[:, 1]]]
     dga = np.bincount(Ea.ravel(), minlength=nv).astype(float)
-    for _ in range(int(JOB.get("lay_smooth", 40))):
+    for _ in range(int(JOB.get("lay_smooth", 10))):
         acc = np.zeros_like(Dp)
         np.add.at(acc, Ea[:, 0], Dp[Ea[:, 1]])
         np.add.at(acc, Ea[:, 1], Dp[Ea[:, 0]])
         Dp[mov] = 0.5 * Dp[mov] + 0.5 * acc[mov] / np.maximum(dga[mov], 1)[:, None]
-    X[mov] = collide(P[mov] + Dp[mov])
+    Y = P[mov] + Dp[mov]
+    rd_ = np.c_[Y[:, 0] - c0[0], Y[:, 1] - c0[1], np.zeros(len(Y))]
+    X[mov] = collide(Y, rd_ / np.maximum(np.linalg.norm(rd_, axis=1), 1e-6)[:, None])
     REP["laid"] = int(len(ids))
 REP["times"]["lay"] = round(time.time() - t, 2)
 
@@ -234,6 +287,10 @@ t = time.time()
 Ef = ED[free[ED[:, 0]] | free[ED[:, 1]]]
 L0 = np.linalg.norm(R[Ef[:, 0]] - R[Ef[:, 1]], axis=1)
 outw = None
+if mode == "drape":                          # out of a slanted shin: forward, away from the body's axis
+    c0_ = J.get("pelvis", np.array([hip_x, hip_y, 0.9]))
+    outw = np.c_[X[:, 0] - c0_[0], X[:, 1] - c0_[1], np.zeros(nv)]
+    outw /= np.maximum(np.linalg.norm(outw, axis=1), 1e-6)[:, None]
 if mode == "push":
     nrm = np.array([v.normal[:] for v in fig.data.vertices])
     outw = nrm.copy()
@@ -256,7 +313,7 @@ for it in range(int(JOB.get("iters", 60))):
 REP["times"]["relax"] = round(time.time() - t, 2)
 # check: worst penetration of the free cloth into legs and seat
 pen = 0.0
-for a, b, ra, rb in caps[:-1]:
+for a, b, ra, rb in caps[:4]:
     sd = cap_dist(X[mov], a, b, ra, rb)[0]
     pen = max(pen, float(-sd.min()) if len(sd) else 0.0)
 REP["worst_leg_penetration_m"] = round(pen, 4)
@@ -265,12 +322,33 @@ REP["edge_stretch_p95"] = round(float(np.quantile(ln / np.maximum(L0, 1e-6), 0.9
 REP["hem_min_z_m"] = round(float(X[mov, 2].min()), 3) if mov.any() else None
 
 # ------------------------------------------------------------------ bake: this pose is the bind pose
+# (by hand: Blender's apply-pose left some helper bones of this skeleton off their posed place)
 bpy.context.view_layer.objects.active = arm
+posed = {pb.name: pb.matrix.copy() for pb in arm.pose.bones}
+bpy.ops.object.mode_set(mode="EDIT")
+for eb in arm.data.edit_bones:
+    eb.use_connect = False
+for eb in arm.data.edit_bones:
+    eb.matrix = posed[eb.name]
 bpy.ops.object.mode_set(mode="POSE")
-bpy.ops.pose.armature_apply(selected=False)
+for pb in arm.pose.bones:
+    pb.location = (0, 0, 0)
+    pb.rotation_quaternion = (1, 0, 0, 0)
+    pb.rotation_euler = (0, 0, 0)
+    pb.scale = (1, 1, 1)
 bpy.ops.object.mode_set(mode="OBJECT")
 fig.data.vertices.foreach_set("co", (X * CM).ravel())
 fig.data.update()
+# the bound outfit in its new bind pose must read back as the settled shape
+_ev = fig.evaluated_get(bpy.context.evaluated_depsgraph_get())
+_E = np.array([v.co[:] for v in _ev.data.vertices]) / CM
+_dd = np.linalg.norm(_E - X, axis=1)
+REP["rebind_err_m"] = {"max": round(float(_dd.max()), 4), "n_over_1cm": int((_dd > 0.01).sum())}
+if (_dd > 0.01).any():
+    gn_ = {g.index: g.name for g in fig.vertex_groups}
+    bad_ = np.nonzero(_dd > 0.01)[0][:200]
+    REP["rebind_err_m"]["groups"] = sorted({gn_[g.group] for i in bad_ for g in fig.data.vertices[int(i)].groups
+                                            if g.weight > 0.05})[:30]
 bpy.ops.object.select_all(action="DESELECT")
 fig.select_set(True)
 arm.select_set(True)

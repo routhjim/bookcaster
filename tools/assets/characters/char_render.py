@@ -699,6 +699,35 @@ def _run():
             S["r"]["make"][spec["name"]] = char_make.make(spec)
             log(f"made {spec['name']}: {json.dumps(S['r']['make'][spec['name']], default=str)[:300]}")
             yield
+    if JOB.get("set_params"):
+        # groom / outfit instance parameters (hair melanin, redness, roughness ...) on existing Character assets;
+        # a "cloud" step with rig and textures off then rebuilds the assembled Blueprint with them
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import importlib
+        import char_make
+        importlib.reload(char_make)
+        S["r"]["set_params"] = {}
+        for sp in JOB["set_params"]:
+            c = EAL.load_asset(sp["path"])
+            added = not mhs.is_object_added_for_editing(c) and mhs.try_add_object_to_edit(c)
+            rr = {}
+            try:
+                insts = [c.get_editor_property("internal_collection").get_editor_property("default_instance")]
+                try:
+                    insts.insert(0, mhs.get_preview_collection(c).get_editor_property("default_instance"))
+                except Exception as e:
+                    rr["preview_instance_error"] = str(e)
+                for k_, ins in enumerate(insts):
+                    sub = {}
+                    char_make.set_params(ins, sp["params"], sub)
+                    rr[f"instance_params_{k_}"] = sub.get("instance_params")
+            finally:
+                if added:
+                    mhs.remove_object_to_edit(c)
+            rr["saved"] = EAL.save_loaded_asset(c, False)
+            S["r"]["set_params"][sp["path"]] = rr
+            yield
     if JOB.get("cloud"):
         try:
             cloud_build(JOB["cloud"])
