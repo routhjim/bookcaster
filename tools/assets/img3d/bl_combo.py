@@ -642,7 +642,30 @@ for side in ("l", "r"):
     ax = (hw - S0) / L
     p = (fco - S0) @ ax
     rad = np.linalg.norm((fco - S0) - np.clip(p, 0, L)[:, None] * ax[None, :], axis=1)
-    tube |= (rad < SLEEVE_R) & (p > 0)
+    if JOB.get("sleeve_radius_m") is None or JOB.get("sleeve_tube_measured", True):
+        # the tube measured from the sleeve itself: per 2 cm station along the arm, the outer radius of the
+        # arm-weighted cloth there (95th percentile) plus a margin, capped short of the torso's surface in that
+        # slice (so a puffed sleeve gets its wide tube at the puff, a coat sleeve a narrow one, never the coat's side)
+        st = np.arange(0.0, L + 0.02, 0.02)
+        rprof = np.full(len(st), SLEEVE_R)
+        cap = np.full(len(st), 0.5)
+        tv = np.array([v.co[:] for v in torso.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices])
+        tp = (tv - S0) @ ax
+        trad = np.linalg.norm((tv - S0) - np.clip(tp, 0, L)[:, None] * ax[None, :], axis=1)
+        for k, t0 in enumerate(st):
+            sl = (np.abs(p - t0) < 0.012) & (armw >= 0.3)
+            if sl.sum() > 15:
+                rprof[k] = float(np.quantile(rad[sl], 0.95)) + float(JOB.get("sleeve_tube_margin_m", 0.02))
+            ts = np.abs(tp - t0) < 0.012
+            if ts.any():
+                cap[k] = max(float(trad[ts].min()) - 0.01, 0.04)
+        rlim = np.minimum(rprof, cap)
+        thr = np.interp(np.clip(p, 0, L), st, rlim)
+        REP.setdefault("sleeve_tube_m", {})[side] = {"max": round(float(rlim.max()), 3), "min": round(float(rlim.min()), 3),
+                                                     "median": round(float(np.median(rlim)), 3)}
+        tube |= (rad < thr) & (p > 0)
+    else:
+        tube |= (rad < SLEEVE_R) & (p > 0)
 below = fco[:, 2] < min(J("upperarm_l").z, J("upperarm_r").z) - 0.04
 sleeve &= ~below | tube
 REP["sleeve_verts"] = int(sleeve.sum())
