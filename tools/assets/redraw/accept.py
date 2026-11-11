@@ -108,6 +108,7 @@ FIX = {"arms": "{Who}'s arms hang in their sleeves clear of the body, both sleev
 
 def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     out = Path(run["out"])
+    neck_eval(checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -139,8 +140,38 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     print(out_jobs, len(lines))
 
 
+NECK_TOL = 1.2
+
+
+def neck_eval(*results: dict) -> None:
+    """Neck verdicts over all keys of the run together (first draws and re-draws): longer than NECK_TOL times the
+    character's median fails, and than NECK_TOL times the engine's own reading when that is the longer reference
+    (the staging figures' necks differ from people's: the man's engine neck reads 1.3-1.6, the woman's 0.7-0.8,
+    against 0.9 drawn; judged on the engine alone, every key of her failed and his long-neck close passed)."""
+    import statistics
+    by = {}
+    for res in results:
+        for rec in res.values():
+            for k, v in rec.get("people", {}).items():
+                n = v.get("redraw", {}).get("neck_ratio")
+                if n:
+                    by.setdefault(k, []).append(n)
+    med = {k: statistics.median(v) for k, v in by.items()}
+    for res in results:
+        for rec in res.values():
+            for k, v in rec.get("people", {}).items():
+                n = v.get("redraw", {}).get("neck_ratio")
+                e = v.get("engine", {}).get("neck_ratio")
+                if not n:
+                    v["neck_ok"] = None
+                    continue
+                v["neck_ok"] = n <= NECK_TOL * med[k] and n <= NECK_TOL * max(e or 0.0, med[k])
+                v["neck_refs"] = {"engine": e, "character_median": round(med[k], 3)}
+
+
 def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     out = Path(run["out"])
+    neck_eval(checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)
