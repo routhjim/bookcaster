@@ -18,6 +18,8 @@ Job:
    "export_geometry": {"key": "<character key>", "folder": "/Game/Char/Geo", "fbx_dir": dir} | null,
    "shots": [{"name", "char": key, "frame": "close" | "medium" | "full", "az": deg, "el": deg,
               "body_anim": path | null, "body_t": s, "body_scan": null | "arms_up",
+              "body_pose": {"name", "rots": [[bone, parent, deg], ...]} | null,   (built pose, e.g. seated)
+              "turn": {"neck_02": deg, "head": deg} | null,   (extra yaw on the body pose, e.g. head turned)
               "face_curves": {curve: value} | null, "face_anim": path | null, "face_t": s}]}
 
 A Character asset renders through the editor preview actor (spawn_meta_human_actor; no assembly needed); an
@@ -406,6 +408,229 @@ def import_outfit(spec):
             spec_c["body_swap"] = r.get("trim")
 
 
+def pose_anim(skel, name, rots):
+    """A two-frame body pose built from the skeleton's reference pose: each [bone, parent, degrees] turns that bone
+    about the character's lateral axis through its own joint (thighs forward and calves back = seated). The sign that
+    brings a thigh's child forward (a calf's child down) is chosen by testing both, so axis conventions cannot flip
+    the pose. Returns the AnimSequence path."""
+    AP = unreal.AnimPoseExtensions
+    WS, LS = unreal.AnimPoseSpaces.WORLD, unreal.AnimPoseSpaces.LOCAL
+    pose = AP.get_reference_pose(skel)
+    world = {}
+    local = {}
+
+    def W(b):
+        if b not in world:
+            world[b] = AP.get_bone_pose(pose, b, WS)
+        return world[b]
+
+    def L(b):
+        if b not in local:
+            local[b] = AP.get_bone_pose(pose, b, LS)
+        return local[b]
+    fwd = W("ball_l").translation - W("foot_l").translation
+    fwd.z = 0
+    fwd = fwd.normal()
+    lat = unreal.Vector(fwd.y, -fwd.x, 0.0)
+    child = {"thigh_l": "calf_l", "thigh_r": "calf_r", "calf_l": "foot_l", "calf_r": "foot_r"}
+    out = {}
+    for b, parent, deg in rots:
+        pw = W(parent)
+        bw = unreal.MathLibrary.compose_transforms(L(b), pw)       # current world (parent may have moved)
+        best = None
+        for sgn in (1, -1):
+            a = math.radians(deg * sgn) / 2
+            q = unreal.Quat(lat.x * math.sin(a), lat.y * math.sin(a), lat.z * math.sin(a), math.cos(a))
+            nw = unreal.Transform(bw.translation, unreal.Rotator(), bw.scale3d)
+            nw.rotation = q * bw.rotation
+            c = child.get(b)
+            if c:
+                cp = unreal.MathLibrary.compose_transforms(L(c), nw).translation - nw.translation
+                score = cp.dot(fwd) if deg > 0 else -cp.z
+            else:
+                score = 0
+            if best is None or score > best[0]:
+                best = (score, nw)
+        nw = best[1]
+        world[b] = nw
+        out[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(pw))
+        local[b] = out[b]
+        for c in [k for k, v in ((r[0], r[1]) for r in rots) if v == b]:
+            world.pop(c, None)
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", skel)
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("pose", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    for b, t in out.items():
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [t.translation] * 3, [t.rotation] * 3, [t.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q.x, q.y, q.z, q.w) for q in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+    ctrl.close_bracket(False)
+    EAL.save_loaded_asset(anim, False)
+    return path
+
+
+def face_from_body_anim(body, face, curves, name):
+    """A two-frame face-skeleton AnimSequence that holds the body component's CURRENT pose for every bone the two
+    skeletons share (local, parent-bone space, as the body evaluates it now, retargeting included) plus the face
+    expression curves. Used for expression stills: a leader-pose follower carries the body pose exactly but not the
+    face's own expression curves (measured: jawOpen on a follower left the jaw bone unmoved)."""
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", face.get_skinned_asset().get_editor_property("skeleton"))
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("face_from_body", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    parent_space = unreal.RelativeTransformSpace.RTS_PARENT_BONE_SPACE
+    n = 0
+    for i in range(face.get_num_bones()):
+        b = face.get_bone_name(i)
+        if body.get_bone_index(b) < 0:
+            continue
+        t = body.get_socket_transform(b, parent_space)
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [t.translation] * 3, [t.rotation] * 3, [t.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q.x, q.y, q.z, q.w) for q in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+        n += 1
+    for cname, val in (curves or {}).items():
+        unreal.AnimationLibrary.add_curve(anim, cname, unreal.RawCurveTrackTypes.RCT_FLOAT, False)
+        for tt in (0.0, 1.0 / 30, 2.0 / 30):
+            unreal.AnimationLibrary.add_float_curve_key(anim, cname, tt, float(val))
+    ctrl.close_bracket(False)
+    return anim, n
+
+
+def turned_body_anim(src_anim, t, turns, name):
+    """A two-frame body AnimSequence: src_anim's pose at time t with extra turns about the world vertical through
+    the named joints ({"neck_02": deg, "head": deg}, applied parent first), e.g. a head turned while crouching."""
+    AP = unreal.AnimPoseExtensions
+    WS, LS = unreal.AnimPoseSpaces.WORLD, unreal.AnimPoseSpaces.LOCAL
+    pose = AP.get_anim_pose_at_time(src_anim, float(t), unreal.AnimPoseEvaluationOptions())
+    bones = [str(b) for b in AP.get_bone_names(pose)]
+    local = {b: AP.get_bone_pose(pose, b, LS) for b in bones}
+    def setp(tr, b):            # children follow their parent (not adjusted); the binding returns the pose
+        nonlocal pose
+        res = AP.set_bone_pose(pose, tr, b, LS)
+        if res is not None:
+            pose = res
+    for b, deg in turns.items():
+        w = AP.get_bone_pose(pose, b, WS)
+        parent_w = unreal.MathLibrary.compose_transforms(unreal.MathLibrary.invert_transform(local[b]), w)
+        a = math.radians(deg) / 2
+        q = unreal.Quat(0, 0, math.sin(a), math.cos(a))
+        nw = unreal.Transform(w.translation, unreal.Rotator(), w.scale3d)
+        nw.rotation = q * w.rotation
+        local[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(parent_w))
+        setp(local[b], b)
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", src_anim.get_editor_property("skeleton"))
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("turned", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    for b in bones:
+        tr = local[b]
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [tr.translation] * 3, [tr.rotation] * 3, [tr.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q_.x, q_.y, q_.z, q_.w) for q_ in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+    ctrl.close_bracket(False)
+    EAL.save_loaded_asset(anim, False)
+    return path
+
+
+def pose_face(sh, info):
+    """Make the face (and so the hair, brows, lashes, eyes and teeth bound to it) carry the body's pose.
+
+    The assembled Blueprint's Face is only ATTACHED to the Body component: the runtime MetaHuman component that
+    would make it a leader-pose follower of the Body does not run in an editor world, and the face AnimBP does not
+    copy the body pose there, so in any body pose the face stayed in its reference pose relative to the actor
+    (measured on the deep knee bend: body head at z 141.9, face head at z 169.8). Without face curves the face
+    becomes a leader-pose follower of the body (exact, also while a clip plays); with expression curves it plays a
+    face anim that holds the body's current pose plus the curves (stills)."""
+    a = S["actors"][sh["char"]][0]
+    body, face = skel_comps(a)
+    if face is None or body is None:
+        return
+    curves = sh.get("face_curves")
+    if curves or sh.get("face_anim"):
+        face.set_leader_pose_component(None, True, False)
+        if sh.get("face_anim"):
+            # a face-only clip (no body bone tracks) cannot carry the body pose: follow the body by leader pose
+            # is impossible together with it, so warn when the body is posed
+            if sh.get("body_anim"):
+                note(f"{sh['name']}: face_anim with a posed body; the face keeps the clip's own head pose")
+            apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
+        else:
+            anim, n = face_from_body_anim(body, face, curves, f"AS_{sh['name']}")
+            apply_anim(face, anim, 1.0 / 30)
+            S["face_anim_last"] = anim
+            info["face_bones_from_body"] = n
+    else:
+        clear_anim(face)
+        face.set_leader_pose_component(body, True, False)
+    info["face_follow"] = "anim" if (curves or sh.get("face_anim")) else "leader"
+
+
+def head_error_mm(key):
+    """Distance between the head and neck bones as the Body and as the Face component place them, in mm."""
+    a = S["actors"][key][0]
+    body, face = skel_comps(a)
+    out = {}
+    for b in ("neck_02", "head"):
+        try:
+            out[b] = round((body.get_socket_location(b) - face.get_socket_location(b)).length() * 10, 2)
+        except Exception as e:
+            out[b] = str(e)
+    return out
+
+
 def curve_anim(skel, curves, name):
     folder = "/Game/Char/Anim"
     path = f"{folder}/{name}"
@@ -572,37 +797,65 @@ def refresh(key):
     return a, body, face
 
 
+def frame_camera(sh, head):
+    """(location, rotation, focal) of a shot's camera for the head position."""
+    fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
+    if fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+        target, dist, focal = head + unreal.Vector(0, 0, sh.get("dz", 1)), sh.get("dist", 230), 85
+    elif fr == "medium":
+        target, dist, focal = head + unreal.Vector(0, 0, -38), 260, 50
+    else:
+        target, dist, focal, el = unreal.Vector(head.x, head.y, head.z * 0.52), 420, 35, sh.get("el", 4)
+    a, e = math.radians(az), math.radians(el)
+    loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
+    return loc, unreal.MathLibrary.find_look_at_rotation(loc, target), target
+
+
+def reframe(cam, sh, info):
+    """Re-aim a shot's camera at the head where the posed body now holds it (the pose takes effect a step after
+    the camera was placed)."""
+    a = S["actors"][sh["char"]][0]
+    body, face = skel_comps(a)
+    try:
+        head = face.get_socket_location("head")
+    except Exception:
+        return
+    if head.z < 30:
+        return
+    loc, rot, _ = frame_camera(sh, head)
+    cam.set_actor_location(loc, False, False)
+    cam.set_actor_rotation(rot, False)
+    info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
+
+
 def setup_shot(sh):
     character_actor(sh["char"])
     a, body, face = refresh(sh["char"])
     show_only(sh["char"])
     info = {"name": sh["name"]}
+    if sh.get("body_pose") and not sh.get("body_anim"):
+        # e.g. {"name": "AS_seated", "rots": [["thigh_l", "pelvis", 85], ["calf_l", "thigh_l", -85], ...]}
+        bp = sh["body_pose"]
+        sh["body_anim"] = pose_anim(body.get_skinned_asset().get_editor_property("skeleton"), bp["name"], bp["rots"])
+        sh["body_t"] = 0.0
     if sh.get("body_anim"):
         banim = EAL.load_asset(sh["body_anim"])
         t = sh.get("body_t", 0.0)
         if sh.get("body_scan"):
             t, score, length = scan_body(banim, sh["body_scan"])
             info["body_scan"] = {"t": round(t, 3), "score": round(score, 2), "length": round(length, 2)}
+        if sh.get("turn"):
+            sh["body_anim"] = turned_body_anim(banim, t, sh["turn"], f"AS_{sh['name']}_turn")
+            banim, t = EAL.load_asset(sh["body_anim"]), 0.0
+            info["turn"] = sh["turn"]
         apply_anim(body, banim, t)
         info["body"] = [sh["body_anim"], round(t, 3)]
     elif body is not None:
         clear_anim(body)
     if face is not None:
-        if sh.get("face_curves") or sh.get("face_anim"):
-            S.setdefault("face_touched", {})[sh["char"]] = True
-        if sh.get("face_curves"):
-            anim = curve_anim(face.get_skinned_asset().get_editor_property("skeleton"), sh["face_curves"],
-                              f"AS_{sh['name']}")
-            apply_anim(face, anim, 1.0 / 30)
-            S["face_anim_last"] = anim
-            info["face"] = sh["face_curves"]
-        elif sh.get("face_anim"):
-            apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
-            info["face"] = [sh["face_anim"], sh.get("face_t", 0.0)]
-        elif not S.get("face_touched", {}).get(sh["char"]):
-            pass                              # keep the face's own AnimBP (it follows the body's head)
-        else:
-            clear_anim(face)
+        pose_face(sh, info)
+        info["face"] = sh.get("face_curves") or sh.get("face_anim")
+        body, face = skel_comps(a)
     try:
         head = face.get_socket_location("head")
         if head.z < 50:
@@ -759,14 +1012,30 @@ def _run():
         les.pilot_level_actor(cam)
         yield from frames(10)
         if sh.get("body_anim") or sh.get("face_curves") or sh.get("face_anim"):
-            # a paused single-node pose shows only from the second application (measured: one shot late)
-            a, body, face = S["actors"][sh["char"]]
+            # a paused single-node pose shows only from the second application (measured: one shot late); the
+            # face is posed again from the body as it now stands
+            a = S["actors"][sh["char"]][0]
+            body, face = skel_comps(a)
             if sh.get("body_anim") and "body" in info:
                 apply_anim(body, EAL.load_asset(sh["body_anim"]), info["body"][1])
-            if sh.get("face_curves") and S.get("face_anim_last"):
-                apply_anim(face, S["face_anim_last"], 1.0 / 30)
+            yield from frames(10)
+            pose_face(sh, info)
             yield from frames(10)
         yield from frames(JOB.get("settle_frames", 40))
+        # verify before capture: the head and neck must sit where the body puts them (1 mm); re-pose the face and
+        # wait if not, and refuse the still if they never agree
+        for attempt in range(JOB.get("head_check_tries", 6)):
+            err = head_error_mm(sh["char"])
+            if all(isinstance(v, float) and v <= 1.0 for v in err.values()):
+                break
+            note(f"{sh['name']}: face off the body {err} mm; re-posing (try {attempt + 1})")
+            pose_face(sh, info)
+            yield from frames(15)
+        info["head_err_mm"] = err
+        reframe(cam, sh, info)
+        yield from frames(5)
+        if not all(isinstance(v, float) and v <= 1.0 for v in err.values()):
+            raise RuntimeError(f"{sh['name']}: face does not follow the body ({err} mm); still refused")
         path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
             os.remove(path)
