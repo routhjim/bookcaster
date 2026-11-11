@@ -334,6 +334,42 @@ if HEAD is not None and gone.any():
         loc_, nrm_, _, d_ = _hb.find_nearest(Vector(co[i]), 0.5)
         if loc_ is not None and d_ > _near and (Vector(co[i]) - loc_).dot(nrm_) > 0:
             gone[i] = False
+COLLAR_RGB = None
+if JOB.get("collar_build") and not STATUE:
+    # the generated shirt front, cravat and shirt collar go (bl_collar.py builds clean ones): cloth clearly lighter
+    # than the coat (the coat's colour: the median over the shoulders) in front of the upper chest and round the
+    # neck. Their colours, light and dark halves of what goes, colour the built pieces.
+    lum_c = col @ np.array([0.3, 0.59, 0.11])
+    shz_ = np.zeros(len(co), bool)
+    for side in ("l", "r"):
+        shz_ |= np.linalg.norm(co - np.array(J(f"upperarm_{side}")), axis=1) < 0.15
+    coat_l = float(np.median(lum_c[shz_])) if shz_.sum() > 20 else 0.15
+    nc_ = np.array(J("neck_01"))
+    rr_ = np.linalg.norm(co[:, :2] - nc_[:2], axis=1)
+    reg = (((co[:, 2] > J("spine_03").z) & (co[:, 1] < nc_[1]) & (np.abs(co[:, 0] - nc_[0]) < 0.11))
+           | ((co[:, 2] > J("clavicle_l").z - 0.01) & (rr_ < 0.10)))
+    light = reg & (lum_c > coat_l + float(JOB["collar_build"].get("light_margin", 0.12))) & ~skin
+    REP["collar_region"] = {"coat_lum": round(coat_l, 3), "light_verts": int(light.sum())}
+    if light.sum() > 50:
+        ll = np.sort(lum_c[light])
+        cl = col[light][np.argsort(lum_c[light])]
+        n_ = len(ll)
+        COLLAR_RGB = {"collar": np.median(cl[int(0.7 * n_):], 0).tolist(),
+                      "cravat": np.median(cl[:int(0.4 * n_)], 0).tolist()}
+        gone |= light
+        if JOB["collar_build"].get("neckwear") == "tie":
+            # a tie is darker than the shirt: its colour is the cloth down the shirt front's centre line that is
+            # not the light shirt (nor the coat's colour at the shoulders)
+            strip = ((np.abs(co[:, 0] - nc_[0]) < 0.02) & (co[:, 1] < nc_[1]) & (co[:, 2] > J("spine_04").z)
+                     & (co[:, 2] < J("clavicle_l").z) & ~light & ~skin & (np.abs(lum_c - coat_l) > 0.03))
+            if strip.sum() > 20:
+                COLLAR_RGB["cravat"] = np.median(col[strip], 0).tolist()
+                gone |= strip
+    for k_ in ("collar", "cravat"):
+        if JOB["collar_build"].get(f"{k_}_rgb"):
+            COLLAR_RGB = COLLAR_RGB or {}
+            COLLAR_RGB[k_] = list(JOB["collar_build"][f"{k_}_rgb"])
+    REP["collar_rgb"] = {k: [round(float(x), 3) for x in v] for k, v in (COLLAR_RGB or {}).items()}
 if STATUE:
     gone[:] = False
 if not JOB.get("keep_figure_hands"):
@@ -406,6 +442,48 @@ if len(islands) > 1:
             crumbs += isl
             REP["floating_dropped"] = REP.get("floating_dropped", 0) + len(isl)
 bmesh.ops.delete(bm, geom=crumbs, context="VERTS")
+# holes the generator left in the cloth (a dark hole low on a jacket front shows its inside): every open boundary
+# loop shorter than HOLE_MAX is filled; the new faces take the UVs their vertices have in the faces round them
+HOLE_MAX = float(JOB.get("fill_holes_m", 0.30))
+if HOLE_MAX > 0 and not STATUE:
+    bnd = [e for e in bm.edges if e.is_boundary]
+    seen_e, loops = set(), []
+    adj = {}
+    for e in bnd:
+        for v in e.verts:
+            adj.setdefault(v, []).append(e)
+    for e0 in bnd:
+        if e0 in seen_e:
+            continue
+        loop, stack = [], [e0]
+        seen_e.add(e0)
+        while stack:
+            e = stack.pop()
+            loop.append(e)
+            for v in e.verts:
+                for e2 in adj[v]:
+                    if e2 not in seen_e:
+                        seen_e.add(e2)
+                        stack.append(e2)
+        loops.append(loop)
+    uvl = bm.loops.layers.uv.active
+    nfill = 0
+    for loop in loops:
+        per = sum(e.calc_length() for e in loop)
+        if per >= HOLE_MAX or len(loop) < 3:
+            continue
+        vuv = {}
+        for e in loop:
+            for v in e.verts:
+                for lp in v.link_loops:
+                    vuv.setdefault(v, lp[uvl].uv.copy())
+        res = bmesh.ops.holes_fill(bm, edges=loop, sides=0)
+        for f in res["faces"]:
+            for lp in f.loops:
+                if lp.vert in vuv:
+                    lp[uvl].uv = vuv[lp.vert]
+        nfill += len(res["faces"]) > 0
+    REP["holes_filled"] = nfill
 bm.to_mesh(fig.data)
 bm.free()
 REP["cut_verts"] = int(gone.sum())
@@ -712,6 +790,47 @@ if not STATUE and bvhs:
             continue
         f = 0.8 * (1 - rr[i] / 0.13)
         fco2[i] = fco2[i] + (np.array(best[0]) - fco2[i]) * f * (best[1] - COL_GAP) / best[1]
+# the coat's sides: a drawn coat flares well past the body from the waist down (24-29 cm from the centre line on a
+# 17 cm hip), so arms hanging at the sides sink into it and the still and its depth show one block with no arm gap.
+# Between SLIM_LO and the armpit, cloth that stands more than SLIM_GAP outside the body's own side (arms excluded) is
+# pulled in to SLIM_GAP + SLIM_K of the excess; monotonic across the layers (a waistcoat inside stays inside), fading
+# out over 8 cm under the armpit; the sleeves are left alone.
+SLIM_K = float(JOB.get("side_slim_k", 0.1))
+if not STATUE and SLIM_K < 1:
+    SLIM_GAP = float(JOB.get("side_slim_gap_m", 0.015))
+    beval = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    BP = np.array([v.co[:] for v in beval.data.vertices])
+    bgn = {g.index: g.name for g in body.vertex_groups}
+    barm = np.array([bool(v.groups) and is_arm(bgn[max(v.groups, key=lambda g: g.weight).group]) for v in body.data.vertices])
+    BT = BP[~barm]
+    cx_ = J("pelvis").x
+    z_hi = min(J("upperarm_l").z, J("upperarm_r").z) - 0.10
+    z_lo = (J("pelvis").z - 0.05) if JOB.get("long_skirt") else (J("pelvis").z - float(JOB.get("side_slim_below_hip_m", 0.32)))
+    zg = np.arange(z_lo - 0.03, z_hi + 0.11, 0.01)
+    ext = {}
+    for sg in (1, -1):
+        e_ = []
+        for z_ in zg:
+            b_ = BT[np.abs(BT[:, 2] - z_) < 0.03]
+            e_.append(np.quantile(sg * (b_[:, 0] - cx_), 0.99) if len(b_) > 10 else 0.15)
+        ext[sg] = np.array(e_)
+    gnf = {g.index: g.name for g in fig.vertex_groups}
+    aw_ = np.array([sum(g.weight for g in v.groups if is_arm(gnf[g.group]) and not gnf[g.group].startswith("clavicle"))
+                    for v in fig.data.vertices])
+    nslim, worst = 0, 0.0
+    for i in np.nonzero((aw_ < 0.5) & (fco2[:, 2] > z_lo) & (fco2[:, 2] < z_hi + 0.08))[0]:
+        sg = 1 if fco2[i, 0] >= cx_ else -1
+        lat = sg * (fco2[i, 0] - cx_)
+        e = float(np.interp(fco2[i, 2], zg, ext[sg])) + SLIM_GAP
+        if lat <= e:
+            continue
+        w_ = float(np.clip((z_hi + 0.08 - fco2[i, 2]) / 0.08, 0, 1))
+        new = e + (lat - e) * SLIM_K
+        fco2[i, 0] = cx_ + sg * (lat + (new - lat) * w_)
+        worst = max(worst, lat - e)
+        nslim += 1
+    REP["side_slim"] = {"verts": nslim, "max_excess_cm": round(worst * 100, 1), "k": SLIM_K,
+                        "z": [round(z_lo, 2), round(z_hi, 2)]}
 disp = fco2 - fco
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
@@ -738,6 +857,39 @@ if cm.sum() > 50:
 REP["cravat_verts_smoothed"] = int(cm.sum())
 ED = np.array([e.vertices[:] for e in fig.data.edges])
 DEG = np.bincount(ED.ravel(), minlength=len(fco)).astype(np.float64)
+if JOB.get("collar_build") and not STATUE:
+    # the edges left round the removed shirt front (lapels, the coat's collar) are ragged: smooth each open
+    # boundary along itself (boundary neighbours only) and let the next ring follow, near the neck and chest
+    P = fco + disp
+    fe = np.array([(p.vertices[k], p.vertices[(k + 1) % len(p.vertices)]) for p in fig.data.polygons
+                   for k in range(len(p.vertices))])
+    fe_s = np.sort(fe, 1)
+    u_, cnt_ = np.unique(fe_s, axis=0, return_counts=True)
+    bed = u_[cnt_ == 1]
+    nc3 = np.array(J("neck_01"))
+    near = (P[:, 2] > J("spine_03").z) & ((P[:, 1] < nc3[1] + 0.02) | (np.linalg.norm(P[:, :2] - nc3[:2], axis=1) < 0.12))
+    bed = bed[near[bed[:, 0]] & near[bed[:, 1]]]
+    bv = np.zeros(len(P), bool)
+    bv[bed.ravel()] = True
+    bdeg = np.bincount(bed.ravel(), minlength=len(P)).astype(np.float64)
+    ring1 = np.zeros(len(P), bool)
+    m1 = bv[ED[:, 0]] | bv[ED[:, 1]]
+    ring1[ED[m1].ravel()] = True
+    ring1 &= ~bv
+    for _ in range(int(JOB["collar_build"].get("edge_smooth", 12))):
+        acc = np.zeros_like(P)
+        np.add.at(acc, bed[:, 0], P[bed[:, 1]])
+        np.add.at(acc, bed[:, 1], P[bed[:, 0]])
+        ok_ = bv & (bdeg >= 2)
+        P[ok_] = 0.5 * P[ok_] + 0.5 * acc[ok_] / bdeg[ok_, None]
+        acc = np.zeros_like(P)
+        np.add.at(acc, ED[:, 0], P[ED[:, 1]])
+        np.add.at(acc, ED[:, 1], P[ED[:, 0]])
+        P[ring1] = 0.7 * P[ring1] + 0.3 * acc[ring1] / np.maximum(DEG[ring1], 1)[:, None]
+    disp = P - fco
+    fig.data.vertices.foreach_set("co", P.ravel())
+    fig.data.update()
+    REP["hole_edge_smoothed"] = int(bv.sum())
 
 
 def smooth_pos(P, w, rounds, lam=0.5, mu=-0.53):
@@ -984,6 +1136,33 @@ if HAIR is not None and HEAD is not None:
     bpy.ops.object.join()
 elif HAIR is not None:
     bpy.data.objects.remove(HAIR)
+# constructed neckwear (bl_collar.py) joins before the liner, so the liner sees it as cover
+PIECES = []
+if JOB.get("collar_build") and not STATUE and HEAD is not None:
+    t_c = time.time()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import bl_collar  # noqa: E402
+    cr = dict(COLLAR_RGB or {})
+    # white linen indoors: an albedo over ~0.72 blows out in window light (the engine's exposure is set for the room)
+    cmax = float(JOB["collar_build"].get("albedo_max", 0.72))
+    for k_ in list(cr):
+        m_ = max(cr[k_])
+        if m_ > cmax:
+            cr[k_] = [c_ * cmax / m_ for c_ in cr[k_]]
+    sw = bl_collar.free_swatches(fig, img, [cr.get("collar", [0.72, 0.72, 0.70]), cr.get("cravat", [0.3, 0.3, 0.32])])
+    PIECES = bl_collar.build(J, HEAD, body, arm, img, JOB, REP,
+                             {"_uv": {"collar": sw[0], "cravat": sw[1]}, "_uv_name": fig.data.uv_layers.active.name})
+    nfig = len(fig.data.vertices)
+    for o in PIECES:
+        o.data.materials.clear()
+    bpy.ops.object.select_all(action="DESELECT")
+    fig.select_set(True)
+    for o in PIECES:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = fig
+    bpy.ops.object.join()
+    REP["collar_build"]["s"] = round(time.time() - t_c, 2)
+    JOB.setdefault("liner_hole_m", 0.08)
 LINER = None
 if not STATUE and HEAD is not None and JOB.get("liner", True):
     # hide the head mesh's skin under the outfit: the part of it the outfit covers (its outward ray meets the

@@ -346,7 +346,7 @@ def import_texture(png, dest, kind):
     return tex
 
 
-def baked_material(path, texs):
+def baked_material(path, texs, opacity=None):
     """An opaque, two-sided lit material sampling the baked maps directly (BaseColor, tangent Normal, RMA = R
     roughness, G metallic, B occlusion). Direct samplers rather than an instance of a parameter master: the
     instance route rendered the master's default textures here."""
@@ -369,6 +369,20 @@ def baked_material(path, texs):
     MEL.connect_material_property(rma, "R", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(rma, "G", unreal.MaterialProperty.MP_METALLIC)
     MEL.connect_material_property(rma, "B", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    if opacity is not None:
+        # a net (a veil): masked, the opacity map dithered over frames so the holes read as sheer cloth
+        op = sampler(opacity, 700, unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_GRAYSCALE)
+        fn = EAL.load_asset("/Engine/Functions/Engine_MaterialFunctions02/Utility/DitherTemporalAA")
+        if fn is not None:
+            dt = MEL.create_material_expression(m, unreal.MaterialExpressionMaterialFunctionCall, -200, 700)
+            dt.set_editor_property("material_function", fn)
+            ins = [str(x) for x in MEL.get_material_expression_input_names(dt)]
+            MEL.connect_material_expressions(op, "R", dt, ins[0] if ins else "Alpha Threshold")
+            MEL.connect_material_property(dt, "", unreal.MaterialProperty.MP_OPACITY_MASK)
+        else:
+            MEL.connect_material_property(op, "R", unreal.MaterialProperty.MP_OPACITY_MASK)
+        m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+        m.set_editor_property("opacity_mask_clip_value", 0.5)
     m.set_editor_property("two_sided", True)
     m.set_editor_property("used_with_skeletal_mesh", True)
     MEL.recompile_material(m)
@@ -387,7 +401,12 @@ def import_outfit(spec):
     tdir = spec["textures"]
     texs = {k: import_texture(os.path.join(tdir, f"T_outfit_{k}.png"), dest + "/Textures", kind)
             for k, kind in (("BaseColor", "color"), ("Normal", "normal"), ("RMA", "mask"))}
-    mi = baked_material(dest + "/M_OutfitBaked", texs)
+    opacity = None
+    if os.path.exists(os.path.join(tdir, "T_outfit_Opacity.png")):
+        opacity = import_texture(os.path.join(tdir, "T_outfit_Opacity.png"), dest + "/Textures", "mask")
+        opacity.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_GRAYSCALE)
+        EAL.save_loaded_asset(opacity, False)
+    mi = baked_material(dest + "/M_OutfitBaked", texs, opacity)
     r["material"] = mi.get_path_name()
     sk = EAL.load_asset(r["outfit"])
     mats = []
