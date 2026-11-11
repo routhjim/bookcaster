@@ -87,6 +87,32 @@ def people(shot: dict, poses: dict | None = None) -> list:
     return sorted(out, key=lambda x: (x[1][0] + x[1][2]) / 2)
 
 
+def heads_out(res: dict, cam: str) -> set:
+    """People in this still whose head is out of the frame (the scene's frame check: head top and chin), e.g. a
+    listener's shoulder at the edge of a close shot. Named as a full person facing the camera, with their LoRA,
+    the redraw gave the speaker the listener's moustache (11-11, a close of a clean-shaven man)."""
+    out = set()
+    for sh in res.get("shots", []):
+        if sh.get("name") != cam:
+            continue
+        checks = dict(sh.get("others_check") or {})
+        subj = [k for k in (sh.get("truth") or {}) if k not in checks]
+        if subj and sh.get("frame_check"):
+            checks[subj[0]] = sh["frame_check"]
+        for k, fc in checks.items():
+            pts = [fc.get("head_top"), fc.get("chin")]
+            if all(pts) and not all(0.0 <= q[0] <= 1.0 and 0.0 <= q[1] <= 1.0 for q in pts):
+                out.add(k)
+    return out
+
+
+def edge_words(edge: list) -> str:
+    if not edge:
+        return ""
+    return (" At the edge of the frame only part of another person's shoulder and clothes is seen, their head out of "
+            "the picture; no other face is in the picture.")
+
+
 def scene_poses(sd: Path) -> dict:
     """Each person's posture word source, from the scene's own job (job.json): a posed character's pose name, a
     plain-mesh figure's library tags ("seated": a figure made sitting). The scene result's subjects do not carry the
@@ -356,6 +382,9 @@ def main():
             kind = kind_of(cam, sh)
             poses = scene_poses(sd)
             ppl = people(sh, poses)
+            out_heads = heads_out(res, cam)
+            edge = [x for x in ppl if x[0] in out_heads and len(ppl) > 1]
+            ppl = [x for x in ppl if x not in edge]
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
                                 "nearer_shoulder": ns} for k, b, a, q, bd, ns in ppl]}
@@ -390,7 +419,7 @@ def main():
                                                 run.get("body_words", False), cast or None,
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
-                                                sh.get("speaker")),
+                                                sh.get("speaker")) + edge_words(edge),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or []),
                          "loras": loras,
