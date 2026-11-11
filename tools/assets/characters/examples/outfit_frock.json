@@ -5,7 +5,10 @@
   "gap": 0.004,
   "collar_gap": 0.007,
   "cuff_past_wrist": -0.01,
-  "tuck_below_waist": 0.07
+  "tuck_below_waist": 0.07,
+  "neck_rise": 0.01,
+  "collar_below_neck": 0.035,
+  "head_gap": 0.012
  },
  "trousers": {
   "gap": 0.006,

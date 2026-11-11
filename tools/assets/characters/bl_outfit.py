@@ -542,6 +542,8 @@ def build(arm, body, head):
     keep = []
     for i, c in enumerate(cls):
         k = c in ("torso", "upperarm", "lowerarm") and co[i].z > F.waist_z - sh.get("tuck_below_waist", 0.07)
+        if c == "neck" and co[i].z < F.neck_z + sh.get("neck_rise", 0.01):
+            k = True                      # up to the collar: no bare strip between the shirt front and the collar
         if c == "lowerarm" and wrist_t(i, f"hand_{side(i)}", sh.get("cuff_past_wrist", -0.01)) > 0:
             k = False
         keep.append(k)
@@ -549,10 +551,22 @@ def build(arm, body, head):
     smooth_edges(shirt)
     smooth(shirt, 6)
     fit_layer(shirt, under, sh.get("gap", 0.004))
+    if head is not None:
+        # A MetaHuman body has an opening at the neck and upper chest that the head mesh fills: a shirt made from
+        # the body's faces has the same hole. Cover it with the head mesh's own faces below the collar line.
+        hz = F.neck_z + sh.get("neck_rise", 0.01)
+        hkeep = [(head.matrix_world @ v.co).z < hz for v in head.data.vertices]
+        if any(hkeep):
+            patch = body_subset("shirt_chest", head, hkeep)
+            smooth_edges(patch)
+            smooth(patch, 6)
+            fit_layer(patch, under + [shirt], sh.get("gap", 0.004))
+            shirt = join([shirt, patch], "shirt")
     parts["shirt"] = shirt
 
     # ---- collar: lofted rings around the neck (head + body points), stand collar
-    collar = loft_collar(F, under, F.neck_z - 0.01, collar_top, sh.get("collar_gap", 0.007), "collar")
+    collar = loft_collar(F, under + [shirt], F.neck_z - sh.get("collar_below_neck", 0.035), collar_top,
+                         sh.get("collar_gap", 0.007), "collar")
     parts["collar"] = collar
 
     # ---- trousers
@@ -1207,13 +1221,57 @@ def test_pose(arm, kind):
 
 
 # ------------------------------------------------------------------ bake + export
-def set_device():
+HOLD_FILE = os.path.expanduser(os.environ.get("CHAR_GPU_HOLD", "~/ue/GPU_HOLD"))
+LOCK = {"fd": None, "bus": None}
+
+
+def gpu_take(kind):
+    """Take a GPU lock only for the seconds a render or bake runs: previews try the iGPU (when idle) then card 05,
+    bakes card 05 (job "bake_cards"). Non-blocking flock polled; waits while the hold file exists; never the CPU."""
+    import fcntl
+    cards = JOB.get("preview_cards", ["c4", "05"]) if kind == "preview" else JOB.get("bake_cards", ["05"])
+    t0 = time.time()
+    while True:
+        if not os.path.exists(HOLD_FILE):
+            for bus in cards:
+                if bus == "c4":
+                    try:
+                        busy = int(open("/sys/bus/pci/devices/0000:c4:00.0/gpu_busy_percent").read())
+                    except Exception:
+                        busy = 100
+                    if busy > 10:
+                        continue
+                lock = "/tmp/gpu-igpu.lock" if bus == "c4" else f"/tmp/gpu-{bus}.lock"
+                fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o666)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    LOCK.update(fd=fd, bus=bus)
+                    try:
+                        set_device(bus)
+                    except RuntimeError as e:
+                        REPORT["warnings"].append(str(e))
+                        gpu_release()
+                        continue
+                    REPORT.setdefault("gpu_waits", []).append([kind, bus, round(time.time() - t0, 1)])
+                    return bus
+                except BlockingIOError:
+                    os.close(fd)
+        time.sleep(2)
+
+
+def gpu_release():
+    if LOCK["fd"] is not None:
+        os.close(LOCK["fd"])
+        LOCK.update(fd=None, bus=None)
+
+
+def set_device(bus):
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"
     p = bpy.context.preferences.addons["cycles"].preferences
     p.compute_device_type = "HIP"
     p.get_devices()
-    want = f"0000:{JOB.get('hip_bus', '05')}:00"
+    want = f"0000:{bus}:00"
     hit = False
     for d in p.devices:
         d.use = d.type == "HIP" and d.id.endswith(want)
@@ -1223,7 +1281,7 @@ def set_device():
     sc.cycles.device = "GPU"
     if hasattr(sc.cycles, "denoising_use_gpu"):
         sc.cycles.denoising_use_gpu = True
-    REPORT["device"] = f"HIP {want}"
+    REPORT.setdefault("device", []).append(f"HIP {want}")
 
 
 def uv_unwrap(ob):
@@ -1245,7 +1303,7 @@ def bake(ob, res, samples):
     """Emission bakes of base colour and (roughness, metallic, AO), then a tangent normal bake; one texture set
     for the whole outfit (conventions of the asset chain)."""
     sc = bpy.context.scene
-    set_device()
+    gpu_take("bake")
     sc.render.bake.margin = 8
     sc.render.bake.margin_type = "EXTEND"
     imgs = {}
@@ -1321,6 +1379,7 @@ def bake(ob, res, samples):
         target("Normal")
         sc.cycles.samples = samples
         bpy.ops.object.bake(type="NORMAL", normal_space="TANGENT", use_clear=True)
+    gpu_release()
     os.makedirs(os.path.join(OUT, "textures"), exist_ok=True)
     for k, im in imgs.items():
         im.filepath_raw = os.path.join(OUT, "textures", f"T_outfit_{k}.png")
@@ -1353,6 +1412,21 @@ def baked_material(ob, imgs):
     ob.data.materials.append(m)
 
 
+def to_centimetres(objs, arm):
+    """Scale the armature and its meshes to centimetres (data, identity transforms). UE reads Blender's FBX with
+    the unit scale on the root bone otherwise (a root scaled x100), and a leader pose from the character's body
+    then flings every vertex; with the data in centimetres and no unit scale the root bone is identity."""
+    if arm.get("cm"):
+        return
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs + [arm]:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    arm.scale = (100, 100, 100)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    arm["cm"] = True
+
+
 def export_fbx(objs, arm, path):
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
@@ -1360,8 +1434,8 @@ def export_fbx(objs, arm, path):
     arm.select_set(True)
     bpy.context.view_layer.objects.active = arm
     bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={"ARMATURE", "MESH"},
-                             apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL", axis_forward="-Z",
-                             axis_up="Y", add_leaf_bones=False, use_armature_deform_only=False,
+                             apply_unit_scale=False, global_scale=1.0, apply_scale_options="FBX_SCALE_NONE",
+                             axis_forward="-Z", axis_up="Y", add_leaf_bones=False, use_armature_deform_only=False,
                              primary_bone_axis="Y", secondary_bone_axis="X", armature_nodetype="NULL",
                              bake_anim=False, mesh_smooth_type="FACE", use_tspace=True, path_mode="STRIP")
 
@@ -1370,7 +1444,7 @@ def export_fbx(objs, arm, path):
 def preview(objs, tag, views=(("front", 0), ("three_q", 35), ("side", 90), ("back", 180)), px=(640, 900),
             samples=24, target_z=None, dist=3.2, focal=50):
     sc = bpy.context.scene
-    set_device()
+    gpu_take("preview")
     sc.cycles.samples = samples
     sc.cycles.use_denoising = True
     sc.render.resolution_x, sc.render.resolution_y = px
@@ -1413,6 +1487,7 @@ def preview(objs, tag, views=(("front", 0), ("three_q", 35), ("side", 90), ("bac
         sc.render.filepath = p
         bpy.ops.render.render(write_still=True)
         paths.append(p)
+    gpu_release()
     bpy.data.objects.remove(cam)
     return paths
 
@@ -1478,6 +1553,7 @@ def main():
             imgs = bake(outfit, JOB.get("bake_px", 4096), JOB.get("bake_samples", 4))
         baked_material(outfit, imgs)
     if "export" in steps:
+        to_centimetres([o for o in (outfit, trim, body) if o is not None], arm)
         with Timer("export"):
             export_fbx([outfit], arm, os.path.join(OUT, "outfit.fbx"))
             export_fbx([trim], arm, os.path.join(OUT, "body_trim.fbx"))

@@ -1,4 +1,4 @@
-"""Run bl_outfit.py in Blender on one locked XTX card (never the CPU for bake or render).
+"""Run bl_outfit.py in Blender; GPU locks are taken inside Blender only for the seconds a bake or render runs.
 
     python tools/assets/characters/char_outfit.py job.json [--cards 05,65] [--geometry-only]
 
@@ -48,16 +48,19 @@ def main():
     ap.add_argument("job")
     ap.add_argument("--cards", default=os.environ.get("CHAR_BLENDER_CARDS", "05"))
     ap.add_argument("--geometry-only", action="store_true")
+    ap.add_argument("--lock-whole-run", action="store_true",
+                    help="old behaviour: hold one card for the whole Blender run (default: bl_outfit.py takes a "
+                         "lock only around each render or bake: previews iGPU then 05, bakes 05)")
     a = ap.parse_args()
     job = json.loads(Path(a.job).read_text())
     fd = None
+    bus = None
     if a.geometry_only:
         job["steps"] = [s for s in job.get("steps", []) if s in ("build", "export")]
-        bus = None
-    else:
+    elif a.lock_whole_run:
         bus, fd, waited = take([c.strip() for c in a.cards.split(",") if c.strip()])
         log(f"card {bus} locked after {waited}s")
-        job["hip_bus"] = bus
+        job["bake_cards"] = job["preview_cards"] = [bus]
     run_job = Path(a.job).with_suffix(".run.json")
     run_job.write_text(json.dumps(job, indent=1))
     t0 = time.time()

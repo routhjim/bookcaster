@@ -106,46 +106,49 @@ def light_scene():
 
 
 def skel_comps(a):
-    """(body, face) skeletal mesh components of a preview actor or an assembled Blueprint actor."""
-    try:
-        return a.get_editor_property("body_component"), a.get_editor_property("face_component")
-    except Exception:
-        pass
+    """(body, face) skeletal mesh components of an assembled Blueprint actor ("Body", "Face") or of the editor
+    preview actor (its body_component / face_component properties)."""
     body = face = None
     for c in a.get_components_by_class(unreal.SkeletalMeshComponent):
         n = c.get_name().lower()
-        if n == "body" or (body is None and "body" in n):
+        if n == "body":
             body = c
-        if n == "face" or (face is None and "face" in n):
+        elif n == "face":
             face = c
+    if body is None:
+        try:
+            body = a.get_editor_property("body_component")
+            face = a.get_editor_property("face_component")
+        except Exception:
+            pass
     return body, face
 
 
 def add_follower(a, body, mesh_path, label, materials_from=None):
+    """A garment (or the trimmed body) as its own SkeletalMeshActor attached to the character, its component driven
+    by the character's body through set_leader_pose_component (bones matched by name), so it follows every pose."""
     mesh = EAL.load_asset(mesh_path)
     if mesh is None:
         raise RuntimeError(f"no skeletal mesh {mesh_path}")
-    try:
-        comp = a.add_component_by_class(unreal.SkeletalMeshComponent, True, unreal.Transform(), False)
-    except Exception as e:
-        # fall back to the subobject system (registers the component on the actor)
-        note(f"add_component_by_class: {e}")
-        sub = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
-        root = sub.k2_gather_subobject_data_for_instance(a)[0]
-        h, fail = sub.add_new_subobject(unreal.AddNewSubobjectParams(parent_handle=root,
-                                                                       new_class=unreal.SkeletalMeshComponent))
-        comp = unreal.SubobjectDataBlueprintFunctionLibrary.get_object(
-            unreal.SubobjectDataBlueprintFunctionLibrary.get_data(h))
+    fa = spawn(unreal.SkeletalMeshActor, (0, 0, 0), label=f"{a.get_actor_label()}_{label}")
+    comp = fa.skeletal_mesh_component
     comp.set_skeletal_mesh_asset(mesh)
-    comp.attach_to_component(body, "", unreal.AttachmentRule.SNAP_TO_TARGET, unreal.AttachmentRule.SNAP_TO_TARGET,
-                             unreal.AttachmentRule.SNAP_TO_TARGET, False)
+    # not attached: attaching re-runs the Blueprint's construction and replaces its components; the follower sits
+    # where the character sits and copies the body's component-space pose
+    fa.set_actor_transform(a.get_actor_transform(), False, False)
     comp.set_leader_pose_component(body, True, False)
     comp.set_editor_property("visibility_based_anim_tick_option",
                              unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
+    comp.set_editor_property("bounds_scale", 2.0)
+    if JOB.get("garment_material") and materials_from is None:
+        gm = EAL.load_asset(JOB["garment_material"])
+        for i in range(comp.get_num_materials()):
+            comp.set_material(i, gm)
     if materials_from is not None:
         for i, m in enumerate(materials_from.get_materials()):
             if i < comp.get_num_materials():
                 comp.set_material(i, m)
+    S.setdefault("followers", {}).setdefault(id(a), []).append(fa)
     return comp
 
 
@@ -158,7 +161,16 @@ def character_actor(key):
     if o is None:
         raise RuntimeError(f"no asset {path}")
     if isinstance(o, unreal.Blueprint):
-        a = act.spawn_actor_from_class(o.generated_class(), unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
+        unreal.BlueprintEditorLibrary.compile_blueprint(o)    # a stale class spawns without its components
+        a = act.spawn_actor_from_object(o, unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
+        if skel_comps(a)[0] is None and spec.get("rebuild_from"):
+            # loaded broken in this editor (its Live Link AnimBP cast did not resolve): reassemble it here
+            note(f"{path} spawned without components; reassembling from {spec['rebuild_from']}")
+            act.destroy_actor(a)
+            cloud_build({"path": spec["rebuild_from"], "rig": False, "textures": False,
+                         "build_path": spec.get("build_path", "/Game/MetaHumans")})
+            o = EAL.load_asset(path)
+            a = act.spawn_actor_from_object(o, unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
     else:
         if not mhs.is_object_added_for_editing(o):
             if not mhs.try_add_object_to_edit(o):
@@ -173,6 +185,7 @@ def character_actor(key):
             a.get_editor_property("lod_sync_component").set_editor_property("forced_lod", 0)
         except Exception as e:
             note(f"forced LOD not set: {e}")
+    S["actors"][key] = (a, None, None)          # registered at once so cleanup removes it even on an error
     body, face = skel_comps(a)
     for comp in (body, face):
         if comp is not None:
@@ -191,8 +204,11 @@ def character_actor(key):
                                  unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
         body.set_render_in_main_pass(False)
         body.set_cast_shadow(False)
-    info = {"class": a.get_class().get_name(), "body": body.get_skinned_asset().get_path_name() if body else None,
-            "face": face.get_skinned_asset().get_path_name() if face else None,
+    if body is None:
+        raise RuntimeError(f"{path}: no Body component on the spawned actor (Blueprint failed to compile?)")
+    info = {"class": a.get_class().get_name(),
+            "body": body.get_skinned_asset().get_path_name() if body.get_skinned_asset() else None,
+            "face": face.get_skinned_asset().get_path_name() if face and face.get_skinned_asset() else None,
             "followers": [f.get_skinned_asset().get_path_name() for f in followers]}
     S["r"].setdefault("actors", {})[key] = info
     log(f"spawned {key}: {json.dumps(info)}")
@@ -324,31 +340,35 @@ def import_texture(png, dest, kind):
     elif kind == "mask":
         tex.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_MASKS)
         tex.set_editor_property("srgb", False)
+    tex.set_editor_property("never_stream", True)    # a 4k map otherwise renders from a low mip (flat colour)
     EAL.save_loaded_asset(tex, False)
     return tex
 
 
-def baked_master(path="/Game/Char/Materials/M_BakedRMA"):
-    """Opaque lit master: BaseColor, Normal and RMA (R roughness, G metallic, B occlusion) texture parameters."""
-    if EAL.does_asset_exist(path):
-        return EAL.load_asset(path)
+def baked_material(path, texs):
+    """An opaque, two-sided lit material sampling the baked maps directly (BaseColor, tangent Normal, RMA = R
+    roughness, G metallic, B occlusion). Direct samplers rather than an instance of a parameter master: the
+    instance route rendered the master's default textures here."""
     MEL = unreal.MaterialEditingLibrary
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
     folder, name = path.rsplit("/", 1)
     m = at.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
 
-    def tex_param(pname, y, sampler):
-        n = MEL.create_material_expression(m, unreal.MaterialExpressionTextureSampleParameter2D, -500, y)
-        n.set_editor_property("parameter_name", pname)
-        n.set_editor_property("sampler_type", sampler)
+    def sampler(tex, y, st):
+        n = MEL.create_material_expression(m, unreal.MaterialExpressionTextureSample, -500, y)
+        n.set_editor_property("texture", tex)
+        n.set_editor_property("sampler_type", st)
         return n
-    bc = tex_param("BaseColor", -200, unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
-    nm = tex_param("Normal", 100, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
-    rma = tex_param("RMA", 400, unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+    bc = sampler(texs["BaseColor"], -200, unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
+    nm = sampler(texs["Normal"], 100, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    rma = sampler(texs["RMA"], 400, unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
     MEL.connect_material_property(bc, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
     MEL.connect_material_property(nm, "RGB", unreal.MaterialProperty.MP_NORMAL)
     MEL.connect_material_property(rma, "R", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(rma, "G", unreal.MaterialProperty.MP_METALLIC)
     MEL.connect_material_property(rma, "B", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    m.set_editor_property("two_sided", True)
     m.set_editor_property("used_with_skeletal_mesh", True)
     MEL.recompile_material(m)
     EAL.save_loaded_asset(m, False)
@@ -366,20 +386,15 @@ def import_outfit(spec):
     tdir = spec["textures"]
     texs = {k: import_texture(os.path.join(tdir, f"T_outfit_{k}.png"), dest + "/Textures", kind)
             for k, kind in (("BaseColor", "color"), ("Normal", "normal"), ("RMA", "mask"))}
-    mpath = dest + "/MI_Outfit"
-    if EAL.does_asset_exist(mpath):
-        EAL.delete_asset(mpath)
-    mi = at.create_asset("MI_Outfit", dest, unreal.MaterialInstanceConstant,
-                         unreal.MaterialInstanceConstantFactoryNew())
-    MEL = unreal.MaterialEditingLibrary
-    MEL.set_material_instance_parent(mi, baked_master())
-    for k, t in texs.items():
-        MEL.set_material_instance_texture_parameter_value(mi, k, t)
-    EAL.save_loaded_asset(mi, False)
+    mi = baked_material(dest + "/M_OutfitBaked", texs)
+    r["material"] = mi.get_path_name()
     sk = EAL.load_asset(r["outfit"])
-    mats = sk.get_editor_property("materials")
-    for sm in mats:
-        sm.set_editor_property("material_interface", mi)
+    mats = []
+    for sm in sk.get_editor_property("materials"):       # the array holds copies: rebuild it
+        sm2 = unreal.SkeletalMaterial()
+        sm2.set_editor_property("material_interface", mi)
+        sm2.set_editor_property("material_slot_name", sm.get_editor_property("material_slot_name"))
+        mats.append(sm2)
     sk.set_editor_property("materials", mats)
     EAL.save_loaded_asset(sk, False)
     r["time_s"] = round(time.time() - t0, 1)
@@ -439,25 +454,55 @@ def scan_body(anim, kind):
         elif kind == "knee_up":
             k = bone_world(anim, LEG_L, t).translation
             score = k.z + abs(k.y)
-        else:
+        else:                         # head turned ~30 deg, kept level (the clip also tilts the head back)
             h = bone_world(anim, HEAD, t)
             fwd = h.rotation.rotate_vector(unreal.Vector(0, 1, 0))
-            score = -abs(abs(math.degrees(math.atan2(fwd.x, fwd.y))) - 35)
+            yaw = math.degrees(math.atan2(fwd.x, fwd.y))
+            pitch = math.degrees(math.asin(max(-1.0, min(1.0, fwd.z))))
+            score = -abs(abs(yaw) - 30) - 2 * abs(pitch)
         if best is None or score > best:
             best, best_t = score, t
     return best_t, best, length
 
 
+def settle_pose(comp):
+    """Evaluate the paused pose now (an editor-world component may not tick its animation on its own)."""
+    for fn in ("tick_animation", "refresh_bone_transforms", "tick_pose"):
+        try:
+            if fn == "tick_animation":
+                comp.tick_animation(0.0, False)
+            elif fn == "refresh_bone_transforms":
+                comp.refresh_bone_transforms()
+        except Exception:
+            pass
+
+
 def apply_anim(comp, anim, t):
+    """Single-node animation paused at time t (override data carries the start position; set again afterwards
+    because a re-used single-node instance can keep the previous position)."""
     comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
+    try:
+        comp.override_animation_data(anim, False, False, float(t), 0.0)
+    except Exception:
+        comp.set_animation(anim)
     comp.set_animation(anim)
     comp.play(False)
     comp.set_position(float(t), False)
     comp.set_play_rate(0.0)
     comp.stop()
+    comp.set_position(float(t), False)
+    settle_pose(comp)
 
 
 def clear_anim(comp):
+    """Back to the component's own Animation Blueprint (an assembled character's face follows the body's head
+    through it), or to the reference pose when it has none."""
+    try:
+        if comp.get_editor_property("anim_class"):
+            comp.set_animation_mode(unreal.AnimationMode.ANIMATION_BLUEPRINT)
+            return
+    except Exception:
+        pass
     comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
     comp.set_animation(None)
 
@@ -482,12 +527,54 @@ def camera(name, target, az, el, dist, focal):
 
 def show_only(key):
     for k, (a, body, face) in S["actors"].items():
-        a.set_is_temporarily_hidden_in_editor(k != key)
-        a.set_actor_hidden_in_game(k != key)
+        for x in [a] + S.get("followers", {}).get(id(a), []):
+            x.set_is_temporarily_hidden_in_editor(k != key)
+            x.set_actor_hidden_in_game(k != key)
+
+
+def refresh(key):
+    """Current body/face components (a Blueprint may have rebuilt them) re-wired to the followers, body hidden when
+    a trimmed copy replaces it."""
+    a = S["actors"][key][0]
+    body, face = skel_comps(a)
+    spec = JOB["characters"][key]
+    for fa in S.get("followers", {}).get(id(a), []):
+        if spec.get("leader", True):
+            fa.skeletal_mesh_component.set_leader_pose_component(body, True, False)
+        else:
+            fa.skeletal_mesh_component.set_leader_pose_component(None, True, False)
+    if spec.get("body_swap") or spec.get("hide_body"):
+        body.set_editor_property("visibility_based_anim_tick_option",
+                                 unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
+        body.set_visibility(False, False)          # still posed (always tick), so followers keep following
+        body.set_cast_shadow(False)
+    for comp in (body, face):
+        if comp is not None:
+            try:
+                comp.set_update_animation_in_editor(True)
+            except Exception:
+                pass
+    # LOD 0 everywhere: lower LODs of an assembled body drop helper and finger bones, and a garment skinned to
+    # those bones collapses to the origin through the leader pose
+    try:
+        lod = a.get_component_by_class(unreal.LODSyncComponent)
+        if lod:
+            lod.set_editor_property("forced_lod", 0)
+    except Exception:
+        pass
+    for comp in [body, face] + [fa.skeletal_mesh_component for fa in S.get("followers", {}).get(id(a), [])]:
+        if comp is not None:
+            try:
+                comp.set_forced_lod(1)
+            except Exception:
+                pass
+    S["actors"][key] = (a, body, face)
+    return a, body, face
 
 
 def setup_shot(sh):
-    a, body, face = character_actor(sh["char"])
+    character_actor(sh["char"])
+    a, body, face = refresh(sh["char"])
     show_only(sh["char"])
     info = {"name": sh["name"]}
     if sh.get("body_anim"):
@@ -501,14 +588,19 @@ def setup_shot(sh):
     elif body is not None:
         clear_anim(body)
     if face is not None:
+        if sh.get("face_curves") or sh.get("face_anim"):
+            S.setdefault("face_touched", {})[sh["char"]] = True
         if sh.get("face_curves"):
             anim = curve_anim(face.get_skinned_asset().get_editor_property("skeleton"), sh["face_curves"],
                               f"AS_{sh['name']}")
             apply_anim(face, anim, 1.0 / 30)
+            S["face_anim_last"] = anim
             info["face"] = sh["face_curves"]
         elif sh.get("face_anim"):
             apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
             info["face"] = [sh["face_anim"], sh.get("face_t", 0.0)]
+        elif not S.get("face_touched", {}).get(sh["char"]):
+            pass                              # keep the face's own AnimBP (it follows the body's head)
         else:
             clear_anim(face)
     try:
@@ -582,10 +674,14 @@ def frames(n):
 
 def _run():
     shots = JOB.get("shots", [])
-    w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-    if JOB.get("map") and (w is None or not w.get_path_name().startswith(JOB["map"])):
+    if JOB.get("map"):
+        # always a fresh copy of the level: a resident editor keeps the last job's level and any actor it leaked
         les.load_level(JOB["map"])
         yield from frames(5)
+    # an assembled Blueprint casts to the plugin's Live Link AnimBP: load it before any Blueprint so the cast
+    # resolves when the Blueprint is loaded and compiled
+    for dep in JOB.get("bp_deps", ["/MetaHumanCharacter/Animation/ABP_MH_LiveLink"]):
+        EAL.load_asset(dep)
     if JOB.get("track"):
         track_images(JOB["track"])
         yield
@@ -621,6 +717,12 @@ def _run():
     if JOB.get("import_outfit"):
         import_outfit(JOB["import_outfit"])
         yield
+    if JOB.get("import_fbx"):              # {"name": [fbx, dest folder]} -> garments may say "@imp:name"
+        imp = {k: import_fbx(f, d) for k, (f, d) in JOB["import_fbx"].items()}
+        S["r"]["import_fbx"] = imp
+        for spec_c in JOB.get("characters", {}).values():
+            spec_c["garments"] = [imp[g[5:]] if g.startswith("@imp:") else g for g in spec_c.get("garments", [])]
+        yield
     if JOB.get("export_geometry"):
         try:
             export_geometry(JOB["export_geometry"])
@@ -641,14 +743,29 @@ def _run():
     light_scene()
     for sh in shots:
         character_actor(sh["char"])
+    for key in list(S["actors"]):
+        refresh(key)
     S["r"]["setup_s"] = round(time.time() - S["t0"], 1)
     yield from frames(JOB.get("warm_frames", 150))
     t = time.time()
+    try:
+        unreal.AssetCompilingManager  # noqa
+    except Exception:
+        pass
     unreal.AutomationLibrary.finish_loading_before_screenshot()
     S["r"]["finish_loading_s"] = round(time.time() - t, 1)
     for sh in shots:
         cam, info = setup_shot(sh)
         les.pilot_level_actor(cam)
+        yield from frames(10)
+        if sh.get("body_anim") or sh.get("face_curves") or sh.get("face_anim"):
+            # a paused single-node pose shows only from the second application (measured: one shot late)
+            a, body, face = S["actors"][sh["char"]]
+            if sh.get("body_anim") and "body" in info:
+                apply_anim(body, EAL.load_asset(sh["body_anim"]), info["body"][1])
+            if sh.get("face_curves") and S.get("face_anim_last"):
+                apply_anim(face, S["face_anim_last"], 1.0 / 30)
+            yield from frames(10)
         yield from frames(JOB.get("settle_frames", 40))
         path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
