@@ -212,6 +212,15 @@ def make(spec, folder=None):
                 sub = {}
                 set_params(ins, spec.get("params"), sub)
                 r[f"instance_params_{k_}"] = sub.get("instance_params")
+            # the parameters were set on the editor's preview collection, a transient copy: copy it back into the
+            # asset's internal collection, or the build assembles the groom with its defaults (melanin 0.8,
+            # redness 0.25: brown-red hair, whatever was asked)
+            mhs.on_edit_preview_collection(c)
+            ic = c.get_editor_property("internal_collection").get_editor_property("default_instance")
+            saved = {}
+            set_params(ic, None, saved)
+            r["instance_params_saved"] = {k: {n: v[1] for n, v in p.items() if n in ("Melanin", "Redness", "Roughness")}
+                                          for k, p in (saved.get("instance_params") or {}).items()}
         except Exception:
             r["instance_params_error"] = traceback.format_exc()
         r["slots"] = sorted(f"{col.get_item_slot_name(k)}" for k in col.get_all_item_keys())

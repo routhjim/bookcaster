@@ -533,25 +533,46 @@ def face_from_body_anim(body, face, curves, name):
 
 
 def turned_body_anim(src_anim, t, turns, name):
-    """A two-frame body AnimSequence: src_anim's pose at time t with extra turns about the world vertical through
-    the named joints ({"neck_02": deg, "head": deg}, applied parent first), e.g. a head turned while crouching."""
+    """A two-frame body AnimSequence: src_anim's pose at time t with extra turns through the named joints, applied
+    in order: {"neck_02": deg, "head": deg} turns about the world vertical (a head turned while crouching);
+    {"thigh_l": [deg, "calf_l", "fwd"], "calf_l": [deg, "foot_l", "down"]} turns about the body's lateral axis, the
+    sign chosen so that the named child joint ends up further forward (+Y, where the character faces) or lower
+    (seated: thighs forward, shins down)."""
     AP = unreal.AnimPoseExtensions
     WS, LS = unreal.AnimPoseSpaces.WORLD, unreal.AnimPoseSpaces.LOCAL
     pose = AP.get_anim_pose_at_time(src_anim, float(t), unreal.AnimPoseEvaluationOptions())
     bones = [str(b) for b in AP.get_bone_names(pose)]
     local = {b: AP.get_bone_pose(pose, b, LS) for b in bones}
+
     def setp(tr, b):            # children follow their parent (not adjusted); the binding returns the pose
         nonlocal pose
         res = AP.set_bone_pose(pose, tr, b, LS)
         if res is not None:
             pose = res
-    for b, deg in turns.items():
-        w = AP.get_bone_pose(pose, b, WS)
-        parent_w = unreal.MathLibrary.compose_transforms(unreal.MathLibrary.invert_transform(local[b]), w)
+
+    def turned(w, axis, deg):
         a = math.radians(deg) / 2
-        q = unreal.Quat(0, 0, math.sin(a), math.cos(a))
+        q = unreal.Quat(axis[0] * math.sin(a), axis[1] * math.sin(a), axis[2] * math.sin(a), math.cos(a))
         nw = unreal.Transform(w.translation, unreal.Rotator(), w.scale3d)
         nw.rotation = q * w.rotation
+        return nw
+
+    for b, spec in turns.items():
+        w = AP.get_bone_pose(pose, b, WS)
+        parent_w = unreal.MathLibrary.compose_transforms(unreal.MathLibrary.invert_transform(local[b]), w)
+        if isinstance(spec, (int, float)):
+            nw = turned(w, (0, 0, 1), spec)
+        else:
+            deg, child, goal = spec
+            cl = local[child]
+            best = None
+            for sgn in (1, -1):
+                cand = turned(w, (1, 0, 0), sgn * deg)
+                cp = unreal.MathLibrary.compose_transforms(cl, cand).translation
+                score = cp.y if goal == "fwd" else -cp.z
+                if best is None or score > best[0]:
+                    best = (score, cand)
+            nw = best[1]
         local[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(parent_w))
         setp(local[b], b)
     folder = "/Game/Char/Anim"
@@ -601,6 +622,7 @@ def pose_face(sh, info):
     curves = sh.get("face_curves")
     if curves or sh.get("face_anim"):
         face.set_leader_pose_component(None, True, False)
+        body, face = skel_comps(a)        # a Blueprint actor may rebuild its components on a property change
         if sh.get("face_anim"):
             # a face-only clip (no body bone tracks) cannot carry the body pose: follow the body by leader pose
             # is impossible together with it, so warn when the body is posed
@@ -609,6 +631,7 @@ def pose_face(sh, info):
             apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
         else:
             anim, n = face_from_body_anim(body, face, curves, f"AS_{sh['name']}")
+            body, face = skel_comps(a)
             apply_anim(face, anim, 1.0 / 30)
             S["face_anim_last"] = anim
             info["face_bones_from_body"] = n
