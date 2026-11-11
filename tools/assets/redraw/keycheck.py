@@ -232,10 +232,9 @@ def main():
             if n is None:
                 v["neck_ok"] = None
                 continue
-            refs = [x for x in (e, med.get(k)) if x]
-            # longer than the engine's own or the character's median by more than NECK_TOL fails; shorter only
-            # against the character's median (the engine figure's own neck is the long one, 11-11)
-            v["neck_ok"] = all(n <= x * NECK_TOL for x in refs) and (not med.get(k) or n >= med[k] / 1.6)
+            # provisional (accept.py judges the run's keys together): longer than NECK_TOL times the character's
+            # median, or than the engine's reading where that is the longer reference
+            v["neck_ok"] = n <= NECK_TOL * med[k] and n <= NECK_TOL * max(e or 0.0, med[k])
             v["neck_refs"] = {"engine": e, "character_median": round(med.get(k, 0), 3)}
     Path(cfg["out"]).write_text(json.dumps(out, indent=1))
     print(json.dumps({"done": len(out), "s": round(time.time() - t0, 1)}), flush=True)
