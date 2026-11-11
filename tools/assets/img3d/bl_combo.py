@@ -412,7 +412,8 @@ for side in ("l", "r"):
     hw = np.array(pose_head(f"hand_{side}"))
     L = np.linalg.norm(hw - S0)
     p = (fco - S0) @ ((hw - S0) / L)
-    near_sh |= (p < float(JOB.get("armhole_frac", 0.25)) * L) & (np.linalg.norm(fco - S0, axis=1) < 0.18)
+    near_sh |= ((p < float(JOB.get("armhole_frac", 0.25)) * L) & (np.linalg.norm(fco - S0, axis=1) < 0.10)
+                & (fco[:, 2] > S0[2] - 0.04))
 OFF = float(JOB.get("sleeve_off_torso_m", 0.035))
 armo = body.copy()
 armo.data = body.data.copy()
@@ -431,6 +432,20 @@ d_arm = np.array([(abvh.find_nearest(Vector(p))[3] or 9.0) for p in fco])
 bpy.data.objects.remove(armo)
 # a sleeve vertex is nearer the arm's surface than the torso's (the sleeve's underside too), or clear of the torso
 sleeve = (armw >= 0.3) & ((d_arm < d_torso) | (d_torso > OFF) | near_sh)
+# below the armpit only the sleeve tube itself: within SLEEVE_R of the arm's centre line (the coat's side and front
+# panels hang there in the spread pose and would otherwise ride up with a raised arm like a cape)
+SLEEVE_R = float(JOB.get("sleeve_radius_m", 0.10))
+tube = np.zeros(len(fco), bool)
+for side in ("l", "r"):
+    S0 = np.array(pose_head(f"upperarm_{side}"))
+    hw = np.array(pose_head(f"hand_{side}"))
+    L = np.linalg.norm(hw - S0)
+    ax = (hw - S0) / L
+    p = (fco - S0) @ ax
+    rad = np.linalg.norm((fco - S0) - np.clip(p, 0, L)[:, None] * ax[None, :], axis=1)
+    tube |= (rad < SLEEVE_R) & (p > 0)
+below = fco[:, 2] < min(J("upperarm_l").z, J("upperarm_r").z) - 0.04
+sleeve &= ~below | tube
 REP["sleeve_verts"] = int(sleeve.sum())
 mask = fig.vertex_groups.new(name="_coat")
 mask.add([int(i) for i in np.nonzero(~sleeve)[0]], 1.0, "REPLACE")
@@ -505,7 +520,7 @@ if len(low):
 # nothing of the outfit inside the body (the head mesh's neck and chest skin follow the body's surface and would
 # show through): every vertex nearer than EASE to the body, or inside it, goes out along the body's normal
 from mathutils.bvhtree import BVHTree  # noqa: E402
-if STATUE and HEAD is not None and JOB.get("statue_head_fit", True):
+if STATUE and HEAD is not None and JOB.get("statue_head_fit", False):
     # the statue's head must enclose the hidden head (whose face would show through): map the statue's head box
     # (above the collar line) onto the head mesh's box grown by the head ease, fading in over 6 cm below the line
     P = np.array([v.co[:] for v in fig.data.vertices])
@@ -532,7 +547,7 @@ if STATUE and HEAD is not None and JOB.get("statue_head_fit", True):
     fig.data.update()
     REP["head_fit_scale"] = [round(float(x), 3) for x in (mhi - mlo) / np.maximum(shi - slo, 1e-6)]
 dg = bpy.context.evaluated_depsgraph_get()
-bvhs = [BVHTree.FromObject(o, dg) for o in (body, HEAD) if o is not None]
+bvhs = [] if STATUE else [BVHTree.FromObject(o, dg) for o in (body, HEAD) if o is not None]   # statue: nothing under it
 fco = np.array([v.co[:] for v in fig.data.vertices])
 EASE_ALL = float(JOB.get("body_ease_m", 0.014))
 HEAD_EASE = float(JOB.get("head_ease_m", 0.014))      # the statue's head must cover the hidden head and its hair
@@ -556,7 +571,7 @@ fig.data.update()
 # body back toward it (half the excess), fading out 22 cm from the shoulder joint
 SH_GAP = float(JOB.get("shoulder_gap_m", 0.025))
 fco2 = fco + disp
-for side in ("l", "r"):
+for side in (() if STATUE else ("l", "r")):
     S0 = np.array(pose_head(f"upperarm_{side}"))
     dd = np.linalg.norm(fco2 - S0, axis=1)
     zone = np.nonzero((dd < 0.22) & (fco2[:, 2] > S0[2] - 0.12))[0]
@@ -710,13 +725,23 @@ if HAIR is not None and HEAD is not None:
         (P[:, 2] > mhi[2] - float(JOB.get("hair_top_m", 0.035)))
     hbvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
     HE = float(JOB.get("hair_ease_m", 0.004))
+    HMAX = float(JOB.get("hair_max_m", 0.012))
     for i, p in enumerate(P):
         loc, nrm, _, dist = hbvh.find_nearest(Vector(p), 0.1)
         if loc is not None:
             sd = (Vector(p) - loc).dot(nrm)
             if sd < HE:
                 P[i] = P[i] + np.array(nrm) * (HE - sd)
+            elif sd > HMAX:                     # seat it on the skull: no more than HMAX of hair off the head
+                P[i] = np.array(loc) + np.array(nrm) * HMAX
     HAIR.data.vertices.foreach_set("co", P.ravel())
+    # its colour: the drawn hair's dark blue-grey reads blue under warm light; point every hair face at the
+    # darkest texel of the atlas (near black)
+    sm = px[::8, ::8, :3].mean(2)
+    yy, xx = np.unravel_index(np.argmin(sm + (px[::8, ::8, 3] < 0.5) * 9), sm.shape)
+    duv = ((xx * 8 + 0.5) / W, (yy * 8 + 0.5) / H)
+    for luv in HAIR.data.uv_layers.active.data:
+        luv.uv = duv
     hb = bmesh.new()
     hb.from_mesh(HAIR.data)
     hb.verts.ensure_lookup_table()

@@ -20,6 +20,10 @@ Environment:
     ASSETS_TRELLIS_MODELS  the GGUF weights                                [~/models/trellis2-gguf]
     ASSETS_TRELLIS_OMP     folder holding libomp.so (ROCm build only)      [unset: the ROCm build will not start]
     ASSETS_HIP_INDEX       helper mapping a device to its HIP index        [~/bin/hip-index]
+    ASSETS_IMG3D_TORCH_PY  Python with torch + trimesh for inner_wall.py   [~/tts-ab/.venv-hy3d/bin/python]
+
+After the port, inner_wall.py deletes the mesh's hidden inner wall on the same device (--keep-inner skips it); the
+raw mesh is not kept.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ HOME_T = Path(os.path.expanduser(os.environ.get("ASSETS_TRELLIS_HOME", str(C.UE_
 MODELS = Path(os.path.expanduser(os.environ.get("ASSETS_TRELLIS_MODELS", "~/models/trellis2-gguf")))
 OMP = os.environ.get("ASSETS_TRELLIS_OMP")
 HIP_INDEX = Path(os.path.expanduser(os.environ.get("ASSETS_HIP_INDEX", "~/bin/hip-index")))
+# a Python with torch and trimesh for the inner-wall clean-up (inner_wall.py) on the same device
+TORCH_PY = os.path.expanduser(os.environ.get("ASSETS_IMG3D_TORCH_PY", "~/tts-ab/.venv-hy3d/bin/python"))
 STAGES = {"1": "preprocess", "2": "condition", "3": "structure", "4": "shape_flow", "5": "shape_decode",
           "6": "texture", "7": "write_mesh"}
 
@@ -100,6 +106,7 @@ def main(argv=None):
     ap.add_argument("--atlas", type=int, default=4096)
     ap.add_argument("--build", default="vulkan", choices=("vulkan", "rocm"))
     ap.add_argument("--device", default=None, help="65, 05 or igpu (default: the line's station)")
+    ap.add_argument("--keep-inner", action="store_true", help="skip the inner-wall clean-up")
     a = ap.parse_args(argv)
     dev = a.device
     if dev is None:
@@ -139,7 +146,28 @@ def main(argv=None):
     t_all = time.time() - t0
     if cur and marks:
         stage_t[cur] = round(t_all - marks[-1], 1)
+    if rc == 0 and out.exists() and not a.keep_inner:
+        # the generator's surface is a hollow double wall: delete the inner wall here, once, for every model
+        raw = out.with_name(out.stem + "_raw.glb")
+        out.replace(raw)
+        env2 = dict(os.environ)
+        env2["HIP_VISIBLE_DEVICES"] = subprocess.run([str(HIP_INDEX), dev], capture_output=True, text=True,
+                                                     check=True).stdout.strip()
+        t1 = time.time()
+        r2 = subprocess.run([TORCH_PY, "-I", str(Path(__file__).with_name("inner_wall.py")), str(raw), str(out)],
+                            env=env2, capture_output=True, text=True)
+        with open(logp, "a") as f:
+            f.write(r2.stdout + r2.stderr)
+        if r2.returncode != 0 or not out.exists():
+            raw.replace(out)
+            log(f"inner-wall step failed (rc {r2.returncode}); kept the raw mesh")
+        else:
+            raw.unlink()
+            ln = [x for x in r2.stdout.splitlines() if x.startswith("INNER_WALL")]
+            stage_t["inner_wall"] = round(time.time() - t1, 1)
+            log(ln[-1] if ln else "inner wall removed")
     os.close(fd)
+    t_all = time.time() - t0
     rep = {"image": str(image), "glb": str(out), "device": dev, "build": a.build, "res": a.res, "seed": a.seed,
            "atlas": a.atlas, "extra": extra, "rc": rc, "seconds": round(t_all, 1), "stage_s": stage_t,
            "backend": devname, "log": str(logp), "time": time.ctime()}

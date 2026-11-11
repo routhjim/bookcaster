@@ -2090,6 +2090,12 @@ def _client(msg, on_result, detach=False):
                     s.close()
                     return 0
             elif "local" in m:
+                if os.environ.get("ASSETS_LINE_SEQ"):       # inside a line entry: never a private run on a card
+                    print(f"scheduler: {m['local']}; refused: this runs inside line entry "
+                          f"{os.environ['ASSETS_LINE_SEQ']} and must not start its own GPU work", file=sys.stderr,
+                          flush=True)
+                    s.close()
+                    return 3
                 print(f"scheduler: {m['local']}; running locally", flush=True)
                 return None
             elif "result" in m:

@@ -1,0 +1,21 @@
+{
+ "_doc": "Per-prop overrides for prop_one.py: view (which reference picture), yaw_deg, regions (model_img3d.py). Regions apply in order; a later one wins. Colours are the generated texture's, hsv 0..1; box is 0..1 of the bounds (x, y, z).",
+ "lamp_oil_table_lit_01": {"regions": [
+   {"name": "globe_glass", "material": "glass", "hsv": [[0, 1], [0, 0.22], [0.62, 1]], "box": [0, 1, 0, 1, 0.5, 1], "color": [0.97, 0.95, 0.9]},
+   {"name": "flame", "material": "emit", "hsv": [[0.03, 0.18], [0.35, 1], [0.8, 1]], "box": [0.25, 0.75, 0.25, 0.75, 0.45, 0.85], "color": [1.0, 0.75, 0.35], "strength": 25}]},
+ "lamp_oil_table_01": {"regions": [
+   {"name": "globe_glass", "material": "glass", "hsv": [[0, 1], [0, 0.22], [0.62, 1]], "box": [0, 1, 0, 1, 0.5, 1], "color": [0.97, 0.95, 0.9]}]},
+ "lantern_hanging_iron_01": {"regions": [
+   {"name": "horn_panels", "material": "glass", "hsv": [[0.04, 0.15], [0.35, 1], [0.35, 0.92]], "box": [0, 1, 0, 1, 0.12, 0.72], "color": [0.9, 0.55, 0.2], "rough": 0.35},
+   {"name": "flame", "material": "emit", "hsv": [[0.03, 0.18], [0.2, 1], [0.9, 1]], "box": [0.2, 0.8, 0.2, 0.8, 0.1, 0.8], "color": [1.0, 0.72, 0.3], "strength": 25}]},
+ "lantern_dark_lit_01": {"regions": [
+   {"name": "flame_lens", "material": "emit", "hsv": [[0.03, 0.18], [0.25, 1], [0.85, 1]], "color": [1.0, 0.75, 0.35], "strength": 15}]},
+ "lantern_dark_01": {"regions": [
+   {"name": "lens", "material": "glass", "hsv": [[0.03, 0.15], [0.2, 0.9], [0.45, 1]], "box": [0, 1, 0, 0.5, 0.15, 0.8], "color": [0.95, 0.8, 0.55], "rough": 0.1}]},
+ "candlestick_brass_lit_01": {"regions": [
+   {"name": "flame", "material": "emit", "hsv": [[0.03, 0.18], [0.25, 1], [0.85, 1]], "box": [0, 1, 0, 1, 0.78, 1], "color": [1.0, 0.75, 0.35], "strength": 25}]},
+ "forge_hearth_stone_lit_01": {"regions": [
+   {"name": "coals", "material": "emit", "hsv": [[0.0, 0.11], [0.45, 1], [0.45, 1]], "color": [1.0, 0.35, 0.08], "strength": 12}]},
+ "magnifier_lens_01": {"regions": [
+   {"name": "lens", "material": "glass", "hsv": [[0, 1], [0, 0.25], [0.5, 1]], "color": [0.95, 0.97, 1.0], "rough": 0.02}]}
+}

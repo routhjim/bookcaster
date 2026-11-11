@@ -449,8 +449,13 @@ def ue_render_job(spec, imp_job, adir, args, mannequin):
 
 def sched_env():
     """The settings a client and the scheduler must share (else the client runs locally)."""
+    # the line sets ASSETS_LINE_* and ASSETS_IMAGE_DEVICE for the tools it runs, and tools have their own
+    # ASSETS_TRELLIS_* settings: none of them is a chain setting, so a tool that submits a job from inside a line
+    # entry still reaches the line instead of running privately
+    skip = ("ASSETS_SCHED", "ASSETS_UE_JOB", "ASSETS_IMAGE_DEVICE")
     return {k: v for k, v in sorted(os.environ.items())
-            if (k.startswith("ASSETS_") or k == "BLENDER") and k not in ("ASSETS_SCHED", "ASSETS_UE_JOB")}
+            if (k.startswith("ASSETS_") or k == "BLENDER") and k not in skip
+            and not k.startswith(("ASSETS_LINE_", "ASSETS_TRELLIS_"))}
 
 
 def guard_main(pid, bus):

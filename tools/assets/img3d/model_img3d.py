@@ -113,5 +113,52 @@ ob.data.materials.clear()
 ob.data.materials.append(m)
 for p in ob.data.polygons:
     p.material_index = 0
+# regions (as models/from_views.py): faces whose texture colour (hsv) and place (box, 0..1 of the bounds) match get a
+# real material instead: "glass" (transmissive; the harness exports it as glass), "emit" (a flame, coals: emissive in
+# the region's colour x strength). The generator makes glass and flames solid and unlit; this gives them back.
+regs = SPEC.get("regions") or []
+if regs:
+    import colorsys
+    import numpy as np
+    W_, H_ = src.size
+    pxa = np.empty(W_ * H_ * 4, np.float32)
+    src.pixels.foreach_get(pxa)
+    pxa = pxa.reshape(H_, W_, 4)
+    me = ob.data
+    uvl = me.uv_layers.active.data
+    co = np.array([v.co[:] for v in me.vertices])
+    lo, hi = co.min(0), co.max(0)
+    for ri, r in enumerate(regs):
+        mat = bpy.data.materials.new(f"{r.get('name', 'region')}_{aid}")
+        mat.use_nodes = True
+        bs = mat.node_tree.nodes["Principled BSDF"]
+        c = r.get("color", [1.0, 0.8, 0.5])
+        bs.inputs["Base Color"].default_value = (*c, 1.0)
+        if r["material"] == "glass":
+            bs.inputs["Transmission Weight"].default_value = 1.0
+            bs.inputs["Roughness"].default_value = r.get("rough", 0.05)
+            bs.inputs["IOR"].default_value = r.get("ior", 1.5)
+        else:
+            bs.inputs["Emission Color"].default_value = (*r.get("glow", c), 1.0)
+            bs.inputs["Emission Strength"].default_value = r.get("strength", 8.0)
+        ob.data.materials.append(mat)
+        k = len(ob.data.materials) - 1
+        n = 0
+        for p in me.polygons:
+            u = np.mean([uvl[li].uv[:] for li in p.loop_indices], axis=0)
+            rgb = pxa[min(H_ - 1, int(u[1] * H_)), min(W_ - 1, int(u[0] * W_)), :3]
+            h, s_, v = colorsys.rgb_to_hsv(*rgb)
+            ok = True
+            if "hsv" in r:
+                (h0, h1), (s0, s1), (v0, v1) = r["hsv"]
+                ok = (h0 <= h <= h1 or (h0 > h1 and (h >= h0 or h <= h1))) and s0 <= s_ <= s1 and v0 <= v <= v1
+            if ok and "box" in r:
+                cc = (np.array(p.center[:]) - lo) / np.maximum(hi - lo, 1e-6)
+                b = r["box"]
+                ok = b[0] <= cc[0] <= b[1] and b[2] <= cc[1] <= b[3] and b[4] <= cc[2] <= b[5]
+            if ok:
+                p.material_index = k
+                n += 1
+        print(f"[img3d model] region {r.get('name')}: {n} faces -> {r['material']}")
 ob.name = f"img3d_{aid}"
 print(f"[img3d model] done in {time.time() - t0:.1f}s")
