@@ -501,7 +501,7 @@ class Sched:
         if st.kind == "ue":
             return f"card{self.ue_bus}"
         if st.kind == "paint":
-            return "igpu"
+            return C.IMAGE_STATION
         if st.kind == "cmd":
             return st.job.entry["station"]
         return None
@@ -832,12 +832,9 @@ class Sched:
             self.inhibit = None
             print("[line] inhibitor released", flush=True)
 
-    def run_cmd(self, st, _):
-        """A generic line entry: run its command at its station. The command takes the station's lock itself
-        (existing tools do), so the line lets go of that lock first and counts the command's session as its own."""
-        job, e = st.job, st.job.entry
-        b = e["station"]
-        st.device, st.device_class = b, "cmd"
+    def hand_over(self, b, st):
+        """Give the station's card to a tool that takes its lock itself: stop the warm Blender spares and let go of
+        the line's own hold on it (the tool's session counts as ours). Returns the card (None for the iGPU)."""
         card = self.cards.get(b[4:]) if b.startswith("card") else None
         if card is not None:
             with self.lock:
@@ -851,10 +848,19 @@ class Sched:
                 if card.fd is not None and not card.blender:
                     os.close(card.fd)
                     card.fd, card.held_since = None, None
+        return card
+
+    def run_cmd(self, st, _):
+        """A generic line entry: run its command at its station. The command takes the station's lock itself
+        (existing tools do), so the line lets go of that lock first and counts the command's session as its own."""
+        job, e = st.job, st.job.entry
+        b = e["station"]
+        st.device, st.device_class = b, "cmd"
+        card = self.hand_over(b, st)
         log = Path(e.get("log") or (job.adir / "cmd.log"))
         log.parent.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, **{k: str(v) for k, v in (e.get("env") or {}).items()},
-                   ASSETS_LINE_STATION=b, ASSETS_LINE_SEQ=str(job.seq))
+                   ASSETS_LINE_STATION=b, ASSETS_LINE_SEQ=str(job.seq), ASSETS_IMAGE_DEVICE=station_device(b))
         try:
             job.log(f"cmd at {b} ({e.get('kind')}): {' '.join(e['cmd'])[:200]}")
             with open(log, "a") as f:
@@ -1151,17 +1157,28 @@ class Sched:
     def run_paint(self, st, _):
         job = st.job
         job.log("paint: guide views -> image model -> projection")
-        st.device, st.device_class = "paint.py (own locks)", "paint"
-        with open(job.adir / "logs" / "paint_stage.log", "w") as f:
-            p = subprocess.Popen([sys.executable, str(HERE / "paint.py"), str(job.adir)], stdout=f,
-                                 stderr=subprocess.STDOUT, start_new_session=True)
-            while p.poll() is None:
-                if job.cancelled:
-                    p.terminate()
-                    p.wait()
-                    st.state = "cancel"
-                    return
-                time.sleep(0.5)
+        b = C.IMAGE_STATION
+        st.device, st.device_class = f"paint.py at {b}", "paint"
+        card = self.hand_over(b, st)
+        env = dict(os.environ, ASSETS_LINE_STATION=b, ASSETS_IMAGE_DEVICE=station_device(b))
+        try:
+            with open(job.adir / "logs" / "paint_stage.log", "w") as f:
+                p = subprocess.Popen([sys.executable, str(HERE / "paint.py"), str(job.adir)], stdout=f,
+                                     stderr=subprocess.STDOUT, start_new_session=True, env=env)
+                with self.lock:
+                    self.child_sids.add(p.pid)
+                while p.poll() is None:
+                    if job.cancelled:
+                        p.terminate()
+                        p.wait()
+                        st.state = "cancel"
+                        return
+                    time.sleep(0.5)
+        finally:
+            with self.lock:
+                self.child_sids.discard(p.pid if "p" in locals() else None)
+                if card is not None:
+                    card.cmd_busy = None
         pj = job.adir / "paint" / "paint.json"
         if p.returncode != 0 or not pj.exists():
             st.info["error"] = f"paint failed; see {job.adir / 'logs' / 'paint_stage.log'}"
@@ -1805,8 +1822,14 @@ def serve():
     return 0
 
 
+def station_device(b):
+    """The device a tool at station b uses: "igpu" or the card's bus ("05")."""
+    return b[4:] if b.startswith("card") else b
+
+
 STATION_ALIASES = {"igpu": "igpu", "video": "video", "blender": f"card{C.BLENDER_CARD}",
                    C.BLENDER_CARD: f"card{C.BLENDER_CARD}", f"card{C.BLENDER_CARD}": f"card{C.BLENDER_CARD}"}
+STATION_ALIASES["image"] = C.IMAGE_STATION         # the image model's station (config ASSETS_IMAGE_STATION)
 
 
 def entry_from_msg(S, msg, cmd, conn):
@@ -1825,7 +1848,7 @@ def entry_from_msg(S, msg, cmd, conn):
     if cmd == "cmd":
         b = STATION_ALIASES.get(str(msg.get("station")))
         if b is None:
-            no(f"station must be one of igpu, blender ({C.BLENDER_CARD}) or video; engine work goes through "
+            no(f"station must be one of igpu, blender ({C.BLENDER_CARD}), image ({C.IMAGE_STATION}) or video; engine work goes through "
                f"--ue-job (got {msg.get('station')})")
             return None
         if not msg.get("argv"):

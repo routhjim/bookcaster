@@ -49,7 +49,10 @@ QWEN_PY_IGPU = Path(os.path.expanduser(os.environ.get("ASSETS_QWEN_PY_IGPU", "~/
 QWEN_IMAGE = Path(os.environ.get("ASSETS_QWEN_IMAGE", HERE.parent / "qwen_image.py"))
 EDIT_PY = Path(os.path.expanduser(os.environ.get("ASSETS_EDIT_PY", "~/tts-ab/.venv-hyworld/bin/python")))
 HIP_INDEX = Path(os.path.expanduser(os.environ.get("ASSETS_HIP_INDEX", "~/bin/hip-index")))
-PAINT_CARDS = [c.strip() for c in os.environ.get("ASSETS_PAINT_DEVICES", "05,65,igpu").split(",") if c.strip()]
+# the device list: ASSETS_PAINT_DEVICES; when the line runs paint.py it names the station's device
+# (ASSETS_IMAGE_DEVICE: the image station, card 05 by default, see config ASSETS_IMAGE_STATION) and only that is used
+PAINT_CARDS = [c.strip() for c in (os.environ.get("ASSETS_PAINT_DEVICES") or os.environ.get("ASSETS_IMAGE_DEVICE")
+                                   or "05,65,igpu").split(",") if c.strip()]
 PAINT_WAIT_S = float(os.environ.get("ASSETS_PAINT_WAIT_S", "1e9"))   # wait for a device (default: as long as it takes)
 SCRATCH = Path(os.path.expanduser(os.environ.get("ASSETS_PAINT_SCRATCH", str(C.UE_HOME / "lab" / "paint"))))
 
@@ -119,9 +122,15 @@ def sched_active():
     return False
 
 
-def card_hold():
-    """No new card job: the machine's hold file exists (the iGPU stays usable), or the scheduler owns the cards."""
-    return HOLD.exists() or sched_active()
+def card_hold(dev=None):
+    """No new card job: the machine's hold file exists (the iGPU stays usable), or the scheduler owns the cards,
+    unless the line itself started this run at that card's station (ASSETS_LINE_STATION=card<bus>: the line let go
+    of the card for it)."""
+    if HOLD.exists():
+        return True
+    if dev and os.environ.get("ASSETS_LINE_STATION") == f"card{dev}":
+        return False
+    return sched_active()
 
 
 def try_lock(dev):
@@ -140,7 +149,7 @@ def take_devices(order, want, wait_s, poll=10):
     while True:
         got = []
         for d in order:
-            if d != "igpu" and card_hold():
+            if d != "igpu" and card_hold(d):
                 continue
             fd = try_lock(d)
             if fd is not None:
@@ -201,7 +210,7 @@ def gpu_for_blender():
     t0 = time.time()
     said = False
     while True:
-        for b in ([] if card_hold() else C.BLENDER_CARDS):
+        for b in [b for b in C.BLENDER_CARDS if not card_hold(b)]:
             slot = try_lock(f"{b}.bake")
             if slot is None:
                 continue
@@ -233,10 +242,14 @@ def blender(job, logf, cards=None):
     rp.unlink(missing_ok=True)
     t = time.time()
     try:
+        env = None
+        if bus == C.IGPU_BUS:                             # one CU left for the desktop, as for the image model
+            idx = subprocess.run([str(HIP_INDEX), "igpu"], capture_output=True, text=True, check=True).stdout.strip()
+            env = dict(os.environ, HSA_CU_MASK=f"{idx}:0-38")
         with open(logf, "w") as f:
             subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", "4", "--python",
                             str(HERE / "bl_paint.py"), "--", str(jp)], stdout=f, stderr=subprocess.STDOUT,
-                           timeout=3600, pass_fds=tuple(fds))
+                           timeout=3600, pass_fds=tuple(fds), env=env)
     finally:
         for x in fds:
             os.close(x)

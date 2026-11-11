@@ -55,8 +55,9 @@ On an XTX a view takes ~9-19 s. Results: the anvil's striking face and edges hol
 scratched, worn); a ghost edge 1-2 cm off a real edge and a hole painted as a stud show where the painter slid
 off the shape. The creature reads as one coherent scaled hide from wide to ~2 m frames, but the painter leaves
 plain-coloured parts (limbs, tail) plain and redraws the head's horns in other places, so detail on the head
-averages into lumps; macro frames do not hold. While the asset scheduler runs, paint.py stays off the cards
-(the scheduler would read its card use as an outside release) and uses the iGPU.
+averages into lumps; macro frames do not hold. Run by the line, paint.py uses the image station's device only
+(card 05 by default; the line hands it over, see "The line"); run outside the line it stays off the cards while the
+scheduler lives. Its Blender steps on the iGPU (guides, projection) leave one CU for the desktop as the drawer does.
 
 Previews and sheets are not denoised (Blender ran OIDN on the CPU here: 0.4-4.4 s per tile, a 12 spp preview took
 12-15 s and 30 s of CPU); they path-trace more samples on the card instead (preview 32 spp: 3.8 s wall, sheet
@@ -82,8 +83,14 @@ python tools/assets/run_asset.py --status          # the one-screen view
 python tools/assets/run_asset.py --start           # start the line: it resumes the work list on disk
 ```
 
-**Stations, one job each.** `igpu` (reference drawing, paint, cloth drape), `card05` (Blender bakes, sheets and
-previews; image-to-3D), `card65` (the one resident UE editor). A job waits for its station; nothing runs on CPU
+**Stations, one job each.** `card05` (Blender bakes, sheets and previews; image-to-3D; and the image model:
+reference drawing and paint), `igpu` (cloth drape; the desktop), `card65` (the one resident UE editor). The image
+model's station is `ASSETS_IMAGE_STATION` (default the Blender card; `igpu` puts it back): measured 11-11 with the
+same jobs and settings, card 05 drew a 1536 px reference sheet in 14.7 s v 66.2 s on the iGPU (close-up 5.7 v 31.7 s)
+and painted a view in 8-11.5 s v 49-52 s, with the model's warm load ~30 s on both (32 v 53 s for the drawer). The
+paint stage runs there, and `--line-cmd image KIND -- CMD` puts a drawing or paint command there; the line hands the
+card over (stops its warm Blender spares, lets go of its hold) and tells the tool its device in
+`ASSETS_IMAGE_DEVICE` (`ref_draw.py` and `paint.py` use it). A job waits for its station; nothing runs on CPU
 cores as a fallback. `video` is a booked window: when a video entry waits, the card stations finish what runs,
 both cards are released, every waiting clip runs, then the cards are reclaimed (the editor reloads). Generic
 `--line-cmd` entries run existing tools unchanged: the tool takes the station's lock itself as it does today; the
@@ -106,10 +113,10 @@ so re-running it skips what was fed.
 **Batches.** Each station runs up to `ASSETS_LINE_BATCH` (8) jobs of one kind before another waiting kind gets its
 turn (oldest first), and keeps going with the same kind while no other kind waits: the engine takes waiting
 imports/stills (`ue_asset`) and editor scripts (`ue_script`) in turns of 8; Blender stays warm (one warm spare
-process); on the iGPU a batch of drawings runs before the paint passes and the cloth solver. Load times that
+process); at the image station a batch of drawings runs before the paint passes. Load times that
 decide whether batching pays (measured): UE editor start 11.8 s (then ~4 s per warm import + stills); Blender
-start ~1-2 s (a bake of a small prop is ~4.5 s in all); the image model on the iGPU 73 s (reference drawer) to
-157 s (paint), i.e. more than a drawing; image-to-3D 21 s load v 49 s per shape; cloth solver ~5 s. The image
+start ~1-2 s (a bake of a small prop is ~4.5 s in all); the image model ~30 s warm on card 05 (73-157 s
+on the iGPU from a cold page cache), i.e. two to three drawings; image-to-3D 21 s load v 49 s per shape; cloth solver ~5 s. The image
 model's batch only saves its load when the tool takes several items per run (refs/ref_draw.py's batch mode does).
 
 **Power and hardware guard.** The battery (`/sys/class/power_supply/BAT0`) is watched and logged with every job

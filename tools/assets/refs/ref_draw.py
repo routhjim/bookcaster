@@ -18,15 +18,17 @@ Recipes (see README.md beside this file for the comparison):
   separate  four independent prompts sharing one description and seed: true views, but four different designs.
   extras    only the extra views again, beside a set already drawn (its views and source_*.png as references).
 
-Device and lock: the drawer runs on the iGPU (HIP index from the hip-index helper, one CU left for the desktop), from
-the iGPU's Python environment, and holds the iGPU lock file (flock -n, polled, never a blocking wait) from its start
+Device and lock: the drawer runs on REFS_DEVICE (the line's image station passes ASSETS_IMAGE_DEVICE: card 05 by
+default; on the iGPU one CU is left for the desktop), from that device's Python environment, and holds its lock file (flock -n, polled, never a blocking wait) from its start
 to its exit; it is started on the first picture and stopped when the run ends.
 
 Environment (defaults in brackets):
   REFS_DIR        where sets are written                 [~/ue/library/_refs]
-  REFS_PY         the Python that runs the drawer         [~/tts-ab/.venv-charlora-igpu/bin/python]
-  REFS_HIP_INDEX  the helper that maps "igpu" to an index [~/bin/hip-index]
-  REFS_LOCK       the iGPU lock file                      [/tmp/gpu-igpu.lock]
+  REFS_DEVICE     igpu, or a card's PCI bus (05, 65)      [$ASSETS_IMAGE_DEVICE, else igpu]
+  REFS_PY         the Python that runs the drawer         [~/tts-ab/.venv-charlora-igpu/bin/python on the iGPU,
+                                                           ~/tts-ab/.venv-qwenimage/bin/python on a card]
+  REFS_HIP_INDEX  the helper that maps a device to an index [~/bin/hip-index]
+  REFS_LOCK       the device's lock file                  [/tmp/gpu-<device>.lock]
   REFS_SIZE       picture side in pixels                  [1024]
 """
 
@@ -45,9 +47,12 @@ HOME = Path.home()
 TOOLS = Path(__file__).resolve().parents[2]
 DRAWER = TOOLS / "qwen_image.py"
 OUT = Path(os.environ.get("REFS_DIR", HOME / "ue" / "library" / "_refs")).expanduser()
-PY = Path(os.environ.get("REFS_PY", HOME / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python")).expanduser()
+# the device: "igpu", or an XTX card's PCI bus ("05", "65"); the line sets ASSETS_IMAGE_DEVICE for its image station
+DEVICE = os.environ.get("REFS_DEVICE") or os.environ.get("ASSETS_IMAGE_DEVICE") or "igpu"
+PY = Path(os.environ.get("REFS_PY") or (HOME / "tts-ab" / (".venv-charlora-igpu" if DEVICE == "igpu" else ".venv-qwenimage")
+                                         / "bin" / "python")).expanduser()
 HIP_INDEX = Path(os.environ.get("REFS_HIP_INDEX", HOME / "bin" / "hip-index")).expanduser()
-LOCK = Path(os.environ.get("REFS_LOCK", "/tmp/gpu-igpu.lock"))
+LOCK = Path(os.environ.get("REFS_LOCK", f"/tmp/gpu-{DEVICE}.lock"))
 SIZE = int(os.environ.get("REFS_SIZE", "1024"))
 VIEWS = ("front", "side", "top", "three_quarter")
 
@@ -106,8 +111,10 @@ class Drawer:
         if self.proc:
             return
         self._take_lock()
-        hip = subprocess.run([str(HIP_INDEX), "igpu"], capture_output=True, text=True, check=True).stdout.strip()
-        env = dict(os.environ, HIP_VISIBLE_DEVICES=hip, HSA_CU_MASK=f"{hip}:0-38")   # one CU left for the desktop
+        hip = subprocess.run([str(HIP_INDEX), DEVICE], capture_output=True, text=True, check=True).stdout.strip()
+        env = dict(os.environ, HIP_VISIBLE_DEVICES=hip)
+        if DEVICE == "igpu":
+            env["HSA_CU_MASK"] = f"{hip}:0-38"                                       # one CU left for the desktop
         env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         t = time.time()
         self.proc = subprocess.Popen([str(PY), "-I", str(DRAWER), "--serve"], stdin=subprocess.PIPE,
@@ -116,7 +123,7 @@ class Drawer:
         if not ln:
             raise RuntimeError(f"the drawer died while loading (rc {self.proc.wait()})")
         self.load_s = round(time.time() - t, 1)
-        log(f"drawer loaded on the iGPU (HIP {hip}) in {self.load_s} s")
+        log(f"drawer loaded on {DEVICE} (HIP {hip}) in {self.load_s} s")
 
     def draw(self, job: dict) -> dict:
         self.start()
@@ -429,7 +436,7 @@ def main() -> int:
         d.close()
     if d.times:
         log(f"{len(d.times)} pictures, {sum(d.times) / len(d.times):.1f} s each on average "
-            f"(load {d.load_s} s, peak {d.peak_gb} GiB on the iGPU)")
+            f"(load {d.load_s} s, peak {d.peak_gb} GiB on {DEVICE})")
     return 1 if failed else 0
 
 

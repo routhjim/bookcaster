@@ -276,6 +276,17 @@ class DispatchTest(unittest.TestCase):
         S.dispatch()
         self.assertEqual(S.started, [("video0", "video", "video")])   # the window runs clips, not card work
 
+    def test_image_station(self):
+        S = self.sched()
+        self.assertEqual(D.STATION_ALIASES["image"], D.C.IMAGE_STATION)
+        self.assertEqual(D.station_device("card05"), "05")
+        self.assertEqual(D.station_device("igpu"), "igpu")
+        job, why = S.add_entry({"type": "cmd", "id": "draw0", "station": D.C.IMAGE_STATION, "kind": "refs",
+                                "cmd": ["true"]})
+        self.assertIsNone(why)
+        paint = D.Stage(job, "paint", "paint", [])
+        self.assertEqual(S.station(paint), D.C.IMAGE_STATION)
+
 
 if __name__ == "__main__":
     unittest.main()

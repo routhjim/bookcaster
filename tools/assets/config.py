@@ -37,6 +37,8 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_SCHED_IDLE_S scheduler exits after   default 60 s with no job and no editor
     ASSETS_UE_CARD      the UE editor's home    default "65"
     ASSETS_BLENDER_CARD Blender's home card     default "05" (bakes, sheets; previews too when the iGPU is taken)
+    ASSETS_IMAGE_STATION the image model's station (reference drawing, paint): default the Blender card ("05");
+                         "igpu" puts it back on the iGPU (cloth and the desktop stay there either way)
     ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 4 (the CPU-by-nature parts)
     ASSETS_BLENDER_LINGER_S  keep the Blender card after the last job   default 120
     ASSETS_OUTSIDE_RELEASE_S  an outside holder of the UE card for this long = a release (video run); default 20
@@ -92,6 +94,10 @@ SCHED_DIR = _p("ASSETS_SCHED_DIR", UE_HOME / "sched")
 SCHED_IDLE_S = float(os.environ.get("ASSETS_SCHED_IDLE_S", "60"))
 UE_CARD = os.environ.get("ASSETS_UE_CARD", "65")
 BLENDER_CARD = os.environ.get("ASSETS_BLENDER_CARD", "05")
+# the image model's station (reference drawing, paint): measured 11-11 on one drawing and one 3-view paint pass,
+# card 05 drew 4.5-6x faster than the iGPU (sheet 14.7 v 66.2 s, paint view ~9 v ~51 s; load ~30 s on both warm)
+_img = os.environ.get("ASSETS_IMAGE_STATION", BLENDER_CARD).strip()
+IMAGE_STATION = "igpu" if _img == "igpu" else "card" + (_img[4:] if _img.startswith("card") else _img)
 BLENDER_PER_CARD = 1         # one job per station
 BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "4"))
 BLENDER_LINGER_S = float(os.environ.get("ASSETS_BLENDER_LINGER_S", "120"))
