@@ -360,6 +360,9 @@ def build(actor, body, pose, params, path):
     f = unreal.AnimSequenceFactory()
     f.set_editor_property("target_skeleton", body.get_skinned_asset().get_editor_property("skeleton"))
     anim = AT.create_asset(name, folder, unreal.AnimSequence, f)
+    # the keys are this body's own bone translations: with no retarget source the skeleton's translation
+    # retargeting scaled them a second time on a body taller than the base (posed figure +15 %, long neck)
+    anim.set_editor_property("retarget_source_asset", body.get_skinned_asset())
     ctrl = anim.get_editor_property("controller")
     ctrl.open_bracket("pose", False)
     ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
