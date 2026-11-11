@@ -98,7 +98,16 @@ def load_body():
         for m in list(head.modifiers):
             head.modifiers.remove(m)
         head.name = "head_ref"
-    # bake object transforms (the FBX comes in centimetres under a 0.01-scaled armature) into the data
+    # The FBX from UE comes in centimetres: an empty (the file's top node, scale 0.01) over the armature object
+    # (named after the skeleton's root joint). Drop the empty, keeping world transforms, then bake every object
+    # transform into the data so the armature, the body and the head all live in metres with identity matrices.
+    for o in list(bpy.data.objects):
+        if o.type == "EMPTY":
+            for ch in list(o.children):
+                mw = ch.matrix_world.copy()
+                ch.parent = None
+                ch.matrix_world = mw
+            bpy.data.objects.remove(o)
     bpy.ops.object.select_all(action="DESELECT")
     for o in (arm, body, head):
         if o is not None:
@@ -265,7 +274,7 @@ def straighten(ob, a, b, mix, extra=0.0, keep_fn=None):
     ax = (b - a)
     L = ax.length
     ax.normalize()
-    stations = defaultdict(float)
+    stations = defaultdict(list)
     data = []
     for v in ob.data.vertices:
         if keep_fn and not keep_fn(v):
@@ -277,10 +286,13 @@ def straighten(ob, a, b, mix, extra=0.0, keep_fn=None):
         c = a + ax * t
         r = (p - c).length
         k = int(t / 0.02)
-        stations[k] = max(stations[k], r)
+        stations[k].append(r)
         data.append((v, t, c, r, k))
+    # a round tube at each station: the mean radius there (averaged with the neighbours) plus ease
+    mean = {k: sum(rs) / len(rs) for k, rs in stations.items()}
     for v, t, c, r, k in data:
-        R = max(stations[k], stations.get(k - 1, 0) * 0.98, stations.get(k + 1, 0) * 0.98) + extra
+        nb = [mean[j] for j in (k - 1, k, k + 1) if j in mean]
+        R = sum(nb) / len(nb) + extra
         if r < 1e-6:
             continue
         nr = r + (R - r) * mix
@@ -288,11 +300,38 @@ def straighten(ob, a, b, mix, extra=0.0, keep_fn=None):
     ob.data.update()
 
 
+def fix_strays(ob, bvh, limit, rounds=8):
+    """Vertices pushed or smoothed far from the body (spikes) go to the mean of their neighbours, repeatedly."""
+    bm = bm_of(ob)
+    fixed = 0
+    for _ in range(rounds):
+        bad = []
+        for v in bm.verts:
+            h = bvh.find_nearest(v.co, 2.0)
+            if h[0] is None or h[3] > limit:
+                bad.append(v)
+        if not bad:
+            break
+        for v in bad:
+            nb = [e.other_vert(v).co for e in v.link_edges]
+            if nb:
+                v.co = sum(nb, Vector()) / len(nb)
+        fixed += len(bad)
+    still = [v for v in bm.verts if not v.link_faces or (lambda h: h[0] is None or h[3] > limit)(
+        bvh.find_nearest(v.co, 2.0))]
+    if still:
+        bmesh.ops.delete(bm, geom=still, context="VERTS")      # loose or unreachable: remove
+    bm.to_mesh(ob.data)
+    bm.free()
+    return [fixed, len(still)]
+
+
 def solidify(ob, t):
     m = ob.modifiers.new("solid", "SOLIDIFY")
     m.thickness = t
     m.offset = -1.0
-    m.use_even_offset = True
+    m.use_even_offset = False          # even offset spikes on sharp or degenerate corners
+    m.use_quality_normals = True
     m.use_rim = True
     apply_mods(ob)
 
@@ -518,21 +557,16 @@ def build(arm, body, head):
     fit_layer(trousers, under, tr.get("gap", 0.006), rounds=2, smooth_iters=2)
     parts["trousers"] = trousers
 
-    # ---- shoes
+    # ---- shoes: lofted along each foot from heel to toe, convex-hull cross-sections + gap (no toes)
     so = S("shoes", {})
-    keep = [c == "foot" or (c == "calf" and co[i].z < F.ankle_z + 0.04) for i, c in enumerate(cls)]
-    shoes = body_subset("shoes", body, keep)
-    smooth(shoes, so.get("smooth", 25), 0.6)
-    fit_layer(shoes, [body], so.get("gap", 0.006), rounds=2, smooth_iters=6)
-    for v in shoes.data.vertices:
-        if v.co.z < so.get("sole_z", 0.012):
-            v.co.z = so.get("sole_bottom", -0.004)
-    toe = (F.j["ball_l"] + F.j["ball_r"]) / 2
-    for v in shoes.data.vertices:
-        f = (v.co - toe).dot(F.fwd)
-        if f > 0:
-            v.co += F.fwd * min(f, 0.05) * so.get("toe_stretch", 0.35)
-    parts["shoes"] = shoes
+    objs = []
+    for s_ in ("l", "r"):
+        sgn = 1 if F.local(F.j[f"foot_{s_}"])[0] > 0 else -1
+        pts = [co[i] for i, c in enumerate(cls)
+               if (c == "foot" or (c == "calf" and co[i].z < F.ankle_z + so.get("top_above_ankle", 0.03)))
+               and loc[i][0] * sgn > 0]
+        objs.append(shoe(F, pts, s_, so))
+    parts["shoes"] = join(objs, "shoes")
 
     # ---- waistcoat
     wc = S("waistcoat", {})
@@ -570,8 +604,12 @@ def build(arm, body, head):
         k = c in ("torso", "upperarm", "lowerarm") and z > F.waist_z - 0.02
         if c == "lowerarm" and wrist_t(i, f"hand_{side(i)}", ct.get("sleeve_short_of_wrist", -0.025)) > 0:
             k = False
-        if c == "torso" and z > F.neck_z - 0.01:
+        if c == "neck" and z < F.neck_z + ct.get("back_neck_rise", 0.02) and fw < 0:
+            k = True                      # the back of the neck base, so the coat meets its collar
+        if c == "torso" and z > F.neck_z + ct.get("back_neck_rise", 0.02):
             k = False
+        if k and fw > 0 and c in ("torso", "neck") and z > F.neck_z - 0.06:
+            k = False                     # front of the neck: the shirt collar and cravat show here
         if k and fw > 0 and c == "torso":
             t = (z - F.waist_z) / max(1e-3, F.neck_z - F.waist_z)
             half = ct.get("open_waist", 0.085) + ct.get("open_widen", 0.03) * t
@@ -579,7 +617,7 @@ def build(arm, body, head):
                 k = False
         keep.append(k)
     coat = body_subset("coat", body, keep)
-    smooth(coat, 10)
+    smooth(coat, ct.get("smooth", 25))
     for s_ in ("l", "r"):
         sgn = 1 if F.local(F.j[f"upperarm_{s_}"])[0] > 0 else -1
 
@@ -593,14 +631,18 @@ def build(arm, body, head):
     parts["lapels"] = lapels(F, coat, ct)
     parts["coat_collar"] = loft_collar(F, under + [collar], F.neck_z - 0.03, F.neck_z + ct.get("collar_rise", 0.035),
                                        ct.get("collar_gap", 0.012), "coat_collar", back_only=True)
-    parts["skirt"] = skirt(F, body, under + [trousers, waistcoat], ct)
+    legs = [co[i] for i, c in enumerate(cls) if c in ("torso", "thigh", "calf")]
+    parts["skirt"] = skirt(F, legs, under + [trousers, waistcoat], ct)
     parts["flaps"] = flaps(F, parts["skirt"], ct)
     parts["coat_buttons"] = coat_buttons(F, coat, parts["skirt"], ct)
 
-    # thickness and materials
+    # strays, then thickness and materials
     for key, th in S("thickness", {}).items():
         if key in parts:
             solidify(parts[key], th)
+    cb = collider(under)
+    loose = {"skirt": 0.3, "flaps": 0.3, "coat_buttons": 0.3, "coat": 0.16, "lapels": 0.16}
+    REPORT["strays_fixed"] = {k: fix_strays(o, cb, loose.get(k, 0.12)) for k, o in parts.items()}
     for key, ob in parts.items():
         set_mat(ob, M[S("material_of", {}).get(key, "wool")])
     REPORT["parts"] = {k: len(o.data.vertices) for k, o in parts.items()}
@@ -841,12 +883,11 @@ def lapels(F, coat, ct):
     return ob
 
 
-def skirt(F, body, under, ct, nang=96, nring=16):
+def skirt(F, pts, under, ct, nang=96, nring=16):
     """Coat skirt from the waist seam to below the knee: convex-hull cross-sections of hips and legs (so it bridges
     between the legs like cloth), plus a gap and a flare that grows downward; open at the front."""
     z_top = F.waist_z - 0.0
     z_hem = F.knee_z + ct.get("hem_vs_knee", -0.05)
-    pts = [body.matrix_world @ v.co for v in body.data.vertices]
     cx, cy = F.center
     open_top = ct.get("skirt_open_top_deg", 34)
     open_hem = ct.get("skirt_open_hem_deg", 44)
@@ -888,8 +929,61 @@ def skirt(F, body, under, ct, nang=96, nring=16):
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
     bm.to_mesh(ob.data)
     bm.free()
+    smooth_skirt(ob, z_top, ct.get("skirt_smooth", 6))
     push_out(ob, bvh, ct.get("skirt_gap", 0.02) * 0.6)
     ob["z_top"], ob["z_hem"] = z_top, z_hem
+    return ob
+
+
+def smooth_skirt(ob, z_top, iters):
+    """Even out the hull facets around each ring (horizontal smoothing only; heights stay)."""
+    bm = bm_of(ob)
+    vs = [v for v in bm.verts if v.co.z < z_top - 1e-4]
+    for _ in range(iters):
+        bmesh.ops.smooth_vert(bm, verts=vs, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=False)
+    bm.to_mesh(ob.data)
+    bm.free()
+
+
+def shoe(F, pts, side, so, nst=22, nang=40):
+    """One closed shoe: stations from heel to toe along the foot's forward axis; each station a ring around the
+    hull of the foot points near it (lateral x height plane), widened by a gap, flat at the sole, rounded toe."""
+    fwd = F.fwd
+    fs = [p.dot(fwd) for p in pts]
+    f0 = min(fs) - so.get("heel_back", 0.008)
+    f1 = max(fs) + so.get("toe_ext", 0.02)
+    lat = F.lat
+    rings = []
+    top = F.ankle_z + so.get("top_above_ankle", 0.03)
+    sole = so.get("sole_bottom", -0.004)
+    gap = so.get("gap", 0.007)
+    for k in range(nst + 1):
+        t = k / nst
+        f = f0 + (f1 - f0) * t
+        band = [p for p, fp in zip(pts, fs) if abs(fp - f) < 0.012]
+        if len(band) < 4:
+            band = sorted(pts, key=lambda p: abs(p.dot(fwd) - f))[:30]
+        cl = sum((p.dot(lat) for p in band)) / len(band)
+        cz = max(0.02, sum(p.z for p in band) / len(band))
+        hull = convex_hull_2d([(round(p.dot(lat) - cl, 4), round(p.z - cz, 4)) for p in band])
+        # toe: taper the last stretch to a rounded point
+        taper = 1.0 if t < 0.8 else max(0.25, 1 - (t - 0.8) / 0.2 * 0.75) ** 0.5
+        ring = []
+        for a in range(nang):
+            ang = 2 * math.pi * a / nang
+            r = (ray_hull(hull, ang) + gap) * taper if len(hull) >= 3 else 0.02
+            x, z = cl + r * math.cos(ang), cz + r * math.sin(ang)
+            z = min(max(z, sole), top)
+            base = Vector((F.center[0], F.center[1], 0)) + fwd * f + lat * x
+            ring.append(Vector((base.x, base.y, z)))
+        rings.append(ring)
+    ob = grid_mesh(f"shoe_{side}", rings, [True] * nang, closed=True)
+    bm = bm_of(ob)
+    bmesh.ops.holes_fill(bm, edges=[e for e in bm.edges if e.is_boundary], sides=0)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(ob.data)
+    bm.free()
+    smooth(ob, 3, 0.5)
     return ob
 
 
@@ -1001,10 +1095,13 @@ def body_trim(body, F, cls):
 
 
 # ------------------------------------------------------------------ poke-through
-def poke_counts(layers, posed=False):
-    """For each (inner, outer) pair: inner vertices that end up outside the outer surface where the outer covers
-    them (nearest outer point within 3 cm, on the outer side of its normal)."""
+def poke_counts(layers, core):
+    """Poke-through per (inner, outer) layer pair, independent of how garment normals face: for each inner vertex,
+    take the nearest point on the core (body + head) and its normal; a ray from there along the normal meets the
+    outer layer at some distance; the inner vertex pokes through when it lies further out than that. Inner vertices
+    whose ray meets no outer layer within 10 cm are not covered by it and are not counted. Returns [pokes, covered]."""
     dg = bpy.context.evaluated_depsgraph_get()
+    cbvh = collider(core)
     res = {}
 
     def world_verts(o):
@@ -1014,25 +1111,50 @@ def poke_counts(layers, posed=False):
         oe.to_mesh_clear()
         return vs
     for inner, outer in layers:
-        bvh = collider(outer)
-        n = 0
-        tot = 0
+        obvh = collider(outer)
+        n = tot = 0
         for o in inner:
             for p in world_verts(o):
-                hit = bvh.find_nearest(p, 0.03)
+                hit = cbvh.find_nearest(p, 0.15)
                 if hit[0] is None:
                     continue
+                loc = hit[0]
+                d_in = (p - loc).length
+                # outward = from the core surface to the inner vertex (BVH face normals of imported meshes may
+                # face either way)
+                nrm = (p - loc) / d_in if d_in > 1e-5 else hit[1]
+                h = obvh.ray_cast(loc + nrm * 0.0005, nrm, 0.10)
+                if h[0] is None:
+                    continue
                 tot += 1
-                if (p - hit[0]).dot(hit[1]) > 0.0005:
+                if d_in > h[3] + 0.0005 + 0.0005:
                     n += 1
         res[f"{'+'.join(o.name for o in inner)} > {'+'.join(o.name for o in outer)}"] = [n, tot]
+    return res
+
+
+def far_verts(parts, core, limit=0.12, loose=("skirt", "flaps", "coat_buttons")):
+    """Stray vertices: further from the body than any garment should be (a spike or a mis-hit), per part."""
+    bvh = collider(core)
+    res = {}
+    for key, o in parts.items():
+        lim = 0.3 if key in loose else limit
+        far = []
+        for v in o.data.vertices:
+            p = o.matrix_world @ v.co
+            h = bvh.find_nearest(p, 2.0)
+            d = h[3] if h[0] is not None else 9.0
+            if d > lim:
+                far.append((round(d, 3), [round(x, 3) for x in p]))
+        res[key] = [len(far), sorted(far, reverse=True)[:3]]
     return res
 
 
 def test_pose(arm, kind):
     pb = arm.pose.bones
     for b in pb:
-        b.rotation_mode = "XYZ"
+        b.rotation_mode = "QUATERNION"
+        b.rotation_quaternion = (1, 0, 0, 0)
         b.rotation_euler = (0, 0, 0)
         b.location = (0, 0, 0)
 
@@ -1283,17 +1405,19 @@ def main():
         trim.parent = arm
         trim.modifiers.new("arm", "ARMATURE").object = arm
     garments = list(parts.values())
-    layers = [([trim] + ([head] if head else []), [parts["shirt"], parts["collar"]]),
+    core = [body] + ([head] if head else [])
+    layers = [([head] if head else [], [parts["shirt"], parts["collar"]]),
               ([parts["shirt"]], [parts["waistcoat"], parts["coat"]]),
               ([parts["waistcoat"]], [parts["coat"]]),
               ([parts["trousers"]], [parts["skirt"]]),
               ([parts["shoes"]], [parts["trousers"]])]
+    REPORT["far_verts"] = far_verts(parts, core)
     with Timer("poke_rest"):
-        REPORT["poke"]["rest"] = poke_counts(layers)
+        REPORT["poke"]["rest"] = poke_counts(layers, core)
     sm = skin_mat()
-    if head:
-        head.data.materials.clear()
-        head.data.materials.append(sm)
+    for o in ([head] if head else []) + [trim]:
+        o.data.materials.clear()
+        o.data.materials.append(sm)
     body.hide_render = True
     if "preview" in steps:
         with Timer("preview_rest"):
@@ -1303,7 +1427,7 @@ def main():
         for kind in ("seated", "arm_up"):
             test_pose(arm, kind)
             with Timer(f"poke_{kind}"):
-                REPORT["poke"][kind] = poke_counts(layers)
+                REPORT["poke"][kind] = poke_counts(layers, core)
             if "preview" in steps:
                 with Timer(f"preview_{kind}"):
                     REPORT.setdefault("preview_pose", []).extend(

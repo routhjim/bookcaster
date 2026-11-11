@@ -81,7 +81,7 @@ def light_scene():
         smc = card.static_mesh_component
         smc.set_static_mesh(EAL.load_asset("/Engine/BasicShapes/Plane"))
         card.set_actor_rotation(unreal.Rotator(roll=90, pitch=0, yaw=0), False)
-        card.set_actor_scale3d(unreal.Vector(12, 1, 6))
+        card.set_actor_scale3d(unreal.Vector(12, 6, 1))
         card.set_actor_location(unreal.Vector(0, -260, 250), False, False)
         mat = EAL.load_asset("/Engine/BasicShapes/BasicShapeMaterial")
         if mat:
@@ -281,6 +281,107 @@ def cloud_build(cb):
     r["ok"] = ok
 
 
+def import_fbx(fbx, dest):
+    """Skeletal FBX -> assets under dest (cleared first); returns the SkeletalMesh path."""
+    if EAL.does_directory_exist(dest):
+        EAL.delete_directory(dest)
+    task = unreal.AssetImportTask()
+    task.filename = fbx
+    task.destination_path = dest
+    task.automated = True
+    task.replace_existing = True
+    task.save = True
+    at.import_asset_tasks([task])
+    meshes = [a.split(".")[0] for a in EAL.list_assets(dest, recursive=True, include_folder=False)
+              if isinstance(EAL.load_asset(a), unreal.SkeletalMesh)]
+    if not meshes:
+        raise RuntimeError(f"no skeletal mesh from {fbx}: {list(task.imported_object_paths)}")
+    return meshes[0]
+
+
+def import_texture(png, dest, kind):
+    task = unreal.AssetImportTask()
+    task.filename = png
+    task.destination_path = dest
+    task.automated = True
+    task.replace_existing = True
+    task.save = False
+    at.import_asset_tasks([task])
+    name = os.path.splitext(os.path.basename(png))[0]
+    tex = EAL.load_asset(f"{dest}/{name}")
+    if kind == "normal":
+        tex.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
+        tex.set_editor_property("srgb", False)
+    elif kind == "mask":
+        tex.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_MASKS)
+        tex.set_editor_property("srgb", False)
+    EAL.save_loaded_asset(tex, False)
+    return tex
+
+
+def baked_master(path="/Game/Char/Materials/M_BakedRMA"):
+    """Opaque lit master: BaseColor, Normal and RMA (R roughness, G metallic, B occlusion) texture parameters."""
+    if EAL.does_asset_exist(path):
+        return EAL.load_asset(path)
+    MEL = unreal.MaterialEditingLibrary
+    folder, name = path.rsplit("/", 1)
+    m = at.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
+
+    def tex_param(pname, y, sampler):
+        n = MEL.create_material_expression(m, unreal.MaterialExpressionTextureSampleParameter2D, -500, y)
+        n.set_editor_property("parameter_name", pname)
+        n.set_editor_property("sampler_type", sampler)
+        return n
+    bc = tex_param("BaseColor", -200, unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
+    nm = tex_param("Normal", 100, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
+    rma = tex_param("RMA", 400, unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+    MEL.connect_material_property(bc, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
+    MEL.connect_material_property(nm, "RGB", unreal.MaterialProperty.MP_NORMAL)
+    MEL.connect_material_property(rma, "R", unreal.MaterialProperty.MP_ROUGHNESS)
+    MEL.connect_material_property(rma, "G", unreal.MaterialProperty.MP_METALLIC)
+    MEL.connect_material_property(rma, "B", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    m.set_editor_property("used_with_skeletal_mesh", True)
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, False)
+    return m
+
+
+def import_outfit(spec):
+    """Outfit + trimmed body FBX from the Blender step, baked textures, a material instance on the outfit."""
+    t0 = time.time()
+    r = {}
+    dest = spec.get("dest", "/Game/Char/Outfit")
+    r["outfit"] = import_fbx(spec["outfit_fbx"], dest + "/Outfit")
+    if spec.get("trim_fbx"):
+        r["trim"] = import_fbx(spec["trim_fbx"], dest + "/BodyTrim")
+    tdir = spec["textures"]
+    texs = {k: import_texture(os.path.join(tdir, f"T_outfit_{k}.png"), dest + "/Textures", kind)
+            for k, kind in (("BaseColor", "color"), ("Normal", "normal"), ("RMA", "mask"))}
+    mpath = dest + "/MI_Outfit"
+    if EAL.does_asset_exist(mpath):
+        EAL.delete_asset(mpath)
+    mi = at.create_asset("MI_Outfit", dest, unreal.MaterialInstanceConstant,
+                         unreal.MaterialInstanceConstantFactoryNew())
+    MEL = unreal.MaterialEditingLibrary
+    MEL.set_material_instance_parent(mi, baked_master())
+    for k, t in texs.items():
+        MEL.set_material_instance_texture_parameter_value(mi, k, t)
+    EAL.save_loaded_asset(mi, False)
+    sk = EAL.load_asset(r["outfit"])
+    mats = sk.get_editor_property("materials")
+    for sm in mats:
+        sm.set_editor_property("material_interface", mi)
+    sk.set_editor_property("materials", mats)
+    EAL.save_loaded_asset(sk, False)
+    r["time_s"] = round(time.time() - t0, 1)
+    S["r"]["import_outfit"] = r
+    log(f"import_outfit {json.dumps(r)}")
+    for spec_c in JOB.get("characters", {}).values():
+        spec_c["garments"] = [r["outfit"] if g == "@outfit" else g for g in spec_c.get("garments", [])]
+        if spec_c.get("body_swap") == "@trim":
+            spec_c["body_swap"] = r.get("trim")
+
+
 def curve_anim(skel, curves, name):
     folder = "/Game/Char/Anim"
     path = f"{folder}/{name}"
@@ -450,6 +551,8 @@ def _tick():
                     if not bp:
                         raise RuntimeError("no assembled blueprint to render")
                     spec["path"] = bp
+        if JOB.get("import_outfit"):
+            import_outfit(JOB["import_outfit"])
         if JOB.get("export_geometry"):
             try:
                 export_geometry(JOB["export_geometry"])

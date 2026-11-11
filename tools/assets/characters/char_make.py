@@ -63,7 +63,10 @@ def set_params(inst, wanted, r):
     ({"<slot or item substring>": {"<param name>": value}}), matched case-insensitively."""
     dump = {}
     for ip in inst.get_instance_parameter_item_paths():
-        key = str(ip.to_dict() if hasattr(ip, "to_dict") else ip)
+        try:
+            key = ip.export_text()
+        except Exception:
+            key = str(ip)
         params = inst.get_instance_parameters(ip)
         dump[key] = {}
         for p in params:
@@ -168,7 +171,17 @@ def make(spec, folder=None):
             r["landmarks"] = [[round(p.x, 2), round(p.y, 2), round(p.z, 2)] for p in mhs.get_face_landmarks(c)]
         mhs.assemble_for_preview(c)
         try:
-            set_params(inst, spec.get("params"), r)
+            # parameters live on the assembled preview instance (the internal collection's default instance
+            # reports none before a build)
+            insts = [inst]
+            try:
+                insts.insert(0, mhs.get_preview_collection(c).get_editor_property("default_instance"))
+            except Exception as e:
+                r["preview_instance_error"] = str(e)
+            for k_, ins in enumerate(insts):
+                sub = {}
+                set_params(ins, spec.get("params"), sub)
+                r[f"instance_params_{k_}"] = sub.get("instance_params")
         except Exception:
             r["instance_params_error"] = traceback.format_exc()
         r["slots"] = sorted(f"{col.get_item_slot_name(k)}" for k in col.get_all_item_keys())
