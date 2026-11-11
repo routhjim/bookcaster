@@ -334,6 +334,59 @@ if HEAD is not None and gone.any():
         loc_, nrm_, _, d_ = _hb.find_nearest(Vector(co[i]), 0.5)
         if loc_ is not None and d_ > _near and (Vector(co[i]) - loc_).dot(nrm_) > 0:
             gone[i] = False
+# the web: generated figures often join the sleeve's underside to the garment's side well below a real armpit (one
+# sheet of cloth from the elbow up); it stretches into a wing when the arm rises and hides the arm's outline when it
+# falls. Between the height where the arm really comes free (sliced in the front plane, as mesh_gate.py does) and
+# the body's armpit, cloth that lies outside the torso's own side (+ WEB_EASE) and outside the arm's tube (below
+# the arm) is cut away; the sleeve and the garment then meet only at the armhole.
+if JOB.get("web_cut", False) and not STATUE:   # experimental: cut 0 faces on the tested figures (11-11)
+    WEB_EASE = float(JOB.get("web_ease_m", 0.03))
+    TUBE = float(JOB.get("web_tube_m", 0.065))
+    cxw = J("pelvis").x
+    beval0 = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    BPw = np.array([v.co[:] for v in beval0.data.vertices])
+    bgw = {g.index: g.name for g in body.vertex_groups}
+    barmw = np.array([bool(v.groups) and bgw[max(v.groups, key=lambda g: g.weight).group].startswith(
+        ("clavicle", "upperarm", "lowerarm", "hand", "thumb", "index", "middle", "ring", "pinky")) for v in body.data.vertices])
+    BTw = BPw[~barmw]
+    REP["web_cut"] = {}
+    for side, sg in (("l", 1), ("r", -1)):
+        S0 = np.array(pose_head(f"upperarm_{side}"))
+        wr = np.array(LM[f"wrist_{side}"])
+        ax = (wr - S0) / np.linalg.norm(wr - S0)
+        z_pit = S0[2] - float(JOB.get("armpit_below_shoulder_m", 0.07))
+        # free height: walking down from the armpit, the first 1 cm slice where the side's outermost cloth run is
+        # apart from the run holding the body's centre line
+        cell = 0.006
+        z_free = None
+        for z_ in np.arange(z_pit, S0[2] - 0.45, -0.01):
+            sl = co[np.abs(co[:, 2] - z_) < 0.005]
+            if len(sl) < 20:
+                continue
+            xs = np.unique(np.floor((sl[:, 0] - cxw) / cell).astype(int))
+            xs = xs[sg * xs > 0] if sg > 0 else xs[xs < 0]
+            if len(xs) == 0:
+                continue
+            o = np.sort(sg * xs)
+            if (np.diff(o) > 2).any() and o[0] <= 1:
+                z_free = float(z_)
+                break
+        if z_free is None or z_free >= z_pit - 0.01:
+            REP["web_cut"][side] = {"free_z": z_free, "armpit_z": round(float(z_pit), 3), "cut": 0}
+            continue
+        zz = np.arange(z_free - 0.02, z_pit + 0.03, 0.01)
+        ext = np.array([np.quantile(sg * (BTw[np.abs(BTw[:, 2] - z_) < 0.015, 0] - cxw), 0.99)
+                        if (np.abs(BTw[:, 2] - z_) < 0.015).sum() > 10 else 0.15 for z_ in zz])
+        # the arm's inner edge in each horizontal slice: where its axis crosses that height, less the sleeve's
+        # half width in the slice (its radius TUBE over the axis' vertical component)
+        az_ = max(abs(float(ax[2])), 0.3)
+        x_axis = sg * (S0[0] - cxw) + (S0[2] - co[:, 2]) / az_ * np.hypot(ax[0], ax[1])
+        x_inner = x_axis - TUBE / az_
+        lat = sg * (co[:, 0] - cxw)
+        web = ((co[:, 2] > z_free) & (co[:, 2] < z_pit) & (lat > np.interp(co[:, 2], zz, ext) + WEB_EASE)
+               & (lat < x_inner) & ~skin)
+        gone |= web
+        REP["web_cut"][side] = {"free_z": round(z_free, 3), "armpit_z": round(float(z_pit), 3), "cut": int(web.sum())}
 COLLAR_RGB = None
 if JOB.get("collar_build") and not STATUE:
     # the generated shirt front, cravat and shirt collar go (bl_collar.py builds clean ones): cloth clearly lighter
@@ -476,22 +529,21 @@ if HOLE_MAX > 0 and not STATUE:
                         stack.append(e2)
         loops.append(loop)
     uvl = bm.loops.layers.uv.active
-    nfill = 0
-    for loop in loops:
-        per = sum(e.calc_length() for e in loop)
-        if per >= HOLE_MAX or len(loop) < 3:
-            continue
-        vuv = {}
-        for e in loop:
+    small = [lp for lp in loops if len(lp) >= 3 and sum(e.calc_length() for e in lp) < HOLE_MAX]
+    vuv = {}
+    for lp in small:
+        for e in lp:
             for v in e.verts:
-                for lp in v.link_loops:
-                    vuv.setdefault(v, lp[uvl].uv.copy())
-        res = bmesh.ops.holes_fill(bm, edges=loop, sides=0)
-        for f in res["faces"]:
-            for lp in f.loops:
-                if lp.vert in vuv:
-                    lp[uvl].uv = vuv[lp.vert]
-        nfill += len(res["faces"]) > 0
+                if v not in vuv and v.link_loops:
+                    vuv[v] = v.link_loops[0][uvl].uv.copy()
+    edges_ = [e for lp in small for e in lp]
+    # one call for every small hole (a call per hole cost 157 s on a dress with 2,600 of them)
+    res = bmesh.ops.holes_fill(bm, edges=edges_, sides=0) if edges_ else {"faces": []}
+    for f in res["faces"]:
+        for lp_ in f.loops:
+            if lp_.vert in vuv:
+                lp_[uvl].uv = vuv[lp_.vert]
+    nfill = len(small)
     REP["holes_filled"] = nfill
 bm.to_mesh(fig.data)
 bm.free()

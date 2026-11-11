@@ -128,3 +128,47 @@ Specific to the first figure (a frock coat, cravat, black hair) and to check on 
 (light unsaturated cloth in front of the neck); the shoulder pull-in (`shoulder_gap_m`). A woman in a long dress:
 set `skirt_pelvis` 1.0, check that the collar is found (a high dress collar is not white: pass `"match": "height"`
 to scale by height instead), and expect the dress to hang straight in a seated pose.
+
+## Guide fixes, new garments and the one-command route (11-11, later)
+
+**Arms that read in the still, the mask and the depth pass.** A drawn coat or bodice flares past the body below the
+armpit and the generated sleeve is a wide tube; with the arms down they merge. bl_combo now pulls the garment's
+sides in to the body's own side (`side_slim_k` 0.1 of the excess past `side_slim_gap_m` 1.5 cm, mid-thigh to the
+armpit; long skirts from the hips up) and, optionally, the sleeves to the body's arm (`sleeve_slim_k`, measured per
+2 cm along each arm bone). The relaxed stance takes 12 deg of arm abduction and 10 deg of forearm forward (character
+.json `relaxed_arm_steps`; `cast_char.py` picks the smallest of 4 / 8 / 12 deg that separates by measurement).
+Measured with `characters/arm_gap.py` on the scene tool's guides (rows along the forearm where the line to the body's
+centre crosses background or a depth jump): the man went from 0/10 rows to 10/10 at wide and 5/5 at medium.
+**The web.** The real cause of arms that will not separate (and of "wings" when they rise): the generated figure
+joins the sleeve's underside to the garment's side below a real armpit. `mesh_gate.py` measures it on the mesh
+(free height and gap at elbow height, front-plane slices); `cast_char.py` sends every drawing that passes
+`pose_gate.py` to 3D and keeps the first mesh that passes `mesh_gate.py` (free >= 0.70 of the height, gap >= 5 % at
+the elbow), else draws the next seeds. bl_combo's `web_cut` (cut the sheet between the arm's slice width and the
+torso's side) is experimental and off: it cut nothing on the figures tried.
+
+**Neckwear (`bl_collar.py`, job key `collar_build`).** The generated shirt front, cravat and shirt collar (cloth
+lighter than the coat in the throat; lower down only what is nearer the shirt's white, so a grey waistcoat stays)
+are removed and rebuilt: a closed standing collar from the neck's base to `visible_neck_frac` x head height under
+the chin (rings at the neck's own radius from the head mesh, never the jaw's), wing tips (`style` "wing"), a shirt
+front plate under the lapels, a bow (`neckwear` "bow") or a tie ("tie"); for a dress: `white_top_m` (her own high
+collar in the dress colour with a white edge), `cuffs`, `plate` false. Colours from the removed cloth, written as
+swatches into a free corner of the atlas; linen capped at albedo 0.72 (it blew out in window light).
+**Neck length.** A slim, tall MetaHuman preset keeps the "Neck Length" body constraint inactive at its own value
+(9.7 cm on the man in black against 6.4 on the doctor): set it (choose_mh.py sets 6.8 / 6.4).
+**Hands.** char_render gives an outfit's `M_skin` slot the body's skin material at spawn (the import had given every
+slot the cloth atlas: dark hands with white specks).
+
+**Veil (`bl_veil.py`).** A small bonnet and a net veil built round the head mesh as two extra garments on the
+combo's skeleton ("down" to below the chin, or "raised": turned back over the bonnet); the veil's material is
+masked by a net opacity map, dithered (char_render: an outfit folder with `T_outfit_Opacity.png`).
+
+**Poses (`characters/poses_extra.py`).** In the scene tool's pose form (a base pose + `steps`): a head look control
+(pitch / yaw over neck_01, neck_02, head; eye curves follow), hands in the lap, the veil lift (start and end), looking
+down at one's own sleeve, and a hand resting on another person's forearm solved from both measured skeletons.
+**Stance variants (`characters/stances.py`).** Seated / walking entries carry `stance` and `seat_asset`, `seat_z_m`;
+`resolve()` picks the entry for a shot's pose and chair.
+
+**One command (`cast_char.py`).** Sheet + look line + LoRA -> library character: measured MetaHuman choice
+(`characters/choose_mh.py`, CLIP + DINOv2 on the card), make + cloud + export, drawings in seed rounds until both
+gates pass, shape, fit rules measured on the drawing, import, arm abduction by measurement, check stills. Resumable
+(each step skipped when its output exists); `--mh` reuses an existing MetaHuman.

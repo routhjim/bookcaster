@@ -138,6 +138,10 @@ def main():
     ap.add_argument("--set", default="sitting_room_victorian_01")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
+    ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
+                    " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
+    ap.add_argument("--mh-fbx", default=None)
+    ap.add_argument("--mh-blueprint", default=None)
     a = ap.parse_args()
     W = Path(a.work)
     W.mkdir(parents=True, exist_ok=True)
@@ -165,6 +169,10 @@ def main():
         return deco
 
     # ---------------------------------------------------------------- choose
+    if a.mh:
+        (W / "choice.json").exists() or (W / "choice.json").write_text(json.dumps(
+            {"base": a.mh, "gender": None, "grooms": {}, "clear_slots": [], "body": {}, "params": {}, "scores": {"given": True}}))
+        CH["mh_build"] = {"blueprint": a.mh_blueprint}
     if not done("choose", W / "choice.json"):
         @timed("choose")
         def _():
@@ -177,8 +185,8 @@ def main():
     CH["metahuman"] = {k: ch[k] for k in ("base", "gender", "grooms", "clear_slots", "body")}
     CH["metahuman_scores"] = ch["scores"]
     save()
-    mh_name = f"MHC_AUTO_{tag}"
-    fbx = W / "fbx"
+    mh_name = a.mh or f"MHC_AUTO_{tag}"
+    fbx = Path(a.mh_fbx) if a.mh_fbx else W / "fbx"
     # ---------------------------------------------------------------- mh
     if not done("mh", fbx / f"{mh_name}_Head.fbx"):
         @timed("mh")
@@ -192,26 +200,28 @@ def main():
                 "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
                 "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
             CH["mh_build"] = {"blueprint": (r.get("cloud") or {}).get("blueprint"), "make": r.get("make")}
-    # ---------------------------------------------------------------- draw + gate
+    # ---------------------------------------------------------------- draw, gate, shape, mesh gate
     draw = W / "draw"
     draw.mkdir(exist_ok=True)
-    pose_map = draw / "pose40.png"
     gate_p = W / "gate.json"
-    if not done("gate", gate_p):
-        @timed("draw_gate")
+    glb = W / "figure.glb"
+    if not (done("gate", gate_p) and done("shape", glb)):
+        @timed("draw_gate_shape")
         def _():
-            subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pose_map), "--deg", "40"], check=True)
+            lk = a.look.lower()
+            # a full skirt and puffed sleeves need the arms a little higher for air between arm and bodice
+            deg = 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42
+            pose_map = draw / f"pose{deg}.png"
+            subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pose_map), "--deg", str(deg)], check=True)
             look = spread_look(a.look)
-            CH["draw_look"] = look
-            best, tried = None, []
+            CH["draw_look"], CH["pose_deg"] = look, deg
+            tried, meshes, chosen = [], [], None
             for rnd in range(a.rounds):
                 seeds = [5 + 6 * (3 * rnd + k) for k in range(3)]
-                jobs = []
-                for s in seeds:
-                    jobs.append({"id": f"{tag}_s{s}", "seed": s, "path": str(draw / f"spread_s{s}.png"), "size": [768, 1344],
-                                 "prompt": f"{a.trigger}, {look}, {POSE_WORDS}", "refs": [a.sheet],
-                                 "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
-                                 "control": {"image": str(pose_map), "type": "pose", "scale": 0.8}})
+                jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(draw / f"spread_s{s_}.png"), "size": [768, 1344],
+                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}", "refs": [a.sheet],
+                         "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
+                         "control": {"image": str(pose_map), "type": "pose", "scale": 0.8}} for s_ in seeds]
                 jl = draw / f"jobs_r{rnd}.jsonl"
                 jl.write_text("".join(json.dumps(j) + "\n" for j in jobs))
                 p = line(["--line-cmd", "image", "refs", "--id", f"cast_{tag}_draw{rnd}", "--", "bash", "-c",
@@ -219,6 +229,7 @@ def main():
                          W / f"draw_r{rnd}.log")
                 if p.returncode:
                     raise RuntimeError(f"drawing failed: {p.stdout[-800:]}")
+                passing = []
                 for j in jobs:
                     g = subprocess.run([sys.executable, str(HERE / "pose_gate.py"), j["path"]], capture_output=True,
                                        text=True)
@@ -227,27 +238,36 @@ def main():
                     tried.append(res)
                     if res["pass"]:
                         sides = [v for k, v in res.items() if isinstance(v, dict) and "angle_deg" in v]
-                        sc = min((s_.get("angle_deg") or 0) * (s_.get("armpit") or 0) for s_ in sides) if sides else 0
-                        if best is None or sc > best[0]:
-                            best = (sc, j["path"])
-                if best:
+                        passing.append((min((s_.get("angle_deg") or 0) * (s_.get("armpit") or 0) for s_ in sides),
+                                        j["path"]))
+                # every drawing that passes goes to 3D, best first, until a mesh passes the mesh gate
+                for _sc, path in sorted(passing, reverse=True):
+                    out = draw / (Path(path).stem + ".glb")
+                    env = ["env", f"ASSETS_TRELLIS_OMP={OMP}"] if OMP else []
+                    p = line(["--line-cmd", "blender", "shape", "--id", f"cast_{tag}_{Path(path).stem}", "--"] + env +
+                             [sys.executable, str(HERE / "img3d.py"), path, str(out), "--res", "1024", "--build", "rocm"],
+                             W / f"shape_{Path(path).stem}.log")
+                    if p.returncode or not out.exists():
+                        meshes.append({"file": str(out), "error": p.stdout[-300:]})
+                        continue
+                    g = subprocess.run([HY_PY, "-I", str(HERE / "mesh_gate.py"), str(out)], capture_output=True, text=True)
+                    res = json.loads(g.stdout.strip().splitlines()[-1]) if g.stdout.strip() else {"file": str(out)}
+                    res["pass"] = g.returncode == 0
+                    meshes.append(res)
+                    if res["pass"]:
+                        chosen = (path, out)
+                        break
+                if chosen:
                     break
-            CH["gate"] = {"tried": tried, "chosen": best[1] if best else None, "rounds": rnd + 1}
+            CH["gate"] = {"drawings": tried, "meshes": meshes, "chosen": chosen[0] if chosen else None,
+                          "rounds": rnd + 1}
             gate_p.write_text(json.dumps(CH["gate"], indent=1))
-            if not best:
-                raise RuntimeError(f"no drawing passed the pose gate in {a.rounds} rounds ({len(tried)} drawings)")
+            if not chosen:
+                raise RuntimeError(f"no figure passed both gates in {a.rounds} rounds ({len(tried)} drawings, "
+                                   f"{len(meshes)} meshes)")
+            import shutil
+            shutil.copy(chosen[1], glb)
     drawing = json.loads(gate_p.read_text())["chosen"]
-    # ---------------------------------------------------------------- shape
-    glb = W / "figure.glb"
-    if not done("shape", glb):
-        @timed("shape")
-        def _():
-            env = ["env", f"ASSETS_TRELLIS_OMP={OMP}"] if OMP else []
-            p = line(["--line-cmd", "blender", "shape", "--id", f"cast_{tag}_shape", "--"] + env +
-                     [sys.executable, str(HERE / "img3d.py"), drawing, str(glb), "--res", "1024", "--build", "rocm"],
-                     W / "shape.log")
-            if p.returncode or not glb.exists():
-                raise RuntimeError(f"shape failed: {p.stdout[-800:]}")
     # ---------------------------------------------------------------- combo
     combo = W / "combo"
     if not done("combo", combo / "outfit.fbx"):
