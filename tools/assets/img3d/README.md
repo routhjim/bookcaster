@@ -184,3 +184,9 @@ collars), the mesh is shaded smooth before export, and the cloth material is mat
 A seated stance lays the skirt with `iters` 0 (no relaxation). `stage_dir` saves a .blend after each step for audits.
 The constructed collar (`collar_build`) is no longer used for the cast: collar and cravat come from the generated
 figure (draw them closed and high in the spread drawing).
+
+**Raised-arm "wings" (11-11).** Coloured by dominant bone with both arms raised 70 deg, the dark sheet under a puffed
+sleeve was the sleeve's own underside: past the sleeve tube radius (`sleeve_radius_m`, 12 cm) it took torso weights
+and stayed down. A 20 cm tube made it follow the arm cleanly (picture in the lab notes); the armhole weight blend
+was not the cause (the wing share of the bodice side stayed 4.4-4.5 % from no blend to the default, and smaller
+blends tore more edges). cast_char uses 20 cm for a dress.

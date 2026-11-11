@@ -182,7 +182,12 @@ def main():
         h_, w_ = sh.shape[:2]
         fig = sh[int(0.25 * h_):int(0.55 * h_), int(0.62 * w_):int(0.88 * w_)]
         face = sh[int(0.05 * h_):int(0.18 * h_), int(0.70 * w_):int(0.80 * w_)]
-        sheet_rel = float(np.median(fig.mean(2))) / max(float(np.median(face.mean(2))), 1e-3)
+        # only the drawn figure, not the paper round it (light, unsaturated)
+        fl = fig.reshape(-1, 3)
+        ink = fl[(fl.mean(1) < 0.8) | ((fl.max(1) - fl.min(1)) > 0.15)]
+        fc = face.reshape(-1, 3)
+        fc = fc[(fc.mean(1) < 0.85) | ((fc.max(1) - fc.min(1)) > 0.15)]
+        sheet_rel = (float(np.median(ink.mean(1))) if len(ink) else 1.0) / max(float(np.median(fc.mean(1))) if len(fc) else 1.0, 1e-3)
         d = Path(a.relaxed)
         im = np.asarray(Image.open(d / "medium.png").convert("RGB")).astype(np.float32) / 255
         mk = np.asarray(Image.open(d / "guides" / "medium_mask_a.png").convert("L")) > 127
