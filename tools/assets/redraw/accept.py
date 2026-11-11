@@ -75,7 +75,10 @@ def item_fails(rec: dict) -> dict:
     return f
 
 
-LAB_L, LAB_HUE, LAB_C = 15.0, 35.0, 18.0     # lightness, hue angle (deg, both coloured) and chroma tolerances
+# hue angle (deg), judged when both are coloured (chroma > LAB_MIN_C). Lightness and chroma are not judged: they
+# follow each shot's light (the same gold chair reads L 4, chroma 10 in the window's shade and L 20, chroma 21 by
+# the fire); a hue tolerance of 35 deg let the gold chair drawn as red leather pass (hue 47 v 67), 15 catches it
+LAB_HUE, LAB_MIN_C = 15.0, 10.0
 
 
 def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
@@ -102,8 +105,8 @@ def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
                 r = ref[n]
                 c1, c2 = math.hypot(v["a"], v["b"]), math.hypot(r["a"], r["b"])
                 h = math.degrees(math.atan2(v["b"], v["a"]) - math.atan2(r["b"], r["a"]))
-                dh = abs((h + 180) % 360 - 180) if min(c1, c2) > 8 else 0.0
-                ok[n] = abs(v["L"] - r["L"]) <= LAB_L and dh <= LAB_HUE and abs(c1 - c2) <= LAB_C
+                dh = abs((h + 180) % 360 - 180) if min(c1, c2) > LAB_MIN_C else 0.0
+                ok[n] = dh <= LAB_HUE
             rec["things_ok"] = ok
     return ref
 
