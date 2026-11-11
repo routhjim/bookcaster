@@ -31,6 +31,7 @@ while any editor of ours is alive, so a --local run never starts a second editor
 A client that disconnects cancels its job: queued stages are dropped, a running Blender is stopped.
 """
 
+import argparse
 import collections
 import datetime
 import fcntl
@@ -115,10 +116,11 @@ def fd_holders(path):
     return out
 
 
-def other_project_editors():
-    """Pids of UE editors on this chain's project that this scheduler did not start (two writers corrupt it)."""
+def other_project_editors(project=None):
+    """Pids of UE editors on a project (default: the chain's) that this scheduler did not start (two writers
+    corrupt a project)."""
     mine = {e.upid for e in getattr(SCHED, "editors", []) if getattr(e, "upid", None)}
-    proj = str(C.UE_PROJECT)
+    proj = str(project or C.UE_PROJECT)
     out = []
     for d in Path("/proc").iterdir():
         if not d.name.isdigit():
@@ -250,10 +252,22 @@ class Igpu:
             self.fd = None
 
 
+def proj_dir(project):
+    """<project>/Saved/AssetServer: the queue folders of the scheduler's editor on that project."""
+    d = Path(project).parent / "Saved" / "AssetServer"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def asset_project(project):
+    return Path(project).resolve() == Path(C.UE_PROJECT).resolve()
+
+
 class Editor:
-    def __init__(self, card, primary):
+    def __init__(self, card, primary, project=None):
         self.card, self.primary = card, primary
-        self.dir = R.server_dir() / f"ed-{card.bus}"
+        self.project = str(project or C.UE_PROJECT)
+        self.dir = proj_dir(self.project) / f"ed-{card.bus}"
         self.qdir = self.dir / "queue"
         self.state = "starting"          # starting / ready / busy / quitting / dead
         self.t_start, self.t_ready, self.idle_since = now(), None, None
@@ -386,7 +400,9 @@ class Sched:
     def submit(self, job):
         a = job.args
         s = []
-        if job.mode == "preview":
+        if job.mode == "ue_job":
+            s.append(Stage(job, "ue_script", "ue"))
+        elif job.mode == "preview":
             s.append(Stage(job, "blender_preview", "blender"))
         else:
             bl = Stage(job, "blender_final", "blender")
@@ -826,7 +842,8 @@ class Sched:
                     e.quit()
             return "rebuild" if not live else None
         cur = code_hash(UE_FILES)
-        idle = [e for e in self.editors if e.state == "ready" and e.code == cur]
+        want = getattr(st.job, "project", None) or str(C.UE_PROJECT)
+        idle = [e for e in self.editors if e.state == "ready" and e.code == cur and e.project == want]
         for e in self.editors:
             if e.state == "ready" and e.code != cur:
                 print(f"[sched] editor {e.card.bus}: ue code changed; restarting it", flush=True)
@@ -838,20 +855,33 @@ class Sched:
         e.state, e.job = "busy", st
         return e
 
-    def ue_backlog(self):
+    def ue_backlog(self, project=None):
+        """UE stages queued (for one project, or all)."""
         n = 0
         for j in self.jobs:
-            if j.cancelled or j.mode != "final":
+            if j.cancelled or j.mode not in ("final", "ue_job"):
+                continue
+            if project is not None and (getattr(j, "project", None) or str(C.UE_PROJECT)) != project:
                 continue
             for s in j.stages:
                 if s.kind == "ue" and s.state in ("wait", "ready"):
                     n += 1
         return n
 
+    def next_project(self):
+        """The project of the oldest queued UE stage (the editor serves one project at a time)."""
+        for j in self.jobs:
+            if j.cancelled or j.mode not in ("final", "ue_job"):
+                continue
+            if any(s.kind == "ue" and s.state in ("wait", "ready") for s in j.stages):
+                return getattr(j, "project", None) or str(C.UE_PROJECT)
+        return str(C.UE_PROJECT) if self.warm_wanted else None
+
     def manage_editors(self):
         live = [e for e in self.editors if e.state != "dead"]
         blocked = any(j.args.rebuild_stage for j in self.jobs if j.mode == "final")
         backlog = self.ue_backlog()
+        need = self.next_project()
         t = now()
         if self.released:
             for e in live:
@@ -864,24 +894,29 @@ class Sched:
                 print("[sched] newer chain code: unloading the idle editor so the next scheduler loads it", flush=True)
                 e.quit()
                 continue
+            if e.state == "ready" and need and e.project != need and self.ue_backlog(e.project) == 0:
+                print(f"[sched] editor on {e.card.bus}: swapping project {Path(e.project).stem} -> "
+                      f"{Path(need).stem}", flush=True)
+                self.swap_t = t
+                e.quit()
+                continue
             if e.state == "ready":
                 lim = C.UE_IDLE_S if e.primary else C.UE_IDLE2_S
                 if (e.idle_since and t - e.idle_since > lim and backlog == 0) or self.stopping:
                     print(f"[sched] editor on {e.card.bus} idle {t - e.idle_since:.0f}s: quitting", flush=True)
                     e.quit()
-        if blocked or self.stopping or (backlog == 0 and not self.warm_wanted):
+        if blocked or self.stopping or need is None:
             return
-        starting = [e for e in live if e.state == "starting"]
         if live and not (C.UE_EDITORS >= 2 and len(live) == 1 and live[0].state in ("ready", "busy")
-                         and backlog >= C.UE_SECOND_AT):
+                         and live[0].project == need and backlog >= C.UE_SECOND_AT):
             return                                            # the resident editor, plus a second one under load
-        other = other_project_editors() if not live else []
-        if other:                                             # a pre-scheduler editor still writes this project
-            if R.server_dir().joinpath("queue").exists():
-                (R.server_dir() / "queue" / "quit").touch()
+        other = other_project_editors(need) if not live else []
+        if other:                                             # an editor not started by us writes this project
+            if asset_project(need) and R.server_dir().joinpath("queue").exists():
+                (R.server_dir() / "queue" / "quit").touch()   # the pre-scheduler warm editor: ask it to go
             if t - getattr(self, "said_other", 0) > 30:
                 self.said_other = t
-                print(f"[sched] waiting for editor(s) {other} on this project to quit", flush=True)
+                print(f"[sched] waiting for editor(s) {other} on {Path(need).stem} to quit", flush=True)
             return
         for b in ([self.ue_bus] if not live else [self.bl_bus]):
             c = self.cards.get(b)
@@ -895,13 +930,13 @@ class Sched:
                     c.release_if_unused()
                 continue
             if self.project_fd is None:
-                self.project_fd = try_flock(R.server_dir() / "project.lock")
+                self.project_fd = try_flock(proj_dir(need) / "project.lock")
                 if self.project_fd is None:
                     if not had:
                         c.release_if_unused()
                     return                                    # a --local run owns the project right now
             self.warm_wanted = False
-            e = Editor(c, primary=not live)
+            e = Editor(c, primary=not live, project=need)
             c.editor = e
             self.editors.append(e)
             threading.Thread(target=self.start_editor, args=(e,), daemon=True).start()
@@ -910,24 +945,33 @@ class Sched:
     def start_editor(self, e):
         c = e.card
         try:
-            R.install_shim()
-            if R.ensure_rt_ini():
-                print("[sched] project renderer settings written; this start compiles shaders", flush=True)
-            if not any(x.state in ("ready", "busy") for x in self.editors if x is not e):
-                R.ensure_stage(C.LOGS)
-            self.mannequin = R.ensure_mannequin()
+            ours = asset_project(e.project)
+            shim = Path(e.project).parent / "Content" / "Python" / "init_unreal.py"
+            if ours:
+                R.install_shim()
+                if R.ensure_rt_ini():
+                    print("[sched] project renderer settings written; this start compiles shaders", flush=True)
+                if not any(x.state in ("ready", "busy") for x in self.editors if x is not e):
+                    R.ensure_stage(C.LOGS)
+                self.mannequin = R.ensure_mannequin()
+            elif not shim.exists():                           # another project's own shim is never replaced
+                shim.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(HERE / "ue" / "init_unreal.py", shim)
             if e.dir.exists():
                 shutil.rmtree(e.dir, ignore_errors=True)
             e.qdir.mkdir(parents=True, exist_ok=True)
-            first = {"script": str(HERE / "ue" / "ue_render.py"), "map": C.UE_STAGE_MAP, "serve_dir": str(e.qdir),
-                     "serve_idle_s": (C.UE_IDLE_S if e.primary else C.UE_IDLE2_S) + 120,
+            first = {"script": str(HERE / "ue" / "ue_render.py"), "map": C.UE_STAGE_MAP if ours else None,
+                     "serve_dir": str(e.qdir), "serve_idle_s": (C.UE_IDLE_S if e.primary else C.UE_IDLE2_S) + 120,
                      "ready_file": str(e.dir / "ready.json"), "res": [1152, 640], "warm_frames": 90,
                      "settle_frames": 30, "ref_box_material": C.UE_STAGE_MAP.rsplit("/", 1)[0] + "/M_StageRef",
-                     "mannequin": self.mannequin}
+                     "mannequin": self.mannequin if ours else None, "idle_fps": C.UE_IDLE_FPS}
             jp = e.dir / "first_job.json"
             jp.write_text(json.dumps(first, indent=1))
             cmd, env = R.editor_cmd(c.bus)
+            if not ours:                                      # the same flags on the other project, no stage map
+                cmd = [cmd[0], e.project] + [x for x in cmd[3:]]
             env["ASSETS_UE_JOB"] = str(jp)
+            env["MH_JOB"] = str(jp)                           # the character tools' shim reads this name
             e.log = C.LOGS / f"assets_ue_ed{c.bus}_{time.strftime('%m%d_%H%M%S')}.log"
             fds = tuple(x for x in (c.fd, self.project_fd) if x is not None)
             with open(e.log, "w") as f:
@@ -938,7 +982,8 @@ class Sched:
             e.pid = e.proc.pid
             (e.dir / "editor.json").write_text(json.dumps({"pid": e.pid, "card": c.bus, "log": str(e.log),
                                                            "started": time.ctime(), "sched_pid": os.getpid()}))
-            print(f"[sched] editor pid {e.pid} starting on card {c.bus} ({'primary' if e.primary else 'second'})",
+            print(f"[sched] editor pid {e.pid} starting on card {c.bus} for {Path(e.project).stem} "
+                  f"({'primary' if e.primary else 'second'})",
                   flush=True)
             while e.alive():
                 if (e.dir / "ready.json").exists():
@@ -952,7 +997,11 @@ class Sched:
                             e.state = "ready"
                         self.wake.notify_all()
                     self.est_put("editor_start", e.t_ready - e.t_start)
-                    print(f"[sched] editor on {c.bus} ready after {e.t_ready - e.t_start:.1f}s", flush=True)
+                    sw = getattr(self, "swap_t", None)
+                    print(f"[sched] editor on {c.bus} ready for {Path(e.project).stem} after "
+                          f"{e.t_ready - e.t_start:.1f}s" + (f" (project swap: {e.t_ready - sw:.1f}s since the "
+                                                             f"swap began)" if sw else ""), flush=True)
+                    self.swap_t = None
                     return
                 if R.mem_avail_gb() < C.MIN_FREE_GB:
                     e.proc.terminate()
@@ -1002,10 +1051,15 @@ class Sched:
                 c.tenant_path.unlink(missing_ok=True)
 
     def run_ue(self, st, ed):
+        if st.name == "ue_script":
+            try:
+                return self._run_ue_script(st, ed)
+            finally:
+                self.editor_free(ed)
         job, a = st.job, st.job.args
         blend = job.blend or {}
         glb = (blend.get("files") or {}).get("export", {}).get("glb")
-        painted = job.adir / "export" / f"{job.id}_painted.glb"
+        painted = job.adir / "export" / "painted" / f"{job.id}.glb"     # as run_asset.py (paint.py writes it)
         tset = job.spec.get("texture_set") or ("painted" if a.paint and (job.spec.get("paint") or {}).get("use", True)
                                                else "procedural")
         if tset == "painted":
@@ -1058,6 +1112,49 @@ class Sched:
             self._run_ue_editor(st, ed, imp_job)
         finally:
             self.editor_free(ed)
+
+    def _run_ue_script(self, st, ed):
+        """A generic editor job (run_asset.py --ue-job): the script runs in the resident editor of its project."""
+        job, jd = st.job, st.job.ue
+        st.device, st.device_class = f"editor {ed.card.bus}", "xtx"
+        res_p = job.adir / "ue_result.json"
+        res_p.unlink(missing_ok=True)
+        ed.n_jobs += 1
+        q = ed.qdir / f"{job.id}.{job.n}.job.json"
+        tmp = ed.qdir / f".{job.id}.{job.n}.tmp"
+        tmp.write_text(json.dumps({"ue_script": jd["script"], "job": jd.get("job", {}), "id": job.id,
+                                   "result": str(res_p)}, indent=1))
+        tmp.replace(q)
+        job.log(f"UE script {Path(jd['script']).name} on {Path(ed.project).stem}: editor on card {ed.card.bus} "
+                f"after {round(st.t_start - st.t_ready, 1)}s")
+        t0, limit = now(), float(jd.get("timeout_s", 1800))
+        outs = [Path(o) for o in jd.get("outputs", [])]
+        res = None
+        while now() - t0 < limit:
+            if res is None and res_p.exists():
+                try:
+                    res = json.loads(res_p.read_text())
+                except ValueError:
+                    pass
+            if res is not None and (not res.get("ok") or all(o.exists() for o in outs)):
+                break
+            if not ed.alive():
+                break
+            time.sleep(0.05)
+        dt = round(now() - t0, 1)
+        missing = [str(o) for o in outs if not o.exists()]
+        ok = bool(res and res.get("ok")) and not missing
+        err = None if ok else ((res or {}).get("error") or (f"outputs missing: {missing}" if res else
+                               f"no result ({'editor died' if not ed.alive() else 'timed out'} after {dt}s); "
+                               f"see {ed.log}"))
+        job.result = {"rc": 0 if ok else 1, "result": (res or {}).get("result"), "result_file": str(res_p),
+                      "seconds": dt, "error": err}
+        job.log(f"UE script done in {dt}s ok={ok}" + (f": {err}" if err else ""))
+        if ok:
+            st.state = "done"
+        else:
+            st.info["error"] = err
+            st.state = "fail"
 
     def editor_free(self, ed):
         with self.lock:
@@ -1305,6 +1402,30 @@ def handle(S, conn):
                 S.drain = True
             conn.sendall(b'{"ok": true}\n')
             return
+        if cmd == "ue_job":
+            with S.lock:
+                if S.should_exit() or S.stopping:
+                    conn.sendall(b'{"retry": true}\n')
+                    return
+            jd = msg["ue_job"]
+            for k in ("project", "script"):
+                if not jd.get(k) or not Path(jd[k]).exists():
+                    raise SystemExit(f"ue job: '{k}' must name an existing file ({jd.get(k)})")
+            args = argparse.Namespace(preview=False, paint=False, skip_render=False, rebuild_stage=False,
+                                      device=None, ue_timeout=float(jd.get("timeout_s", 1800)), model=None)
+            jid = jd.get("id") or Path(jd["script"]).stem
+            job = Job(args, {"id": jid, "class": "ue_job"}, conn, msg.get("pid"), [])
+            job.mode, job.ue = "ue_job", jd
+            job.project = str(Path(jd["project"]).resolve())
+            job.adir = Path(jd.get("log_dir") or (C.SCHED_DIR / "jobs" / f"{jid}_{job.n}"))
+            job.adir.mkdir(parents=True, exist_ok=True)
+            job.log(f"{jid}: UE job {job.n} for {Path(jd['project']).stem} queued with the scheduler (pid {os.getpid()})")
+            S.submit(job)
+            while True:
+                if not f.readline():
+                    break
+            S.cancel(job, "client disconnected")
+            return
         if cmd != "submit":
             conn.sendall(b'{"error": "unknown command"}\n')
             return
@@ -1422,6 +1543,39 @@ def client_submit(argv):
                 r = m["result"]
                 if r.get("error") and r.get("rc"):
                     print(r["error"], file=sys.stderr, flush=True)
+                return int(r.get("rc", 1))
+        s.close()
+        if not retry:
+            print("the scheduler went away before the job finished; see its log in ASSETS_LOGS", file=sys.stderr)
+            return 4
+        time.sleep(0.5)
+    return 4
+
+
+def client_ue_job(path):
+    """run_asset.py --ue-job JOB.json: run an editor-side script in the scheduler's resident editor of its project.
+    JOB: {"project": .uproject, "script": editor-side .py, "job": {...} (the script's JOB), "outputs": [paths to wait
+    for], "timeout_s": 1800, "id": name, "log_dir": folder for sched.json / ue_result.json}. Prints the result."""
+    jd = json.loads(Path(path).read_text())
+    for k in ("project", "script"):
+        if jd.get(k):
+            jd[k] = str(Path(jd[k]).resolve())
+    jd["outputs"] = [str(Path(o).resolve()) for o in jd.get("outputs", [])]
+    for _ in range(5):
+        s = connect()
+        s.sendall((json.dumps({"cmd": "ue_job", "ue_job": jd, "pid": os.getpid()}) + "\n").encode())
+        retry = False
+        for line in s.makefile("rb"):
+            m = json.loads(line)
+            if "log" in m:
+                print(m["log"], flush=True)
+            elif m.get("retry"):
+                retry = True
+                break
+            elif "result" in m:
+                r = m["result"]
+                r.pop("sched", None)
+                print(json.dumps(r, default=str), flush=True)
                 return int(r.get("rc", 1))
         s.close()
         if not retry:

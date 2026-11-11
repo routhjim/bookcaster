@@ -94,6 +94,7 @@ OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))
 RECLAIM_FREE_S = float(os.environ.get("ASSETS_RECLAIM_FREE_S", "5"))
 RELEASE_GRACE_S = float(os.environ.get("ASSETS_RELEASE_GRACE_S", "120"))
 UE_VRAM_GB = float(os.environ.get("ASSETS_UE_VRAM_GB", "8"))
+UE_IDLE_FPS = int(os.environ.get("ASSETS_UE_IDLE_FPS", "10"))   # idle editor frame cap (t.MaxFPS)
 BLENDER_SPARES = int(os.environ.get("ASSETS_BLENDER_SPARES", "2"))
 BAKE_WAIT_S = float(os.environ.get("ASSETS_BAKE_WAIT_S", "45"))   # poll for a GPU this long before the CPU
 BAKE_VRAM_GB = float(os.environ.get("ASSETS_BAKE_VRAM_GB", "8"))  # free VRAM to bake beside the warm editor

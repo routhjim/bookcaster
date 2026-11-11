@@ -21,6 +21,7 @@ import importlib.util
 import json
 import math
 import os
+import runpy
 import time
 import traceback
 
@@ -264,6 +265,50 @@ class Job:
         log(f"{self.j['id']}: done ok={r['ok']} in {r['elapsed_s']} s")
 
 
+class ScriptJob:
+    """A generic editor job from the scheduler (run_asset.py --ue-job): {"ue_script": path, "job": {...},
+    "result": path}. The script runs once with JOB (the job dict) in its globals; if it defines run(job), that is
+    called: a dict return is the result; a generator is advanced one step per editor tick (for work that needs
+    rendered frames) and its return value (StopIteration.value) is the result."""
+
+    def __init__(self, job):
+        self.j, self.t0, self.gen = job, time.time(), None
+        self.r = {"ok": False, "id": job.get("id"), "result": None}
+
+    def step(self):
+        if self.gen is None:
+            g = runpy.run_path(self.j["ue_script"], init_globals={"JOB": self.j.get("job", {})},
+                               run_name="__assets_ue_job__")
+            out = g["run"](self.j.get("job", {})) if callable(g.get("run")) else g.get("RESULT")
+            if hasattr(out, "__next__"):
+                self.gen = out
+                return False
+            self.r.update(ok=True, result=out)
+            return True
+        try:
+            next(self.gen)
+            return False
+        except StopIteration as e:
+            self.r.update(ok=True, result=e.value)
+            return True
+
+    def finish(self):
+        self.r["elapsed_s"] = round(time.time() - self.t0, 2)
+        tmp = self.j["result"] + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.r, f, indent=1, default=str)
+        os.replace(tmp, self.j["result"])
+        log(f"script job {self.j.get('id')}: done ok={self.r['ok']} in {self.r['elapsed_s']} s")
+
+
+def set_fps(cap):
+    """Idle cap: an idle offscreen editor otherwise renders flat out (measured ~290% CPU, ~68% of its card)."""
+    try:
+        unreal.SystemLibrary.execute_console_command(None, f"t.MaxFPS {cap}")
+    except Exception:
+        pass
+
+
 def next_job():
     d = FIRST.get("serve_dir")
     if not d:
@@ -272,6 +317,8 @@ def next_job():
         job = json.load(open(p))
         os.rename(p, p + ".taken")
         job.setdefault("result", p[:-9] + ".result.json")
+        if job.get("ue_script"):
+            return job
         for k in ("map", "ref_box_material", "mannequin", "res", "warm_frames", "settle_frames"):
             job.setdefault(k, FIRST.get(k))
         return job
@@ -308,7 +355,7 @@ def _tick():
     if S["first_level"]:
         S["first_level"] = False
         w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-        if w is None or not w.get_path_name().startswith(FIRST["map"]):
+        if FIRST.get("map") and (w is None or not w.get_path_name().startswith(FIRST["map"])):
             log(f"loading {FIRST['map']}")
             les.load_level(FIRST["map"])
         les.editor_set_game_view(True)
@@ -319,6 +366,7 @@ def _tick():
             S["job"].f0 = S["n"]
         else:                                        # started ahead of work by the scheduler: serve only
             S["idle_since"] = time.time()
+            set_fps(FIRST.get("idle_fps", 10))
         if FIRST.get("ready_file"):
             with open(FIRST["ready_file"], "w") as f:
                 json.dump({"pid": os.getpid(), "t": time.time()}, f)
@@ -330,6 +378,7 @@ def _tick():
             job.finish()
             S["job"] = None
             S["idle_since"] = time.time()
+            set_fps(FIRST.get("idle_fps", 10))
             if not FIRST.get("serve_dir"):
                 quit_editor()
         return
@@ -340,7 +389,8 @@ def _tick():
     if S["n"] % 2 == 0:
         nj = next_job()
         if nj:
-            S["job"] = Job(nj)
+            set_fps(0)                                   # full speed while working (waits count frames)
+            S["job"] = ScriptJob(nj) if nj.get("ue_script") else Job(nj)
             S["job"].f0 = S["n"]
 
 
