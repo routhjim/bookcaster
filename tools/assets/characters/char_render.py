@@ -1054,17 +1054,32 @@ def settle_pose(comp):
 def apply_anim(comp, anim, t):
     """Single-node animation paused at time t (override data carries the start position; set again afterwards
     because a re-used single-node instance can keep the previous position)."""
+    try:
+        comp.set_component_tick_enabled(True)
+        comp.set_update_animation_in_editor(True)
+    except Exception:
+        pass
     comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
     try:
         comp.override_animation_data(anim, False, False, float(t), 0.0)
     except Exception:
         comp.set_animation(anim)
     comp.set_animation(anim)
-    comp.play(False)
-    comp.set_position(float(t), False)
-    comp.set_play_rate(0.0)
-    comp.stop()
-    comp.set_position(float(t), False)
+    m = JOB.get("anim_method", "stop")
+    if m == "stop":
+        comp.play(False)
+        comp.set_position(float(t), False)
+        comp.set_play_rate(0.0)
+        comp.stop()
+        comp.set_position(float(t), False)
+    elif m == "rate0":
+        comp.play(False)
+        comp.set_play_rate(0.0)
+        comp.set_position(float(t), True)
+    else:
+        comp.play(True)
+        comp.set_play_rate(0.0001)
+        comp.set_position(float(t), True)
     settle_pose(comp)
 
 
@@ -1217,7 +1232,13 @@ def setup_shot(sh):
     if sh.get("body_pose") and not sh.get("body_anim"):
         # e.g. {"name": "AS_seated", "rots": [["thigh_l", "pelvis", 85], ["calf_l", "thigh_l", -85], ...]}
         bp = sh["body_pose"]
-        sh["body_anim"] = pose_anim(body.get_skinned_asset().get_editor_property("skeleton"), bp["name"], bp["rots"])
+        # one asset per pose per job: deleting an AnimSequence the body is playing (to rebuild it for the next
+        # shot) leaves the component without an instance ("ObjectInstance is null")
+        key = json.dumps([bp["name"], bp["rots"]])
+        if key not in S.setdefault("poses", {}):
+            S["poses"][key] = pose_anim(body.get_skinned_asset().get_editor_property("skeleton"), bp["name"],
+                                        bp["rots"])
+        sh["body_anim"] = S["poses"][key]
         sh["body_t"] = 0.0
     if sh.get("body_anim"):
         banim = EAL.load_asset(sh["body_anim"])
@@ -1425,6 +1446,23 @@ def _run():
             yield from frames(15)
             hok, hands = hands_check(sh["char"])
         info["hands"] = hands
+        if JOB.get("debug_comps"):
+            a_ = S["actors"][sh["char"]][0]
+            lst = []
+            for c_ in a_.get_components_by_class(unreal.SkeletalMeshComponent):
+                d_ = {"name": c_.get_name(), "mesh": c_.get_skinned_asset().get_name() if c_.get_skinned_asset() else None}
+                for f_ in ("is_registered", "is_visible"):
+                    try:
+                        d_[f_] = getattr(c_, f_)()
+                    except Exception as ex:
+                        d_[f_] = str(ex)[:40]
+                try:
+                    d_["mode"] = str(c_.get_animation_mode())
+                    d_["hand_r"] = str(c_.get_socket_location("hand_r"))[-60:]
+                except Exception as ex:
+                    d_["mode"] = str(ex)[:60]
+                lst.append(d_)
+            info["comps"] = lst
         reframe(cam, sh, info)
         yield from frames(5)
         if not all(isinstance(v, float) and v <= 1.0 for v in err.values()):
