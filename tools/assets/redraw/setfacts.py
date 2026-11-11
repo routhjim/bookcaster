@@ -7,7 +7,8 @@
 From the set builder's spec (spec.json: fixtures and props with library asset ids and floor positions, wall openings,
 lights) and each asset's library size. A thing is lit when one of the set's point/spot lights sits inside its
 footprint (a lamp's flame, a fire in a grate); a lit thing whose name or asset names a fire place is a fire.
-Words come from the set builder's own names for things ("side_table" -> "side table"), never from story text.
+Words come from the set builder's own names for things ("side_table" -> "side table"), never from story text; a
+window's view is the "view_words" of the set's outside backdrop, when it has one.
 """
 from __future__ import annotations
 
@@ -86,10 +87,14 @@ def things(set_dir) -> list:
             t["lit"] = True
             t["light_pos"] = list(p)
             t["fire"] = any(w in (t["name"] + " " + (t["asset"] or "")).lower() for w in FIRE)
+    view = next((f.get("view_words") for k in ("fixtures", "props") for f in spec.get(k, [])
+                 if f.get("outside") and f.get("view_words")), None)
     for t in out:
         n = t["name"].replace("_", " ")
         if t["kind"] == "window":
             t["words"] = "the window"
+            if view:                      # what the set puts outside it (a backdrop's own words in the spec)
+                t["view"] = view
         elif t["kind"] == "door":
             t["words"] = "the door"
         else:

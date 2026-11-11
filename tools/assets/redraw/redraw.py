@@ -193,7 +193,9 @@ def set_words(shot: dict) -> str:
     parts = []
     for t in sorted(th, key=lambda t: (t["box"][0] + t["box"][2]) / 2):
         w = t["words"] if t.get("flame_in_view", True) else t["words"].split(" with ")[0].split(",")[0]
-        if t["kind"] == "window" and shot.get("daylight"):
+        if t["kind"] == "window" and t.get("view"):
+            w += f" showing {t['view']}"
+        elif t["kind"] == "window" and shot.get("daylight"):
             w += ", bright with " + shot["daylight"] + " outside"
         parts.append(f"{w} {frame_place(t['box'])}")
     out = ("In the frame: " + "; ".join(parts) + ".") if parts else ""

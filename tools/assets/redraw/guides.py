@@ -153,7 +153,7 @@ def seen_things(things, cam: dict, d: torch.Tensor, n: int = 7) -> list:
                 flame = False
         out.append({"name": t["name"], "kind": t["kind"], "words": t["words"], "lit": t["lit"], "fire": t["fire"],
                     "flame_in_view": flame,
-                    "box": box, "visible_frac": round(nv / len(pts), 3)})
+                    "box": box, "visible_frac": round(nv / len(pts), 3), **({"view": t["view"]} if t.get("view") else {})})
     return out
 
 
