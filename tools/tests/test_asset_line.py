@@ -276,6 +276,49 @@ class DispatchTest(unittest.TestCase):
         S.dispatch()
         self.assertEqual(S.started, [("video0", "video", "video")])   # the window runs clips, not card work
 
+    def test_command_borrows_idle_engine_card(self):
+        S = self.sched()
+        ue = f"card{D.C.UE_CARD}"
+        card = S.cards[D.C.UE_CARD]
+
+        class FakeEditor:
+            def __init__(self):
+                self.card, self.state = card, "ready"
+
+            def quit(self):
+                self.state = "quitting"
+
+        ed = FakeEditor()
+        S.editors = [ed]
+        job, why = S.add_entry({"type": "cmd", "id": "shape0", "station": "engine", "kind": "shape", "cmd": ["true"]})
+        self.assertIsNone(why)
+        self.assertEqual(job.entry["station"], ue)
+        job.stages[0].state = "ready"
+        S.dispatch()
+        self.assertEqual(S.started, [])                      # the idle editor is asked to unload first
+        self.assertEqual(ed.state, "quitting")
+        S.dispatch()
+        self.assertEqual(S.started, [])                      # still unloading
+        ed.state = "dead"
+        S.dispatch()
+        self.assertEqual(S.started, [("shape0", ue, "shape")])
+
+    def test_engine_work_goes_before_a_borrow(self):
+        S = self.sched()
+        root = Path(tempfile.mkdtemp(dir=TMP))
+        for f in ("p.uproject", "s.py"):
+            (root / f).write_text("")
+        ej, _ = S.add_entry({"type": "ue_job", "id": "set0", "ue": {"project": str(root / "p.uproject"),
+                                                                    "script": str(root / "s.py"),
+                                                                    "log_dir": str(root / "log")}})
+        cj, _ = S.add_entry({"type": "cmd", "id": "shape0", "station": "engine", "kind": "shape", "cmd": ["true"]})
+        cj.stages[0].state = "ready"
+        S.dispatch()
+        self.assertEqual([s for s in S.started if s[0] == "shape0"], [])   # an engine job waits: no borrow
+        ej.stages[0].state = "done"
+        S.dispatch()
+        self.assertIn(("shape0", f"card{D.C.UE_CARD}", "shape"), S.started)
+
     def test_image_station(self):
         S = self.sched()
         self.assertEqual(D.STATION_ALIASES["image"], D.C.IMAGE_STATION)

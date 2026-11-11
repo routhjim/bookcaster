@@ -5,7 +5,8 @@ Pure logic with no GPU or UE calls, so it can be unit-tested (tools/tests/test_a
 Stations, one job each (nothing falls back to the CPU; a job waits for its station):
     igpu       reference drawing, paint, cloth drape (image model / solver on the iGPU)
     card<B>    the Blender card (ASSETS_BLENDER_CARD, default 05): Blender bakes and previews, image-to-3D
-    card<U>    the engine card (ASSETS_UE_CARD, default 65): the one resident UE editor
+    card<U>    the engine card (ASSETS_UE_CARD, default 65): the one resident UE editor; a command job ("engine")
+               may borrow it while the engine has no work (the editor unloads, and loads for the next engine job)
     video      a booked window: the card stations finish, both cards are handed over, every waiting clip runs,
                then the cards come back
 

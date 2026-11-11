@@ -84,7 +84,9 @@ python tools/assets/run_asset.py --start           # start the line: it resumes 
 ```
 
 **Stations, one job each.** `card05` (Blender bakes, sheets and previews; image-to-3D; and the image model:
-reference drawing and paint), `igpu` (cloth drape; the desktop), `card65` (the one resident UE editor). The image
+reference drawing and paint), `igpu` (cloth drape; the desktop), `card65` (the one resident UE editor; a `--line-cmd engine KIND -- CMD` command
+borrows this card while the engine has no work: engine jobs waiting or running go first, an idle editor is asked to
+quit, the command runs once it is gone, and the next engine job loads the editor again, ~12-25 s). The image
 model's station is `ASSETS_IMAGE_STATION` (default the Blender card; `igpu` puts it back): measured 11-11 with the
 same jobs and settings, card 05 drew a 1536 px reference sheet in 14.7 s v 66.2 s on the iGPU (close-up 5.7 v 31.7 s)
 and painted a view in 8-11.5 s v 49-52 s, with the model's warm load ~30 s on both (32 v 53 s for the drawer). The

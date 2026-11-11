@@ -761,6 +761,8 @@ class Sched:
                     continue
             elif b in cards and (video_wanted or self.released):
                 continue
+            if b == f"card{self.ue_bus}" and st.kind == "cmd" and not self.lend_engine_card():
+                continue                                    # the engine has work, or its editor is unloading
             k = self.skind(st)
             if v["pause"] or (b in cards and not v["cards"]):
                 continue
@@ -785,6 +787,24 @@ class Sched:
                 ok = self.launch(st, self.run_cmd, None)
             if not ok:
                 self.batcher.cur = prev                     # the station could not take it yet: no batch count
+
+    def lend_engine_card(self):
+        """A command job may borrow the engine card while the engine has no work: no engine stage waits or runs,
+        no Blender job spilled onto that card, and the resident editor has unloaded (an idle one is asked to quit
+        here). True when the card is free for the command now. While the command runs, the card's cmd_busy keeps
+        the editor from loading (Card.hold); the next engine job loads it again afterwards."""
+        c = self.cards[self.ue_bus]
+        if self.ue_backlog() or c.blender:
+            return False
+        if any(s.kind == "ue" and s.state == "run" for j in self.jobs for s in j.stages):
+            return False
+        live = [e for e in self.editors if e.state != "dead" and e.card is c]
+        for e in live:
+            if e.state == "ready":
+                print(f"[sched] editor on {c.bus}: unloading so a line command can borrow the card", flush=True)
+                e.quit()
+        self.warm_wanted = False                            # no warm reload until engine work arrives
+        return not live
 
     def power_note(self):
         g = self.guard.update()
@@ -1830,6 +1850,9 @@ def station_device(b):
 STATION_ALIASES = {"igpu": "igpu", "video": "video", "blender": f"card{C.BLENDER_CARD}",
                    C.BLENDER_CARD: f"card{C.BLENDER_CARD}", f"card{C.BLENDER_CARD}": f"card{C.BLENDER_CARD}"}
 STATION_ALIASES["image"] = C.IMAGE_STATION         # the image model's station (config ASSETS_IMAGE_STATION)
+# a command may borrow the engine card while the engine has no work (Sched.lend_engine_card)
+STATION_ALIASES.update({"engine": f"card{C.UE_CARD}", C.UE_CARD: f"card{C.UE_CARD}",
+                        f"card{C.UE_CARD}": f"card{C.UE_CARD}"})
 
 
 def entry_from_msg(S, msg, cmd, conn):
@@ -1848,7 +1871,8 @@ def entry_from_msg(S, msg, cmd, conn):
     if cmd == "cmd":
         b = STATION_ALIASES.get(str(msg.get("station")))
         if b is None:
-            no(f"station must be one of igpu, blender ({C.BLENDER_CARD}), image ({C.IMAGE_STATION}) or video; engine work goes through "
+            no(f"station must be one of igpu, blender ({C.BLENDER_CARD}), image ({C.IMAGE_STATION}), engine "
+               f"({C.UE_CARD}: borrowed while the engine has no work) or video; engine work goes through "
                f"--ue-job (got {msg.get('station')})")
             return None
         if not msg.get("argv"):
@@ -2113,7 +2137,8 @@ def client_ue_job(path, detach=False):
 
 def client_line_cmd(argv):
     """run_asset.py --line-cmd STATION KIND [--id NAME] [--log FILE] [--detach] -- COMMAND...: run an existing tool
-    at a station (igpu, blender, video). The tool takes the station's lock itself, as it does today; the line
+    at a station (igpu, blender, image, engine, video; engine borrows the engine card while it has no work: the
+    editor unloads first and loads again for the next engine job). The tool takes the station's lock itself, as it does today; the line
     starts it only when the station is free and the guard allows. KIND names the batch (e.g. refs, paint, cloth,
     shape, video): a station finishes a batch of one kind before it switches."""
     if "--" not in argv or len(argv) < 4:
