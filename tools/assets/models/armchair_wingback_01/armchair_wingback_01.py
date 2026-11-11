@@ -12,8 +12,33 @@ import sys
 sys.path.insert(0, os.environ.get("ASSETS_MODELS_DIR") or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import period_kit as K  # noqa: E402
 
-# muted gold silk damask (the room's set picture); the woven figure a darker olive-gold
-LEATHER = K.fabric("damask", (0.150, 0.100, 0.036), wear=0.8, figure=(0.085, 0.058, 0.020), scale=4.0)
+# muted gold silk damask (the room's set picture): the cloth is the reference set's drawn close-up of the damask
+# (material.png, our own drawing), box-projected and mirror-tiled at its woven scale; folds, cavities and rubbed
+# edges darken or lighten it. Without the drawing it falls back to the procedural damask.
+REFS = os.path.expanduser(os.environ.get("ASSETS_REFS_DIR", "~/ue/library/_refs"))
+CLOTH = os.path.join(REFS, "armchair_wingback_01", "material.png")
+
+
+def drawn_damask(path, tile=0.22, name="damask_drawn"):
+    k = K.NK(name)
+    img = K.bpy.data.images.load(path, check_existing=True)
+    tx = k.N.new("ShaderNodeTexImage")
+    tx.image, tx.projection, tx.projection_blend, tx.extension = img, "BOX", 0.25, "MIRROR"
+    k.L.new(k.vec(k.obj, (1 / tile, 1 / tile, 1 / tile)), tx.inputs["Vector"])
+    e = k.edge(0.006, 0.99, 0.88)
+    cv = k.cavity(0.035, 0.92, 0.45)
+    big = k.noise(k.obj, 4.0, 3.0, 0.5)
+    col = k.mix(k.mr(big, 0.3, 0.7, 0, 0.25), tx.outputs["Color"], (0.10, 0.07, 0.025))
+    col = k.mix(k.m("MULTIPLY", e, 0.45), col, (0.32, 0.25, 0.12))          # rubbed high edges
+    col = k.mix(k.m("MULTIPLY", cv, 0.7), col, (0.04, 0.03, 0.012))         # grime in the folds
+    lum = k.N.new("ShaderNodeRGBToBW")
+    k.L.new(tx.outputs["Color"], lum.inputs[0])
+    rough = k.mr(lum.outputs[0], 0.15, 0.45, 0.62, 0.85)                    # the woven figure is the glossier silk
+    return k.out(col, rough, 0.0, k.bump(lum.outputs[0], 0.0004, 0.35))
+
+
+LEATHER = (drawn_damask(CLOTH) if os.path.exists(CLOTH) else
+           K.fabric("damask", (0.150, 0.100, 0.036), wear=0.8, figure=(0.085, 0.058, 0.020), scale=4.0))
 BUTTON = LEATHER
 TUFT = False          # the period picture shows plain (not buttoned) damask; True gives the deep-buttoned version
 legw = K.wood("mahogany", "Z", wear=0.6, gloss=0.6, grime=0.7)

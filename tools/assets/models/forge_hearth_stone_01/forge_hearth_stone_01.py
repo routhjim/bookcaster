@@ -394,6 +394,11 @@ def P(k):
     return s
 
 
+REFS = os.path.expanduser(os.environ.get("ASSETS_REFS_DIR", "~/ue/library/_refs"))
+DRAWN = os.path.join(REFS, "forge_hearth_stone_lit_01", "material.png")   # the drawn fieldstone close-up
+DRAWN_LUM = []
+
+
 def mat_stone(kind):
     """kind 'stone' (pcol tint) or 'mortar'. Soot over the fire, up the wall and chimney; heat-calcined stone and
     ash round the pit; floor grime at the base."""
@@ -411,6 +416,28 @@ def mat_stone(kind):
         # mineral flecks and darker inclusions
         col = k.mix(k.mr(vor, 0.08, 0.0, 0.0, 0.5), col, (0.12, 0.115, 0.11))
         col = k.mix(k.mr(big, 0.55, 0.75, 0.0, 0.4), col, (0.30, 0.22, 0.14))   # iron-stain patches
+        if os.path.exists(DRAWN):
+            # the drawn stone's grain, pits and chips inside each stone: a pure-stone patch of the reference set's
+            # material picture, mirror-tiled (ping-pong) every 0.3 m and box-projected, modulating the stone colour
+            img = bpy.data.images.load(DRAWN, check_existing=True)
+            sp = k.N.new("ShaderNodeSeparateXYZ")
+            k.L.new(k.vec(pos, (1 / 0.3, 1 / 0.3, 1 / 0.3)), sp.inputs[0])
+            cx = k.N.new("ShaderNodeCombineXYZ")
+            for i, (a0, a1) in enumerate(((0.08, 0.70), (0.32, 0.70), (0.32, 0.70))):
+                pp = k.m("PINGPONG", sp.outputs[i], 1.0)
+                k.L.new(k.m("ADD", k.m("MULTIPLY", pp, a1 - a0), a0), cx.inputs[i])
+            tx = k.N.new("ShaderNodeTexImage")
+            tx.image, tx.projection, tx.projection_blend = img, "BOX", 0.3
+            k.L.new(cx.outputs[0], tx.inputs["Vector"])
+            lum = k.N.new("ShaderNodeRGBToBW")
+            k.L.new(tx.outputs["Color"], lum.inputs[0])
+            DRAWN_LUM.append(lum.outputs[0])
+            mx = k.N.new("ShaderNodeMix")
+            mx.data_type, mx.blend_type = "RGBA", "MULTIPLY"
+            mx.inputs["Factor"].default_value = 1.0
+            k.L.new(col, mx.inputs[6])
+            k.L.new(k.mr(lum.outputs[0], 0.05, 0.28, 0.55, 1.45), mx.inputs[7])
+            col = mx.outputs[2]
     else:
         col = k.mix(k.mr(mid, 0.3, 0.7), (0.15, 0.14, 0.125), (0.22, 0.21, 0.19))
         col = k.mix(k.mr(fine, 0.5, 0.7, 0.0, 0.5), col, (0.10, 0.095, 0.085))
@@ -452,6 +479,8 @@ def mat_stone(kind):
     h = k.m("ADD", k.m("MULTIPLY", fine, 0.6), k.m("MULTIPLY", mid, 0.5))
     h = k.m("ADD", h, k.m("MULTIPLY", k.mr(vor, 0.0, 0.1, -0.3, 0.0), 1.0))
     h = k.m("SUBTRACT", h, k.m("MULTIPLY", k.m("MULTIPLY", cracks, calc), 0.8))
+    if kind == "stone" and DRAWN_LUM:
+        h = k.m("ADD", h, k.m("MULTIPLY", DRAWN_LUM[-1], 3.0))
     return k.out(col, rough, 0.0, k.bump(h, 0.0015, 0.55 if kind == "stone" else 0.4))
 
 

@@ -599,31 +599,42 @@ def bake(ob):
         te.image = imgs["Emissive"]
         nt.links.new(te.outputs["Color"], pr.inputs["Emission Color"])
         pr.inputs["Emission Strength"].default_value = emis_strength
-    glass_idx = {i for i, s in enumerate(ob.material_slots) if s.material in glass}
-    gmat = None
-    if glass:
-        # one glass material from the first glass slot's constant factors (transmissive, not baked)
-        _, gp = _principled(glass[0])
-        gmat = bpy.data.materials.new(f"M_{AID}_Glass")
-        gmat.use_nodes = True
-        gpr = gmat.node_tree.nodes["Principled BSDF"]
-        for k in ("Base Color", "Roughness", "IOR", "Transmission Weight", "Metallic", "Alpha"):
-            if gp is not None and k in gp.inputs and not gp.inputs[k].is_linked:
-                gpr.inputs[k].default_value = gp.inputs[k].default_value
-        if gpr.inputs["Transmission Weight"].default_value < 0.5:
-            gpr.inputs["Transmission Weight"].default_value = 1.0
-        REPORT["glass"] = {k: (list(gpr.inputs[k].default_value) if hasattr(gpr.inputs[k].default_value, "__len__")
-                               else gpr.inputs[k].default_value) for k in ("Base Color", "Roughness", "IOR",
-                                                                         "Transmission Weight")}
+    # one transmissive material per glass slot, from that slot's constant factors (not baked): M_<id>_Glass,
+    # M_<id>_Glass2, ... (a frosted globe and a clear chimney keep their own looks); emission carries over (a lit globe)
+    gslot = {}                                       # old slot index -> new slot index
+    gmats = []
+    for i, sl in enumerate(ob.material_slots):
+        if sl.material in glass and sl.material not in [g for g, _ in gmats]:
+            _, gp = _principled(sl.material)
+            gmat = bpy.data.materials.new(f"M_{AID}_Glass" + (str(len(gmats) + 1) if gmats else ""))
+            gmat.use_nodes = True
+            gpr = gmat.node_tree.nodes["Principled BSDF"]
+            for k in ("Base Color", "Roughness", "IOR", "Transmission Weight", "Metallic", "Alpha",
+                      "Emission Color", "Emission Strength"):
+                if gp is not None and k in gp.inputs and not gp.inputs[k].is_linked:
+                    gpr.inputs[k].default_value = gp.inputs[k].default_value
+            if gpr.inputs["Transmission Weight"].default_value < 0.5:
+                gpr.inputs["Transmission Weight"].default_value = 1.0
+            gmats.append((sl.material, gmat))
+        if sl.material in glass:
+            gslot[i] = 1 + [g for g, _ in gmats].index(sl.material)
+    REPORT["glass"] = [{k: (list(gm.node_tree.nodes["Principled BSDF"].inputs[k].default_value)
+                            if hasattr(gm.node_tree.nodes["Principled BSDF"].inputs[k].default_value, "__len__")
+                            else gm.node_tree.nodes["Principled BSDF"].inputs[k].default_value)
+                        for k in ("Base Color", "Roughness", "IOR", "Transmission Weight", "Emission Strength")}
+                       for _, gm in gmats]
     old_idx = np.empty(len(ob.data.polygons), dtype=np.int32)
     ob.data.polygons.foreach_get("material_index", old_idx)
     ob.data.materials.clear()
     ob.data.materials.append(mat)
-    if gmat is not None:
-        ob.data.materials.append(gmat)
-    new_idx = np.isin(old_idx, list(glass_idx)).astype(np.int32) if glass_idx else np.zeros_like(old_idx)
+    for _, gm in gmats:
+        ob.data.materials.append(gm)
+    lut = np.zeros(max(len(ob.material_slots), int(old_idx.max(initial=0)) + 1), dtype=np.int32)
+    for i, j in gslot.items():
+        lut[i] = j
+    new_idx = lut[old_idx]
     ob.data.polygons.foreach_set("material_index", new_idx)
-    REPORT["glass_faces"] = int(new_idx.sum())
+    REPORT["glass_faces"] = int((new_idx > 0).sum())
     for m in mats:
         if m.users == 0:
             bpy.data.materials.remove(m)

@@ -1,15 +1,52 @@
 {
  "id": "lantern_hanging_iron_01",
  "class": "prop",
- "description": "Early medieval hanging lantern, lit: small round black iron cage ~0.16 m across and ~0.36 m tall to the top of its hanging ring; six straps and three bands, glowing amber horn panes, a door pane ajar at the front (-Y) showing a lit candle, a pierced conical top. Origin at its base: place the base at the hanging height under a beam.",
- "tags": ["lantern", "light", "candle", "horn", "iron", "hanging", "lit", "medieval", "smithy", "interior"],
+ "description": "Early medieval hanging lantern, lit: round cage of hammered, pitted black iron ~0.16 m across and ~0.36 m tall to the top of its hanging ring: dished base, eight straps, riveted bands, thin amber rippled glass panes you can see through, a conical cap pierced with quatrefoils, ring and link; a pillar candle inside whose flame is the light. Origin at its base: place the base at the hanging height under a beam.",
+ "tags": [
+  "lantern",
+  "light",
+  "candle",
+  "horn",
+  "iron",
+  "hanging",
+  "lit",
+  "medieval",
+  "smithy",
+  "interior"
+ ],
  "tier": "mid",
- "size_m": [0.18, 0.19, 0.36],
+ "size_m": [
+  0.18,
+  0.19,
+  0.36
+ ],
  "size_tolerance": 0.15,
  "placement": "floor",
  "source": "scripted",
  "licence": "CC0 (original script)",
  "texture_px": 1024,
  "variant": "lit",
- "paint": {"prompt": "a sooty black hand-forged iron lantern with rust spots, thin translucent amber horn panes with streaks and mottling, a pale wax candle", "views": {"ring": 6, "upper": 3}}
+ "paint": {
+  "prompt": "hammered, pitted black hand-forged iron with soot and small rust spots, worn dark grey on the edges and rivet heads; a pale cream wax candle",
+  "views": {
+   "ring": 6,
+   "upper": 3
+  }
+ },
+ "cameras": [
+  {
+   "name": "inside",
+   "position": [
+    0.12,
+    -0.32,
+    0.2
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.15
+   ],
+   "focal": 70
+  }
+ ]
 }

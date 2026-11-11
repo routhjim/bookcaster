@@ -67,6 +67,9 @@ VIEW_WORDS = {
     "top": "Top view (plan view), the camera directly above looking straight down at the object",
     "three_quarter": "Three-quarter view from the front left, the camera slightly above, showing the front, the "
                      "left side and a little of the top",
+    "back": "Straight-on back view (rear elevation), the camera level and looking directly at the object's back",
+    "right": "Exact side view from the object's right side at ninety degrees (right elevation, profile), the camera "
+             "level",
     "rear_three_quarter": "Rear three-quarter view: the camera behind the object and off to its right, slightly "
                           "above, so the back end is nearest the camera and the front end points away from it",
 }
@@ -369,7 +372,7 @@ def draw_asset(d: Drawer, aid: str, desc: str, style: str = "", material: str = 
              f"- description: {desc}", f"- style: {style or '(none)'}", f"- material: {material or '(none)'}",
              f"- recipe: {recipe}", f"- seed: {seed}", f"- picture size: {size[0]}x{size[1]} "
              f"(each view square; raw drawings and sheet cells in raw/)",
-             f"- drawer: tools/qwen_image.py --serve (Qwen-Image-2.1 + 4-step Lightning) on the iGPU; "
+             f"- drawer: tools/qwen_image.py --serve (Qwen-Image-2.1 + 4-step Lightning) on {DEVICE}; "
              f"{time.time() - t0:.0f} s for the set", "", "## Prompts", ""]
     for name, prompt, refs, sec, sz in rows:
         notes += [f"### {name} ({sz[0]}x{sz[1]}, {sec} s{', references: ' + ', '.join(refs) if refs else ''})", "",
