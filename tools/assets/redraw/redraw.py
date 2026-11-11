@@ -136,7 +136,7 @@ def names(ppl: list, cast: dict) -> dict:
     return out
 
 
-def people_words(ppl: list, with_body: bool = False, cast: dict | None = None) -> str:
+def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, speaker: str | None = None) -> str:
     if not ppl:
         return ""
     cast = cast or {}
@@ -162,6 +162,8 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None) -
         if with_body:
             parts.append(body_words(bdeg, near, w["pos"].capitalize(), w["pos"], w.get("back_detail", "")))
     out = " ".join(parts)
+    if speaker and speaker in nm:
+        out += f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, mouth slightly open mid-word."
     for i, w in enumerate(ws):
         out = out.replace(f"{{T{i}}}", w.get("trigger") or w["noun"])
     return out
@@ -252,10 +254,10 @@ def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = 
 
 def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
                  wear_back: str | None = None, with_body: bool = False, cast: dict | None = None,
-                 look: str = "") -> str:
+                 look: str = "", speaker: str | None = None) -> str:
     cast = cast or {"*": {"trigger": trigger}}
     return " ".join(x for x in [
-        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body, cast),
+        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body, cast, speaker),
         wear_words(ppl, wear, wear_back, cast),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
@@ -300,6 +302,9 @@ def main():
             sid = f"{sd.name}/{cam}"
             if only and sid not in only:
                 continue
+            if sh.get("reject"):            # the staging check failed (e.g. the speaker's face is not shown)
+                print(f"skip {sid}: {sh['reject']}")
+                continue
             kind = kind_of(cam, sh)
             poses = {k: ((v.get("body_pose") or {}).get("pose") or "") for k, v in res.get("subjects", {}).items()}
             ppl = people(sh, poses)
@@ -336,7 +341,8 @@ def main():
                                                 set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
                                                 run.get("body_words", False), cast or None,
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
-                                                                     run.get("look", "")) if x)),
+                                                                     run.get("look", "")) if x),
+                                                sh.get("speaker")),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": sheets + list(run.get("extra_refs") or []),
                          "loras": loras,

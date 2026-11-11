@@ -295,6 +295,7 @@ def one_scene(sd: Path, dev, things=None, day=None):
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,
+                               "speaker": sh.get("speaker"), "reject": sh.get("reject"),
                                "depth_range_cm": [round(float(d[valid].min()), 1), round(float(d[valid].max()), 1)]}
         if pose_picture(res, sh["camera"], w, h, g / f"{cam}_pose.png"):
             truth["shots"][cam]["pose"] = str(g / f"{cam}_pose.png")
