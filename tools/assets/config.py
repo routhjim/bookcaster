@@ -39,7 +39,7 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_BLENDER_CARD Blender's home card     default "05" (bakes, sheets; previews too when the iGPU is taken)
     ASSETS_IMAGE_STATION the image model's station (reference drawing, paint): default the Blender card ("05");
                          "igpu" puts it back on the iGPU (cloth and the desktop stay there either way)
-    ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 4 (the CPU-by-nature parts)
+    ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 0 = all cores (the CPU-by-nature parts)
     ASSETS_BLENDER_LINGER_S  keep the Blender card after the last job   default 120
     ASSETS_OUTSIDE_RELEASE_S  an outside holder of the UE card for this long = a release (video run); default 20
     ASSETS_OUTSIDE_RELEASE_BL_S  the same for the Blender card alone; default 120 (bakes spill meanwhile; a video
@@ -99,7 +99,7 @@ BLENDER_CARD = os.environ.get("ASSETS_BLENDER_CARD", "05")
 _img = os.environ.get("ASSETS_IMAGE_STATION", BLENDER_CARD).strip()
 IMAGE_STATION = "igpu" if _img == "igpu" else "card" + (_img[4:] if _img.startswith("card") else _img)
 BLENDER_PER_CARD = 1         # one job per station
-BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "4"))
+BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "0"))   # 0 = every core (owner, 11-11: no thread limits)
 BLENDER_LINGER_S = float(os.environ.get("ASSETS_BLENDER_LINGER_S", "120"))
 OUTSIDE_RELEASE_BL_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_BL_S", "120"))
 OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))

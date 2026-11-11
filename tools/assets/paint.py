@@ -24,7 +24,7 @@ maps exist and paint.use is not false). Scratch (EXR passes, guide pictures) goe
 (default $ASSETS_UE_HOME/lab/paint/<id>).
 
 Devices: Blender on a free XTX (its lock and bake slot) or the idle iGPU (its lock), waiting until one is free:
-never the CPU (-t 4 for Blender's own CPU-bound parts); the image model on whichever of the two XTX locks or the
+never the CPU (all cores for Blender's own CPU-bound parts); the image model on whichever of the two XTX locks or the
 iGPU lock comes free first (polled with flock -n), on a second device too when it is free at once.
 """
 
@@ -247,7 +247,7 @@ def blender(job, logf, cards=None):
             idx = subprocess.run([str(HIP_INDEX), "igpu"], capture_output=True, text=True, check=True).stdout.strip()
             env = dict(os.environ, HSA_CU_MASK=f"{idx}:0-38")
         with open(logf, "w") as f:
-            subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", "4", "--python",
+            subprocess.run([str(C.BLENDER), "-b", "--factory-startup", "-t", str(C.BLENDER_THREADS), "--python",
                             str(HERE / "bl_paint.py"), "--", str(jp)], stdout=f, stderr=subprocess.STDOUT,
                            timeout=3600, pass_fds=tuple(fds), env=env)
     finally:
