@@ -863,6 +863,12 @@ class Sched:
         cur = code_hash(UE_FILES)
         want = getattr(st.job, "project", None) or str(C.UE_PROJECT)
         idle = [e for e in self.editors if e.state == "ready" and e.code == cur and e.project == want]
+        # fairness between projects: once another project's oldest job has waited past the swap limit and this
+        # editor has had its minimum stay, leave it idle so manage_editors swaps it (else a busy project starves
+        # the other for as long as it keeps submitting)
+        need = self.next_project()
+        if need and need != want and self.oldest_wait(need) > C.UE_SWAP_AFTER_S:
+            idle = [e for e in idle if not self.stay_over(e)]
         for e in self.editors:
             if e.state == "ready" and e.code != cur:
                 print(f"[sched] editor {e.card.bus}: ue code changed; restarting it", flush=True)
@@ -886,6 +892,11 @@ class Sched:
                 if s.kind == "ue" and s.state in ("wait", "ready"):
                     n += 1
         return n
+
+    def stay_over(self, e):
+        """True once an editor has served its project for the minimum stay (so swaps cannot ping-pong)."""
+        t_ready = getattr(e, "t_ready", None)
+        return t_ready is None or now() - t_ready > C.UE_STAY_S
 
     def oldest_wait(self, project):
         """Seconds the oldest queued UE stage of a project has been ready."""
@@ -925,7 +936,8 @@ class Sched:
                 e.quit()
                 continue
             if e.state == "ready" and need and e.project != need and (
-                    self.ue_backlog(e.project) == 0 or self.oldest_wait(need) > C.UE_SWAP_AFTER_S):
+                    self.ue_backlog(e.project) == 0
+                    or (self.oldest_wait(need) > C.UE_SWAP_AFTER_S and self.stay_over(e))):
                 print(f"[sched] editor on {e.card.bus}: swapping project {Path(e.project).stem} -> "
                       f"{Path(need).stem}", flush=True)
                 self.swap_t = t
