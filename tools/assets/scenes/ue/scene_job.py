@@ -461,10 +461,15 @@ def run(job):
                 a, body, face = comps(key)
                 fp = spec.get("face_pose") or {}
                 if fp.get("curves"):
+                    # the face anim is made ONCE, before the leader is cleared, and reused by the later calls: made
+                    # again it deleted the AnimSequence the face was still playing (same asset path), and the next
+                    # call on the face failed with "ObjectInstance is null" (11-11, every character)
+                    if spec.get("_face_anim") is None:
+                        mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
+                        spec["_face_anim"] = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
+                    anim, n = spec["_face_anim"]
                     face.set_leader_pose_component(None, True, False)
                     a, body, face = live_face(key)          # the call can replace the Blueprint's components
-                    mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
-                    anim, n = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
                     CR.apply_anim(face, anim, 1.0 / 30)
                     r["subjects"].setdefault(key, {})["face_follow"] = f"anim ({n} bones from the body)"
                 elif fp.get("anim"):
