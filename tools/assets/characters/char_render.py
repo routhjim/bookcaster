@@ -10,6 +10,7 @@ Two ways to run it:
 Job:
   {"script", "map", "out", "result", "res": [1152, 640], "warm_frames": 150, "settle_frames": 40,
    "backdrop": true,                              (grey cyclorama instead of the template sky)
+   "interior": null | true | false,               (true: groom strands get no sky light; see interior_hair)
    "characters": {"<key>": {"path": "/Game/.../Character" or "/Game/.../BP_X" (assembled Blueprint),
                             "garments": ["/Game/.../SK_Garment", ...],   (follow the body via leader pose)
                             "body_swap": "/Game/.../SK_BodyTrim" | null,   (replaces the visible body: a copy
@@ -645,8 +646,28 @@ def track_images(spec):
     S["r"]["track"] = out
 
 
+HAIR_SKY = "r.HairStrands.SkyLighting"
+
+
+def interior_hair(interior):
+    """Groom strands take the sky light's cubemap directly, with no occlusion by walls: in a room, black hair then
+    shows the outdoor sky's blue in its specular (measured 11-11 in a dressed sitting room: navy hair; with the
+    strands' sky lighting off it reads black). An interior job turns it off for its stills (restored in cleanup);
+    outdoors the sky does reach the hair and the default stays."""
+    if interior is None:
+        return
+    try:
+        S["hair_sky_old"] = unreal.SystemLibrary.get_console_variable_int_value(HAIR_SKY)
+    except Exception:
+        S["hair_sky_old"] = 1
+    unreal.SystemLibrary.execute_console_command(None, f"{HAIR_SKY} {0 if interior else 1}")
+    note(f"{HAIR_SKY} {0 if interior else 1} (interior={bool(interior)})")
+
+
 def cleanup():
     """Leave the (possibly resident) editor as it was: our actors gone, characters released."""
+    if "hair_sky_old" in S:
+        unreal.SystemLibrary.execute_console_command(None, f"{HAIR_SKY} {S.pop('hair_sky_old')}")
     try:
         les.eject_pilot_level_actor()
     except Exception:
@@ -682,6 +703,7 @@ def _run():
     # resolves when the Blueprint is loaded and compiled
     for dep in JOB.get("bp_deps", ["/MetaHumanCharacter/Animation/ABP_MH_LiveLink"]):
         EAL.load_asset(dep)
+    interior_hair(JOB.get("interior"))     # job["interior"]: true for a room (the set's own property), false outdoors
     if JOB.get("track"):
         track_images(JOB["track"])
         yield
