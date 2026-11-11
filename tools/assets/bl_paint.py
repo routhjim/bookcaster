@@ -469,6 +469,10 @@ def bake_geometry(sc, ob, res, lo, hi):
     tn = nt.nodes.new("ShaderNodeTexImage")
     nt.nodes.active = tn
     saved = [s.material for s in ob.material_slots]
+    # materials.clear() zeroes the faces' slot indices: keep them, or the glass slot is lost on export (seen 11-11:
+    # a painted lantern's panes came out opaque in UE)
+    saved_idx = np.empty(len(ob.data.polygons), dtype=np.int32)
+    ob.data.polygons.foreach_get("material_index", saved_idx)
     ob.data.materials.clear()
     ob.data.materials.append(m)
     sc.render.bake.margin = 0
@@ -495,6 +499,8 @@ def bake_geometry(sc, ob, res, lo, hi):
     ob.data.materials.clear()
     for s in saved:
         ob.data.materials.append(s)
+    ob.data.polygons.foreach_set("material_index", saved_idx)
+    ob.data.update()
     bpy.data.materials.remove(m)
     cov = res_["pos"][..., 0] > -0.5
     pos = lo + res_["pos"][..., :3] * (hi - lo)

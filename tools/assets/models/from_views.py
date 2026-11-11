@@ -75,6 +75,25 @@ for p in me.polygons:
     p.use_smooth = True
 bm = bmesh.new()                                      # sensible normals: outward, consistent
 bm.from_mesh(me)
+# loose crumbs (bits of a drawing's shadow or background built as geometry): drop islands under 0.5% of the faces
+seen, crumbs = set(), []
+for f in bm.faces:
+    if f.index in seen:
+        continue
+    isl, stack = [], [f]
+    seen.add(f.index)
+    while stack:
+        g = stack.pop()
+        isl.append(g)
+        for e in g.edges:
+            for h in e.link_faces:
+                if h.index not in seen:
+                    seen.add(h.index)
+                    stack.append(h)
+    if len(isl) < 0.005 * len(bm.faces):
+        crumbs += isl
+if crumbs:
+    bmesh.ops.delete(bm, geom=crumbs, context="FACES")
 bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 bm.to_mesh(me)
 bm.free()
@@ -89,7 +108,14 @@ def object_box(img):
     w, h = img.size
     a = np.empty(w * h * 4, dtype=np.float32)
     img.pixels.foreach_get(a)
-    a = a.reshape(h, w, 4)[..., :3]
+    a = a.reshape(h, w, 4)
+    if a[..., 3].min() < 0.5:                          # a keyed picture: the alpha is the object
+        ys, xs = np.nonzero(a[..., 3] > 0.5)
+        a = a[..., :3]
+        x0, x1 = xs.min(), xs.max()
+        y0, y1 = ys.min(), ys.max()
+        return (x0 / w, (x1 + 1) / w, y0 / h, (y1 + 1) / h), a
+    a = a[..., :3]
     bg = np.concatenate([a[:6, :6].reshape(-1, 3), a[-6:, -6:].reshape(-1, 3), a[:6, -6:].reshape(-1, 3),
                          a[-6:, :6].reshape(-1, 3)]).mean(0)
     m = np.abs(a - bg).sum(-1) > 0.07
@@ -153,6 +179,7 @@ for name, (img, (u0, u1, v0, v1), _) in views.items():
     tx.image, tx.extension = img, "EXTEND"
     L.new(cx.outputs[0], tx.inputs[0])
     w = math_node("POWER", math_node("MAXIMUM", math_node("MULTIPLY", ns.outputs[na.upper()], float(ns_sign)), 0.0), P)
+    w = math_node("MULTIPLY", w, math_node("ADD", math_node("MULTIPLY", tx.outputs["Alpha"], 0.999), 0.001))
     if name in ("left", "right") and "back" not in views:
         w = math_node("ADD", w, 0.02)                  # the back gets the sides when there is no back view
     if name == "front":
