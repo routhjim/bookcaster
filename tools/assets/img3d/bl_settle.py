@@ -53,6 +53,45 @@ def local(p):
 
 
 JT = {k: local(v) for k, v in JOB["joints"].items()}
+# helper joints (correctives, twists) are driven by the engine's pose logic, which Blender does not have: posed here
+# they would tear the cloth they hold, and the engine would move them differently from this bind. The stance's
+# outfit rides on the main joints only: each helper's weight goes to its nearest main ancestor.
+import re  # noqa: E402
+HELP = re.compile(JOB.get("helper_re", r"(fwd|bck|_in(_|$)|_out|Cor|twist|lwr|latissimus|pec|scap|bulge)"))
+
+
+def main_of(n):
+    b = arm.data.bones.get(n)
+    while b is not None and HELP.search(b.name):
+        b = b.parent
+    return b.name if b is not None else n
+
+
+t_f = time.time()
+gname = {g.index: g.name for g in fig.vertex_groups}
+fold = {gi: main_of(n) for gi, n in gname.items() if HELP.search(n) and n in arm.data.bones}
+if fold:
+    for tgt in set(fold.values()):
+        if tgt not in fig.vertex_groups:
+            fig.vertex_groups.new(name=tgt)
+    tg_i = {n: fig.vertex_groups[n].index for n in set(fold.values())}
+    add = {}
+    for v in fig.data.vertices:
+        acc = {}
+        for g in v.groups:
+            if g.group in fold and g.weight > 0:
+                acc[tg_i[fold[g.group]]] = acc.get(tg_i[fold[g.group]], 0.0) + g.weight
+        if acc:
+            cur = {g.group: g.weight for g in v.groups}
+            for gi_, w_ in acc.items():
+                add.setdefault(gi_, []).append((v.index, cur.get(gi_, 0.0) + w_))
+    for gi_, lst in add.items():
+        grp = fig.vertex_groups[gi_]
+        for vi, w_ in lst:
+            grp.add([vi], w_, "REPLACE")
+    for gi in sorted(fold, reverse=True):
+        fig.vertex_groups.remove(fig.vertex_groups[gname[gi]])
+REP["helpers_folded"] = {"groups": len(fold), "s": round(time.time() - t_f, 2)}
 bpy.context.view_layer.objects.active = arm
 bpy.ops.object.mode_set(mode="POSE")
 PB = arm.pose.bones
@@ -102,10 +141,11 @@ P = np.array([v.co[:] for v in ev.data.vertices]) / CM          # metres, charac
 R = np.array([v.co[:] for v in fig.data.vertices]) / CM          # the standing (bind) shape
 _E0 = np.array([e.vertices[:] for e in fig.data.edges])
 _le = np.linalg.norm(P[_E0[:, 0]] - P[_E0[:, 1]], axis=1)
-_far = np.unique(_E0[_le > 0.25].ravel())
+_far = np.unique(_E0[_le > float(JOB.get("dbg_edge_m", 0.25))].ravel())
 if len(_far):
     gn_ = {g.index: g.name for g in fig.vertex_groups}
-    REP["far_verts"] = {"n": int(len(_far)), "groups": sorted({gn_[g.group] for i in _far[:50] for g in fig.data.vertices[int(i)].groups if g.weight > 0.05})}
+    REP["far_verts"] = {"n": int(len(_far)), "z": [round(float(P[_far, 2].min()), 2), round(float(P[_far, 2].max()), 2)],
+                        "groups": sorted({gn_[g.group] for i in _far[:200] for g in fig.data.vertices[int(i)].groups if g.weight > 0.05})}
 nv = len(P)
 sk = np.load(os.path.join(JOB["combo"], "skirt_idx.npy"))
 sk = sk[sk < nv]
@@ -132,7 +172,10 @@ RAD.update(JOB.get("radii") or {})
 CLR = float(JOB.get("clear_m", 0.012))
 caps = []                                    # (a, b, ra, rb)
 for s in ("l", "r"):
-    caps.append((J[f"thigh_{s}"], J[f"calf_{s}"], RAD["thigh"], RAD["knee"]))
+    # standing or walking the thigh's top quarter is inside the hips, which the skirt already clears: start lower
+    f0 = 0.0 if JOB.get("mode") == "drape" else float(JOB.get("thigh_from", 0.3))
+    a0 = J[f"thigh_{s}"] + f0 * (J[f"calf_{s}"] - J[f"thigh_{s}"])
+    caps.append((a0, J[f"calf_{s}"], RAD["thigh"] + f0 * (RAD["knee"] - RAD["thigh"]), RAD["knee"]))
     caps.append((J[f"calf_{s}"], J[f"foot_{s}"], RAD["knee"], RAD["calf"]))
 if JOB.get("mode") == "drape":                # seated: the hips and seat of the body under the skirt's back
     caps.append((J["thigh_l"] + np.array([0, 0.02, 0.03]), J["thigh_r"] + np.array([0, 0.02, 0.03]), RAD["hips"],
@@ -297,9 +340,9 @@ if mode == "push":
     outw[:, 2] = 0
     outw /= np.maximum(np.linalg.norm(outw, axis=1), 1e-6)[:, None]
 deg = np.bincount(Ef.ravel(), minlength=nv).astype(float)
-for it in range(int(JOB.get("iters", 60))):
-    X[mov, 2] -= float(JOB.get("gravity_step_m", 0.002))
-    for _ in range(4):
+for it in range(int(JOB.get("iters", 40))):
+    X[mov, 2] -= float(JOB.get("gravity_step_m", 0.0 if mode == "push" else 0.0005))
+    for _ in range(int(JOB.get("solve", 8))):
         d = X[Ef[:, 1]] - X[Ef[:, 0]]
         ln = np.linalg.norm(d, axis=1)
         corr = ((ln - L0) / np.maximum(ln, 1e-9))[:, None] * d * 0.5

@@ -144,12 +144,16 @@ def make(spec, folder=None):
             c.set_editor_property("face_evaluation_settings", fe)
         mhs.commit_face_state(c)
         if spec.get("body"):
-            cons = mhs.get_body_constraints(c)
-            for b in cons:
+            # the array's elements come back as copies: build a new list (setting fields on the loop variable left
+            # every constraint inactive at the preset's value; probe 11-11)
+            new = []
+            for b in mhs.get_body_constraints(c):
+                b = b.copy()
                 if str(b.name) in spec["body"]:
                     b.target_measurement = float(spec["body"][str(b.name)])
                     b.is_active = True
-            mhs.set_body_constraints(c, cons)
+                new.append(b)
+            mhs.set_body_constraints(c, new)
             mhs.commit_body_state(c)
             r["body"] = {str(b.name): round(b.target_measurement, 1) for b in mhs.get_body_constraints(c)
                          if str(b.name) in ("Height", "Chest", "Waist", "Hip", "Across Shoulder", "Inseam", "Fat",

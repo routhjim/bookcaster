@@ -359,7 +359,7 @@ if not STATUE:
 # weld them first, the UVs live on the loops)
 bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
 bm.verts.index_update()
-seen, crumbs = set(), []
+seen, crumbs, islands = set(), [], []
 for v0 in bm.verts:
     if v0.index in seen:
         continue
@@ -375,6 +375,18 @@ for v0 in bm.verts:
                 stack.append(w)
     if len(isl) < 300:
         crumbs += isl
+    else:
+        islands.append(isl)
+# pieces left floating round the head by the collar cut (a bun, a hat brim, hair at the nape): any piece other than
+# the largest that lies wholly above the collarbones, off the neck's axis (a collar or frill ring is centred on it)
+if len(islands) > 1:
+    islands.sort(key=len, reverse=True)
+    zc_ = J("clavicle_l").z + float(JOB.get("float_above_clav_m", 0.04))
+    for isl in islands[1:]:
+        cxy = np.mean([v.co[:2] for v in isl], axis=0)
+        if min(v.co.z for v in isl) > zc_ and np.linalg.norm(cxy - np.array(J("neck_01"))[:2]) > 0.06:  # not a collar ring
+            crumbs += isl
+            REP["floating_dropped"] = REP.get("floating_dropped", 0) + len(isl)
 bmesh.ops.delete(bm, geom=crumbs, context="VERTS")
 bm.to_mesh(fig.data)
 bm.free()
@@ -528,6 +540,23 @@ for i in np.nonzero(skirt)[0]:
         tgn = f"thigh_{side}"
         (fig.vertex_groups.get(tgn) or fig.vertex_groups.new(name=tgn)).add([int(i)], 1 - SKIRT_PELVIS, "ADD")
 REP["skirt_verts"] = int(skirt.sum())
+# the band above the skirt line blends from the skirt's pelvis toward the body's own weights over SKIRT_BLEND, so a
+# bending spine or a stepping thigh does not tear the cloth along that line
+SKIRT_BLEND = float(JOB.get("skirt_blend_m", 0.12))
+if SKIRT_BLEND > 0 and skirt.any():
+    z0_ = J("pelvis").z - 0.05
+    band_ = np.nonzero(~skirt & ~sleeve & (fco[:, 2] >= z0_) & (fco[:, 2] < z0_ + SKIRT_BLEND))[0]
+    pg_ = fig.vertex_groups.get("pelvis") or fig.vertex_groups.new(name="pelvis")
+    gl_ = {g.index: g for g in fig.vertex_groups}
+    for i in band_:
+        t_ = float((fco[i, 2] - z0_) / SKIRT_BLEND)
+        v_ = fig.data.vertices[int(i)]
+        cur = {g.group: g.weight for g in v_.groups}
+        tot = sum(cur.values()) or 1.0
+        for gi_, w_ in cur.items():
+            gl_[gi_].add([int(i)], t_ * w_ / tot, "REPLACE")
+        pg_.add([int(i)], (1 - t_) + t_ * cur.get(pg_.index, 0.0) / tot, "REPLACE")
+    REP["skirt_blend_verts"] = int(len(band_))
 # the loose cloth's vertex ids (the outfit's first vertices keep their ids through the joins below), for the
 # per-stance settle (bl_settle.py)
 if JOB.get("long_skirt"):
