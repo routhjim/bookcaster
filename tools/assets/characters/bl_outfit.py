@@ -2301,6 +2301,11 @@ RIDES_ON = {"lapels": ["coat"], "coat_collar": ["coat"], "coat_buttons": ["coat"
             "wc_buttons": ["waistcoat"], "wc_welts": ["waistcoat"], "cravat": ["collar", "shirt"]}
 
 
+# pieces skinned rigidly to one bone (outfit spec "rigid" overrides): the standing collar and the cravat follow the
+# upper chest, not the arms
+RIGID = SPEC.get("rigid", {"collar": "spine_05", "cravat": "spine_05"})
+
+
 def skin(arm, body, F, parts):
     order = [k for k in parts if k not in RIDES_ON] + [k for k in parts if k in RIDES_ON]
     for key in order:
@@ -2311,6 +2316,10 @@ def skin(arm, body, F, parts):
             transfer_from(ob, [parts[s] for s in RIDES_ON[key]])
         else:
             transfer_weights(ob, body)
+        if key in RIGID:
+            # starched pieces round the neck ride one bone: weights copied from the body there were 40-80% spine_04
+            # plus clavicle and upper-arm helper joints (up to ~25%), so an arms-down pose pulled the collar open
+            set_weights(ob, [{RIGID[key]: 1.0}] * len(ob.data.vertices))
         bpy.context.view_layer.objects.active = ob
         bpy.ops.object.select_all(action="DESELECT")
         ob.select_set(True)

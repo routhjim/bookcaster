@@ -6,7 +6,7 @@
   "cuff_past_wrist": -0.01,
   "tuck_below_waist": 0.07,
   "neck_rise": 0.01,
-  "collar_below_neck": 0.03,
+  "collar_below_neck": 0.015,
   "collar_h_back": 0.068,
   "collar_h_front": 0.058,
   "collar_gap": 0.005,
