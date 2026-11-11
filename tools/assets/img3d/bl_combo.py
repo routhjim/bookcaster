@@ -1062,6 +1062,9 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
             me_l.uv_layers.remove(me_l.uv_layers[-1])
         if not me_l.uv_layers:
             me_l.uv_layers.new(name="UVMap")
+        # the join matches UV layers by name: under another name the liner's UVs would land in a second layer and
+        # read (0, 0) in the outfit's own
+        me_l.uv_layers[0].name = fig.data.uv_layers.active.name
         lvi = np.empty(len(me_l.loops), np.int64)
         me_l.loops.foreach_get("vertex_index", lvi)
         me_l.uv_layers[0].data.foreach_set("uv", vuv[lvi].astype(np.float32).ravel())
