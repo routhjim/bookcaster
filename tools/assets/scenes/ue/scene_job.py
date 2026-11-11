@@ -13,7 +13,8 @@ JOB (written by scene.py; set-frame metres converted to UE centimetres there):
                 "position"/"target" (set frame, metres; wide) | "az", "el", "screen_x" (computed shots),
                 "focal_mm", "aperture"}],
    "lights": [expanded lights (layout.light_items)], "exposure_ev100": float | null,
-   "warm_frames", "settle_frames", "attach_tol_cm"}
+   "warm_frames", "settle_frames", "attach_tol_cm",
+   "hide": [set item names hidden for these stills (a figure that brings its own chair takes the set's chair's place)]}
 Returns {"ok", "shots": [{name, path, t_s, camera, frame_check, attach}], "subjects", "times_s", "notes"}.
 Nothing is saved: the set level is loaded, dressed for the stills and left as it was (spawned actors destroyed,
 post settings restored).
@@ -274,6 +275,7 @@ def run(job):
     r = {"ok": False, "id": job["id"], "shots": [], "subjects": {}, "times_s": {}, "notes": []}
     res = job.get("res", [1152, 640])
     temp = []
+    hidden = []
     post_old = None
     CR = None
     framing = _load("scene_framing", os.path.join(os.path.dirname(HERE), "framing.py"))
@@ -303,6 +305,12 @@ def run(job):
             pp.set_editor_property("override_auto_exposure_bias", True)
             pp.set_editor_property("auto_exposure_bias", -float(job["exposure_ev100"]))
             ppv.set_editor_property("settings", pp)
+        for a in act.get_all_level_actors() if job.get("hide") else []:
+            if a.get_actor_label() in job["hide"] and not a.is_hidden_ed():
+                a.set_is_temporarily_hidden_in_editor(True)
+                a.set_actor_hidden_in_game(True)
+                hidden.append(a)
+        r["hidden"] = [a.get_actor_label() for a in hidden]
         if job.get("lights"):
             SB = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
             for l in job["lights"]:
@@ -569,6 +577,12 @@ def run(job):
         for a in temp:
             try:
                 act.destroy_actor(a)
+            except Exception:
+                pass
+        for a in hidden:
+            try:
+                a.set_is_temporarily_hidden_in_editor(False)
+                a.set_actor_hidden_in_game(False)
             except Exception:
                 pass
         if post_old:

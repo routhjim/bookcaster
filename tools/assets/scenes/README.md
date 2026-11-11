@@ -57,6 +57,8 @@ changing. So:
             "position": [x, y], "facing": [dx, dy]}   // measured from its bounds (img3d/ue_stage_figure.py), guides too
  },
  "lights": [ ... ],                        // extra lights, the set builder's point / spot / rect format
+ "hide": ["<set item name>", ...],         // set items hidden for these stills (restored after): e.g. the set's
+                                           // armchair where a seated figure brings its own chair
  "cameras": [
   {"name": "wide", "kind": "wide", "subject": "<key>", "position": [x, y, z], "target": [x, y, z] | "subject",
    "focal_mm": 22},

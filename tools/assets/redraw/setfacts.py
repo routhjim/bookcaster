@@ -8,7 +8,10 @@ From the set builder's spec (spec.json: fixtures and props with library asset id
 lights) and each asset's library size. A thing is lit when one of the set's point/spot lights sits inside its
 footprint (a lamp's flame, a fire in a grate); a lit thing whose name or asset names a fire place is a fire.
 Words come from the set builder's own names for things ("side_table" -> "side table"), never from story text; a
-window's view is the "view_words" of the set's outside backdrop, when it has one.
+window's view is the "view_words" of the set's outside backdrop, when it has one. A thing's look (its colours,
+pattern, fabric, what a picture shows) is the placement's "look" in the set spec, else the asset's own "look" in
+its library entry: said in every shot that sees the thing, it keeps a redraw from repainting the rug, a chair's
+cover or a picture's subject differently from one shot to the next.
 """
 from __future__ import annotations
 
@@ -51,6 +54,14 @@ def _short(lib: Path, asset: str) -> str | None:
     return None
 
 
+def _look(lib: Path, asset: str) -> str | None:
+    for cls in ("prop", "set", "character"):
+        p = lib / cls / asset / "asset.json"
+        if p.exists():
+            return json.loads(p.read_text()).get("look") or None
+    return None
+
+
 def things(set_dir) -> list:
     set_dir = Path(set_dir)
     spec = json.loads((set_dir / "spec.json").read_text())
@@ -69,6 +80,7 @@ def things(set_dir) -> list:
             hx, hy = (sz[0] * c + sz[1] * s) / 2, (sz[0] * s + sz[1] * c) / 2
             z0 = float(f.get("on_z_m", f["position"][2] if len(f["position"]) > 2 else 0.0))
             t = {"name": f["name"], "asset": f["asset"], "kind": kind[:-1], "short": _short(lib, f["asset"]),
+                 "look": f.get("look") or _look(lib, f["asset"]),
                  "center": [f["position"][0], f["position"][1], z0 + sz[2] / 2], "half": [hx, hy, sz[2] / 2],
                  "on": f.get("on"), "lit": False, "fire": False}
             out.append(t)
@@ -118,7 +130,8 @@ def things(set_dir) -> list:
         elif t["kind"] == "door":
             t["words"] = "the door"
         else:
-            what = f"the {n}" + (f" ({t['short']})" if t.get("short") and t["kind"] in ("fixture", "prop") else "")
+            own = "; ".join(x for x in (t.get("short"), t.get("look")) if x) if t["kind"] in ("fixture", "prop") else ""
+            what = f"the {n}" + (f" ({own})" if own else "")
             t["words"] = what + (f" on the {by_name[t['on']]['name'].replace('_', ' ')}" if t.get("on") in by_name else "")
         if t["fire"]:
             t["words"] += " with a fire burning in the grate, flames and glowing coals"

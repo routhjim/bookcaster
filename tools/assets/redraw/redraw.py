@@ -8,9 +8,10 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "sheet": "/abs/character sheet.png",    identity picture (both models)
       "lora": "/abs/char.safetensors", "trigger": "chr_x", "lora_w": {"1": 0.8, "2": 0.63},   (method image)
       "cast": {"<scene key>": {"noun": "man"|"woman", "trigger", "lora", "lora_w", "sheet", "wear", "wear_back",
-               "back_detail"}},           (several different people: each their own words, their LoRA on their own
+               "back_detail", "face_ref"}},   (several different people: each their own words, their LoRA on their own
                                               region of the frame (box + lora_pad) and their sheet as a reference;
-                                              replaces sheet/lora/trigger/wear/wear_back)
+                                              replaces sheet/lora/trigger/wear/wear_back; face_ref: a crop of their
+                                              face from an accepted shot, facecrop.py, given where their face shows)
       "look": "...",                          (the closing words on the picture's look; default: real skin, film grain)
       "room_surfaces": "...",                 (the set's walls, floor and drapes in words, said in every shot)
       "set": "/abs/library set dir", "light_words": true,   (say where the light comes from, from the set's lit
@@ -195,12 +196,24 @@ def frame_place(box) -> str:
     return "on the left" if cx < 0.35 else "on the right" if cx > 0.65 else "in the middle"
 
 
+PROP_SEEN = 0.3       # share of a free prop's sample points seen in the still
+PROP_AREA = 0.004     # share of the frame its box covers
+MAX_THINGS = 10       # the biggest things in frame; more words only dilute the prompt
+
+
 def set_words(shot: dict) -> str:
     """The set's things the engine sees in this frame (guides.py --set), with their place and whether they burn or
     are lit, plus where the daylight comes from. Nothing that is out of frame is named, except the daylight."""
+    def area(t):
+        b = t["box"]
+        return (b[2] - b[0]) * (b[3] - b[1])
+    # fixtures when partly seen, lit things, and a free prop (a rug, a picture, a sofa) when most of it is in frame
+    # and it covers a fair part of the frame: unnamed, the redraw repainted such things differently in every shot
     th = [t for t in shot.get("things") or [] if t["visible_frac"] >= 0.05 and t["kind"] != "prop" or
-          (t.get("lit") and t["visible_frac"] >= 0.02)]
+          (t.get("lit") and t["visible_frac"] >= 0.02) or
+          (t["kind"] == "prop" and t["visible_frac"] >= PROP_SEEN and area(t) >= PROP_AREA)]
     th = [t for t in th if t["name"] != "rug" or t["visible_frac"] >= 0.2]
+    th = sorted(th, key=area, reverse=True)[:MAX_THINGS]
     parts = []
     for t in sorted(th, key=lambda t: (t["box"][0] + t["box"][2]) / 2):
         w = t["words"] if t.get("flame_in_view", True) else t["words"].split(" with ")[0].split(",")[0]
@@ -261,6 +274,18 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         wear_words(ppl, wear, wear_back, cast),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
+
+
+def faces(ppl: list, cast: dict) -> list:
+    """Each person's face reference (cast "face_ref": a crop of their face from the first accepted close shot,
+    facecrop.py) for the people in frame whose face shows: beside the LoRA and the sheet, it holds one face from
+    shot to shot where the LoRA alone let a man's face drift between a single and an over-the-shoulder shot."""
+    out = []
+    for k, box, ang, *_ in ppl:
+        f = (cast.get(k) or {}).get("face_ref")
+        if f and ang < 115 and f not in out:
+            out.append(f)
+    return out
 
 
 def light_words(set_dir: str | None) -> str:
@@ -344,7 +369,7 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker")),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
-                         "size": [1152, 640], "refs": sheets + list(run.get("extra_refs") or []),
+                         "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or []),
                          "loras": loras,
                          "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])

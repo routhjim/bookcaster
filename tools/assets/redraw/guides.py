@@ -300,7 +300,8 @@ def one_scene(sd: Path, dev, things=None, day=None):
         if pose_picture(res, sh["camera"], w, h, g / f"{cam}_pose.png"):
             truth["shots"][cam]["pose"] = str(g / f"{cam}_pose.png")
         if things is not None:
-            truth["shots"][cam]["things"] = seen_things(things, sh["camera"], d)
+            hid = set(res.get("hidden") or [])       # set items the scene hid (a figure brought its own chair)
+            truth["shots"][cam]["things"] = seen_things([t for t in things if t["name"] not in hid], sh["camera"], d)
             truth["shots"][cam]["daylight"] = day
     (sd / "truth.json").write_text(json.dumps(truth, indent=1))
     return truth
