@@ -1,0 +1,16 @@
+{
+  "id": "chair_balloon_back_01",
+  "class": "prop",
+  "description": "Victorian balloon-back dining / side chair, mahogany, front -Y: turned and tapered front legs with ring collars, sabre back legs rising into a rounded balloon-hoop back with a shaped waist rail, stuffed-over seat in worn oxblood leather with a row of brass nail heads, seat rails below. Seat top 0.47 m, overall 0.88 m.",
+  "tags": ["chair", "dining-chair", "side-chair", "balloon-back", "victorian", "furniture", "mahogany", "leather", "interior"],
+  "tier": "mid",
+  "size_m": [0.46, 0.50, 0.88],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "seat_nails", "position": [0.30, -0.55, 0.62], "target": [0.05, -0.18, 0.42], "focal": 60},
+    {"name": "back", "position": [-0.45, 0.85, 0.95], "target": [0.0, 0.18, 0.66], "focal": 50}
+  ]
+}

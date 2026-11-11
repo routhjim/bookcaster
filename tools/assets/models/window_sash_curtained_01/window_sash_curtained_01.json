@@ -1,0 +1,91 @@
+{
+ "id": "window_sash_curtained_01",
+ "class": "prop",
+ "description": "Victorian six-over-six sash window with heavy curtains, front -Y (room side), floor-standing unit 1.70 W x 0.36 D x 2.80 H m. Painted (cream, chipped) box frame, two glazed sashes with glazing bars and meeting rails, window board and apron at 0.75 m, moulded architrave with corner blocks; brass curtain pole at 2.70 m with ball finials, rings and wall brackets; two heavy brown-and-gold damask curtains in folds, tied back at 1.05 m with cord and tassels, flaring to the floor. Built to sit in a wall: the room-side wall face is 0.23 m in front of the back of the bounds; the wall needs an opening 1.06 W x 1.86 H m with its sill 0.75 m above the floor, centred on the unit (the reveal linings, frame and glass are behind the wall face).",
+ "tags": [
+  "window",
+  "sash-window",
+  "curtains",
+  "drapes",
+  "victorian",
+  "interior",
+  "architecture",
+  "glass",
+  "fixture"
+ ],
+ "tier": "mid",
+ "texture_px": 2048,
+ "size_m": [
+  1.7,
+  0.36,
+  2.8
+ ],
+ "size_tolerance": 0.12,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "front",
+   "position": [
+    0.0,
+    -3.6,
+    1.5
+   ],
+   "target": [
+    0.0,
+    0.0,
+    1.45
+   ],
+   "focal": 35
+  },
+  {
+   "name": "tieback",
+   "position": [
+    -0.25,
+    -1.0,
+    1.2
+   ],
+   "target": [
+    -0.62,
+    -0.05,
+    1.05
+   ],
+   "focal": 50
+  },
+  {
+   "name": "sash",
+   "position": [
+    0.35,
+    -0.9,
+    1.75
+   ],
+   "target": [
+    0.1,
+    0.1,
+    1.6
+   ],
+   "focal": 50
+  }
+ ],
+ "paint": {
+  "prompt": "heavy antique brown and gold damask curtains in deep folds, cream painted wooden window frame with chipped paint, brass curtain pole",
+  "views": {
+   "ring": 5,
+   "upper": 3,
+   "top": false
+  },
+  "close": {
+   "box": [
+    0.0,
+    0.0,
+    0.25,
+    0.4,
+    0.6,
+    0.55
+   ],
+   "ring": 3,
+   "top": false
+  }
+ }
+}

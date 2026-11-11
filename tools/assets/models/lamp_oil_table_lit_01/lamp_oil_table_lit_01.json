@@ -1,0 +1,59 @@
+{
+  "id": "lamp_oil_table_lit_01",
+  "class": "prop",
+  "description": "Victorian paraffin (oil) table lamp, lit, 0.60 m: stepped brass foot, turned brass column with beads, round brass font, burner with a pierced gallery and a side wick-winder knob, opal (milk-glass) globe shade, tall clear glass chimney. Tarnished brass, polished where handled. The globe glows warm and a flame burns in the chimney (emissive). Unlit twin: lamp_oil_table_01.",
+  "tags": [
+    "lamp",
+    "oil-lamp",
+    "paraffin",
+    "kerosene",
+    "light",
+    "victorian",
+    "brass",
+    "glass",
+    "table",
+    "interior",
+    "lit"
+  ],
+  "tier": "mid",
+  "size_m": [
+    0.2,
+    0.2,
+    0.6
+  ],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "variant": "lit",
+  "cameras": [
+    {
+      "name": "burner",
+      "position": [
+        0.12,
+        -0.3,
+        0.42
+      ],
+      "target": [
+        0.0,
+        0.0,
+        0.33
+      ],
+      "focal": 70
+    },
+    {
+      "name": "whole",
+      "position": [
+        0.35,
+        -0.75,
+        0.55
+      ],
+      "target": [
+        0.0,
+        0.0,
+        0.3
+      ],
+      "focal": 50
+    }
+  ]
+}

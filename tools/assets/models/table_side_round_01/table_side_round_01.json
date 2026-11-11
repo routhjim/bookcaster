@@ -1,0 +1,16 @@
+{
+  "id": "table_side_round_01",
+  "class": "prop",
+  "description": "Victorian round tripod side table (wine/occasional table), mahogany: 0.60 m dish-edged round top on a square bearer block, turned baluster column with a vase knop, beads and a ring collar, three snake-curved splayed legs on pad feet. French-polished, worn paler on the edges, grime in the turnings. Top surface at 0.72 m.",
+  "tags": ["table", "side-table", "tripod", "round", "victorian", "furniture", "mahogany", "turned", "interior"],
+  "tier": "mid",
+  "size_m": [0.60, 0.60, 0.72],
+  "size_tolerance": 0.1,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "column", "position": [0.35, -0.55, 0.45], "target": [0.0, 0.0, 0.38], "focal": 60},
+    {"name": "edge", "position": [0.2, -0.55, 0.85], "target": [0.05, -0.27, 0.71], "focal": 70}
+  ]
+}

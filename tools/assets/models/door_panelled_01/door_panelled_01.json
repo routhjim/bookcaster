@@ -1,0 +1,17 @@
+{
+  "id": "door_panelled_01",
+  "class": "prop",
+  "description": "Victorian four-panel interior door, closed, in its frame, front -Y (room side), 1.06 W x 0.17 D x 2.14 H m. Leaf 0.84 x 2.03 m, grained dark oak finish: stiles, top rail, deep lock rail and bottom rail, two tall upper and two short lower fielded panels with bead mouldings; brass knob on a rose, keyhole escutcheon and finger plate; painted cream moulded architrave with plinth blocks and a lining through the wall. Built to sit in a wall: the room-side wall face is 0.022 m behind the front of the bounds (the architrave's thickness); the wall needs an opening 0.894 W x 2.045 H m from the floor, centred on the unit. The leaf's far side is plain (not modelled for the next room).",
+  "tags": ["door", "panelled-door", "four-panel", "victorian", "interior", "architecture", "oak", "brass", "fixture"],
+  "tier": "mid",
+  "size_m": [1.06, 0.17, 2.14],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "front", "position": [0.0, -3.4, 1.1], "target": [0.0, 0.0, 1.05], "focal": 35},
+    {"name": "knob", "position": [0.15, -0.55, 1.05], "target": [0.355, -0.03, 0.93], "focal": 60}
+  ],
+  "paint": {"prompt": "Victorian four-panel interior door with a dark grained oak finish, worn and darkened round the brass knob, cream painted architrave with chipped paint", "views": {"ring": 4, "upper": 2, "top": false}, "close": {"box": [0.55, 0.0, 0.35, 0.9, 0.5, 0.55], "ring": 3, "top": false}}
+}
