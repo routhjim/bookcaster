@@ -20,6 +20,8 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
                                                within 100 deg of the camera, the others at "strength_bg")
       "set_facts": true,                      (name the set's things the frame holds, lit ones as lit: guides.py --set)
       "room_all": false,                      (the room's contents for every shot; default: wide shots only)
+      "extra_refs": ["/abs/anchor.png", ...], (method image: more reference pictures after the sheet, e.g. the
+                                               scene's first accepted redraw, so later shots draw the same room)
       "seed": 7, "only": ["scene/cam", ...]}
 Outputs: method edit -> edit_jobs.json for tools/assets/qwen_edit.py; method image -> image_jobs.jsonl for
 tools/qwen_image.py --serve (one JSON line per picture). Each job id is "<scene>__<cam>[__s<strength>]".
@@ -230,7 +232,7 @@ def main():
                                                 set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
                                                 run.get("body_words", False)),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
-                         "size": [1152, 640], "refs": [run["sheet"]],
+                         "size": [1152, 640], "refs": [run["sheet"]] + list(run.get("extra_refs") or []),
                          "loras": [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]],
                          "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])

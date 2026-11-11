@@ -280,6 +280,18 @@ def one_scene(sd: Path, dev, things=None, day=None):
                         allp |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
                 allp = F.max_pool2d(allp.float()[None, None], 9, 1, 4)[0, 0] > 0.5
                 save(allp.float() * 255, g / f"{cam}_mask_{name}.png")
+            # three levels for a per-pixel strength (qwen_image reads the grey as a blend of its two strengths):
+            # people facing within 100 deg white, the room mid grey, people turned past 100 deg black (they keep the
+            # guide's body: at higher strength the model swung a turned-away body to profile, 11-11 round 1)
+            tier = torch.full_like(d, 128.0)
+            for val, keep in ((255.0, lambda v: (v.get("body_to_camera_deg") or 0) <= 100),
+                              (0.0, lambda v: (v.get("body_to_camera_deg") or 0) > 100)):
+                for key, v in people.items():
+                    if keep(v):
+                        m = torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
+                        m = F.max_pool2d(m.float()[None, None], 9, 1, 4)[0, 0] > 0.5
+                        tier[m] = val
+            save(tier, g / f"{cam}_mask_tiered.png")
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,
