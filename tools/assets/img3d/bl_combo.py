@@ -659,7 +659,9 @@ for side in ("l", "r"):
             ts = np.abs(tp - t0) < 0.012
             if ts.any():
                 cap[k] = max(float(trad[ts].min()) - 0.01, 0.04)
-        rlim = np.minimum(rprof, cap)
+        # the torso cap matters near the shoulder only; along the forearm the slab meets the hip and the coat skirt,
+        # so there the tube is the sleeve's own radius, never below the job's floor
+        rlim = np.where(st > 0.4 * L, np.maximum(rprof, SLEEVE_R), np.minimum(rprof, cap))
         thr = np.interp(np.clip(p, 0, L), st, rlim)
         REP.setdefault("sleeve_tube_m", {})[side] = {"max": round(float(rlim.max()), 3), "min": round(float(rlim.min()), 3),
                                                      "median": round(float(np.median(rlim)), 3)}
