@@ -541,7 +541,8 @@ def cloth(key, d, seams):
     noise.inputs["Scale"].default_value = d.get("heather_scale", 40.0)
     noise.inputs["Detail"].default_value = 6.0
     nt.links.new(pos, noise.inputs["Vector"])
-    height = _math(nt, "MULTIPLY_ADD", h, 0.7, _math(nt, "MULTIPLY", fib.outputs["Fac"], 0.5))
+    bw = S("bake_weave", 1.0)        # the engine lays thread-scale weave over the bake: keep the baked one faint
+    height = _math(nt, "MULTIPLY_ADD", h, 0.7 * bw, _math(nt, "MULTIPLY", fib.outputs["Fac"], 0.5 * bw))
     colv = _ramp(nt, noise.outputs["Fac"], 0.3, 0.7, 1.0 - d.get("vary", 0.0), 1.0 + d.get("vary", 0.0))
     colv = _math(nt, "MULTIPLY", colv, _ramp(nt, h, 0.0, 1.0, 1.0 - d.get("weave_tone", 0.12), 1.0))
     if d.get("stripe"):
@@ -561,6 +562,11 @@ def cloth(key, d, seams):
         geo = nt.nodes.new("ShaderNodeNewGeometry")
         wear = _ramp(nt, geo.outputs["Pointiness"], 0.51, 0.6, 0.0, d["wear"])
         colv = _math(nt, "MULTIPLY", colv, _math(nt, "ADD", wear, 1.0))
+    # tone per panel: a face attribute "tone" (offset around 0) set per garment part before the bake
+    ta = nt.nodes.new("ShaderNodeAttribute")
+    ta.attribute_type = "GEOMETRY"
+    ta.attribute_name = "tone"
+    colv = _math(nt, "MULTIPLY", colv, _math(nt, "ADD", ta.outputs["Fac"], 1.0))
     hsv = nt.nodes.new("ShaderNodeHueSaturation")
     hsv.inputs["Color"].default_value = (*col, 1)
     nt.links.new(colv, hsv.inputs["Value"])
@@ -1053,6 +1059,10 @@ def build(arm, body, head):
     ease_torso(shirt, F, girth((0.5, 0.8, 0.8)), (0.004, 0.004, 0.004), F.waist_z - 0.1, F.armpit_z)
     smooth(shirt, 3)
     fit_layer(shirt, under, sh.get("gap", 0.004))
+
+    def near_wrist(p):
+        return any((p - F.j[f"hand_{s_}"]).length < 0.09 for s_ in ("l", "r"))
+    REPORT["tidy_cuff"] = tidy_edges(shirt, near_wrist, iters=20)
     if head is not None:
         # the body has an opening at the neck and upper chest that the head mesh fills: cover it with the head
         # mesh's own faces below the collar line
@@ -1065,6 +1075,8 @@ def build(arm, body, head):
             fit_layer(patch, under + [shirt], sh.get("gap", 0.004))
             shirt = weld(join([shirt, patch], "shirt"))
     parts["shirt"] = shirt
+    if sh.get("cuffs", True):
+        parts["shirt_cuffs"] = shirt_cuffs(F, co, cls, sh)
 
     # ---- standing collar: a smooth cone around the neck (not the neck's contour), rounded top, open at the front
     collar, cinfo = stand_collar(F, under + [shirt], F.neck_z - sh.get("collar_below_neck", 0.03), sh)
@@ -1078,7 +1090,9 @@ def build(arm, body, head):
         pts = [co[i] for i, c in enumerate(cls)
                if (c == "foot" or (c == "calf" and co[i].z < F.ankle_z + so.get("top_above_ankle", 0.03)))
                and loc[i][0] * sgn > 0]
-        objs.append(shoe(F, pts, s_, so))
+        sh_ob = shoe(F, pts, s_, so)
+        objs.append(sh_ob)
+        objs.extend(sole_and_heel(F, sh_ob, s_, so))
     parts["shoes"] = join(objs, "shoes")
 
     # ---- trousers: lofted from girths, two legs and a seat with a dropped crotch (no wrap of the body)
@@ -1095,11 +1109,13 @@ def build(arm, body, head):
                 lambda lat, fw, z: (2 if lat >= 0 else 0) + (1 if fw > hip_fwd else 0),
                 lambda lat, fw, z: z > t_top - 0.012,
                 collide_keep=lambda p: p[2] < F.waist_z + 0.12)
+    REPORT["tidy_hem"] = tidy_edges(trousers, lambda p: p.z < F.ankle_z + 0.06, iters=16)
     parts["trousers"] = trousers
 
     # ---- waistcoat
     wc = S("waistcoat", {})
     vz = F.neck_z - wc.get("v_depth", 0.17)
+    F.wc_vz = vz
     vhalf = wc.get("v_half_top", 0.075)
 
     def v_half(z):
@@ -1192,11 +1208,14 @@ def build(arm, body, head):
     ease_torso(coat, F, girth(ct.get("hang", (0.08, 0.3, 0.15))), ct.get("ease", (0.030, 0.026, 0.026)),
                F.waist_z - 0.1, F.armpit_z)
     smooth(coat, 4)
+    shoulder_pad(coat, F, ct.get("shoulder_pad", 0.0), ct.get("shoulder_pad_r", 0.11))
     fit_layer(coat, under + [shirt, collar, waistcoat, parts["wc_buttons"], parts["wc_lapels"], parts["cravat"]],
               ct.get("gap", 0.006))
     boundary_snap(coat, F, lambda lat, fw, z: (math.copysign(open_half(z), lat)
                                                if fw > 0 and z < zn + 0.005 and abs(lat) < open_half(z) + 0.04
                                                else None))
+    if ct.get("sleeve_end_t") is not None:
+        REPORT["sleeve_extended"] = extend_sleeves(coat, F, ct["sleeve_end_t"])
     cuffs(F, coat, ct)
     parts["coat"] = coat
     cb = collider([coat])
@@ -1521,8 +1540,10 @@ def stand_collar(F, under, z0, sh, nang=96):
 
 
 def cravat_tied(F, ci, shirt, cv):
-    """Silk cravat: a soft band wound over the lower collar (an elliptical tube with lengthwise creases), a knot with
-    volume and folds at the throat, and two full, ruffled ends falling over the shirt front, one over the other."""
+    """Silk cravat (an ascot): a smooth band once round the collar base, a soft knot at the throat (a rounded
+    cushion with two broad folds, not a lump), and two blades that spread from the knot over the shirt front in a
+    few long, soft lengthwise folds, the front blade over the back one, both ending in a clean straight edge tucked
+    under the waistcoat opening."""
     cx, cy = ci["c"]
     R, ang, D = ci["R"], ci["ang"], ci["D"]
     rcol = R + ci["gap"] + ci["flare"] * 0.5
@@ -1535,7 +1556,7 @@ def cravat_tied(F, ci, shirt, cv):
         row = []
         for k in range(nps):
             ps = 2 * math.pi * k / nps
-            crease = 0.0012 * math.sin(5 * ang[a] + 3 * ps) + 0.0008 * math.sin(11 * ang[a] - 2 * ps)
+            crease = cv.get("band_crease", 0.0005) * math.sin(3 * ang[a] + 2 * ps)
             rr = rcol[a] + 0.0015 + ht + ht * math.cos(ps) + crease
             row.append((cx + rr * D[a, 0], cy + rr * D[a, 1], zc + hz * math.sin(ps)))
         rows.append(row)
@@ -1547,12 +1568,14 @@ def cravat_tied(F, ci, shirt, cv):
     kc = Vector((cx + r_front * math.cos(front), cy + r_front * math.sin(front), zc - 0.004))
     kx, ky, kz = cv.get("knot", [0.021, 0.014, 0.019])
     bmk = bmesh.new()
-    bmesh.ops.create_uvsphere(bmk, u_segments=24, v_segments=14, radius=1.0)
+    bmesh.ops.create_uvsphere(bmk, u_segments=32, v_segments=18, radius=1.0)
     for v in bmk.verts:
         th = math.atan2(v.co.y, v.co.x)
         ph = math.asin(max(-1, min(1, v.co.z)))
-        fold = 1 + 0.09 * math.sin(4 * th + 1.3) * math.cos(ph) + 0.05 * math.sin(7 * ph + th)
-        v.co = Vector((v.co.x * kx * fold, v.co.y * ky * fold, v.co.z * kz * fold))
+        # a cushion: flatter at the back (against the throat), two broad diagonal folds across the front
+        fold = 1 + cv.get("knot_fold", 0.06) * math.cos(2 * th + 2 * ph) * math.cos(ph)
+        back = 0.55 if v.co.y > 0 else 1.0
+        v.co = Vector((v.co.x * kx * fold, v.co.y * ky * fold * back, v.co.z * kz * fold))
     me = bpy.data.meshes.new("knot")
     bmk.to_mesh(me)
     bmk.free()
@@ -1566,30 +1589,37 @@ def cravat_tied(F, ci, shirt, cv):
     objs.append(knot)
     sb = collider([shirt])
     k_lat, _, k_z = F.local(kc)
-    for n_end, sgn in enumerate((-1, 1)):
-        L = cv.get("end_len", [0.105, 0.12])[n_end]
+    z_end = getattr(F, "wc_vz", k_z - 0.14) - cv.get("tuck", 0.015)
+    nfold = cv.get("folds", 3)
+    for n_end, sgn in enumerate((1, -1)):          # back blade first, then the front blade over it
+        L = max(0.04, (k_z - 0.012) - z_end - 0.008 * n_end)
+        ns, nw = 28, 16
         rows = []
-        ns, nw = 24, 12
+        last = None
         for i in range(ns + 1):
-            s = i / ns
-            cl = k_lat + sgn * (0.004 + cv.get("end_fan", 0.024) * s ** 0.8)
-            z = k_z - 0.012 - L * s
-            w = cv.get("end_w0", 0.026) + (cv.get("end_w1", 0.05) - cv.get("end_w0", 0.026)) * s ** 0.7
-            tilt = sgn * 0.25 * s
+            s_ = i / ns
+            cl = k_lat + sgn * (0.003 + cv.get("end_fan", 0.012) * s_)
+            z = k_z - 0.012 - L * s_
+            w = cv.get("end_w0", 0.03) + (cv.get("end_w1", 0.08) - cv.get("end_w0", 0.03)) * min(1.0, s_ * 1.6) ** 0.6
             row = []
             for j in range(nw + 1):
                 u = j / nw - 0.5
-                lat = cl + u * w * math.cos(tilt)
-                zz = z + u * w * math.sin(tilt)
-                hit = surface_point(sb, F, lat, zz)
-                bulge = cv.get("end_bulge", 0.006) * (1 - (2 * u) ** 2) * (0.4 + 0.6 * s)
-                ruffle = cv.get("ruffle", 0.002) * s ** 1.5 * math.sin(5 * math.pi * s + 2.5 * math.pi * u * sgn)
-                off = cv.get("end_gap", 0.008) + 0.004 * n_end + bulge + ruffle + 0.006 * (1 - s) ** 3
-                if hit is None:
-                    row.append(tuple(F.world(lat, 0.1, zz)))
-                else:
-                    p, n = hit
-                    row.append(tuple(p + n * off))
+                lat = cl + u * w
+                hit = surface_point(sb, F, lat, z)
+                if hit is not None:
+                    last = hit
+                p, nrm = (hit if hit is not None else (last if last is not None else (F.world(lat, 0.1, z), F.fwd)))
+                if hit is None and last is not None:
+                    p = F.world(lat, F.local(last[0])[1], z)
+                # soft lengthwise folds, deepest mid-blade, flat at the knot and at the tucked end
+                env = math.sin(math.pi * min(1.0, s_ * 1.15))
+                fold = cv.get("fold_amp", 0.004) * env * (0.5 + 0.5 * math.cos(2 * math.pi * nfold * u + n_end))
+                bulge = cv.get("end_bulge", 0.006) * (1 - (2 * u) ** 2) * (0.5 + 0.5 * env)
+                off = cv.get("end_gap", 0.006) + 0.004 * n_end + bulge + fold + 0.008 * (1 - s_) ** 3
+                # the tucked end lies flat on the shirt, under the waistcoat
+                tk = min(1.0, max(0.0, (z - z_end) / 0.035))
+                off = 0.0022 + (off - 0.0022) * tk * tk * (3 - 2 * tk)
+                row.append(tuple(p + nrm * off))
             rows.append(row)
         objs.append(mesh_from_grid(f"cravat_end{n_end}", rows))
     ob = join(objs, "cravat")
@@ -2018,6 +2048,183 @@ def shoe(F, pts, side, so, nst=22, nang=40):
     return ob
 
 
+def extend_sleeves(ob, F, t_end, steps=3, taper=0.1):
+    """The body's wrist is weighted to the hand, so a sleeve cut from the body by class stops well short of it.
+    Carry each sleeve's open end on along the forearm axis to t_end (metres past the hand joint) as a straight
+    tube: the end loop is extruded in steps, each ring keeping the loop's shape, the last ring square to the arm."""
+    out = {}
+    for s_ in ("l", "r"):
+        h, e = F.j[f"hand_{s_}"], F.j[f"lowerarm_{s_}"]
+        ax = (h - e).normalized()
+        bm = bm_of(ob)
+        loop_e = [ed for ed in bm.edges if ed.is_boundary and all(
+            (v.co - h).length < 0.25 and -0.25 < (v.co - h).dot(ax) < t_end - 0.005 and (v.co - h).dot(ax) > -0.2
+            and ((v.co - h) - ax * (v.co - h).dot(ax)).length < 0.09 for v in ed.verts)]
+        if not loop_e:
+            bm.free()
+            continue
+        vs = {v for ed in loop_e for v in ed.verts}
+        t0 = float(np.mean([(v.co - h).dot(ax) for v in vs]))
+        cur = loop_e
+        for k in range(1, steps + 1):
+            res = bmesh.ops.extrude_edge_only(bm, edges=cur)
+            nv = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
+            target = t0 + (t_end - t0) * k / steps
+            for v in nv:
+                v.co = v.co + ax * (target - (v.co - h).dot(ax))
+                c = h + ax * (v.co - h).dot(ax)
+                v.co = c + (v.co - c) * (1 - taper / steps)       # a sleeve narrows a little to the wrist
+            cur = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge) and g.is_boundary]
+        bm.to_mesh(ob.data)
+        bm.free()
+        out[s_] = round(t_end - t0, 3)
+    return out
+
+
+def shoulder_pad(ob, F, pad, rad):
+    """A little structure at the shoulder: round each shoulder point the cloth is carried out (lateral) and a
+    touch up, falling off smoothly, so the coat's shoulder line is wider and squarer than the lean body's."""
+    if pad <= 0:
+        return
+    co = get_co(ob)
+    for s_ in ("l", "r"):
+        j = np.array(F.j[f"upperarm_{s_}"])
+        sg = 1 if F.local(F.j[f"upperarm_{s_}"])[0] > 0 else -1
+        q = j + np.array(F.lat) * sg * 0.02 + np.array([0, 0, 0.035])
+        d = np.linalg.norm(co - q, axis=1)
+        w = np.clip(1 - d / rad, 0, 1) ** 2
+        co += w[:, None] * (np.array(F.lat) * sg * pad + np.array([0, 0, pad * 0.35]))
+    set_co(ob, co)
+    REPORT["shoulder_pad"] = pad
+
+
+def tidy_edges(ob, near_fn, iters=12, ring=2):
+    """Clean an open edge (a cuff end, a hem): boundary loops whose vertices pass near_fn are smoothed along the
+    loop (Laplacian on the loop only), then their inner rings follow, so the edge is a clean curve, not the
+    stair-step of the faces it was cut from."""
+    bm = bm_of(ob)
+    bv = [v for v in bm.verts if v.is_boundary and near_fn(v.co)]
+    sel = set(v.index for v in bv)
+    if not sel:
+        bm.free()
+        return 0
+    nb = {v.index: [e.other_vert(v).index for e in v.link_edges if e.is_boundary and e.other_vert(v).index in sel]
+          for v in bv}
+    co = np.array([v.co[:] for v in bm.verts])
+    start = co.copy()
+    for _ in range(iters):
+        new = co.copy()
+        for i, ns in nb.items():
+            if len(ns) == 2:
+                new[i] = 0.5 * co[i] + 0.25 * (co[ns[0]] + co[ns[1]])
+        co = new
+    moved = co - start
+    # inner rings follow with falloff
+    front = set(sel)
+    for k in range(1, ring + 1):
+        nxt = set()
+        for i in front:
+            for e in bm.verts[i].link_edges:
+                j = e.other_vert(bm.verts[i]).index
+                if j not in sel and j not in nxt:
+                    nxt.add(j)
+        for j in nxt:
+            ns = [e.other_vert(bm.verts[j]).index for e in bm.verts[j].link_edges]
+            src = [moved[n] for n in ns if n in front]
+            if src:
+                co[j] = co[j] + np.mean(src, 0) * (1 - k / (ring + 1))
+        sel |= nxt
+        front = nxt
+    for v in bm.verts:
+        v.co = co[v.index]
+    bm.to_mesh(ob.data)
+    bm.free()
+    return len(nb)
+
+
+def shirt_cuffs(F, co, cls, sh, nang=48):
+    """Stiff single cuffs, constructed: an elliptical tube round the wrist (the wrist's own section from the body,
+    + ease), from inside the coat sleeve to cuff_end past the wrist joint, with a rolled edge, so the cuff shows as
+    a clean band instead of the cut end of the shirt sleeve."""
+    objs = []
+    for s_ in ("l", "r"):
+        h, e = F.j[f"hand_{s_}"], F.j[f"lowerarm_{s_}"]
+        ax = (h - e).normalized()
+        u = ax.cross(Vector((0, 0, 1)))
+        if u.length < 1e-3:
+            u = ax.cross(Vector((0, 1, 0)))
+        u.normalize()
+        v = ax.cross(u).normalized()
+        q = []
+        for i, c in enumerate(cls):
+            if c not in ("lowerarm", "hand"):
+                continue
+            d = co[i] - h
+            t = d.dot(ax)
+            if -0.035 < t < 0.0 and d.length < 0.09:
+                q.append((d.dot(u), d.dot(v)))
+        if len(q) < 8:
+            continue
+        Q = np.array(q)
+        c2 = Q.mean(0)
+        hull = hull_np(Q - c2)
+        ang = np.linspace(0, 2 * np.pi, nang, endpoint=False)
+        R = ray_hull_np(hull, dirs(ang)) + sh.get("cuff_ease", 0.008)
+        for _ in range(3):
+            R = sum(np.roll(R, k) for k in range(-2, 3)) / 5
+        t0, t1 = sh.get("cuff_start", -0.06), sh.get("cuff_end", 0.04)
+        rows = []
+        for t in np.linspace(t0, t1, 8):
+            rows.append([h + ax * t + u * (c2[0] + R[a] * math.cos(ang[a])) + v * (c2[1] + R[a] * math.sin(ang[a]))
+                         for a in range(nang)])
+        for dr, dt in ((0.0012, 0.0012), (0.0024, -0.0004)):        # rolled edge at the open end
+            rows.append([h + ax * (t1 + dt) + u * (c2[0] + (R[a] + dr) * math.cos(ang[a]))
+                         + v * (c2[1] + (R[a] + dr) * math.sin(ang[a])) for a in range(nang)])
+        objs.append(grid_mesh(f"cuff_{s_}", rows, [True] * nang, closed=True))
+    return join(objs, "shirt_cuffs")
+
+
+def prism(name, F, poly, z0, z1):
+    """A closed slab: polygon (lat, fwd) pairs in the body frame, from z0 to z1, rounded off by one bevel."""
+    n = len(poly)
+    verts = [tuple(F.world(la, fw, z0)) for la, fw in poly] + [tuple(F.world(la, fw, z1)) for la, fw in poly]
+    faces = [tuple(range(n))[::-1], tuple(range(n, 2 * n))]
+    faces += [(i, (i + 1) % n, n + (i + 1) % n, n + i) for i in range(n)]
+    me = bpy.data.meshes.new(name)
+    me.from_pydata(verts, [], faces)
+    ob = new_obj(name, me)
+    bm = bm_of(ob)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bmesh.ops.bevel(bm, geom=[e for e in bm.edges if len(e.link_faces) == 2 and
+                              abs(e.link_faces[0].normal.dot(e.link_faces[1].normal)) < 0.5],
+                    offset=min(0.0025, (z1 - z0) * 0.3), segments=2, affect="EDGES", profile=0.5)
+    bm.to_mesh(ob.data)
+    bm.free()
+    return ob
+
+
+def sole_and_heel(F, shoe_ob, side, so):
+    """A sole that stands a welt's width proud of the upper all round, and a stacked heel under the back third."""
+    co = np.array([v.co[:] for v in shoe_ob.data.vertices])
+    zb = so.get("sole_bottom", -0.004)
+    low = co[co[:, 2] < zb + 0.015]
+    L = local_np(F, low)[:, :2]
+    h = hull_np(L)
+    c = h.mean(0)
+    welt = so.get("welt", 0.004)
+    poly = [tuple(c + (p - c) * (1 + welt / max(1e-4, np.linalg.norm(p - c)))) for p in h]
+    # the foot stands on the floor, so the sole and heel are built up from it around the upper's base: the welt
+    # edge and the heel stack show, the upper sits inside them
+    sole = prism(f"sole_{side}", F, poly, zb, zb + so.get("sole_t", 0.011))
+    f0, f1 = L[:, 1].min(), L[:, 1].max()
+    cut = f0 + (f1 - f0) * so.get("heel_frac", 0.28)
+    hh = hull_np(L[L[:, 1] <= cut])
+    hc = hh.mean(0)
+    hp = [tuple(hc + (p - hc) * (1 + welt * 0.5 / max(1e-4, np.linalg.norm(p - hc)))) for p in hh]
+    heel = prism(f"heel_{side}", F, hp, zb, zb + so.get("heel_h", 0.026))
+    return [sole, heel]
+
+
 def cuffs(F, coat, ct):
     """Turned-back cuffs: the last stretch of each sleeve stands a little proud."""
     L = ct.get("cuff_len", 0.075)
@@ -2329,6 +2536,35 @@ UV_DENSITY = {"collar": 2.2, "cravat": 2.0, "lapels": 1.6, "coat_collar": 1.8, "
               "skirt": 0.75, "shoes": 0.8}
 
 
+def tag_tone(parts):
+    """Slight tone variation across panels: each island of each part gets its own small offset."""
+    rng = np.random.default_rng(S("tone_seed", 11))
+    amp = S("tone_vary", 0.05)
+    for key, ob in parts.items():
+        me = ob.data
+        bm = bm_of(ob)
+        bm.faces.ensure_lookup_table()
+        isl = np.full(len(bm.faces), -1)
+        n = 0
+        for f in bm.faces:
+            if isl[f.index] >= 0:
+                continue
+            stack = [f]
+            isl[f.index] = n
+            while stack:
+                g = stack.pop()
+                for e in g.edges:
+                    for h in e.link_faces:
+                        if isl[h.index] < 0:
+                            isl[h.index] = n
+                            stack.append(h)
+            n += 1
+        bm.free()
+        off = rng.uniform(-amp, amp, max(n, 1))
+        a = me.attributes.get("tone") or me.attributes.new("tone", "FLOAT", "FACE")
+        a.data.foreach_set("value", off[isl].astype(float))
+
+
 def tag_density(parts):
     for key, ob in parts.items():
         a = ob.data.attributes.new("uvk", "FLOAT", "FACE")
@@ -2376,7 +2612,13 @@ def unwrap_part(ob):
         q = uv[p.loop_start:p.loop_start + p.loop_total]
         a2 += 0.5 * abs(np.dot(q[:, 0], np.roll(q[:, 1], 1)) - np.dot(q[:, 1], np.roll(q[:, 0], 1)))
     if a2 > 0:
-        me.uv_layers[0].data.foreach_set("uv", (uv * math.sqrt(a3 / a2)).ravel())
+        uv = uv * math.sqrt(a3 / a2)
+        me.uv_layers[0].data.foreach_set("uv", uv.ravel())
+    # a second channel in centimetres, kept through the pack: the engine tiles thread-scale weave maps with it at a
+    # real thread density
+    cm = me.uv_layers.new(name="UVcm")
+    cm.data.foreach_set("uv", (uv * 100.0).ravel())
+    me.uv_layers.active_index = 0
 
 
 def uv_unwrap(ob):
@@ -2397,7 +2639,9 @@ def uv_unwrap(ob):
         me.uv_layers[0].data.foreach_get("uv", uv)
         uv = (uv.reshape(-1, 2) * per_loop[:, None]).ravel()
         me.uv_layers[0].data.foreach_set("uv", uv)
-    # pack works on selected UVs; in a background session UV selection is not the mesh selection unless synced
+    # pack works on selected UVs of the active layer; in a background session UV selection is not the mesh
+    # selection unless synced
+    me.uv_layers.active_index = 0
     bpy.context.scene.tool_settings.use_uv_select_sync = True
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
@@ -2519,8 +2763,18 @@ def baked_material(ob, imgs):
     nmap = nt.nodes.new("ShaderNodeNormalMap")
     nt.links.new(nm.outputs["Color"], nmap.inputs["Color"])
     nt.links.new(nmap.outputs["Normal"], p.inputs["Normal"])
-    ob.data.materials.clear()
-    ob.data.materials.append(m)
+    # one slot per cloth, all on the same baked maps: the slot name (MB_<cloth>) tells the engine which cloth
+    # shading and weave to put over the bake
+    for i, slot in enumerate(ob.material_slots):
+        src = slot.material
+        if src is None or src is m:
+            continue
+        key = src.name[2:] if src.name.startswith("M_") else src.name
+        mb = bpy.data.materials.get(f"MB_{key}") or m.copy()
+        mb.name = f"MB_{key}"
+        ob.data.materials[i] = mb
+    if not ob.material_slots:
+        ob.data.materials.append(m)
 
 
 def to_centimetres(objs, arm):
@@ -2663,6 +2917,7 @@ def main():
     if "bake" in steps or "export" in steps:
         bpy.ops.object.select_all(action="DESELECT")
         tag_density(parts)
+        tag_tone(parts)
         with Timer("uv_parts"):
             for o in garments:
                 unwrap_part(o)

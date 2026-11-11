@@ -45,6 +45,7 @@ mhs = unreal.get_editor_subsystem(unreal.MetaHumanCharacterEditorSubsystem)
 at = unreal.AssetToolsHelpers.get_asset_tools()
 JOB = {}
 RES = [1152, 640]
+CUR_RES = []          # the shot being set up may have its own resolution (portrait full-length stills)
 S = {}
 
 
@@ -83,7 +84,17 @@ def rect(label, loc, rot, cd, size):
 
 
 def light_scene():
-    """Neutral three-point portrait light (front-left key, front-right fill, back rim) on the template level."""
+    """Neutral three-point portrait light (front-left key, front-right fill, back rim) on the template level.
+    "studio": false keeps the level's own light (a set: judge the character in the room's light)."""
+    if not JOB.get("studio", True):
+        if JOB.get("exposure_bias") is not None:
+            ppv = spawn(unreal.PostProcessVolume, (0, 0, 0), label="ch_pp")
+            ppv.set_editor_property("unbound", True)
+            pp = ppv.get_editor_property("settings")
+            pp.set_editor_property("override_auto_exposure_bias", True)
+            pp.set_editor_property("auto_exposure_bias", float(JOB["exposure_bias"]))
+            ppv.set_editor_property("settings", pp)
+        return
     rect("ch_key", (120, 170, 200), (0, -15, -125), JOB.get("key_cd", 40), 140)
     rect("ch_fill", (-190, 210, 160), (0, -5, -50), JOB.get("fill_cd", 14), 220)
     rect("ch_rim", (-60, -210, 230), (0, -25, 75), JOB.get("rim_cd", 25), 120)
@@ -438,6 +449,164 @@ def baked_material(path, texs):
     return m
 
 
+# cloth per baked slot (MB_<cloth>): weave map, its tile in cm (UV channel 1 is in centimetres), how strong the
+# thread normal and occlusion are, roughness, specular, and either cloth fuzz (wool, linen) or anisotropy (silk);
+# never both on one material. Starting values from the outfit research, tuned by eye.
+CLOTH = {
+    "wool": {"weave": "nap", "tile_cm": 4.0, "n": 0.35, "ao": 0.25, "rough": 0.92, "spec": 0.25, "fuzz": 0.65,
+             "fuzz_color": [0.16, 0.16, 0.17]},
+    "wool_lapel": {"weave": "nap", "tile_cm": 4.0, "n": 0.3, "ao": 0.25, "rough": 0.88, "spec": 0.25, "fuzz": 0.6,
+                   "fuzz_color": [0.16, 0.16, 0.17]},
+    "wool_vest": {"weave": "twill22", "tile_cm": 3.429, "n": 0.6, "ao": 0.4, "rough": 0.82, "spec": 0.3,
+                  "fuzz": 0.35, "fuzz_color": [0.2, 0.2, 0.2]},
+    "wool_trousers": {"weave": "twill22", "tile_cm": 3.429, "n": 0.6, "ao": 0.4, "rough": 0.74, "spec": 0.3,
+                      "fuzz": 0.25, "fuzz_color": [0.45, 0.45, 0.44]},
+    "cotton": {"weave": "plain", "tile_cm": 2.909, "n": 0.7, "ao": 0.45, "rough": 0.78, "spec": 0.35, "fuzz": 0.15,
+               "fuzz_color": [0.9, 0.9, 0.88]},
+    "starch": {"weave": "plain", "tile_cm": 2.909, "n": 0.2, "ao": 0.15, "rough": 0.45, "spec": 0.4, "fuzz": 0.0},
+    "silk": {"weave": "satin5", "tile_cm": 1.667, "n": 0.25, "ao": 0.15, "rough": 0.5, "spec": 0.35, "aniso": 0.45},
+    "leather": {"rough": 0.36, "spec": 0.5},
+    "horn": {"rough": 0.3, "spec": 0.5},
+    "thread": {"rough": 0.8, "spec": 0.3},
+}
+
+
+def cloth_material(path, texs, weave, c):
+    """A two-sided material over the baked maps (UV 0) with a thread-scale weave (UV 1 in cm / tile): normals
+    blended (whiteout), weave occlusion in colour and AO, roughness from the cloth with the weave's crown factor,
+    low specular; Cloth shading with fuzz for wool and linen, anisotropy for silk."""
+    MEL = unreal.MaterialEditingLibrary
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    folder, name = path.rsplit("/", 1)
+    m = at.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
+    X = {"x": -1200}
+
+    def node(cls, **props):
+        X["x"] += 40
+        n = MEL.create_material_expression(m, cls, X["x"], 0)
+        for k, v in props.items():
+            n.set_editor_property(k, v)
+        return n
+
+    def link(a, ao, b, bi):
+        MEL.connect_material_expressions(a, ao, b, bi)
+
+    def const(v):
+        if isinstance(v, (list, tuple)):
+            return node(unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(*v, 1.0))
+        return node(unreal.MaterialExpressionConstant, r=float(v))
+
+    def op(cls, a, b, ao="", bo=""):
+        n = node(cls)
+        link(a, ao, n, "A")
+        link(b, bo, n, "B")
+        return n
+
+    def samp(tex, st, uv=None):
+        n = node(unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=st)
+        if uv is not None:
+            link(uv, "", n, "UVs")
+        return n
+    S_COL, S_NRM, S_MSK = (unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL,
+                           unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+    bc = samp(texs["BaseColor"], S_COL)
+    nm = samp(texs["Normal"], S_NRM)
+    rma = samp(texs["RMA"], S_MSK)
+    P = unreal.MaterialProperty
+    outs = {}
+    w = c.get("weave")
+    if w and w in weave:
+        tc = node(unreal.MaterialExpressionTextureCoordinate, coordinate_index=1)
+        uv = op(unreal.MaterialExpressionMultiply, tc, const(1.0 / c["tile_cm"]))
+        wn = samp(weave[w]["N"], S_NRM, uv)
+        wm = samp(weave[w]["M"], S_MSK, uv)
+        # weave normal toward flat by (1 - strength), then whiteout blend with the baked normal
+        wl = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const([0.0, 0.0, 1.0]), "", wl, "A")
+        link(wn, "RGB", wl, "B")
+        link(const(c.get("n", 0.5)), "", wl, "Alpha")
+        rg_a = node(unreal.MaterialExpressionComponentMask, r=True, g=True, b=False, a=False)
+        link(nm, "RGB", rg_a, "")
+        rg_b = node(unreal.MaterialExpressionComponentMask, r=True, g=True, b=False, a=False)
+        link(wl, "", rg_b, "")
+        b_a = node(unreal.MaterialExpressionComponentMask, r=False, g=False, b=True, a=False)
+        link(nm, "RGB", b_a, "")
+        b_b = node(unreal.MaterialExpressionComponentMask, r=False, g=False, b=True, a=False)
+        link(wl, "", b_b, "")
+        xy = op(unreal.MaterialExpressionAdd, rg_a, rg_b)
+        zz = op(unreal.MaterialExpressionMultiply, b_a, b_b)
+        ap = op(unreal.MaterialExpressionAppendVector, xy, zz)
+        nn = node(unreal.MaterialExpressionNormalize)
+        link(ap, "", nn, "VectorInput")
+        outs["MP_NORMAL"] = (nn, "")
+        # thread occlusion: lerp(1, weave AO, k)
+        aol = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const(1.0), "", aol, "A")
+        link(wm, "G", aol, "B")
+        link(const(c.get("ao", 0.3)), "", aol, "Alpha")
+        col = op(unreal.MaterialExpressionMultiply, bc, aol, "RGB", "")
+        outs["MP_BASE_COLOR"] = (col, "")
+        ao = op(unreal.MaterialExpressionMultiply, rma, aol, "B", "")
+        outs["MP_AMBIENT_OCCLUSION"] = (ao, "")
+        rf = op(unreal.MaterialExpressionMultiply, wm, const(2.0), "B", "")
+        rl = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const(1.0), "", rl, "A")
+        link(rf, "", rl, "B")
+        link(const(0.6), "", rl, "Alpha")
+        rough = op(unreal.MaterialExpressionMultiply, rl, const(c.get("rough", 0.8)))
+    else:
+        outs["MP_BASE_COLOR"] = (bc, "RGB")
+        outs["MP_NORMAL"] = (nm, "RGB")
+        outs["MP_AMBIENT_OCCLUSION"] = (rma, "B")
+        rough = const(c.get("rough", 0.8))
+    outs["MP_ROUGHNESS"] = (rough, "")
+    outs["MP_SPECULAR"] = (const(c.get("spec", 0.4)), "")
+    outs["MP_METALLIC"] = (const(0.0), "")
+    if c.get("fuzz", 0) > 0:
+        m.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_CLOTH)
+        outs["MP_SUBSURFACE_COLOR"] = (const(c.get("fuzz_color", [0.2, 0.2, 0.2])), "")
+        outs["CustomData0"] = (const(c["fuzz"]), "")    # the cloth amount: only Make Material Attributes has it
+    elif c.get("aniso"):
+        outs["MP_ANISOTROPY"] = (const(c["aniso"]), "")
+    pins = {"MP_BASE_COLOR": "BaseColor", "MP_NORMAL": "Normal", "MP_ROUGHNESS": "Roughness",
+            "MP_SPECULAR": "Specular", "MP_METALLIC": "Metallic", "MP_AMBIENT_OCCLUSION": "AmbientOcclusion",
+            "MP_SUBSURFACE_COLOR": "SubsurfaceColor", "MP_ANISOTROPY": "Anisotropy", "CustomData0": "CustomData0"}
+    if "CustomData0" in outs:
+        mma = node(unreal.MaterialExpressionMakeMaterialAttributes)
+        for k, (n_, o_) in outs.items():
+            ok = MEL.connect_material_expressions(n_, o_, mma, pins[k])
+            if not ok and k == "CustomData0":
+                ok = MEL.connect_material_expressions(n_, o_, mma, "ClearCoat")
+            if not ok:
+                note(f"{path}: pin {pins[k]} not connected")
+        m.set_editor_property("use_material_attributes", True)
+        MEL.connect_material_property(mma, "", P.MP_MATERIAL_ATTRIBUTES)
+    else:
+        for k, (n_, o_) in outs.items():
+            MEL.connect_material_property(n_, o_, getattr(P, k))
+    m.set_editor_property("two_sided", True)
+    m.set_editor_property("used_with_skeletal_mesh", True)
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, False)
+    return m
+
+
+def import_weave(wdir, dest):
+    out = {}
+    for fn in sorted(os.listdir(wdir)):
+        if not fn.endswith(".png"):
+            continue
+        kind, ch = fn[len("T_weave_"):-4].rsplit("_", 1)
+        tex = import_texture(os.path.join(wdir, fn), dest, "normal" if ch == "N" else "mask")
+        tex.set_editor_property("address_x", unreal.TextureAddress.TA_WRAP)
+        tex.set_editor_property("address_y", unreal.TextureAddress.TA_WRAP)
+        tex.set_editor_property("never_stream", True)
+        EAL.save_loaded_asset(tex, False)
+        out.setdefault(kind, {})[ch] = tex
+    return out
+
+
 def import_outfit(spec):
     """Outfit + trimmed body FBX from the Blender step, baked textures, a material instance on the outfit."""
     t0 = time.time()
@@ -451,19 +620,31 @@ def import_outfit(spec):
             for k, kind in (("BaseColor", "color"), ("Normal", "normal"), ("RMA", "mask"))}
     mi = baked_material(dest + "/M_OutfitBaked", texs)
     r["material"] = mi.get_path_name()
+    weave = import_weave(spec["weave"], dest + "/Weave") if spec.get("weave") else {}
+    cloth = dict(CLOTH, **spec.get("cloth", {}))
+    made = {}
     sk = EAL.load_asset(r["outfit"])
     mats = []
     for sm in sk.get_editor_property("materials"):       # the array holds copies: rebuild it
         sm2 = unreal.SkeletalMaterial()
-        # a skin slot (hands carried in the outfit) keeps its own material; refresh() gives it the body's skin
-        if "skin" not in str(sm.get_editor_property("material_slot_name")).lower():
-            sm2.set_editor_property("material_interface", mi)
-        else:
+        slot = str(sm.get_editor_property("material_slot_name"))
+        key = slot[3:] if slot.startswith("MB_") else None
+        if "skin" in slot.lower():
+            # a skin slot (hands carried in the outfit) keeps its own material; refresh() gives it the body's skin
             sm2.set_editor_property("material_interface", sm.get_editor_property("material_interface"))
+        elif spec.get("cloth_slots", True) and key in cloth:
+            if key not in made:
+                made[key] = cloth_material(f"{dest}/M_Cloth_{key}", texs, weave, cloth[key])
+            sm2.set_editor_property("material_interface", made[key])
+        else:
+            sm2.set_editor_property("material_interface", mi)
         sm2.set_editor_property("material_slot_name", sm.get_editor_property("material_slot_name"))
         mats.append(sm2)
     sk.set_editor_property("materials", mats)
     EAL.save_loaded_asset(sk, False)
+    r["cloth"] = {k: v.get_path_name() for k, v in made.items()}
+    if made:
+        JOB["garment_material"] = None          # the slots carry their own cloth now
     r["time_s"] = round(time.time() - t0, 1)
     S["r"]["import_outfit"] = r
     log(f"import_outfit {json.dumps(r)}")
@@ -901,7 +1082,8 @@ def camera(name, target, az, el, dist, focal):
     cam.set_actor_rotation(unreal.MathLibrary.find_look_at_rotation(loc, target), False)
     cc = cam.get_cine_camera_component()
     fb = cc.get_editor_property("filmback")
-    fb.sensor_width, fb.sensor_height = 36.0, 36.0 * RES[1] / RES[0]
+    res = CUR_RES[0] if CUR_RES else RES
+    fb.sensor_width, fb.sensor_height = 36.0, 36.0 * res[1] / res[0]
     cc.set_editor_property("filmback", fb)
     cc.set_editor_property("current_focal_length", focal)
     fs = cc.get_editor_property("focus_settings")
@@ -975,6 +1157,16 @@ def aim_point(sh):
     return p + unreal.Vector(*off)
 
 
+def full_focal(sh, head):
+    """Full-length lens: 35 mm by default; with "fill": true the figure (crown at head + 12%) fills ~92% of the
+    frame height at the shot's distance (4.2 m unless "dist"), whatever the still's aspect."""
+    if not sh.get("fill"):
+        return sh.get("focal", 35)
+    res = sh.get("res", RES)
+    sensor_h = 36.0 * res[1] / res[0]
+    return sensor_h * sh.get("dist", 420.0) / (head.z * 1.12 / 0.92)
+
+
 def frame_camera(sh, head):
     """(location, rotation, focal) of a shot's camera for the head position (or the shot's aim bone)."""
     fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
@@ -986,7 +1178,8 @@ def frame_camera(sh, head):
     elif fr == "medium":
         target, dist, focal = head + unreal.Vector(0, 0, -38), 260, 50
     else:
-        target, dist, focal, el = unreal.Vector(head.x, head.y, head.z * 0.52), 420, 35, sh.get("el", 4)
+        target, dist, focal, el = (unreal.Vector(head.x, head.y, head.z * 0.52), sh.get("dist", 420),
+                                   full_focal(sh, head), sh.get("el", 4))
     a, e = math.radians(az), math.radians(el)
     loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
     return loc, unreal.MathLibrary.find_look_at_rotation(loc, target), target, focal
@@ -1010,6 +1203,7 @@ def reframe(cam, sh, info):
 
 
 def setup_shot(sh):
+    CUR_RES[:] = [sh["res"]] if sh.get("res") else []
     character_actor(sh["char"])
     a, body, face = refresh(sh["char"])
     show_only(sh["char"])
@@ -1052,7 +1246,8 @@ def setup_shot(sh):
     elif fr == "medium":
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -38), az, el, 260, 50)
     else:
-        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.52), az, sh.get("el", 4), 420, 35)
+        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.52), az, sh.get("el", 4),
+                     sh.get("dist", 420), full_focal(sh, head))
     return cam, info
 
 
@@ -1233,7 +1428,8 @@ def _run():
         path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
             os.remove(path)
-        unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], path, camera=cam, force_game_view=True)
+        res = sh.get("res", RES)
+        unreal.AutomationLibrary.take_high_res_screenshot(res[0], res[1], path, camera=cam, force_game_view=True)
         t1 = time.time()
         while not (os.path.exists(path) and os.path.getsize(path) > 0):
             if time.time() - t1 > 90:
