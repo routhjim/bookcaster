@@ -149,7 +149,7 @@ FIX = {"arms": "{Who}'s arms hang in their sleeves clear of the body, both sleev
 def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     out = Path(run["out"])
     neck_eval(checked)
-    colour_eval(checked, ref_id=(run.get("anchor") or {}).get("id"))
+    colour_eval(checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -221,7 +221,7 @@ def neck_eval(*results: dict) -> None:
 def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     out = Path(run["out"])
     neck_eval(checked, retry)
-    colour_eval(checked, retry, ref_id=(run.get("anchor") or {}).get("id"))
+    colour_eval(checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)
