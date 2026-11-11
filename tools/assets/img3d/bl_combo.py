@@ -187,7 +187,20 @@ s = top_z / (zmax - zmin)
 mx = np.median(co[:, 0])
 white = (col.min(1) > 0.55) & (col.max(1) - col.min(1) < 0.10) & (np.abs(co[:, 0] - mx) < 0.06 * (zmax - zmin))
 white &= co[:, 2] > zmin + 0.7 * (zmax - zmin)
-if white.sum() > 20 and JOB.get("match", "collar") == "collar":
+match = JOB.get("match", "neck")
+if match == "neck":
+    # the neck: the narrowest horizontal slice of the upper figure (head above is wider, collar and shoulders
+    # below are wider; spread arms hang lower), matched to the body's neck_01 joint
+    Hf = zmax - zmin
+    zs_ = np.linspace(zmin + 0.74 * Hf, zmin + 0.95 * Hf, 43)
+    wid = []
+    for z_ in zs_:
+        sl = co[np.abs(co[:, 2] - z_) < 0.004 * Hf]
+        wid.append(np.ptp(sl[:, 0]) if len(sl) > 10 else 9.0)
+    zn = zs_[int(np.argmin(wid))]
+    s = 0.5 * (J("neck_01").z + J("neck_02").z) / (zn - zmin)        # the narrowest slice is mid-neck
+    REP["neck_match"] = {"figure_neck_frac": round(float((zn - zmin) / Hf), 3), "width_frac": round(float(min(wid) / Hf), 3)}
+elif white.sum() > 20 and match == "collar":
     cz = np.quantile(co[white, 2], 0.98)
     s = (J("neck_02").z + float(JOB.get("collar_above_neck02_m", 0.0))) / (cz - zmin)
     REP["collar_match"] = {"figure_collar_frac": round(float((cz - zmin) / (zmax - zmin)), 3)}
@@ -281,6 +294,9 @@ for side, sg in (("l", 1), ("r", -1)):
 # centre the collar on the body's neck
 dn = np.array(J("neck_01")) - LM["neck"]
 dn[2] = 0
+cap = float(JOB.get("neck_shift_max_m", 0.03))         # a figure leaning its head forward must not shear its coat
+if np.linalg.norm(dn) > cap:
+    dn = dn * cap / np.linalg.norm(dn)
 w = np.clip((co[:, 2] - 0.62 * top_z) / (0.16 * top_z), 0, 1)
 co += w[:, None] * dn[None, :]
 REP["neck_shift_m"] = [round(float(x), 3) for x in dn]
@@ -294,7 +310,11 @@ cut_z = J("neck_02").z + float(JOB.get("neck_cut_m", 0.01))
 # the head goes by one clean tilted plane (below); here only the figure's own neck skin inside the collar (a tube
 # round the neck axis) and, below, the hands
 nr = np.linalg.norm(co[:, :2] - np.array(J("neck_01"))[:2], axis=1)
-gone = skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.085)))
+gone = skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.12)))
+# the figure's own hair and head left under the collar line (a long face, hair at the nape): dark or skin above
+# the body's upper neck, near the neck's axis
+lum_ = col @ np.array([0.3, 0.59, 0.11])
+gone |= (co[:, 2] > J("neck_02").z - 0.01) & (nr < 0.13) & (skin | (lum_ < float(JOB.get("hair_lum_max", 0.22))))
 if STATUE:
     gone[:] = False
 if not JOB.get("keep_figure_hands"):
