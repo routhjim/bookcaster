@@ -1,7 +1,7 @@
 {
  "id": "picture_framed_engraving_01",
  "class": "prop",
- "description": "Black-and-white engraving of a country house among trees behind a pale mount in a gilt frame, 0.51 x 0.58 m. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
+ "description": "Black-and-white engraving of a country house among trees behind a pale mount in a gilt frame, 0.51 x 0.63 m. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
  "tags": [
   "picture",
   "frame",
@@ -19,7 +19,7 @@
  "size_m": [
   0.51,
   0.045,
-  0.58
+  0.63
  ],
  "size_tolerance": 0.12,
  "placement": "floor",
@@ -27,7 +27,7 @@
  "licence": "CC0 (original script; picture drawn by the local image model)",
  "picture": {
   "w": 0.3,
-  "h": 0.37,
+  "h": 0.42,
   "frame_w": 0.05,
   "mount_w": 0.055,
   "oil": false

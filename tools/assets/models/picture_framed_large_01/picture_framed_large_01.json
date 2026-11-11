@@ -1,7 +1,7 @@
 {
  "id": "picture_framed_large_01",
  "class": "prop",
- "description": "Victorian pastoral oil landscape (cattle by a stream, cloudy sky), yellowed varnish, in a deep gilt frame, 0.85 x 0.65 m, for over a mantelpiece. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
+ "description": "Victorian pastoral oil landscape (cattle by a stream, cloudy sky), yellowed varnish, in a deep gilt frame, 0.85 x 0.66 m, for over a mantelpiece. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
  "tags": [
   "picture",
   "frame",
@@ -18,7 +18,7 @@
  "size_m": [
   0.85,
   0.045,
-  0.65
+  0.66
  ],
  "size_tolerance": 0.12,
  "placement": "floor",
@@ -26,7 +26,7 @@
  "licence": "CC0 (original script; picture drawn by the local image model)",
  "picture": {
   "w": 0.68,
-  "h": 0.48,
+  "h": 0.49,
   "frame_w": 0.085,
   "mount_w": 0.0,
   "oil": true

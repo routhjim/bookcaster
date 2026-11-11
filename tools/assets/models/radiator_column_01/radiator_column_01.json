@@ -1,0 +1,48 @@
+{
+ "id": "radiator_column_01",
+ "class": "prop",
+ "description": "Late-Victorian cast-iron column radiator, front -Y, 0.90 W x 0.20 D x 0.75 H m: twelve ornate four-column sections with a cast leaf pattern band, joined top and bottom, on short feet, a brass valve wheel on the left inlet pipe. Painted bronze-brown, chipped and dusty, dark between the sections.",
+ "tags": [
+  "radiator",
+  "heating",
+  "cast-iron",
+  "victorian",
+  "interior",
+  "fixture"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.9,
+  0.2,
+  0.75
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "valve",
+   "position": [
+    -0.65,
+    -0.5,
+    0.45
+   ],
+   "target": [
+    -0.45,
+    0.0,
+    0.25
+   ],
+   "focal": 55
+  }
+ ],
+ "paint": {
+  "prompt": "late Victorian ornate cast iron column radiator painted bronze brown, chipped paint, dust between the sections",
+  "views": {
+   "ring": 5,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

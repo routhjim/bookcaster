@@ -1,0 +1,50 @@
+{
+ "id": "magnifier_lens_01",
+ "class": "prop",
+ "description": "Victorian reading magnifier, 0.24 m, lying flat on the floor along X: 75 mm glass lens in a brass rim, a short brass ferrule and a turned ebony handle (to -X). Brass worn bright on the rim.",
+ "tags": [
+  "magnifier",
+  "magnifying-glass",
+  "lens",
+  "detective",
+  "victorian",
+  "hand-prop",
+  "brass",
+  "glass"
+ ],
+ "tier": "hero",
+ "texture_px": 1024,
+ "size_m": [
+  0.24,
+  0.08,
+  0.02
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "lens",
+   "position": [
+    0.15,
+    -0.2,
+    0.2
+   ],
+   "target": [
+    0.05,
+    0.0,
+    0.01
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "Victorian magnifying glass with a brass rim and a turned ebony handle",
+  "views": {
+   "ring": 5,
+   "upper": 3,
+   "top": true
+  }
+ }
+}
