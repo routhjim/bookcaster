@@ -2298,11 +2298,17 @@ def uv_unwrap(ob):
         me.uv_layers[0].data.foreach_get("uv", uv)
         uv = (uv.reshape(-1, 2) * per_loop[:, None]).ravel()
         me.uv_layers[0].data.foreach_set("uv", uv)
+    # pack works on selected UVs; in a background session UV selection is not the mesh selection unless synced
+    bpy.context.scene.tool_settings.use_uv_select_sync = True
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.pack_islands(rotate=True, margin=0.002)
+    bpy.ops.uv.pack_islands(rotate=True, scale=True, margin=0.002)
     bpy.ops.object.mode_set(mode="OBJECT")
-    REPORT["uv_islands_packed"] = True
+    uv = np.zeros(len(me.loops) * 2)
+    me.uv_layers[0].data.foreach_get("uv", uv)
+    REPORT["uv_range"] = [round(float(uv.min()), 4), round(float(uv.max()), 4)]
+    if uv.min() < -1e-3 or uv.max() > 1.001:
+        raise RuntimeError(f"UV pack left islands outside the atlas: {REPORT['uv_range']}")
 
 
 def bake(ob, res, samples):

@@ -146,8 +146,17 @@ def main():
     run_job.write_text(json.dumps(job, indent=1))
     t0 = time.time()
     cmd = [BLENDER, "-b", "--factory-startup", "-t", "4", "--python", str(HERE / "bl_outfit.py"), "--", str(run_job)]
+    env = dict(os.environ)
+    # show Blender only the GPUs this job may use: HIP sets up every visible device, and a reset of one it never
+    # uses (the shared iGPU) otherwise aborts the bake
+    cards = sorted(set(job.get("bake_cards", ["05"]) + job.get("preview_cards", ["c4", "05"])))
     try:
-        rc = subprocess.call(cmd, pass_fds=())
+        idx = [subprocess.check_output(["hip-index", "igpu" if c == "c4" else c], text=True).strip() for c in cards]
+        env["HIP_VISIBLE_DEVICES"] = ",".join(idx)
+    except (OSError, subprocess.CalledProcessError):
+        log("hip-index unavailable: Blender sees every GPU")
+    try:
+        rc = subprocess.call(cmd, pass_fds=(), env=env)
     finally:
         if fd is not None:
             os.close(fd)
