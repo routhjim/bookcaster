@@ -78,9 +78,10 @@ def backproject(i, sel):
 
 
 # ---------------- per-frame consistency
-mask_d = F.max_pool2d(mask[:, None].float(), 5, 1, 2)[:, 0] > 0.5          # 2 px slack
+mask_d = F.max_pool2d(mask[:, None].float(), 9, 1, 4)[:, 0] > 0.5          # 4 px slack
 sil_in = np.zeros(S)
 dep_err = np.zeros(S)
+pair_out = np.full((S, S), np.nan)                                     # fraction of i's points outside j's mask
 gen = torch.Generator(device=dev).manual_seed(0)
 order = np.argsort(az)
 for i in range(S):
@@ -96,6 +97,7 @@ for i in range(S):
         ok = ok & (z > 0)
         if ok.sum() > 100:
             fr.append(float(m[ok].float().mean()))
+            pair_out[i, j] = 1 - fr[-1]
     sil_in[i] = np.mean(fr)
     # depth agreement with the frames nearest in azimuth (either clip), visible points only
     nb = np.argsort(np.abs(((az - az[i] + 180) % 360) - 180))[1:5]
@@ -109,6 +111,26 @@ for i in range(S):
             r = ((z[ok] - dj[ok]) / dj[ok]).abs()
             errs.append(float(r.median()))
     dep_err[i] = np.mean(errs) if errs else np.nan
+np.save(O / "pair_outside.npy", pair_out)
+clipn = np.array([Path(f["path"]).parent.name for f in cams["frames"]])
+gap = np.abs(az[:, None] - az[None, :]) % 360
+gap = np.minimum(gap, 360 - gap)
+same = clipn[:, None] == clipn[None, :]
+rig = []
+for lo_g, hi_g in [(0.1, 10), (10, 25), (25, 45), (45, 90), (90, 180)]:
+    for nm, sl in (("same clip", same), ("other clip", ~same)):
+        mm_ = (gap > lo_g) & (gap <= hi_g) & sl & ~np.isnan(pair_out)
+        if mm_.sum():
+            rig.append({"gap": [lo_g, hi_g], "pairs": nm, "n": int(mm_.sum()),
+                        "outside_median_pct": round(float(np.median(pair_out[mm_])) * 100, 1),
+                        "outside_p90_pct": round(float(np.percentile(pair_out[mm_], 90)) * 100, 1)})
+for cn in sorted(set(clipn)):
+    sel_ = clipn == cn
+    sub_ = pair_out[np.ix_(sel_, sel_)]
+    if np.isfinite(sub_).any():
+        rig.append({"clip": cn, "frames": int(sel_.sum()), "outside_median_pct":
+                    round(float(np.nanmedian(sub_)) * 100, 1)})
+print(json.dumps(rig), flush=True)
 # weight: a frame whose points fall outside the others' masks or disagree with its neighbours counts less
 bad = (1 - sil_in) / max(np.median(1 - sil_in), 1e-4) + dep_err / max(np.nanmedian(dep_err), 1e-4)
 wf = 1.0 / (1.0 + np.maximum(bad - 2, 0))
@@ -370,7 +392,7 @@ cons = {"frames": [{"i": i, "path": cams["frames"][i]["path"].split("/")[-2] + "
                     "mask_agree": round(float(sil_in[i]), 3), "depth_err_rel": round(float(dep_err[i]), 4),
                     "badness": round(float(bad[i]), 2), "weight": round(float(wf[i]), 3), "kept": i in keep}
                    for i in range(S)],
-        "dropped": sorted(drop), "grid": [nx, ny, nz], "voxel_m": vox * mpu, "verts": len(Vn), "faces": len(Fn),
+        "dropped": sorted(drop), "rigidity": rig, "grid": [nx, ny, nz], "voxel_m": vox * mpu, "verts": len(Vn), "faces": len(Fn),
         "seen_vert_frac": round(float(seen_v.float().mean()), 3), "extent_m": ext.tolist(),
         "seconds": {"consistency": round(t_cons, 1), "fuse": round(t_fuse, 1), "mesh": round(t_mesh, 1),
                     "colour": round(t_col, 1), "total": round(time.time() - t0, 1)}}

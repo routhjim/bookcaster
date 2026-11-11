@@ -34,6 +34,10 @@ ap.add_argument("--drawing-weight", type=float, default=6.0, help="how much more
 ap.add_argument("--pose-opt", type=int, default=1)
 ap.add_argument("--use-dropped", type=int, default=0)
 ap.add_argument("--render-scale", type=float, default=1.0, help="training resolution, fraction of the frames'")
+ap.add_argument("--clips", default="", help="comma list of clip folder names to train on (the first frame always)")
+ap.add_argument("--holdout", type=int, default=0, help="hold out every Nth frame (never the first) for PSNR")
+ap.add_argument("--app-opt", type=int, default=1, help="per-frame colour gain/bias")
+ap.add_argument("--mesh-renders", type=int, default=1)
 a = ap.parse_args()
 t0 = time.time()
 dev = "cuda"
@@ -43,7 +47,13 @@ O.mkdir(parents=True, exist_ok=True)
 fj = json.loads((FD / "frame.json").read_text())
 pp = fj["pp"]
 frames = [f for f in fj["frames"] if f["kept"] or a.use_dropped or f["i"] == 0]
+if a.clips:
+    frames = [f for f in frames if f["i"] == 0 or Path(f["path"]).parent.name in a.clips.split(",")]
 S = len(frames)
+held = np.zeros(S, bool)
+if a.holdout:
+    held[np.arange(a.holdout // 2, S, a.holdout)] = True
+    held[0] = False
 
 # ---- images (full size) and masks (processed size, upsampled)
 im0 = Image.open(frames[0]["path"])
@@ -68,6 +78,7 @@ Ks = torch.tensor(np.array(Ks), device=dev, dtype=torch.float32)
 c2w0 = torch.tensor(np.array([f["c2w"] for f in frames]), device=dev, dtype=torch.float32)
 wfr = np.array([max(f["weight"], 0.05) for f in frames])
 wfr[0] *= a.drawing_weight
+wfr[held] = 0
 prob = torch.tensor(wfr / wfr.sum(), device=dev)
 
 # ---- start points: area-weighted samples on the fused mesh, with its vertex colours
@@ -111,7 +122,8 @@ sstate = strategy.initialize_state(scene_scale=scene)
 # ---- per-frame camera correction (axis-angle + translation) and colour gain/bias; frame 0 fixed
 dpose = torch.nn.Parameter(torch.zeros(S, 6, device=dev))
 app = torch.nn.Parameter(torch.zeros(S, 6, device=dev))
-opt_x = torch.optim.Adam([{"params": [dpose], "lr": 2e-4 if a.pose_opt else 0.0}, {"params": [app], "lr": 2e-3}])
+opt_x = torch.optim.Adam([{"params": [dpose], "lr": 2e-4 if a.pose_opt else 0.0},
+                          {"params": [app], "lr": 2e-3 if a.app_opt else 0.0}])
 
 
 def rodrigues(r):
@@ -209,11 +221,22 @@ with torch.no_grad():
         dep = extra[3][0, ..., 0] if extra is not None else rc[0, ..., 3]
         m = masks[k] > 0.5
         gain, bias = 1 + app[k, :3] * (k != 0), app[k, 3:] * (k != 0)
-        e = ((rgb * gain + bias) - imgs[k].float() / 255).abs().mean(-1)
+        pred = rgb * gain + bias
+        e = (pred - imgs[k].float() / 255).abs().mean(-1)
+        # PSNR over the subject's box (mask dilated), composited on the frame's own background
+        mb = F.max_pool2d(masks[k][None, None], 31, 1, 15)[0, 0] > 0.5
+        comp = pred + (1 - alpha[..., None]) * (imgs[k].float() / 255)
+        mse = ((comp - imgs[k].float() / 255) ** 2)[mb].mean()
+        psnr = float(-10 * torch.log10(mse))
         am = alpha > 0.5
         iou = float((am & m).sum() / (am | m).sum().clamp(min=1))
         dp = dpose[k] * (k != 0)
-        fit.append({"i": frames[k]["i"], "az": frames[k]["az"], "l1_in_mask": round(float(e[m].mean()), 4),
+        if held[k] or k == 0 or k % 24 == 0:
+            vis = torch.cat([imgs[k].float() / 255, comp.clamp(0, 1)], 1)
+            (O / "views").mkdir(exist_ok=True)
+            Image.fromarray((vis * 255).byte().cpu().numpy()).save(O / "views" / f"{'held' if held[k] else 'train'}_{frames[k]['i']:03d}.jpg")
+        fit.append({"i": frames[k]["i"], "az": frames[k]["az"], "held": bool(held[k]), "psnr": round(psnr, 2),
+                    "l1_in_mask": round(float(e[m].mean()), 4),
                     "alpha_iou": round(iou, 4), "rot_fix_deg": round(float(dp[:3].norm() * 0.1 * 180 / math.pi), 3),
                     "move_fix_m": round(float(dp[3:].norm() * scene * 0.01), 4)})
         D_all.append(dep.cpu().numpy().astype(np.float32))
@@ -251,10 +274,14 @@ with open(O / "splats.ply", "wb") as fh:
               "".join(f"property float {c}\n" for c in cols) + "end_header\n").encode())
     fh.write(arr.tobytes())
 l1s = np.array([f["l1_in_mask"] for f in fit])
+ps = np.array([f["psnr"] for f in fit])
+hf = np.array([f["held"] for f in fit])
 ious = np.array([f["alpha_iou"] for f in fit])
 summary = {"mode": a.mode, "iters": a.iters, "frames": S, "train_res": [W, H], "splats": len(arr),
            "seconds": {"setup": round(t_setup, 1), "train": round(t_train, 1), "total": round(time.time() - t0, 1)},
-           "l1_in_mask_median": float(np.median(l1s)), "alpha_iou_median": float(np.median(ious)),
+           "l1_in_mask_median": float(np.median(l1s)),
+           "psnr_train_median": float(np.median(ps[~hf])), "psnr_held_median": float(np.median(ps[hf])) if hf.any() else None,
+           "psnr_held_min": float(ps[hf].min()) if hf.any() else None, "psnr_drawing": float(ps[0]), "alpha_iou_median": float(np.median(ious)),
            "peak_gib": round(torch.cuda.max_memory_allocated() / 2**30, 1), "log": log}
 (O / "fit.json").write_text(json.dumps({"summary": summary, "frames": fit}, indent=1))
 print(json.dumps({k: v for k, v in summary.items() if k != "log"}))

@@ -6,7 +6,7 @@ three maps. Each side of the subject comes from the clip that saw it.
          "views_dir": bl_views.py out folder, "out": textures folder,
          "sides": {"<clip tag>": "-x" | "+x" | "any"}  (clip tag = the letters after the frame's index in its file
                   name, e.g. 012_c048.png -> "c"; a side clip skins only its half, blended over "band_m"),
-         "band_m": 0.25, "exclude": [view names], "params": {...}}
+         "band_m": 0.25, "exclude": [view names], "view_weight": {view name: factor}, "params": {...}}
 
 Per texel: every view whose rendered surface point at the texel's pixel is the texel itself (visibility), inside
 the frame's own mask, away from silhouettes and depth steps, weighted by facing (cos^2 for the low band, cos^8
@@ -152,8 +152,9 @@ for v in V:
     lowv = bilinear(low, xi, yi)
     highv = bilinear(high, xi, yi)
     dn = dens / dens_ref
-    ws = wb * cosv ** P["p_soft"] * dn * sw
-    wh = wb * cosv ** P["p_sharp"] * dn ** 2 * sw
+    vw = float(JOB.get("view_weight", {}).get(v["name"], 1.0))     # e.g. the drawing above the video frames
+    ws = wb * cosv ** P["p_soft"] * dn * sw * vw
+    wh = wb * cosv ** P["p_sharp"] * dn ** 2 * sw * vw
     per.append((v["name"], ii, ws, wh, lowv, highv))
     stats.append({"view": v["name"], "clip": clip_tag(v["frame"]), "texels": int(len(ii)),
                   "weight": round(float(ws.sum()), 1)})
