@@ -52,6 +52,13 @@ REP = {"times": {}}
 T0 = time.time()
 
 
+def stage_save(name):
+    """JOB "stage_dir": a copy of the scene at this step (the clothes audit renders each one the same way)."""
+    if JOB.get("stage_dir"):
+        os.makedirs(JOB["stage_dir"], exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(JOB["stage_dir"], f"{name}.blend"), copy=True, compress=True)
+
+
 def mark(name, t):
     REP["times"][name] = round(time.time() - t, 2)
 
@@ -312,6 +319,7 @@ REP["neck_shift_m"] = [round(float(x), 3) for x in dn]
 fig.data.vertices.foreach_set("co", co.ravel())
 fig.data.update()
 mark("fit", t)
+stage_save("s1_scaled_placed")
 
 # ------------------------------------------------------------------ 4. cut head and hands
 t = time.time()
@@ -550,6 +558,7 @@ bm.free()
 REP["cut_verts"] = int(gone.sum())
 REP["crumb_verts"] = len(crumbs)
 mark("cut", t)
+stage_save("s2_cut")
 
 # ------------------------------------------------------------------ 5. weights from the posed body
 t = time.time()
@@ -798,7 +807,11 @@ if STATUE and HEAD is not None and JOB.get("statue_head_fit", False):
     fig.data.update()
     REP["head_fit_scale"] = [round(float(x), 3) for x in (mhi - mlo) / np.maximum(shi - slo, 1e-6)]
 dg = bpy.context.evaluated_depsgraph_get()
-bvhs = [] if STATUE else [BVHTree.FromObject(o, dg) for o in (body, HEAD) if o is not None]   # statue: nothing under it
+# the body is hidden in the engine: cloth inside it is never seen, and pushing every vertex out of it printed the
+# body's own shape (a bust, a belly) into the garment. Only the visible head mesh (neck, shoulder skin) pushes, unless
+# the job asks for the body too.
+_push_objs = (body, HEAD) if JOB.get("push_body", False) else (HEAD,)
+bvhs = [] if STATUE else [BVHTree.FromObject(o, dg) for o in _push_objs if o is not None]   # statue: nothing under it
 fco = np.array([v.co[:] for v in fig.data.vertices])
 EASE_ALL = float(JOB.get("body_ease_m", 0.014))
 HEAD_EASE = float(JOB.get("head_ease_m", 0.014))      # the statue's head must cover the hidden head and its hair
@@ -820,7 +833,7 @@ fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
 # shoulders: the drawn coat's shoulders stand off the body's narrower ones; pull what stands more than SH_GAP off the
 # body back toward it (half the excess), fading out 22 cm from the shoulder joint
-SH_GAP = float(JOB.get("shoulder_gap_m", 0.025))
+SH_GAP = float(JOB.get("shoulder_gap_m", 9.0))      # pull-in off by default (it roughened the shoulders)
 fco2 = fco + disp
 for side in (() if STATUE else ("l", "r")):
     S0 = np.array(pose_head(f"upperarm_{side}"))
@@ -835,7 +848,7 @@ for side in (() if STATUE else ("l", "r")):
         fco2[i] = fco2[i] + (np.array(loc) - fco2[i]) * f * (dist - SH_GAP) / dist
 # the collar: the drawn coat's collar stands off a thinner neck and shows as a raised tab from behind; pull what
 # stands more than COL_GAP off the body or head back to it, fading out 13 cm from the neck's axis
-COL_GAP = float(JOB.get("collar_gap_m", 0.012))
+COL_GAP = float(JOB.get("collar_gap_m", 9.0))       # collar pull off by default (jagged collar edges)
 if not STATUE and bvhs:
     ncx = np.array(J("neck_01"))[:2]
     rr = np.linalg.norm(fco2[:, :2] - ncx, axis=1)
@@ -856,7 +869,7 @@ if not STATUE and bvhs:
 # Between SLIM_LO and the armpit, cloth that stands more than SLIM_GAP outside the body's own side (arms excluded) is
 # pulled in to SLIM_GAP + SLIM_K of the excess; monotonic across the layers (a waistcoat inside stays inside), fading
 # out over 8 cm under the armpit; the sleeves are left alone.
-SLIM_K = float(JOB.get("side_slim_k", 0.1))
+SLIM_K = float(JOB.get("side_slim_k", 1.0))     # 1 = off; for a figure that fails mesh_gate
 if SLIM_K < 1:   # statue (pure figure) too
     SLIM_GAP = float(JOB.get("side_slim_gap_m", 0.015))
     beval = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
@@ -948,6 +961,31 @@ if not STATUE and SLEEVE_K < 1:
                 nsl += 1
     REP["sleeve_slim"] = {"verts": nsl, "k": SLEEVE_K}
 disp = fco2 - fco
+DSM = int(JOB.get("disp_smooth", 12))
+if DSM > 0 and not STATUE:
+    # the pushes, pull-ins and slims above move each vertex on its own, which shears triangles (faceting) and
+    # irons folds; smoothing the DISPLACEMENT (not the positions) keeps the garment's own surface and moves it as
+    # a whole. Afterwards, anything left inside the visible head mesh goes out once more.
+    _ed = np.array([e.vertices[:] for e in fig.data.edges])
+    _deg = np.bincount(_ed.ravel(), minlength=len(fco)).astype(np.float64)
+    for _ in range(DSM):
+        acc = np.zeros_like(disp)
+        np.add.at(acc, _ed[:, 0], disp[_ed[:, 1]])
+        np.add.at(acc, _ed[:, 1], disp[_ed[:, 0]])
+        disp = 0.5 * disp + 0.5 * acc / np.maximum(_deg, 1)[:, None]
+    if HEAD is not None and bvhs:
+        hb_ = bvhs[-1]
+        nfix = 0
+        for i in range(len(fco)):
+            q = Vector(fco[i] + disp[i])
+            loc, nrm, _, dist = hb_.find_nearest(q, 0.05)
+            if loc is None:
+                continue
+            s_ = (q - loc).dot(nrm)
+            if s_ < EASE_ALL:
+                disp[i] = disp[i] + np.array(nrm) * (EASE_ALL - s_)
+                nfix += 1
+        REP["disp_smooth"] = {"rounds": DSM, "head_refix_verts": nfix}
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
 # the cravat: the drawn one is crumpled; smooth its surface (light, unsaturated cloth in front of the neck)
@@ -961,7 +999,7 @@ cm = ((fc.min(1) > 0.30) & (fc.max(1) - fc.min(1) < 0.12) & (P[:, 2] > J("spine_
 if cm.sum() > 50:
     ed = np.array([e.vertices[:] for e in fig.data.edges])
     deg = np.bincount(ed.ravel(), minlength=len(P)).astype(np.float64)
-    for _ in range(int(JOB.get("cravat_smooth", 15))):
+    for _ in range(int(JOB.get("cravat_smooth", 0))):
         acc = np.zeros_like(P)
         np.add.at(acc, ed[:, 0], P[ed[:, 1]])
         np.add.at(acc, ed[:, 1], P[ed[:, 0]])
@@ -1022,7 +1060,7 @@ def smooth_pos(P, w, rounds, lam=0.5, mu=-0.53):
 
 # the coat's shoulders: the drawn shoulder seam and the pull-in above leave a flat top with a hard corner over the
 # arm; round it (Taubin smoothing, no shrink) over the shoulder cap, fading out SH_ROUND from the shoulder joint
-SH_ROUND = float(JOB.get("shoulder_round_m", 0.15))
+SH_ROUND = float(JOB.get("shoulder_round_m", 0.0))      # smoothing flattens the garment: off
 P = fco + disp
 if not STATUE and SH_ROUND > 0:
     wsh = np.zeros(len(P))
@@ -1165,6 +1203,7 @@ if STATUE:
         (fig.vertex_groups.get(bone) or fig.vertex_groups.new(name=bone)).add(ids, 1.0, "REPLACE")
     REP["rigid_verts"] = {k: len(v) for k, v in rig.items()}
 mark("weights", t)
+stage_save("s3_fitted_weighted")
 
 # the body's hands, posed, as the outfit's skin slot
 t = time.time()
@@ -1404,6 +1443,7 @@ if LINER is not None:
     bpy.context.view_layer.objects.active = fig
     bpy.ops.object.join()
 bpy.context.view_layer.objects.active = arm
+stage_save("s4_with_liner_pieces")
 bpy.ops.object.mode_set(mode="POSE")
 bpy.ops.pose.armature_apply(selected=False)
 bpy.ops.object.mode_set(mode="OBJECT")
@@ -1428,6 +1468,10 @@ if hands is not None:
     hands.select_set(True)
     bpy.context.view_layer.objects.active = fig
     bpy.ops.object.join()
+# smooth shading: the generated surface is a fine mesh with smooth normals; flat faces (the glTF's custom normals
+# are lost at the first weld) made every garment look faceted in the engine (export smoothing "FACE" = per face)
+fig.data.polygons.foreach_set("use_smooth", np.ones(len(fig.data.polygons), bool))
+fig.data.update()
 # the character tools' outfit FBX carries centimetre values (no unit conversion on export or import): scale both
 for o in (arm, fig):
     o.scale = (100.0, 100.0, 100.0)
@@ -1445,7 +1489,7 @@ REP["outfit_tris"] = sum(len(p.vertices) - 2 for p in fig.data.polygons)
 img.filepath_raw = os.path.join(OUT, "textures", "T_outfit_BaseColor.png")
 img.file_format = "PNG"
 img.save()
-for name, rgb in (("Normal", (0.5, 0.5, 1.0)), ("RMA", (0.8, 0.0, 1.0))):
+for name, rgb in (("Normal", (0.5, 0.5, 1.0)), ("RMA", (float(JOB.get("roughness", 0.95)), 0.0, 1.0))):   # wool / matte cloth
     im = bpy.data.images.new(f"T_outfit_{name}", 64, 64, alpha=False)
     im.colorspace_settings.name = "Non-Color"
     im.pixels.foreach_set(np.tile(np.array(list(rgb) + [1.0], np.float32), 64 * 64))

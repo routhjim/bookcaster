@@ -159,6 +159,7 @@ def main():
     ap.add_argument("--scene-tool", default=os.environ.get("ASSETS_SCENE_TOOL", str(ASSETS / "scenes")))
     ap.add_argument("--set", default="sitting_room_victorian_01")
     ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
                     " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
@@ -232,7 +233,7 @@ def main():
         def _():
             lk = a.look.lower()
             # a full skirt and puffed sleeves need the arms a little higher for air between arm and bodice
-            deg0 = 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42
+            deg0 = a.pose_deg or (48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
             look = spread_look(a.look)
             CH["draw_look"] = look
             tried, meshes, chosen = [], [], None

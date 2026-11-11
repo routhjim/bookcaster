@@ -394,6 +394,10 @@ def baked_material(path, texs, opacity=None):
     MEL.connect_material_property(rma, "R", unreal.MaterialProperty.MP_ROUGHNESS)
     MEL.connect_material_property(rma, "G", unreal.MaterialProperty.MP_METALLIC)
     MEL.connect_material_property(rma, "B", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    # cloth, not leather: a low specular level (no broad glossy lobe on black wool or a matte dress)
+    sp = MEL.create_material_expression(m, unreal.MaterialExpressionConstant, -200, 600)
+    sp.set_editor_property("r", 0.15)
+    MEL.connect_material_property(sp, "", unreal.MaterialProperty.MP_SPECULAR)
     if opacity is not None:
         # a net (a veil): masked, the opacity map dithered over frames so the holes read as sheer cloth
         op = sampler(opacity, 700, unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_GRAYSCALE)

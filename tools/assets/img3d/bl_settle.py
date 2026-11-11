@@ -415,6 +415,8 @@ if (_dd > 0.01).any():
     bad_ = np.nonzero(_dd > 0.01)[0][:200]
     REP["rebind_err_m"]["groups"] = sorted({gn_[g.group] for i in bad_ for g in fig.data.vertices[int(i)].groups
                                             if g.weight > 0.05})[:30]
+fig.data.polygons.foreach_set("use_smooth", np.ones(len(fig.data.polygons), bool))
+fig.data.update()
 bpy.ops.object.select_all(action="DESELECT")
 fig.select_set(True)
 arm.select_set(True)
