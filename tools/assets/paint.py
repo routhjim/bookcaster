@@ -60,7 +60,9 @@ DEFAULTS = {
     # plain CG paint, and at 0.85 slid edges; the edit model invented holes and rivets (IoU 0.937) at ~80 s a view
     "method": "img2img", "strength": 0.65, "control": None, "control_scale": 0.7, "control_end": 1.0,
     "seed": 7, "samples": 48,
-    "params": {"anchor": 0.0, "normal_strength": 1.5, "rough_strength": 0.25, "gain_match": True},
+    # detail from the painted colour (anvil 11-10: 1.0/1.5/0.25 left dark steel near plain; 1.8/3/0.35 shows the
+    # painted pitting as relief without looking embossed)
+    "params": {"anchor": 0.0, "detail_gain": 1.8, "normal_strength": 3.0, "rough_strength": 0.35, "gain_match": True},
 }
 FLAT = ("Even, flat, shadowless studio lighting from every side; no cast shadows, no highlights, no reflections "
         "of the room. The same object, the same shape, outline, size and position as the input, on the same plain "
