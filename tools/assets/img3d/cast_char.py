@@ -64,16 +64,38 @@ def log(m):
 
 
 def line(args, log_file=None):
-    """One line entry, followed to its end (exit code 75/76: the line is full / the same entry waits: wait for room
-    by following the station's queue, never a busy loop)."""
+    """One line entry, followed to its end. On LINE FULL the entry goes to the line's own feeder (run_asset.py
+    --feed waits for room by watching the status, never resubmitting blindly), then this follows the entry's done
+    record (<sched>/line/done/*.json, by id and submit time)."""
     if log_file and "--line-cmd" in args:
         i = args.index("--")
         args = args[:i] + ["--log", str(log_file)] + args[i:]
+    t_sub = time.time()
     p = subprocess.run(LINE + args, cwd=str(REPO), capture_output=True, text=True)
-    if p.returncode in (75, 76):
-        # never loop on a full line: stop here; a re-run resumes from this step
-        raise SystemExit(f"the line is full or the same entry waits (exit {p.returncode}): run again later")
-    return p
+    if p.returncode not in (75, 76):
+        return p
+    import shlex
+    eid = args[args.index("--id") + 1] if "--id" in args else None
+    if p.returncode == 75:
+        (Path(C.SCHED_DIR) / "feeds").mkdir(exist_ok=True)
+        lst = Path(C.SCHED_DIR) / "feeds" / f"{eid or int(t_sub)}_{int(t_sub)}.txt"
+        lst.write_text(shlex.join(args) + "\n")
+        f = subprocess.run(LINE + ["--feed", str(lst)], cwd=str(REPO), capture_output=True, text=True)
+        if f.returncode:
+            return f
+    if not eid:
+        raise SystemExit(f"entry queued without an id to follow (exit {p.returncode})")
+    done = Path(C.SCHED_DIR) / "line" / "done"
+    while True:                                  # the entry's own end, on disk (not the line's queue)
+        for q in sorted(done.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:200]:
+            try:
+                d = json.loads(q.read_text())
+            except ValueError:
+                continue
+            if d.get("id") == eid and d.get("submitted", 0) >= t_sub - 3600 and d.get("state") in ("done", "failed"):
+                rc = (d.get("result") or {}).get("rc", 1 if d.get("state") == "failed" else 0)
+                return subprocess.CompletedProcess(args, rc, stdout=json.dumps(d.get("result")), stderr="")
+        time.sleep(10)
 
 
 def ue_job(work, name, script, job, timeout=1800):
@@ -136,7 +158,7 @@ def main():
     ap.add_argument("--work", required=True)
     ap.add_argument("--scene-tool", default=os.environ.get("ASSETS_SCENE_TOOL", str(ASSETS / "scenes")))
     ap.add_argument("--set", default="sitting_room_victorian_01")
-    ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
                     " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
@@ -210,21 +232,32 @@ def main():
         def _():
             lk = a.look.lower()
             # a full skirt and puffed sleeves need the arms a little higher for air between arm and bodice
-            deg = 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42
-            pose_map = draw / f"pose{deg}.png"
-            subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pose_map), "--deg", str(deg)], check=True)
+            deg0 = 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42
             look = spread_look(a.look)
-            CH["draw_look"], CH["pose_deg"] = look, deg
+            CH["draw_look"] = look
             tried, meshes, chosen = [], [], None
+            # each run draws into its own folder with its own seeds (an earlier run's entries still on the line
+            # must not overwrite this run's drawings)
+            run_n = len([p_ for p_ in draw.iterdir() if p_.is_dir() and p_.name.startswith("run")])
+            rdir = draw / f"run{run_n}"
+            rdir.mkdir()
             for rnd in range(a.rounds):
-                seeds = [5 + 6 * (3 * rnd + k) for k in range(3)]
-                jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(draw / f"spread_s{s_}.png"), "size": [768, 1344],
+                # a round that fails raises the arms 6 degrees and holds the pose map harder; the canvas is wide
+                # enough for the hands at any of these angles
+                deg = deg0 + 6 * rnd
+                pose_map = rdir / f"pose{deg}.png"
+                subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pose_map), "--deg", str(deg),
+                                "--w", "896", "--h", "1344", "--fig", "1000"], check=True)
+                CH.setdefault("pose_deg", []).append(deg)
+                seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
+                jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [896, 1344],
                          "prompt": f"{a.trigger}, {look}, {POSE_WORDS}", "refs": [a.sheet],
                          "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
-                         "control": {"image": str(pose_map), "type": "pose", "scale": 0.8}} for s_ in seeds]
-                jl = draw / f"jobs_r{rnd}.jsonl"
+                         "control": {"image": str(pose_map), "type": "pose", "scale": 0.8 + 0.1 * min(rnd, 2)}}
+                        for s_ in seeds]
+                jl = rdir / f"jobs_r{rnd}.jsonl"
                 jl.write_text("".join(json.dumps(j) + "\n" for j in jobs))
-                p = line(["--line-cmd", "image", "refs", "--id", f"cast_{tag}_draw{rnd}", "--", "bash", "-c",
+                p = line(["--line-cmd", "image", "refs", "--id", f"cast_{tag}_draw{run_n}_{rnd}", "--", "bash", "-c",
                           f"cd {REPO} && bash {CARD} 05 {QWEN_PY} -I tools/qwen_image.py --serve < {jl}"],
                          W / f"draw_r{rnd}.log")
                 if p.returncode:
@@ -242,9 +275,9 @@ def main():
                                         j["path"]))
                 # every drawing that passes goes to 3D, best first, until a mesh passes the mesh gate
                 for _sc, path in sorted(passing, reverse=True):
-                    out = draw / (Path(path).stem + ".glb")
+                    out = rdir / (Path(path).stem + ".glb")
                     env = ["env", f"ASSETS_TRELLIS_OMP={OMP}"] if OMP else []
-                    p = line(["--line-cmd", "blender", "shape", "--id", f"cast_{tag}_{Path(path).stem}", "--"] + env +
+                    p = line(["--line-cmd", "blender", "shape", "--id", f"cast_{tag}_{run_n}_{Path(path).stem}", "--"] + env +
                              [sys.executable, str(HERE / "img3d.py"), path, str(out), "--res", "1024", "--build", "rocm"],
                              W / f"shape_{Path(path).stem}.log")
                     if p.returncode or not out.exists():
@@ -328,10 +361,11 @@ def main():
             chars, cams = {}, []
             for k, ab in (("a4", 4), ("a8", 8), ("a12", 12)):
                 x = {"a4": -0.9, "a8": 0.2, "a12": 1.3}[k]
-                chars[k] = {"id": a.id, "position": [x, 0.6], "facing": [0, -1], "body_pose": {
+                chars[k] = {"id": a.id, "position": [x, 0.4], "facing": [0, -1], "body_pose": {
                     "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 0, "head_deg": 0, "head_tilt": 0,
                                                         "hand_at_lapel": False, "steps": arm_steps(ab)}}}
-                cams.append({"name": f"wide_{k}", "kind": "full", "subject": k, "focal_mm": 50, "az": 0})
+                # a full shot at 24 mm stays inside a 5 m room (at 50 mm the camera stood behind the wall)
+                cams.append({"name": f"wide_{k}", "kind": "full", "subject": k, "focal_mm": 24, "az": 0})
             spec = {"id": f"arms_{tag}", "set": a.set, "guides": True, "characters": chars, "cameras": cams}
             sp = W / "arms_scene.json"
             sp.write_text(json.dumps(spec, indent=1))

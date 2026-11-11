@@ -291,7 +291,7 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours, PH=None):
     if C.get("cravat", True):
         cv = C.get("cravat_shape") or {}
         # band: the collar's lower rings, 4 mm out
-        kb = max(2, int(NR * float(cv.get("band_frac", 0.4))))
+        kb = max(2, int(NR * float(cv.get("band_frac", 0.4 if C.get("neckwear") == "tie" else 0.86))))
         bvv, bff = [], []
         for k in range(kb + 1):
             for a in range(NA):
@@ -307,9 +307,13 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours, PH=None):
         zk = z_bot + (z_top - z_bot) * float(cv.get("knot_frac", 0.4))
         knot_c = np.array([cx, f0[1] - 0.010, zk])
         Rk = np.eye(3)
-        kdef = [0.012, 0.009, 0.013] if C.get("neckwear", "bow") == "tie" else [0.016, 0.011, 0.014]
+        kdef = [0.012, 0.009, 0.013] if C.get("neckwear", "bow") == "tie" else [0.02, 0.016, 0.018]
         kv, kf = _ellipsoid(knot_c, cv.get("knot", kdef), Rk)
         objs.append(("cravat", _obj("cravat_knot", kv, kf)))
+        if C.get("neckwear", "bow") != "tie":
+            # a soft fold under the knot, so the bow has volume below the chin
+            fv, ff = _ellipsoid(knot_c + np.array([0, -0.004, -0.022]), [0.022, 0.013, 0.014], Rk)
+            objs.append(("cravat", _obj("cravat_fold", fv, ff)))
         tie = C.get("neckwear", "bow") == "tie"
         # bow: two loops and two short tails fanned out; tie: one long blade down the shirt front
         for sgn in ((0,) if tie else (1, -1)):
@@ -317,11 +321,11 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours, PH=None):
                 ang = math.radians(cv.get("loop_deg", 18)) * sgn
                 Rl = np.array([[math.cos(ang), 0, -math.sin(ang)], [0, 1, 0], [math.sin(ang), 0, math.cos(ang)]])
                 lc = knot_c + np.array([sgn * cv.get("loop_off_m", 0.026), -0.002, 0.002])
-                lv, lf = _ellipsoid(lc, cv.get("loop", [0.024, 0.009, 0.014]), Rl)
+                lv, lf = _ellipsoid(lc, cv.get("loop", [0.03, 0.013, 0.018]), Rl)
                 objs.append(("cravat", _obj("cravat_loop", lv, lf)))
             # a tail: a tapered strip from under the knot, laid over the shirt front
             L = float(cv.get("tail_m", 0.30 if tie else 0.085))
-            w0, w1 = (0.028, 0.055) if tie else (0.016, 0.028)
+            w0, w1 = (0.028, 0.055) if tie else (0.024, 0.036)
             rows = []
             nrow = 14 if tie else 8
             for k in range(nrow):

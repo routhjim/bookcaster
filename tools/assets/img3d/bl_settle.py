@@ -364,6 +364,29 @@ ln = np.linalg.norm(X[Ef[:, 1]] - X[Ef[:, 0]], axis=1)
 REP["edge_stretch_p95"] = round(float(np.quantile(ln / np.maximum(L0, 1e-6), 0.95)), 3)
 REP["hem_min_z_m"] = round(float(X[mov, 2].min()), 3) if mov.any() else None
 
+# the shoulders: in the engine the head mesh's shoulder skin follows corrective joints that this stance's outfit
+# rides only through their main joints (folded above), so in a pose that moves the clavicles (arms on chair arms,
+# hands in a lap) the skin rose through the cloth as orange patches. The cloth over each shoulder (within
+# SH_R of the clavicle -> upper arm line) stands SH_EASE further out from that line, fading to nothing at SH_R.
+SH_EASE = float(JOB.get("shoulder_ease_m", 0.012))
+SH_R = float(JOB.get("shoulder_ease_r_m", 0.16))
+if SH_EASE > 0:
+    n_e = 0
+    for s in ("l", "r"):
+        if f"clavicle_{s}" not in PB:
+            continue
+        a_ = np.array(head(f"clavicle_{s}")[:]) / CM
+        b_ = np.array(head(f"upperarm_{s}")[:]) / CM
+        ab = b_ - a_
+        t_ = np.clip(((X - a_) @ ab) / (ab @ ab), 0, 1.2)
+        c_ = a_ + t_[:, None] * ab[None, :]
+        dv = X - c_
+        dn = np.linalg.norm(dv, axis=1)
+        sel = (dn < SH_R) & (dn > 1e-4) & ~free & (X[:, 2] > c_[:, 2] - 0.06)
+        w_ = (1 - dn[sel] / SH_R) ** 0.5
+        X[sel] += dv[sel] / dn[sel][:, None] * (SH_EASE * w_)[:, None]
+        n_e += int(sel.sum())
+    REP["shoulder_ease_verts"] = n_e
 # ------------------------------------------------------------------ bake: this pose is the bind pose
 # (by hand: Blender's apply-pose left some helper bones of this skeleton off their posed place)
 bpy.context.view_layer.objects.active = arm

@@ -156,7 +156,7 @@ def reach_forearm(him_joints, him_pos, him_facing, her_joints, her_side, sleeve_
     across = [hd[i] - k * d[i] for i in range(3)]
     an = math.sqrt(sum(x * x for x in across)) or 1.0
     across = [x / an for x in across]
-    hand_dir = [across[i] * 0.85 - u[i] * 0.35 for i in range(3)]          # fingers across and a little down
+    hand_dir = [across[i] * 0.97 - u[i] * 0.12 for i in range(3)]          # fingers across, lying on top of the sleeve
     wrist = [palm_c[i] - hand_dir[i] * palm_len_m for i in range(3)]
     A = lambda p: to_actor(p, him_pos, him_facing)   # noqa: E731
     w_a = A(wrist)

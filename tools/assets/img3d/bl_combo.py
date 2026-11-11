@@ -415,7 +415,7 @@ if JOB.get("collar_build") and not STATUE:
         cl = col[light][np.argsort(lum_c[light])]
         n_ = len(ll)
         COLLAR_RGB = {"collar": np.median(cl[int(0.7 * n_):], 0).tolist(),
-                      "cravat": np.median(cl[:int(0.4 * n_)], 0).tolist()}
+                      "cravat": np.median(cl[:int(0.2 * n_)], 0).tolist()}
         gone |= light
         if JOB["collar_build"].get("neckwear") == "tie":
             # a tie is darker than the shirt: its colour is the cloth down the shirt front's centre line that is
@@ -507,7 +507,7 @@ bmesh.ops.delete(bm, geom=crumbs, context="VERTS")
 # holes the generator left in the cloth (a dark hole low on a jacket front shows its inside): every open boundary
 # loop shorter than HOLE_MAX is filled; the new faces take the UVs their vertices have in the faces round them
 HOLE_MAX = float(JOB.get("fill_holes_m", 0.30))
-if HOLE_MAX > 0 and not STATUE:
+if HOLE_MAX > 0:
     bnd = [e for e in bm.edges if e.is_boundary]
     seen_e, loops = set(), []
     adj = {}
@@ -857,7 +857,7 @@ if not STATUE and bvhs:
 # pulled in to SLIM_GAP + SLIM_K of the excess; monotonic across the layers (a waistcoat inside stays inside), fading
 # out over 8 cm under the armpit; the sleeves are left alone.
 SLIM_K = float(JOB.get("side_slim_k", 0.1))
-if not STATUE and SLIM_K < 1:
+if SLIM_K < 1:   # statue (pure figure) too
     SLIM_GAP = float(JOB.get("side_slim_gap_m", 0.015))
     beval = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
     BP = np.array([v.co[:] for v in beval.data.vertices])
@@ -878,8 +878,19 @@ if not STATUE and SLIM_K < 1:
     gnf = {g.index: g.name for g in fig.vertex_groups}
     aw_ = np.array([sum(g.weight for g in v.groups if is_arm(gnf[g.group]) and not gnf[g.group].startswith("clavicle"))
                     for v in fig.data.vertices])
+    # never the arms: anything within the sleeve tube round shoulder -> wrist (hands and fingers outside the tube
+    # radius of a spread figure carried coat weights and were pulled into the body)
+    in_tube = np.zeros(len(fco2), bool)
+    for side in ("l", "r"):
+        S0_ = np.array(pose_head(f"upperarm_{side}"))
+        wr_ = np.array(LM[f"wrist_{side}"])
+        L_ = np.linalg.norm(wr_ - S0_)
+        ax_ = (wr_ - S0_) / L_
+        t_ = (fco2 - S0_) @ ax_
+        rr_ = np.linalg.norm((fco2 - S0_) - np.clip(t_, 0, None)[:, None] * ax_[None, :], axis=1)
+        in_tube |= (t_ > 0.15 * L_) & (rr_ < float(JOB.get("sleeve_radius_m", 0.10)) + 0.05)
     nslim, worst = 0, 0.0
-    for i in np.nonzero((aw_ < 0.5) & (fco2[:, 2] > z_lo) & (fco2[:, 2] < z_hi + 0.08))[0]:
+    for i in np.nonzero((aw_ < 0.5) & ~in_tube & (fco2[:, 2] > z_lo) & (fco2[:, 2] < z_hi + 0.08))[0]:
         sg = 1 if fco2[i, 0] >= cx_ else -1
         lat = sg * (fco2[i, 0] - cx_)
         e = float(np.interp(fco2[i, 2], zg, ext[sg])) + SLIM_GAP
@@ -1250,6 +1261,10 @@ if JOB.get("collar_build") and not STATUE and HEAD is not None:
     cr = dict(COLLAR_RGB or {})
     # white linen indoors: an albedo over ~0.72 blows out in window light (the engine's exposure is set for the room)
     cmax = float(JOB["collar_build"].get("albedo_max", 0.72))
+    # a cravat reads as dark silk: at most CRAV_MAX (the sheet's dark grey; a mid grey read as a white neck brace)
+    if "cravat" in cr and max(cr["cravat"]) > float(JOB["collar_build"].get("cravat_albedo_max", 0.22)):
+        m_ = max(cr["cravat"])
+        cr["cravat"] = [c_ * float(JOB["collar_build"].get("cravat_albedo_max", 0.22)) / m_ for c_ in cr["cravat"]]
     for k_ in list(cr):
         m_ = max(cr[k_])
         if m_ > cmax:

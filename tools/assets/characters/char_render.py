@@ -204,8 +204,24 @@ def character_actor(key):
             except Exception as e:
                 note(f"set_update_animation_in_editor: {e}")
     followers = []
-    for i, g in enumerate(spec.get("garments", [])):
+    hide_face = bool(spec.get("hide_face")) or "@hide_face" in spec.get("garments", [])
+    for i, g in enumerate(g_ for g_ in spec.get("garments", []) if g_ != "@hide_face"):
         followers.append(add_follower(a, body, g, f"garment_{i}"))
+    if hide_face:
+        # a pure generated figure (its own head, hair and hands): the MetaHuman's face and grooms are not drawn
+        # (they keep animating, so the face skeleton still measures eyes and head)
+        for c in a.get_components_by_class(unreal.SkeletalMeshComponent):
+            if c != body and c.get_name().lower() != "body":
+                c.set_render_in_main_pass(False)
+                c.set_cast_shadow(False)
+                try:
+                    c.set_editor_property("visibility_based_anim_tick_option",
+                                          unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
+                except Exception:
+                    pass
+        for gc in a.get_components_by_class(unreal.GroomComponent):
+            gc.set_visibility(False, True)
+        note(f"{key}: MetaHuman face and grooms hidden (pure figure)")
     if spec.get("body_swap"):
         followers.append(add_follower(a, body, spec["body_swap"], "body_swap", materials_from=body))
     if spec.get("body_swap") or spec.get("hide_body"):
