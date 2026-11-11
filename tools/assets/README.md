@@ -117,7 +117,9 @@ same release (it never fights for a lock). Meanwhile, with the Blender card held
 `ASSETS_BAKE_SPILL_S` (20), bakes spill to the UE card beside the editor when it has `ASSETS_SPILL_MIN_FREE_GB`
 (8) free, at most `ASSETS_SPILL_JOBS` (2) at once; each spill is logged and counted in `--status`. While released, asset jobs wait
 (previews may still run on the iGPU); nothing runs on the CPU. Asset mode returns by itself when both locks have
-been free for `ASSETS_RECLAIM_FREE_S` (5) with asset work queued (after `ASSETS_RELEASE_GRACE_S`, 120, for a
+been free for `ASSETS_RECLAIM_FREE_S` (5) with asset work queued (when the release came from an outside holder
+of the UE card, the UE card alone being free is enough: bakes then spill beside the editor while the Blender card
+stays held) (after `ASSETS_RELEASE_GRACE_S`, 120, for a
 manual release), or at `--reclaim-cards`; the cost is the editor's reload. `--release-card 05` gives up only the
 Blender card for an outside job that needs one card.
 

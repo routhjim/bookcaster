@@ -460,10 +460,10 @@ class Sched:
                     return True
         return False
 
-    def release(self, reason, manual):
+    def release(self, reason, manual, card=None):
         if self.released:
             return
-        self.released = {"reason": reason, "manual": manual, "t": now(), "done_t": None}
+        self.released = {"reason": reason, "manual": manual, "t": now(), "done_t": None, "card": card}
         print(f"[sched] releasing both cards: {reason}", flush=True)
         try:
             (C.SCHED_DIR / "released.json").write_text(json.dumps(self.released))
@@ -478,6 +478,9 @@ class Sched:
         self.last_release = dict(r, reclaim_t=now(), reclaim_why=why)
         self.released = None
         self.warm_wanted = True                            # load the editor now, even before UE work arrives
+        self.outside, self.free_since = {}, {}             # fresh windows: no stale "held for N s" after a reclaim
+        for c in self.cards.values():
+            c.outside_since = None
         (C.SCHED_DIR / "released.json").unlink(missing_ok=True)
         print(f"[sched] reclaiming the cards: {why}", flush=True)
 
@@ -497,7 +500,7 @@ class Sched:
                 lim = C.OUTSIDE_RELEASE_S if self.cards[bus].role == "ue" else C.OUTSIDE_RELEASE_BL_S
                 if t - since >= lim and (ours or self.card_work_queued()):
                     who = "; ".join(f"{p} {cmd[:60]}" for p, cmd in self.outside_holders(self.cards[bus]))
-                    self.release(f"an outside job holds card {bus} ({who or '?'}) for {t - since:.0f}s", False)
+                    self.release(f"an outside job holds card {bus} ({who or '?'}) for {t - since:.0f}s", False, bus)
                     break
             return
         r = self.released
@@ -518,6 +521,13 @@ class Sched:
         grace = C.RELEASE_GRACE_S if r["manual"] else 0.0
         if t - r["t"] >= grace and free_for >= C.RECLAIM_FREE_S and all(b in self.free_since for b in self.cards):
             self.reclaim(f"both card locks free for {free_for:.0f}s and asset work is queued")
+        elif (not r["manual"] and r.get("card") == self.ue_bus and C.BAKE_SPILL_S >= 0
+              and self.ue_bus in self.free_since
+              and t - self.free_since[self.ue_bus] >= C.RECLAIM_FREE_S):
+            # an automatic release, and only the Blender card is still held from outside: take the UE card back
+            # and let bakes spill beside the editor (a video run that needs both cards uses --release-cards)
+            self.reclaim(f"UE card free for {t - self.free_since[self.ue_bus]:.0f}s; the Blender card is still "
+                         f"held from outside, so bakes spill to the UE card")
 
     def tick(self):
         t = now()
