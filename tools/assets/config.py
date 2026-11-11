@@ -57,6 +57,11 @@ Every location comes from an environment variable; the defaults below are the do
                          a spare is a loaded idle Blender, not a second job: the card runs one job at a time)
 
   The line (line.py): stations with one job each, short lines, batches, the power and hardware guard; see there.
+    ASSETS_LINE_RELOAD  1 (default): the line reloads itself onto newer code (running jobs finish first); 0 = off
+    ASSETS_LINE_BORROW_MAX_WAIT_S  a borrow of the engine card waits at most this long for editor work; default 600
+    ASSETS_LINE_HOLD_GRACE_S  a full next line holds a station only while it moves (or idled under this); default 30
+    ASSETS_LINE_STALL_REPORT_S  log a station idle this long with ready work, with the reasons; default 60
+    ASSETS_LINE_INHIBIT  1 (default): hold the sleep inhibitor while the list has work; 0 for dry-run lines
 
 Stdlib only: imported by the orchestrator, never inside Blender or UE.
 """

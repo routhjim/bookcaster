@@ -99,18 +99,57 @@ both cards are released, every waiting clip runs, then the cards are reclaimed (
 line starts it only when the station is free, lets go of its own hold on that card first, and does not count the
 tool's process session as an outside user. Engine work is never a `--line-cmd` (use `--ue-job`).
 
+**The engine card: editor work and borrows.** Borrow commands (`--line-cmd engine ...`) wait in their own line
+(`card65:borrow` in the status) beside the editor's imports, stills and scripts (`card65`), so a line full of
+borrows never holds a bake whose next stage is the editor, and the other way round. The card alternates: a borrow
+takes it when no editor work can start (an asset still baking does not count), or once the editor has run
+`ASSETS_LINE_BATCH` (8) jobs while the borrow waited, or after `ASSETS_LINE_BORROW_MAX_WAIT_S` (600 s); after a
+borrow, the editor work that arrived meanwhile goes first. A turn given to a borrow stands until it starts, and no
+editor is loaded for an asset that is still baking while a borrow waits (no unload / reload ping-pong).
+
+**Image-to-3D on either card.** `img3d.py` runs on whichever card its station names: `--line-cmd blender shape
+...` runs it on card 05 as an ordinary command, `--line-cmd engine shape ...` borrows card 65. Choose by what waits:
+send it to `blender` (card 05) when card 05's line is short and no bakes, drawings or paint passes are queued there
+(it then runs at once and the editor keeps card 65); send it to `engine` (card 65) when card 05 is busy with bakes,
+the image model or paint, or when the editor has little work (each borrow costs the editor an unload and a ~12 s
+reload). Look at `--status` first: the shorter line with the less valuable work in it is the right one. Never send
+the same shape to both (a second entry with the same id at one station is refused anyway).
+
 **The work list and restarts.** Every submission is an entry file under `$ASSETS_SCHED_DIR/line/entries/` (done
 ones move to `line/done/`; per-entry logs in `line/logs/`). A client that goes away no longer cancels its job
 (`--cancel` does); `--detach` returns once the entry is on the line. Starting the line again (`--start`, or any
 client) reloads every unfinished entry in list order: a finished bake is kept, whatever was in flight runs again
-(a Blender or command left running by the dead scheduler is stopped first; its orphan editor is asked to quit).
+(a Blender left running by the dead scheduler is stopped first; its orphan editor is asked to quit). Commands are
+started through a small runner (`line.py --run RECORD -- CMD`) that writes the exit code to the entry's record
+file the moment the command ends, and the line writes the stage's end to the entry (fsynced) before anything else:
+after a restart, a command that ended while no line watched it is finished from its record and never runs again,
+and one still running is adopted (watched to its end, not killed). A process counts as the entry's only if its pid
+and its start time both match (pids are reused). Entries written by older code (no start time, no record) still get
+the old treatment: a live process is stopped and the entry runs again.
+
+**Reloading onto newer code.** Every 2 s the line looks at its own code (`assetd.py`, `line.py`, `config.py`,
+`run_asset.py`). When it changed, the line starts nothing new, lets the RUNNING jobs finish (a job in flight is
+never killed for a reload), unloads the idle editor and warm Blender, checks that the new code imports (if not, it
+stays on the old code and says so), and re-executes itself: same pid, same socket and daemon lock, the work list
+resumed from disk. Clients that connect meanwhile wait in the socket's backlog; a client following its entry (not
+`--detach`) re-attaches by itself and gets the result. Measured in the dry-run test: the reload follows the
+running job's end within a second. `ASSETS_LINE_RELOAD=0` turns it off; `--status` shows `RELOADING` and what it
+waits for.
 
 **Short lines.** At most `ASSETS_LINE_MAX` (3) jobs wait in front of a station; a submission past that gets
 `LINE FULL ... retry later` and exit code 75, and nothing is accepted. A station also holds a job whose next
 station's line is full, so the line never grows upstream. A flood of 40 submissions puts 4 on the line (one
 running, three waiting) and refuses 36. `--feed` is the way to put a backlog through: it submits one entry at a
 time, waits for room (leaving one place free in each line for other builders) and records progress beside the list,
-so re-running it skips what was fed.
+so re-running it skips what was fed. A station holds a job for a full next line only while that line moves (its
+station works on it, its editor loads, or it went idle less than `ASSETS_LINE_HOLD_GRACE_S`, 30 s, ago); a next line
+that does not move holds at twice its length, so it never idles the station upstream.
+
+**One job, one entry.** A submission that repeats a job already waiting or running is refused with `ALREADY
+QUEUED: already queued as entry N` (exit code 76; `--feed` counts it as fed; a client without `--detach` follows
+the entry that is there): a command with the same `--id` at the same station, an asset with the same id and mode, an
+engine job with the same id and the same job file content. Once the entry has finished, the same job may be
+submitted again.
 
 **Batches.** Each station runs up to `ASSETS_LINE_BATCH` (8) jobs of one kind before another waiting kind gets its
 turn (oldest first), and keeps going with the same kind while no other kind waits: the engine takes waiting
@@ -136,7 +175,11 @@ block (also while paused at the floor), released when the list is empty; it ends
 from AssetLab (which stays on disk unchanged); the start-up shim runs a job named by `ASSETS_UE_JOB` or `MH_JOB`.
 
 `--status` shows, per station, what runs and for how long, what waits and the oldest wait, the batch kind; the
-battery, load, memory, why work is paused or held; and the jobs finished in the last hour.
+battery, load, memory, why work is paused or held; and the jobs finished in the last hour. A line with waiting
+entries that starts none says why on the line under it (`why not running (idle Ns): ...`): held for the next line
+(and which one, how full), waiting for the editor to unload, editor work goes first, the guard (battery floor,
+charger, card, ASPM, the hold file), a video window, a reload in progress, the card's lock or VRAM, or an entry that
+waits for its earlier stage. A station idle 60 s with ready work logs the same reasons (`ASSETS_LINE_STALL_REPORT_S`).
 
 **Stages.** An asset job is a chain of stages: `blender_preview`; or `blender_final` (bake, export, then a small
 sheet) -> `paint` (with `--paint`, iGPU station) -> `ue` (import + stills in the editor) -> `finalize` (manifest).

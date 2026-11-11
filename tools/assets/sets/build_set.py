@@ -44,6 +44,12 @@ GPU_HOLD = Path(C.UE_HOME) / "GPU_HOLD"
 MANNEQUIN = "/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple"
 
 
+def line_client() -> Path:
+    """The line's client: ASSETS_LINE_CLIENT (the run_asset.py of the worktree the line runs from), else this
+    copy's. Run from its own worktree, so a client that starts the line starts that worktree's daemon."""
+    return Path(os.environ.get("ASSETS_LINE_CLIENT") or (HERE.parent / "run_asset.py")).resolve()
+
+
 def out_root():
     if os.environ.get("SETS_OUT"):
         return Path(os.path.expanduser(os.environ["SETS_OUT"]))
@@ -318,8 +324,9 @@ def run_sched(job, adir, timeout):
         Path(o).unlink(missing_ok=True)
     t0 = time.time()
     for attempt in range(3):              # a scheduler restart (code update) drops queued jobs: resubmit
-        p = subprocess.run([sys.executable, str(HERE.parent / "run_asset.py"), "--ue-job", str(jp)],
-                           capture_output=True, text=True, env=dict(os.environ, ASSETS_SCHED="1"))
+        client = line_client()
+        p = subprocess.run([sys.executable, str(client), "--ue-job", str(jp)],
+                           capture_output=True, text=True, cwd=str(client.parents[2]), env=dict(os.environ, ASSETS_SCHED="1"))
         if "scheduler went away" not in p.stderr:
             break
         log(f"the scheduler restarted under the job; resubmitting ({attempt + 1})")

@@ -36,6 +36,12 @@ RT_KEYS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.Har
            "r.SkinCache.CompileShaders": "True"}
 
 
+def line_client() -> Path:
+    """The line's client: ASSETS_LINE_CLIENT (the run_asset.py of the worktree the line runs from), else this
+    copy's. Run from its own worktree, so a client that starts the line starts that worktree's daemon."""
+    return Path(os.environ.get("ASSETS_LINE_CLIENT") or (HERE.parent / "run_asset.py")).resolve()
+
+
 def log(m):
     print(f"[scene {time.strftime('%H:%M:%S')}] {m}", flush=True)
 
@@ -174,8 +180,9 @@ def main():
     for o in outs:
         Path(o).unlink(missing_ok=True)
     t0 = time.time()
-    p = subprocess.run([sys.executable, str(HERE.parent / "run_asset.py"), "--ue-job", str(jp)],
-                       capture_output=True, text=True)
+    client = line_client()
+    p = subprocess.run([sys.executable, str(client), "--ue-job", str(jp)],
+                       capture_output=True, text=True, cwd=str(client.parents[2]))
     wall = round(time.time() - t0, 1)
     (odir / "sched" / "client.log").write_text(p.stdout + "\n--- stderr\n" + p.stderr)
     res = json.loads(Path(job["result"]).read_text()) if Path(job["result"]).exists() else {}
