@@ -172,3 +172,15 @@ down at one's own sleeve, and a hand resting on another person's forearm solved 
 (`characters/choose_mh.py`, CLIP + DINOv2 on the card), make + cloud + export, drawings in seed rounds until both
 gates pass, shape, fit rules measured on the drawing, import, arm abduction by measurement, check stills. Resumable
 (each step skipped when its output exists); `--mh` reuses an existing MetaHuman.
+
+**The fit keeps the generated garment (11-11, after the clothes audit).** Rendering one dress at every stage showed
+the texture intact throughout and the loss in two places: the fit (every vertex pushed out of the hidden body by
+1.4 cm printed the body's bust into the bodice; pull-ins and smoothing flattened folds) and the export (every face
+flat-shaded: the glTF's smooth normals are lost at the first weld and the FBX carried per-face smoothing, so the
+engine drew each garment faceted). Now: only the visible head mesh pushes (`push_body` false), all fit moves are one
+displacement field smoothed over the mesh before it is applied (`disp_smooth` 12), shoulder and collar pull-ins,
+shoulder rounding and cravat smoothing are off, the liner is off for the rebuilt cast (it made dark spikes at
+collars), the mesh is shaded smooth before export, and the cloth material is matte (roughness 0.95, specular 0.15).
+A seated stance lays the skirt with `iters` 0 (no relaxation). `stage_dir` saves a .blend after each step for audits.
+The constructed collar (`collar_build`) is no longer used for the cast: collar and cravat come from the generated
+figure (draw them closed and high in the spread drawing).
