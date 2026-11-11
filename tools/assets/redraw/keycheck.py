@@ -169,6 +169,21 @@ def arm_hand(m: dict, j2: dict, box) -> dict:
     return res
 
 
+def lab_of(img: torch.Tensor, mask_path: str) -> dict | None:
+    """Median CIE Lab of the picture inside an engine mask (img: [3, H, W] RGB 0-255 on the card)."""
+    m = torch.from_numpy(np.asarray(Image.open(mask_path).convert("L").resize((img.shape[2], img.shape[1])))).to(img.device) > 127
+    if int(m.sum()) < 50:
+        return None
+    x = img[:, m] / 255.0
+    x = torch.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+    M = torch.tensor([[0.4124, 0.3576, 0.1805], [0.2126, 0.7152, 0.0722], [0.0193, 0.1192, 0.9505]], device=img.device)
+    xyz = (M @ x) / torch.tensor([0.9505, 1.0, 1.089], device=img.device)[:, None]
+    f = torch.where(xyz > 0.008856, xyz.clamp_min(1e-9) ** (1 / 3), 7.787 * xyz + 16 / 116)
+    L, a, b = 116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])
+    return {"L": round(float(L.median()), 1), "a": round(float(a.median()), 1), "b": round(float(b.median()), 1),
+            "px": int(m.sum())}
+
+
 def main():
     if not torch.cuda.is_available():
         raise SystemExit("no GPU visible: checks run on a card, never on the CPU")
@@ -241,6 +256,8 @@ def main():
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
             r["people"][p["key"]] = q
+        if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
+            r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"]}
         out[it["id"]] = r
         print(json.dumps({"id": it["id"], "people": {k: {"arms": (v["redraw"]["arms_found"], v["redraw"]["arms_shown"]),
                                                           "hands": (v["redraw"]["hands_found"], v["redraw"]["hands_shown"]),

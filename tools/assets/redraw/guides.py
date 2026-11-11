@@ -165,9 +165,50 @@ def seen_things(things, cam: dict, d: torch.Tensor, n: int = 7) -> list:
                         flame = True
                         break
         out.append({"name": t["name"], "kind": t["kind"], "words": t["words"], "lit": t["lit"], "fire": t["fire"],
+                    **({"place": t["place"]} if t.get("place") else {}), "large": bool(t.get("large")),
                     "flame_in_view": flame,
                     "box": box, "visible_frac": round(nv / len(pts), 3), **({"view": t["view"]} if t.get("view") else {})})
     return out
+
+
+def thing_mask(t: dict, cam: dict, d: torch.Tensor, n: int = 24) -> torch.Tensor:
+    """Where a set thing's own surface is what the camera sees: points over its box (a fine grid, its floor face
+    left out) kept where the engine depth lies ON them (within 3 cm + 1.5 %), splatted and closed. The colour check
+    compares a redraw inside it with the run's look of that thing (a chair drawn gold in one shot, red in the next)."""
+    h, w = d.shape
+    c, hf = t["center"], t["half"]
+    lin = torch.linspace(-1, 1, n, device=d.device)
+    gx, gy, gz = torch.meshgrid(lin, lin, lin, indexing="ij")
+    P = torch.stack([c[0] + hf[0] * gx, c[1] + hf[1] * gy, c[2] + hf[2] * gz], -1).reshape(-1, 3)
+    P = P[P[:, 2] > 0.04] if hf[2] > 0.05 else P
+    # project (framing.project, vectorised)
+    pos = torch.tensor(cam["position"], device=d.device, dtype=torch.float32)
+    f = torch.tensor([cam["target"][i] - cam["position"][i] for i in range(3)], device=d.device)
+    f = f / f.norm()
+    up = torch.tensor([0.0, 0.0, 1.0], device=d.device)
+    r = torch.linalg.cross(f, up)
+    r = r / r.norm()
+    u = torch.linalg.cross(r, f)
+    v = P - pos
+    z = v @ f
+    keep = z > 0.05
+    v, z = v[keep], z[keep]
+    sw, sh = framing.SENSOR_W, framing.sensor_h((w, h))
+    uu = 0.5 + cam["focal_mm"] * (v @ r) / z / sw
+    vv = 0.5 - cam["focal_mm"] * (v @ u) / z / sh
+    inside = (uu >= 0) & (uu < 1) & (vv >= 0) & (vv < 1)
+    uu, vv, z = uu[inside], vv[inside], z[inside]
+    m = torch.zeros((h, w), dtype=torch.bool, device=d.device)
+    if not len(z):
+        return m
+    xi, yi = (uu * w).long().clamp(0, w - 1), (vv * h).long().clamp(0, h - 1)
+    dm = d[yi, xi]
+    on = (dm - z * 100.0).abs() <= 3.0 + 0.015 * z * 100.0
+    m[yi[on], xi[on]] = True
+    k = max(3, int(round(min(w, h) * 0.012)) | 1)
+    m = F.max_pool2d(m.float()[None, None], k, 1, k // 2)[0, 0] > 0.5         # close the splats
+    m = -F.max_pool2d(-m.float()[None, None], k, 1, k // 2)[0, 0] > 0.5
+    return m
 
 
 # OpenPose 18-point body (COCO order) and its usual colours: the ControlNet Union reads left and right from them
@@ -370,6 +411,17 @@ def one_scene(sd: Path, dev, things=None, day=None):
         if things is not None:
             hid = set(res.get("hidden") or [])       # set items the scene hid (a figure brought its own chair)
             truth["shots"][cam]["things"] = seen_things([t for t in things if t["name"] not in hid], sh["camera"], d)
+            pm = torch.zeros_like(d, dtype=torch.bool)               # people in front take their pixels
+            for key in people:
+                pm |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
+            by = {t["name"]: t for t in things}
+            for st in truth["shots"][cam]["things"]:
+                if st.get("large") and st["name"] in by:
+                    tm = thing_mask(by[st["name"]], sh["camera"], d) & ~pm
+                    if int(tm.sum()) > 0.003 * w * h:
+                        save(tm.float() * 255, g / f"{cam}_thing_{st['name']}.png")
+                        st["mask"] = str(g / f"{cam}_thing_{st['name']}.png")
+                        st["mask_area"] = round(float(tm.float().mean()), 4)
             truth["shots"][cam]["daylight"] = day
     (sd / "truth.json").write_text(json.dumps(truth, indent=1))
     return truth

@@ -119,6 +119,27 @@ def things(set_dir) -> list:
             t["lit"] = True
             t["light_pos"] = list(p)
             t["fire"] = any(w in (t["name"] + " " + (t["asset"] or "")).lower() for w in FIRE)
+    # where each piece of furniture stands in the room, by the room's landmarks (the fire, the windows), the same
+    # words in every shot: two armchairs named only by their looks swapped looks between shots (11-11)
+    marks = [t for t in out if t.get("fire") or t["kind"] == "window"]
+    for t in out:
+        if t["kind"] != "fixture" or t.get("fire") or not marks:
+            continue
+        m = min(marks, key=lambda q: math.dist(q["center"][:2], t["center"][:2]))
+        mw = "the fireplace" if m.get("fire") else "the window"
+        to = [m["center"][0], m["center"][1]]                 # from the room's middle, facing the landmark
+        right = [to[1], -to[0]]
+        d = [t["center"][0] - m["center"][0], t["center"][1] - m["center"][1]]
+        along = d[0] * right[0] + d[1] * right[1]
+        n = math.hypot(*right) or 1.0
+        along /= n
+        reach = max(m["half"][0], m["half"][1])
+        t["place"] = (f"in front of {mw}" if abs(along) <= reach * 0.6 else
+                      f"to the {'right' if along > 0 else 'left'} of {mw}")
+        t["large"] = max(t["half"][0], t["half"][1]) >= 0.4
+    for t in out:
+        if t["kind"] == "prop" and t["half"][0] * t["half"][1] >= 1.0:
+            t["large"] = True              # a carpet
     view = next((f.get("view_words") for k in ("fixtures", "props") for f in spec.get(k, [])
                  if f.get("outside") and f.get("view_words")), None)
     for t in out:

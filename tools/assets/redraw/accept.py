@@ -16,6 +16,7 @@ pick:   per key, the first that passes every check (the draw, else its re-draw),
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -67,7 +68,44 @@ def failures(v: dict) -> list:
 
 
 def item_fails(rec: dict) -> dict:
-    return {k: failures(v) for k, v in rec.get("people", {}).items() if failures(v)}
+    f = {k: failures(v) for k, v in rec.get("people", {}).items() if failures(v)}
+    for n, ok in (rec.get("things_ok") or {}).items():
+        if ok is False:
+            f.setdefault("set", []).append(f"colour {n}")
+    return f
+
+
+LAB_L, LAB_HUE, LAB_C = 15.0, 35.0, 18.0     # lightness, hue angle (deg, both coloured) and chroma tolerances
+
+
+def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
+    """Each large piece's look over the run's keys: its colour (median Lab in its engine mask) against the run's
+    reference for it (the anchor key's, else the median over the keys): lightness, hue and chroma within
+    tolerance. Returns the references."""
+    import statistics
+    vals = {}
+    for res in results:
+        for iid, rec in res.items():
+            for n, v in (rec.get("things") or {}).items():
+                if v and v["px"] > 400:
+                    vals.setdefault(n, []).append((iid, v))
+    ref = {}
+    for n, vs in vals.items():
+        an = [v for iid, v in vs if ref_id and iid == ref_id]
+        ref[n] = an[0] if an else {k: statistics.median(v[k] for _, v in vs) for k in ("L", "a", "b")}
+    for res in results:
+        for rec in res.values():
+            ok = {}
+            for n, v in (rec.get("things") or {}).items():
+                if not v or v["px"] <= 400 or n not in ref:
+                    continue
+                r = ref[n]
+                c1, c2 = math.hypot(v["a"], v["b"]), math.hypot(r["a"], r["b"])
+                h = math.degrees(math.atan2(v["b"], v["a"]) - math.atan2(r["b"], r["a"]))
+                dh = abs((h + 180) % 360 - 180) if min(c1, c2) > 8 else 0.0
+                ok[n] = abs(v["L"] - r["L"]) <= LAB_L and dh <= LAB_HUE and abs(c1 - c2) <= LAB_C
+            rec["things_ok"] = ok
+    return ref
 
 
 def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
@@ -93,8 +131,10 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
             c = cast.get(p["key"]) or {}
             ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun")))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
+        things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place")}
+                  for t in truth.get("things") or [] if t.get("mask")]
         items.append({"id": iid, "redraw": path, "engine": m["still"],
-                      "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl})
+                      "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl, "things": things})
     out_p.write_text(json.dumps({"out": str(out_p.with_suffix("")) + "_result.json", "pose_model": pose_model,
                                  "judge": True, "items": items}, indent=1))
     print(out_p, len(items))
@@ -109,6 +149,7 @@ FIX = {"arms": "{Who}'s arms hang in their sleeves clear of the body, both sleev
 def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     out = Path(run["out"])
     neck_eval(checked)
+    colour_eval(checked, ref_id=(run.get("anchor") or {}).get("id"))
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -122,6 +163,14 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
                for p in meta[iid]["people"]]
         nm = RD.names(ppl, cast)
         add = []
+        tw = {t["name"]: t for t in json.loads((Path([s for s in run["scenes"] if Path(s).name == meta[iid]["scene"]][0])
+                                                 / "truth.json").read_text())["shots"][meta[iid]["cam"]].get("things") or []}
+        for x in f.pop("set", []):
+            t = tw.get(x.split(" ", 1)[1])
+            if t:
+                add.append(f"{t['words'].split(' (')[0].capitalize()} {('(' + t['words'].split(' (', 1)[1]) if ' (' in t['words'] else ''}"
+                           f"{', ' + t['place'] if t.get('place') else ''} keeps exactly the colour and shape of its "
+                           f"reference picture.")
         for k, fs in f.items():
             who = nm.get(k, "the person")
             w = RD.who_of(cast, k)
@@ -172,6 +221,7 @@ def neck_eval(*results: dict) -> None:
 def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     out = Path(run["out"])
     neck_eval(checked, retry)
+    colour_eval(checked, retry, ref_id=(run.get("anchor") or {}).get("id"))
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)

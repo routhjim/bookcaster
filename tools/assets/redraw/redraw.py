@@ -331,11 +331,14 @@ def set_words(shot: dict) -> str:
           (t.get("lit") and t["visible_frac"] >= 0.02) or
           (t["kind"] == "prop" and t["visible_frac"] >= PROP_SEEN and area(t) >= PROP_AREA)]
     th = [t for t in th if t["name"] != "rug" or t["visible_frac"] >= 0.2]
-    th = sorted(th, key=area, reverse=True)[:MAX_THINGS]
+    big = [t for t in th if t.get("large")]                   # large furniture always: never dropped by the cap
+    th = big + [t for t in sorted(th, key=area, reverse=True) if not t.get("large")][:max(0, MAX_THINGS - len(big))]
     parts = []
     for t in sorted(th, key=lambda t: (t["box"][0] + t["box"][2]) / 2):
         # only a lit thing whose flame is out of view loses its flame words (null = not a lit thing: keep its look)
         w = t["words"] if t.get("flame_in_view") is not False else t["words"].split(" with ")[0].split(",")[0]
+        if t.get("place"):                 # where it stands in the room, the same words in every shot
+            w += f", {t['place']},"
         if t["kind"] == "window" and t.get("view"):
             w += f" showing {t['view']}"
         elif t["kind"] == "window" and shot.get("daylight"):
@@ -410,6 +413,39 @@ def faces(ppl: list, cast: dict) -> list:
     return out
 
 
+def anchor_crops(run: dict, out: Path) -> dict:
+    """{thing name: crop path} of each large piece of furniture in the run's room anchor (run "anchor": {"image",
+    "scene", "cam"}: an accepted key that shows the room), from the engine's own box of it in that shot. Given as a
+    reference wherever that piece is in frame (several anchors: each piece from the one that shows it biggest), they
+    hold one look per chair across shots (11-11: the leather chair
+    drawn brown in one shot, red in another, button-backed or plain)."""
+    anchors = run.get("anchor") or []
+    anchors = [anchors] if isinstance(anchors, dict) else anchors
+    if not anchors:
+        return {}
+    from PIL import Image
+    best = {}                                  # per piece: the anchor that shows it biggest
+    for a in anchors:
+        sh = json.loads((Path(a["scene"]) / "truth.json").read_text())["shots"][a["cam"]]
+        for t in sh.get("things") or []:
+            if not t.get("large") or t["visible_frac"] < 0.3 or t["kind"] == "prop":
+                continue
+            b = t["box"]
+            ar = (b[2] - b[0]) * (b[3] - b[1])
+            if ar >= 0.01 and ar > best.get(t["name"], (0,))[0]:
+                best[t["name"]] = (ar, a["image"], b)
+    d = out / "anchor_crops"
+    d.mkdir(parents=True, exist_ok=True)
+    res = {}
+    for n, (ar, img, b) in best.items():
+        im = Image.open(img).convert("RGB")
+        W, H = im.size
+        p = d / f"{n}.png"
+        im.crop((int(b[0] * W), int(b[1] * H), int(b[2] * W), int(b[3] * H))).save(p)
+        res[n] = str(p)
+    return res
+
+
 def light_words(set_dir: str | None) -> str:
     """Where the light comes from, from the set's own facts (setfacts: lit things, a fire, daylight through a window):
     the same sentence for every shot of the set, so the redraw keeps one light and mood across cuts."""
@@ -440,6 +476,7 @@ def main():
     seed = int(run.get("seed", 7))
     only = set(run.get("only") or [])
     jobs = []
+    crops = anchor_crops(run, out)
     for sd in map(Path, run["scenes"]):
         truth = json.loads((sd / "truth.json").read_text())
         res = json.loads((sd / "result.json").read_text())
@@ -503,7 +540,9 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
-                         "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or []),
+                         "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
+                         + [crops[t["name"]] for t in sorted(sh.get("things") or [], key=lambda t: -t.get("mask_area", 0))
+                            if t["name"] in crops and t.get("mask")][:run.get("max_piece_refs", 2)],
                          "loras": loras,
                          "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st, seed=seed)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
