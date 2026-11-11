@@ -18,12 +18,15 @@ Job:
    "export_geometry": {"key": "<character key>", "folder": "/Game/Char/Geo", "fbx_dir": dir} | null,
    "shots": [{"name", "char": key, "frame": "close" | "medium" | "full", "az": deg, "el": deg,
               "body_anim": path | null, "body_t": s, "body_scan": null | "arms_up",
+              "body_pose": {"name", "rots": [[bone, parent, deg], ...]} | null,   (built pose, e.g. seated)
+              "turn": {"neck_02": deg, "head": deg} | null,   (extra yaw on the body pose, e.g. head turned)
               "face_curves": {curve: value} | null, "face_anim": path | null, "face_t": s}]}
 
 A Character asset renders through the editor preview actor (spawn_meta_human_actor; no assembly needed); an
 assembled Blueprint renders as an ordinary actor. Garments are SkeletalMeshComponents added to the actor with
 set_leader_pose_component(body), so they follow every body pose; body_swap hides the body component and shows the
-trimmed copy (with the body's own materials) the same way. export_geometry (needs Slate, so the full editor, not a
+trimmed copy (with the body's own materials) the same way. Before each still: head on the neck (face and body
+agree within 1 mm) and both hands visible and attached (hands_check), or the still is refused. export_geometry (needs Slate, so the full editor, not a
 commandlet) writes the character's body/head skeletal meshes as assets and FBX files.
 """
 
@@ -42,6 +45,7 @@ mhs = unreal.get_editor_subsystem(unreal.MetaHumanCharacterEditorSubsystem)
 at = unreal.AssetToolsHelpers.get_asset_tools()
 JOB = {}
 RES = [1152, 640]
+CUR_RES = []          # the shot being set up may have its own resolution (portrait full-length stills)
 S = {}
 
 
@@ -80,7 +84,17 @@ def rect(label, loc, rot, cd, size):
 
 
 def light_scene():
-    """Neutral three-point portrait light (front-left key, front-right fill, back rim) on the template level."""
+    """Neutral three-point portrait light (front-left key, front-right fill, back rim) on the template level.
+    "studio": false keeps the level's own light (a set: judge the character in the room's light)."""
+    if not JOB.get("studio", True):
+        if JOB.get("exposure_bias") is not None:
+            ppv = spawn(unreal.PostProcessVolume, (0, 0, 0), label="ch_pp")
+            ppv.set_editor_property("unbound", True)
+            pp = ppv.get_editor_property("settings")
+            pp.set_editor_property("override_auto_exposure_bias", True)
+            pp.set_editor_property("auto_exposure_bias", float(JOB["exposure_bias"]))
+            ppv.set_editor_property("settings", pp)
+        return
     rect("ch_key", (120, 170, 200), (0, -15, -125), JOB.get("key_cd", 40), 140)
     rect("ch_fill", (-190, 210, 160), (0, -5, -50), JOB.get("fill_cd", 14), 220)
     rect("ch_rim", (-60, -210, 230), (0, -25, 75), JOB.get("rim_cd", 25), 120)
@@ -124,9 +138,11 @@ def skel_comps(a):
     return body, face
 
 
-def add_follower(a, body, mesh_path, label, materials_from=None):
-    """A garment (or the trimmed body) as its own SkeletalMeshActor attached to the character, its component driven
-    by the character's body through set_leader_pose_component (bones matched by name), so it follows every pose."""
+def add_follower(a, body, mesh_path, label, skin=False):
+    """A garment (or, skin=True, the trimmed body) as its own SkeletalMeshActor attached to the character, its
+    component driven by the character's body through set_leader_pose_component (bones matched by name), so it follows
+    every pose. The trimmed body never takes the garment material: it gets the body's own materials in refresh()
+    (an assembled Blueprint has no Body component until its first construction, so they are not known here)."""
     mesh = EAL.load_asset(mesh_path)
     if mesh is None:
         raise RuntimeError(f"no skeletal mesh {mesh_path}")
@@ -140,16 +156,74 @@ def add_follower(a, body, mesh_path, label, materials_from=None):
     comp.set_editor_property("visibility_based_anim_tick_option",
                              unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
     comp.set_editor_property("bounds_scale", 2.0)
-    if JOB.get("garment_material") and materials_from is None:
+    if JOB.get("garment_material") and not skin:
         gm = EAL.load_asset(JOB["garment_material"])
+        slots = skin_slots(comp)
         for i in range(comp.get_num_materials()):
-            comp.set_material(i, gm)
-    if materials_from is not None:
-        for i, m in enumerate(materials_from.get_materials()):
-            if i < comp.get_num_materials():
-                comp.set_material(i, m)
+            if i not in slots:
+                comp.set_material(i, gm)
     S.setdefault("followers", {}).setdefault(id(a), []).append(fa)
+    if skin:
+        S.setdefault("swap", {})[id(a)] = fa
+        tweak = JOB.get("swap_bounds", "leader")
+        if tweak == "leader":
+            comp.set_editor_property("use_bounds_from_leader_pose_component", True)
+        elif tweak == "scale":
+            comp.set_editor_property("bounds_scale", 20.0)
     return comp
+
+
+def skin_slots(comp):
+    """Indices of material slots that carry skin (hands in an outfit mesh): slot name contains "skin"."""
+    sk = comp.get_skinned_asset()
+    if sk is None:
+        return []
+    return [i for i, m in enumerate(sk.get_editor_property("materials"))
+            if "skin" in str(m.get_editor_property("material_slot_name")).lower()]
+
+
+def skin_materials(body):
+    """The body's skin material(s) for the trimmed copy, slot by slot name when the names match, else the body's
+    first slot (the trim keeps one skin slot; the body's UVs, so the body's skin maps fit it)."""
+    out = {}
+    bm = body.get_skinned_asset().get_editor_property("materials") if body.get_skinned_asset() else []
+    names = [str(m.get_editor_property("material_slot_name")).lower() for m in bm]
+    mats = body.get_materials()
+    for i, n in enumerate(names):
+        if i < len(mats) and mats[i] is not None:
+            out[n] = mats[i]
+    first = next((m for m in mats if m is not None), None)
+    return out, first
+
+
+def set_skin_slots(a, body):
+    """Skin slots of every follower (hands carried in the outfit) take the body's own skin material."""
+    if body is None:
+        return
+    _, first = skin_materials(body)
+    for fa in S.get("followers", {}).get(id(a), []):
+        comp = fa.skeletal_mesh_component
+        for i in skin_slots(comp):
+            if first is not None:
+                comp.set_material(i, first)
+
+
+def set_swap_materials(a, body):
+    fa = S.get("swap", {}).get(id(a))
+    if fa is None or body is None:
+        return
+    by_name, first = skin_materials(body)
+    comp = fa.skeletal_mesh_component
+    for spec in JOB.get("characters", {}).values():
+        if spec.get("swap_material") and S["actors"].get(next((k for k, v in JOB["characters"].items()
+                                                                if v is spec), None), (None,))[0] is a:
+            first, by_name = EAL.load_asset(spec["swap_material"]), {}     # a test override
+    sk = comp.get_skinned_asset()
+    slots = [str(m.get_editor_property("material_slot_name")).lower() for m in sk.get_editor_property("materials")]
+    for i in range(comp.get_num_materials()):
+        m = by_name.get(slots[i] if i < len(slots) else "") or first
+        if m is not None:
+            comp.set_material(i, m)
 
 
 def character_actor(key):
@@ -197,7 +271,7 @@ def character_actor(key):
     for i, g in enumerate(spec.get("garments", [])):
         followers.append(add_follower(a, body, g, f"garment_{i}"))
     if spec.get("body_swap"):
-        followers.append(add_follower(a, body, spec["body_swap"], "body_swap", materials_from=body))
+        followers.append(add_follower(a, body, spec["body_swap"], "body_swap", skin=True))
     if spec.get("body_swap") or spec.get("hide_body"):
         # keep it animating (followers read its pose) but do not draw it
         body.set_editor_property("visibility_based_anim_tick_option",
@@ -375,6 +449,164 @@ def baked_material(path, texs):
     return m
 
 
+# cloth per baked slot (MB_<cloth>): weave map, its tile in cm (UV channel 1 is in centimetres), how strong the
+# thread normal and occlusion are, roughness, specular, and either cloth fuzz (wool, linen) or anisotropy (silk);
+# never both on one material. Starting values from the outfit research, tuned by eye.
+CLOTH = {
+    "wool": {"weave": "nap", "tile_cm": 4.0, "n": 0.35, "ao": 0.25, "rough": 0.92, "spec": 0.25, "fuzz": 0.65,
+             "fuzz_color": [0.16, 0.16, 0.17]},
+    "wool_lapel": {"weave": "nap", "tile_cm": 4.0, "n": 0.3, "ao": 0.25, "rough": 0.88, "spec": 0.25, "fuzz": 0.6,
+                   "fuzz_color": [0.16, 0.16, 0.17]},
+    "wool_vest": {"weave": "twill22", "tile_cm": 3.429, "n": 0.6, "ao": 0.4, "rough": 0.82, "spec": 0.3,
+                  "fuzz": 0.35, "fuzz_color": [0.2, 0.2, 0.2]},
+    "wool_trousers": {"weave": "twill22", "tile_cm": 3.429, "n": 0.6, "ao": 0.4, "rough": 0.74, "spec": 0.3,
+                      "fuzz": 0.25, "fuzz_color": [0.45, 0.45, 0.44]},
+    "cotton": {"weave": "plain", "tile_cm": 2.909, "n": 0.7, "ao": 0.45, "rough": 0.78, "spec": 0.35, "fuzz": 0.15,
+               "fuzz_color": [0.9, 0.9, 0.88]},
+    "starch": {"weave": "plain", "tile_cm": 2.909, "n": 0.2, "ao": 0.15, "rough": 0.45, "spec": 0.4, "fuzz": 0.0},
+    "silk": {"weave": "satin5", "tile_cm": 1.667, "n": 0.25, "ao": 0.15, "rough": 0.5, "spec": 0.35, "aniso": 0.45},
+    "leather": {"rough": 0.36, "spec": 0.5},
+    "horn": {"rough": 0.3, "spec": 0.5},
+    "thread": {"rough": 0.8, "spec": 0.3},
+}
+
+
+def cloth_material(path, texs, weave, c):
+    """A two-sided material over the baked maps (UV 0) with a thread-scale weave (UV 1 in cm / tile): normals
+    blended (whiteout), weave occlusion in colour and AO, roughness from the cloth with the weave's crown factor,
+    low specular; Cloth shading with fuzz for wool and linen, anisotropy for silk."""
+    MEL = unreal.MaterialEditingLibrary
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    folder, name = path.rsplit("/", 1)
+    m = at.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
+    X = {"x": -1200}
+
+    def node(cls, **props):
+        X["x"] += 40
+        n = MEL.create_material_expression(m, cls, X["x"], 0)
+        for k, v in props.items():
+            n.set_editor_property(k, v)
+        return n
+
+    def link(a, ao, b, bi):
+        MEL.connect_material_expressions(a, ao, b, bi)
+
+    def const(v):
+        if isinstance(v, (list, tuple)):
+            return node(unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(*v, 1.0))
+        return node(unreal.MaterialExpressionConstant, r=float(v))
+
+    def op(cls, a, b, ao="", bo=""):
+        n = node(cls)
+        link(a, ao, n, "A")
+        link(b, bo, n, "B")
+        return n
+
+    def samp(tex, st, uv=None):
+        n = node(unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=st)
+        if uv is not None:
+            link(uv, "", n, "UVs")
+        return n
+    S_COL, S_NRM, S_MSK = (unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL,
+                           unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+    bc = samp(texs["BaseColor"], S_COL)
+    nm = samp(texs["Normal"], S_NRM)
+    rma = samp(texs["RMA"], S_MSK)
+    P = unreal.MaterialProperty
+    outs = {}
+    w = c.get("weave")
+    if w and w in weave:
+        tc = node(unreal.MaterialExpressionTextureCoordinate, coordinate_index=1)
+        uv = op(unreal.MaterialExpressionMultiply, tc, const(1.0 / c["tile_cm"]))
+        wn = samp(weave[w]["N"], S_NRM, uv)
+        wm = samp(weave[w]["M"], S_MSK, uv)
+        # weave normal toward flat by (1 - strength), then whiteout blend with the baked normal
+        wl = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const([0.0, 0.0, 1.0]), "", wl, "A")
+        link(wn, "RGB", wl, "B")
+        link(const(c.get("n", 0.5)), "", wl, "Alpha")
+        rg_a = node(unreal.MaterialExpressionComponentMask, r=True, g=True, b=False, a=False)
+        link(nm, "RGB", rg_a, "")
+        rg_b = node(unreal.MaterialExpressionComponentMask, r=True, g=True, b=False, a=False)
+        link(wl, "", rg_b, "")
+        b_a = node(unreal.MaterialExpressionComponentMask, r=False, g=False, b=True, a=False)
+        link(nm, "RGB", b_a, "")
+        b_b = node(unreal.MaterialExpressionComponentMask, r=False, g=False, b=True, a=False)
+        link(wl, "", b_b, "")
+        xy = op(unreal.MaterialExpressionAdd, rg_a, rg_b)
+        zz = op(unreal.MaterialExpressionMultiply, b_a, b_b)
+        ap = op(unreal.MaterialExpressionAppendVector, xy, zz)
+        nn = node(unreal.MaterialExpressionNormalize)
+        link(ap, "", nn, "VectorInput")
+        outs["MP_NORMAL"] = (nn, "")
+        # thread occlusion: lerp(1, weave AO, k)
+        aol = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const(1.0), "", aol, "A")
+        link(wm, "G", aol, "B")
+        link(const(c.get("ao", 0.3)), "", aol, "Alpha")
+        col = op(unreal.MaterialExpressionMultiply, bc, aol, "RGB", "")
+        outs["MP_BASE_COLOR"] = (col, "")
+        ao = op(unreal.MaterialExpressionMultiply, rma, aol, "B", "")
+        outs["MP_AMBIENT_OCCLUSION"] = (ao, "")
+        rf = op(unreal.MaterialExpressionMultiply, wm, const(2.0), "B", "")
+        rl = node(unreal.MaterialExpressionLinearInterpolate)
+        link(const(1.0), "", rl, "A")
+        link(rf, "", rl, "B")
+        link(const(0.6), "", rl, "Alpha")
+        rough = op(unreal.MaterialExpressionMultiply, rl, const(c.get("rough", 0.8)))
+    else:
+        outs["MP_BASE_COLOR"] = (bc, "RGB")
+        outs["MP_NORMAL"] = (nm, "RGB")
+        outs["MP_AMBIENT_OCCLUSION"] = (rma, "B")
+        rough = const(c.get("rough", 0.8))
+    outs["MP_ROUGHNESS"] = (rough, "")
+    outs["MP_SPECULAR"] = (const(c.get("spec", 0.4)), "")
+    outs["MP_METALLIC"] = (const(0.0), "")
+    if c.get("fuzz", 0) > 0:
+        m.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_CLOTH)
+        outs["MP_SUBSURFACE_COLOR"] = (const(c.get("fuzz_color", [0.2, 0.2, 0.2])), "")
+        outs["CustomData0"] = (const(c["fuzz"]), "")    # the cloth amount: only Make Material Attributes has it
+    elif c.get("aniso"):
+        outs["MP_ANISOTROPY"] = (const(c["aniso"]), "")
+    pins = {"MP_BASE_COLOR": "BaseColor", "MP_NORMAL": "Normal", "MP_ROUGHNESS": "Roughness",
+            "MP_SPECULAR": "Specular", "MP_METALLIC": "Metallic", "MP_AMBIENT_OCCLUSION": "AmbientOcclusion",
+            "MP_SUBSURFACE_COLOR": "SubsurfaceColor", "MP_ANISOTROPY": "Anisotropy", "CustomData0": "CustomData0"}
+    if "CustomData0" in outs:
+        mma = node(unreal.MaterialExpressionMakeMaterialAttributes)
+        for k, (n_, o_) in outs.items():
+            ok = MEL.connect_material_expressions(n_, o_, mma, pins[k])
+            if not ok and k == "CustomData0":
+                ok = MEL.connect_material_expressions(n_, o_, mma, "ClearCoat")
+            if not ok:
+                note(f"{path}: pin {pins[k]} not connected")
+        m.set_editor_property("use_material_attributes", True)
+        MEL.connect_material_property(mma, "", P.MP_MATERIAL_ATTRIBUTES)
+    else:
+        for k, (n_, o_) in outs.items():
+            MEL.connect_material_property(n_, o_, getattr(P, k))
+    m.set_editor_property("two_sided", True)
+    m.set_editor_property("used_with_skeletal_mesh", True)
+    MEL.recompile_material(m)
+    EAL.save_loaded_asset(m, False)
+    return m
+
+
+def import_weave(wdir, dest):
+    out = {}
+    for fn in sorted(os.listdir(wdir)):
+        if not fn.endswith(".png"):
+            continue
+        kind, ch = fn[len("T_weave_"):-4].rsplit("_", 1)
+        tex = import_texture(os.path.join(wdir, fn), dest, "normal" if ch == "N" else "mask")
+        tex.set_editor_property("address_x", unreal.TextureAddress.TA_WRAP)
+        tex.set_editor_property("address_y", unreal.TextureAddress.TA_WRAP)
+        tex.set_editor_property("never_stream", True)
+        EAL.save_loaded_asset(tex, False)
+        out.setdefault(kind, {})[ch] = tex
+    return out
+
+
 def import_outfit(spec):
     """Outfit + trimmed body FBX from the Blender step, baked textures, a material instance on the outfit."""
     t0 = time.time()
@@ -388,15 +620,31 @@ def import_outfit(spec):
             for k, kind in (("BaseColor", "color"), ("Normal", "normal"), ("RMA", "mask"))}
     mi = baked_material(dest + "/M_OutfitBaked", texs)
     r["material"] = mi.get_path_name()
+    weave = import_weave(spec["weave"], dest + "/Weave") if spec.get("weave") else {}
+    cloth = dict(CLOTH, **spec.get("cloth", {}))
+    made = {}
     sk = EAL.load_asset(r["outfit"])
     mats = []
     for sm in sk.get_editor_property("materials"):       # the array holds copies: rebuild it
         sm2 = unreal.SkeletalMaterial()
-        sm2.set_editor_property("material_interface", mi)
+        slot = str(sm.get_editor_property("material_slot_name"))
+        key = slot[3:] if slot.startswith("MB_") else None
+        if "skin" in slot.lower():
+            # a skin slot (hands carried in the outfit) keeps its own material; refresh() gives it the body's skin
+            sm2.set_editor_property("material_interface", sm.get_editor_property("material_interface"))
+        elif spec.get("cloth_slots", True) and key in cloth:
+            if key not in made:
+                made[key] = cloth_material(f"{dest}/M_Cloth_{key}", texs, weave, cloth[key])
+            sm2.set_editor_property("material_interface", made[key])
+        else:
+            sm2.set_editor_property("material_interface", mi)
         sm2.set_editor_property("material_slot_name", sm.get_editor_property("material_slot_name"))
         mats.append(sm2)
     sk.set_editor_property("materials", mats)
     EAL.save_loaded_asset(sk, False)
+    r["cloth"] = {k: v.get_path_name() for k, v in made.items()}
+    if made:
+        JOB["garment_material"] = None          # the slots carry their own cloth now
     r["time_s"] = round(time.time() - t0, 1)
     S["r"]["import_outfit"] = r
     log(f"import_outfit {json.dumps(r)}")
@@ -404,6 +652,332 @@ def import_outfit(spec):
         spec_c["garments"] = [r["outfit"] if g == "@outfit" else g for g in spec_c.get("garments", [])]
         if spec_c.get("body_swap") == "@trim":
             spec_c["body_swap"] = r.get("trim")
+
+
+def pose_anim(skel, name, rots):
+    """A two-frame body pose built from the skeleton's reference pose: each [bone, parent, degrees] turns that bone
+    about the character's lateral axis through its own joint (thighs forward and calves back = seated). The sign that
+    brings a thigh's child forward (a calf's child down) is chosen by testing both, so axis conventions cannot flip
+    the pose. Returns the AnimSequence path."""
+    AP = unreal.AnimPoseExtensions
+    WS, LS = unreal.AnimPoseSpaces.WORLD, unreal.AnimPoseSpaces.LOCAL
+    pose = AP.get_reference_pose(skel)
+    world = {}
+    local = {}
+
+    def W(b):
+        if b not in world:
+            world[b] = AP.get_bone_pose(pose, b, WS)
+        return world[b]
+
+    def L(b):
+        if b not in local:
+            local[b] = AP.get_bone_pose(pose, b, LS)
+        return local[b]
+    fwd = W("ball_l").translation - W("foot_l").translation
+    fwd.z = 0
+    fwd = fwd.normal()
+    lat = unreal.Vector(fwd.y, -fwd.x, 0.0)
+    child = {"thigh_l": "calf_l", "thigh_r": "calf_r", "calf_l": "foot_l", "calf_r": "foot_r",
+             "upperarm_l": "lowerarm_l", "upperarm_r": "lowerarm_r", "lowerarm_l": "hand_l", "lowerarm_r": "hand_r"}
+    out = {}
+    for rot in rots:
+        b, parent, deg = rot[:3]
+        # axis: "lat" (default; pitch: thighs forward, elbows bend forward) or "fwd" (roll: arms down to the sides,
+        # the sign that lowers the child is taken)
+        axis_name = rot[3] if len(rot) > 3 else "lat"
+        ax_v = fwd if axis_name == "fwd" else lat
+        pw = W(parent)
+        bw = unreal.MathLibrary.compose_transforms(L(b), pw)       # current world (parent may have moved)
+        best = None
+        for sgn in (1, -1):
+            a = math.radians(deg * sgn) / 2
+            q = unreal.Quat(ax_v.x * math.sin(a), ax_v.y * math.sin(a), ax_v.z * math.sin(a), math.cos(a))
+            nw = unreal.Transform(bw.translation, unreal.Rotator(), bw.scale3d)
+            nw.rotation = q * bw.rotation
+            c = child.get(b)
+            if c:
+                cp = unreal.MathLibrary.compose_transforms(L(c), nw).translation - nw.translation
+                score = -cp.z if axis_name == "fwd" else (cp.dot(fwd) if deg > 0 else -cp.z)
+            else:
+                score = 0
+            if best is None or score > best[0]:
+                best = (score, nw)
+        nw = best[1]
+        world[b] = nw
+        out[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(pw))
+        local[b] = out[b]
+        for c in [k for k, v in ((r_[0], r_[1]) for r_ in rots) if v == b]:
+            world.pop(c, None)
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", skel)
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("pose", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    for b, t in out.items():
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [t.translation] * 3, [t.rotation] * 3, [t.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q.x, q.y, q.z, q.w) for q in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+    ctrl.close_bracket(False)
+    EAL.save_loaded_asset(anim, False)
+    return path
+
+
+def face_from_body_anim(body, face, curves, name):
+    """A two-frame face-skeleton AnimSequence that holds the body component's CURRENT pose for every bone the two
+    skeletons share (local, parent-bone space, as the body evaluates it now, retargeting included) plus the face
+    expression curves. Used for expression stills: a leader-pose follower carries the body pose exactly but not the
+    face's own expression curves (measured: jawOpen on a follower left the jaw bone unmoved)."""
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", face.get_skinned_asset().get_editor_property("skeleton"))
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("face_from_body", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    parent_space = unreal.RelativeTransformSpace.RTS_PARENT_BONE_SPACE
+    n = 0
+    for i in range(face.get_num_bones()):
+        b = face.get_bone_name(i)
+        if body.get_bone_index(b) < 0:
+            continue
+        t = body.get_socket_transform(b, parent_space)
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [t.translation] * 3, [t.rotation] * 3, [t.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q.x, q.y, q.z, q.w) for q in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+        n += 1
+    for cname, val in (curves or {}).items():
+        unreal.AnimationLibrary.add_curve(anim, cname, unreal.RawCurveTrackTypes.RCT_FLOAT, False)
+        for tt in (0.0, 1.0 / 30, 2.0 / 30):
+            unreal.AnimationLibrary.add_float_curve_key(anim, cname, tt, float(val))
+    ctrl.close_bracket(False)
+    return anim, n
+
+
+def turned_body_anim(src_anim, t, turns, name):
+    """A two-frame body AnimSequence: src_anim's pose at time t with extra turns through the named joints, applied
+    in order: {"neck_02": deg, "head": deg} turns about the world vertical (a head turned while crouching);
+    {"thigh_l": [deg, "calf_l", "fwd"], "calf_l": [deg, "foot_l", "down"]} turns about the body's lateral axis, the
+    sign chosen so that the named child joint ends up further forward (+Y, where the character faces) or lower
+    (seated: thighs forward, shins down)."""
+    AP = unreal.AnimPoseExtensions
+    WS, LS = unreal.AnimPoseSpaces.WORLD, unreal.AnimPoseSpaces.LOCAL
+    pose = AP.get_anim_pose_at_time(src_anim, float(t), unreal.AnimPoseEvaluationOptions())
+    bones = [str(b) for b in AP.get_bone_names(pose)]
+    local = {b: AP.get_bone_pose(pose, b, LS) for b in bones}
+
+    def setp(tr, b):            # children follow their parent (not adjusted); the binding returns the pose
+        nonlocal pose
+        res = AP.set_bone_pose(pose, tr, b, LS)
+        if res is not None:
+            pose = res
+
+    def turned(w, axis, deg):
+        a = math.radians(deg) / 2
+        q = unreal.Quat(axis[0] * math.sin(a), axis[1] * math.sin(a), axis[2] * math.sin(a), math.cos(a))
+        nw = unreal.Transform(w.translation, unreal.Rotator(), w.scale3d)
+        nw.rotation = q * w.rotation
+        return nw
+
+    for b, spec in turns.items():
+        w = AP.get_bone_pose(pose, b, WS)
+        parent_w = unreal.MathLibrary.compose_transforms(unreal.MathLibrary.invert_transform(local[b]), w)
+        if isinstance(spec, (int, float)):
+            nw = turned(w, (0, 0, 1), spec)
+        else:
+            deg, child, goal = spec
+            cl = local[child]
+            best = None
+            for sgn in (1, -1):
+                cand = turned(w, (1, 0, 0), sgn * deg)
+                cp = unreal.MathLibrary.compose_transforms(cl, cand).translation
+                score = cp.y if goal == "fwd" else -cp.z
+                if best is None or score > best[0]:
+                    best = (score, cand)
+            nw = best[1]
+        local[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(parent_w))
+        setp(local[b], b)
+    folder = "/Game/Char/Anim"
+    path = f"{folder}/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    f.set_editor_property("target_skeleton", src_anim.get_editor_property("skeleton"))
+    anim = at.create_asset(name, folder, unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("turned", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    for b in bones:
+        tr = local[b]
+        for fn in ("add_bone_curve", "add_bone_track"):
+            try:
+                getattr(ctrl, fn)(b, False)
+                break
+            except Exception:
+                continue
+        pos, rot, scl = [tr.translation] * 3, [tr.rotation] * 3, [tr.scale3d] * 3
+        try:
+            ctrl.set_bone_track_keys(b, pos, rot, scl, False)
+        except Exception:
+            ctrl.set_bone_track_keys(b, [unreal.Vector3f(v.x, v.y, v.z) for v in pos],
+                                     [unreal.Quat4f(q_.x, q_.y, q_.z, q_.w) for q_ in rot],
+                                     [unreal.Vector3f(v.x, v.y, v.z) for v in scl], False)
+    ctrl.close_bracket(False)
+    EAL.save_loaded_asset(anim, False)
+    return path
+
+
+def pose_face(sh, info):
+    """Make the face (and so the hair, brows, lashes, eyes and teeth bound to it) carry the body's pose.
+
+    The assembled Blueprint's Face is only ATTACHED to the Body component: the runtime MetaHuman component that
+    would make it a leader-pose follower of the Body does not run in an editor world, and the face AnimBP does not
+    copy the body pose there, so in any body pose the face stayed in its reference pose relative to the actor
+    (measured on the deep knee bend: body head at z 141.9, face head at z 169.8). Without face curves the face
+    becomes a leader-pose follower of the body (exact, also while a clip plays); with expression curves it plays a
+    face anim that holds the body's current pose plus the curves (stills)."""
+    a = S["actors"][sh["char"]][0]
+    body, face = skel_comps(a)
+    if face is None or body is None:
+        return
+    curves = sh.get("face_curves")
+    if curves or sh.get("face_anim"):
+        face.set_leader_pose_component(None, True, False)
+        body, face = skel_comps(a)        # a Blueprint actor may rebuild its components on a property change
+        if sh.get("face_anim"):
+            # a face-only clip (no body bone tracks) cannot carry the body pose: follow the body by leader pose
+            # is impossible together with it, so warn when the body is posed
+            if sh.get("body_anim"):
+                note(f"{sh['name']}: face_anim with a posed body; the face keeps the clip's own head pose")
+            apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
+        else:
+            anim, n = face_from_body_anim(body, face, curves, f"AS_{sh['name']}")
+            body, face = skel_comps(a)
+            apply_anim(face, anim, 1.0 / 30)
+            S["face_anim_last"] = anim
+            info["face_bones_from_body"] = n
+    else:
+        clear_anim(face)
+        face.set_leader_pose_component(body, True, False)
+    info["face_follow"] = "anim" if (curves or sh.get("face_anim")) else "leader"
+
+
+def head_error_mm(key):
+    """Distance between the head and neck bones as the Body and as the Face component place them, in mm."""
+    a = S["actors"][key][0]
+    body, face = skel_comps(a)
+    out = {}
+    for b in ("neck_02", "head"):
+        try:
+            out[b] = round((body.get_socket_location(b) - face.get_socket_location(b)).length() * 10, 2)
+        except Exception as e:
+            out[b] = str(e)
+    return out
+
+
+def hands_check(key):
+    """Both hands visible and attached: the mesh that shows the hands (the trimmed copy when the body is swapped,
+    else the body) is drawn, wears skin (never the garment material), and puts hand_l / hand_r within 1 mm of
+    where the body places them. Returns (ok, details)."""
+    a = S["actors"][key][0]
+    body, _ = skel_comps(a)
+    sw = S.get("swap", {}).get(id(a))
+    if sw is None:      # hands carried in a garment (a skin slot), else the body itself shows them
+        sw = next((f for f in S.get("followers", {}).get(id(a), []) if skin_slots(f.skeletal_mesh_component)), None)
+    comp = sw.skeletal_mesh_component if sw is not None else body
+    d = {"mesh": comp.get_skinned_asset().get_path_name() if comp.get_skinned_asset() else None}
+    ok = d["mesh"] is not None and comp.is_visible() and (sw is None or not sw.is_hidden_ed())
+    d["visible"] = bool(ok)
+    if JOB.get("debug_hands"):
+        dbg = {}
+        for nm, c_, ac in (("swap", comp, sw), ("garment0", (S.get("followers", {}).get(id(a)) or [sw])[0].skeletal_mesh_component, None)):
+            x = {}
+            for prop in ("render_in_main_pass", "render_in_depth_pass", "hidden_in_game", "visible", "owner_no_see",
+                         "only_owner_see", "bounds_scale", "use_bounds_from_leader_pose_component", "cast_shadow"):
+                try:
+                    x[prop] = str(c_.get_editor_property(prop))
+                except Exception as ex:
+                    x[prop] = "ERR"
+            try:
+                o, e = c_.get_owner().get_actor_bounds(False)
+                x["actor_bounds"] = [[round(o.x, 1), round(o.y, 1), round(o.z, 1)], [round(e.x, 1), round(e.y, 1), round(e.z, 1)]]
+            except Exception as ex:
+                x["actor_bounds"] = str(ex)
+            try:
+                lb = c_.get_skinned_asset().get_bounds()
+                x["mesh_bounds"] = [[round(lb.origin.x, 1), round(lb.origin.y, 1), round(lb.origin.z, 1)],
+                                    [round(lb.box_extent.x, 1), round(lb.box_extent.y, 1), round(lb.box_extent.z, 1)]]
+            except Exception as ex:
+                x["mesh_bounds"] = str(ex)
+            try:
+                x["leader"] = c_.get_editor_property("leader_pose_component").get_name()
+            except Exception as ex:
+                x["leader"] = str(ex)
+            try:
+                x["comp_loc"] = str(c_.get_world_location())
+                x["comp_scale"] = str(c_.get_world_scale())
+            except Exception as ex:
+                pass
+            dbg[nm] = x
+        d["debug"] = dbg
+    gm = JOB.get("garment_material") or "\0"
+    mats = [m.get_path_name() if m else None for m in comp.get_materials()]
+    if sw is not None and skin_slots(comp):
+        mats = [mats[i] for i in skin_slots(comp)]
+    d["materials"] = mats
+    d["skin"] = bool(mats) and all(m is not None and not m.startswith(gm.split(".")[0]) for m in mats)
+    ok = ok and d["skin"]
+    for b in ("hand_l", "hand_r"):
+        try:
+            if comp.get_bone_index(b) < 0:
+                raise ValueError("no bone")
+            e = round((comp.get_socket_location(b) - body.get_socket_location(b)).length() * 10, 2)
+        except Exception as ex:
+            e = str(ex)
+        d[b + "_mm"] = e
+        ok = ok and isinstance(e, float) and e <= 1.0
+    # the fingers must hang off the hand (a follower skinned to bones its leader does not evaluate collapses them
+    # toward the origin while the hand bone itself still agrees)
+    for f, h in (("middle_03_l", "hand_l"), ("middle_03_r", "hand_r"), ("thumb_03_l", "hand_l"),
+                 ("thumb_03_r", "hand_r")):
+        try:
+            e = round((comp.get_socket_location(f) - comp.get_socket_location(h)).length(), 1)
+        except Exception as ex:
+            e = str(ex)
+        d[f + "_cm"] = e
+        ok = ok and isinstance(e, float) and 3.0 <= e <= 25.0
+    return bool(ok), d
 
 
 def curve_anim(skel, curves, name):
@@ -480,17 +1054,32 @@ def settle_pose(comp):
 def apply_anim(comp, anim, t):
     """Single-node animation paused at time t (override data carries the start position; set again afterwards
     because a re-used single-node instance can keep the previous position)."""
+    try:
+        comp.set_component_tick_enabled(True)
+        comp.set_update_animation_in_editor(True)
+    except Exception:
+        pass
     comp.set_animation_mode(unreal.AnimationMode.ANIMATION_SINGLE_NODE)
     try:
         comp.override_animation_data(anim, False, False, float(t), 0.0)
     except Exception:
         comp.set_animation(anim)
     comp.set_animation(anim)
-    comp.play(False)
-    comp.set_position(float(t), False)
-    comp.set_play_rate(0.0)
-    comp.stop()
-    comp.set_position(float(t), False)
+    m = JOB.get("anim_method", "stop")
+    if m == "stop":
+        comp.play(False)
+        comp.set_position(float(t), False)
+        comp.set_play_rate(0.0)
+        comp.stop()
+        comp.set_position(float(t), False)
+    elif m == "rate0":
+        comp.play(False)
+        comp.set_play_rate(0.0)
+        comp.set_position(float(t), True)
+    else:
+        comp.play(True)
+        comp.set_play_rate(0.0001)
+        comp.set_position(float(t), True)
     settle_pose(comp)
 
 
@@ -514,7 +1103,8 @@ def camera(name, target, az, el, dist, focal):
     cam.set_actor_rotation(unreal.MathLibrary.find_look_at_rotation(loc, target), False)
     cc = cam.get_cine_camera_component()
     fb = cc.get_editor_property("filmback")
-    fb.sensor_width, fb.sensor_height = 36.0, 36.0 * RES[1] / RES[0]
+    res = CUR_RES[0] if CUR_RES else RES
+    fb.sensor_width, fb.sensor_height = 36.0, 36.0 * res[1] / res[0]
     cc.set_editor_property("filmback", fb)
     cc.set_editor_property("current_focal_length", focal)
     fs = cc.get_editor_property("focus_settings")
@@ -543,10 +1133,17 @@ def refresh(key):
             fa.skeletal_mesh_component.set_leader_pose_component(body, True, False)
         else:
             fa.skeletal_mesh_component.set_leader_pose_component(None, True, False)
+    set_skin_slots(a, body)
+    if spec.get("body_swap"):
+        set_swap_materials(a, body)
     if spec.get("body_swap") or spec.get("hide_body"):
         body.set_editor_property("visibility_based_anim_tick_option",
                                  unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
-        body.set_visibility(False, False)          # still posed (always tick), so followers keep following
+        if spec.get("hide_mode", "visibility") == "visibility":
+            body.set_visibility(False, False)      # still posed (always tick), so followers keep following
+        else:
+            body.set_visibility(True, False)
+            body.set_render_in_main_pass(False)
         body.set_cast_shadow(False)
     for comp in (body, face):
         if comp is not None:
@@ -572,37 +1169,95 @@ def refresh(key):
     return a, body, face
 
 
+def aim_point(sh):
+    """World location of the bone a shot aims at ("aim_bone", e.g. hand_r for a hands close-up), from the body."""
+    a = S["actors"][sh["char"]][0]
+    body, _ = skel_comps(a)
+    p = body.get_socket_location(sh["aim_bone"])
+    off = sh.get("aim_offset", [0, 0, 0])
+    return p + unreal.Vector(*off)
+
+
+def full_focal(sh, head):
+    """Full-length lens: 35 mm by default; with "fill": true the figure (crown at head + 12%) fills ~92% of the
+    frame height at the shot's distance (4.2 m unless "dist"), whatever the still's aspect."""
+    if not sh.get("fill"):
+        return sh.get("focal", 35)
+    res = sh.get("res", RES)
+    sensor_h = 36.0 * res[1] / res[0]
+    return sensor_h * sh.get("dist", 420.0) / (head.z * 1.12 / 0.92)
+
+
+def frame_camera(sh, head):
+    """(location, rotation, focal) of a shot's camera for the head position (or the shot's aim bone)."""
+    fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
+    focal = None
+    if sh.get("aim_bone"):
+        target, dist, focal = aim_point(sh), sh.get("dist", 120), sh.get("focal", 50)
+    elif fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+        target, dist, focal = head + unreal.Vector(0, 0, sh.get("dz", 1)), sh.get("dist", 230), 85
+    elif fr == "medium":
+        target, dist, focal = head + unreal.Vector(0, 0, -38), 260, 50
+    else:
+        target, dist, focal, el = (unreal.Vector(head.x, head.y, head.z * 0.52), sh.get("dist", 420),
+                                   full_focal(sh, head), sh.get("el", 4))
+    a, e = math.radians(az), math.radians(el)
+    loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
+    return loc, unreal.MathLibrary.find_look_at_rotation(loc, target), target, focal
+
+
+def reframe(cam, sh, info):
+    """Re-aim a shot's camera at the head where the posed body now holds it (the pose takes effect a step after
+    the camera was placed)."""
+    a = S["actors"][sh["char"]][0]
+    body, face = skel_comps(a)
+    try:
+        head = face.get_socket_location("head")
+    except Exception:
+        return
+    if head.z < 30:
+        return
+    loc, rot, _, _ = frame_camera(sh, head)
+    cam.set_actor_location(loc, False, False)
+    cam.set_actor_rotation(rot, False)
+    info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
+
+
 def setup_shot(sh):
+    CUR_RES[:] = [sh["res"]] if sh.get("res") else []
     character_actor(sh["char"])
     a, body, face = refresh(sh["char"])
     show_only(sh["char"])
     info = {"name": sh["name"]}
+    if sh.get("body_pose") and not sh.get("body_anim"):
+        # e.g. {"name": "AS_seated", "rots": [["thigh_l", "pelvis", 85], ["calf_l", "thigh_l", -85], ...]}
+        bp = sh["body_pose"]
+        # one asset per pose per job: deleting an AnimSequence the body is playing (to rebuild it for the next
+        # shot) leaves the component without an instance ("ObjectInstance is null")
+        key = json.dumps([bp["name"], bp["rots"]])
+        if key not in S.setdefault("poses", {}):
+            S["poses"][key] = pose_anim(body.get_skinned_asset().get_editor_property("skeleton"), bp["name"],
+                                        bp["rots"])
+        sh["body_anim"] = S["poses"][key]
+        sh["body_t"] = 0.0
     if sh.get("body_anim"):
         banim = EAL.load_asset(sh["body_anim"])
         t = sh.get("body_t", 0.0)
         if sh.get("body_scan"):
             t, score, length = scan_body(banim, sh["body_scan"])
             info["body_scan"] = {"t": round(t, 3), "score": round(score, 2), "length": round(length, 2)}
+        if sh.get("turn"):
+            sh["body_anim"] = turned_body_anim(banim, t, sh["turn"], f"AS_{sh['name']}_turn")
+            banim, t = EAL.load_asset(sh["body_anim"]), 0.0
+            info["turn"] = sh["turn"]
         apply_anim(body, banim, t)
         info["body"] = [sh["body_anim"], round(t, 3)]
     elif body is not None:
         clear_anim(body)
     if face is not None:
-        if sh.get("face_curves") or sh.get("face_anim"):
-            S.setdefault("face_touched", {})[sh["char"]] = True
-        if sh.get("face_curves"):
-            anim = curve_anim(face.get_skinned_asset().get_editor_property("skeleton"), sh["face_curves"],
-                              f"AS_{sh['name']}")
-            apply_anim(face, anim, 1.0 / 30)
-            S["face_anim_last"] = anim
-            info["face"] = sh["face_curves"]
-        elif sh.get("face_anim"):
-            apply_anim(face, EAL.load_asset(sh["face_anim"]), sh.get("face_t", 0.0))
-            info["face"] = [sh["face_anim"], sh.get("face_t", 0.0)]
-        elif not S.get("face_touched", {}).get(sh["char"]):
-            pass                              # keep the face's own AnimBP (it follows the body's head)
-        else:
-            clear_anim(face)
+        pose_face(sh, info)
+        info["face"] = sh.get("face_curves") or sh.get("face_anim")
+        body, face = skel_comps(a)
     try:
         head = face.get_socket_location("head")
         if head.z < 50:
@@ -611,12 +1266,15 @@ def setup_shot(sh):
         head = unreal.Vector(0, 0, 165)
     info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
     fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
-    if fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+    if sh.get("aim_bone"):
+        cam = camera(sh["name"], aim_point(sh), az, el, sh.get("dist", 120), sh.get("focal", 50))
+    elif fr == "close":               # head and shoulders: aim near the eyes (the head joint sits low in the skull)
         cam = camera(sh["name"], head + unreal.Vector(0, 0, sh.get("dz", 1)), az, el, sh.get("dist", 230), 85)
     elif fr == "medium":
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -38), az, el, 260, 50)
     else:
-        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.52), az, sh.get("el", 4), 420, 35)
+        cam = camera(sh["name"], unreal.Vector(head.x, head.y, head.z * 0.52), az, sh.get("el", 4),
+                     sh.get("dist", 420), full_focal(sh, head))
     return cam, info
 
 
@@ -759,18 +1417,63 @@ def _run():
         les.pilot_level_actor(cam)
         yield from frames(10)
         if sh.get("body_anim") or sh.get("face_curves") or sh.get("face_anim"):
-            # a paused single-node pose shows only from the second application (measured: one shot late)
-            a, body, face = S["actors"][sh["char"]]
+            # a paused single-node pose shows only from the second application (measured: one shot late); the
+            # face is posed again from the body as it now stands
+            a = S["actors"][sh["char"]][0]
+            body, face = skel_comps(a)
             if sh.get("body_anim") and "body" in info:
                 apply_anim(body, EAL.load_asset(sh["body_anim"]), info["body"][1])
-            if sh.get("face_curves") and S.get("face_anim_last"):
-                apply_anim(face, S["face_anim_last"], 1.0 / 30)
+            yield from frames(10)
+            pose_face(sh, info)
             yield from frames(10)
         yield from frames(JOB.get("settle_frames", 40))
+        # verify before capture: the head and neck must sit where the body puts them (1 mm); re-pose the face and
+        # wait if not, and refuse the still if they never agree
+        for attempt in range(JOB.get("head_check_tries", 6)):
+            err = head_error_mm(sh["char"])
+            if all(isinstance(v, float) and v <= 1.0 for v in err.values()):
+                break
+            note(f"{sh['name']}: face off the body {err} mm; re-posing (try {attempt + 1})")
+            pose_face(sh, info)
+            yield from frames(15)
+        info["head_err_mm"] = err
+        # both hands visible and attached (the trimmed copy wears skin and follows the body); one refresh to
+        # re-wire it if not, then refuse the still
+        hok, hands = hands_check(sh["char"])
+        if not hok and not sh.get("hands_optional"):
+            note(f"{sh['name']}: hands not right {hands}; refreshing")
+            refresh(sh["char"])
+            yield from frames(15)
+            hok, hands = hands_check(sh["char"])
+        info["hands"] = hands
+        if JOB.get("debug_comps"):
+            a_ = S["actors"][sh["char"]][0]
+            lst = []
+            for c_ in a_.get_components_by_class(unreal.SkeletalMeshComponent):
+                d_ = {"name": c_.get_name(), "mesh": c_.get_skinned_asset().get_name() if c_.get_skinned_asset() else None}
+                for f_ in ("is_registered", "is_visible"):
+                    try:
+                        d_[f_] = getattr(c_, f_)()
+                    except Exception as ex:
+                        d_[f_] = str(ex)[:40]
+                try:
+                    d_["mode"] = str(c_.get_animation_mode())
+                    d_["hand_r"] = str(c_.get_socket_location("hand_r"))[-60:]
+                except Exception as ex:
+                    d_["mode"] = str(ex)[:60]
+                lst.append(d_)
+            info["comps"] = lst
+        reframe(cam, sh, info)
+        yield from frames(5)
+        if not all(isinstance(v, float) and v <= 1.0 for v in err.values()):
+            raise RuntimeError(f"{sh['name']}: face does not follow the body ({err} mm); still refused")
+        if not hok and not sh.get("hands_optional"):
+            raise RuntimeError(f"{sh['name']}: hands not visible and attached ({hands}); still refused")
         path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
             os.remove(path)
-        unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], path, camera=cam, force_game_view=True)
+        res = sh.get("res", RES)
+        unreal.AutomationLibrary.take_high_res_screenshot(res[0], res[1], path, camera=cam, force_game_view=True)
         t1 = time.time()
         while not (os.path.exists(path) and os.path.getsize(path) > 0):
             if time.time() - t1 > 90:

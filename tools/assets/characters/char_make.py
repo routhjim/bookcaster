@@ -11,6 +11,8 @@ and assembly are char_build.py).
                "landmarks": [[index, [dx, dy, dz]], ...] | null,    (sculpt: translate_face_landmarks, cm)
                "head_scale": 1.0,
                "body": {"Height": 183, "Waist": 78, "Fat": -1.2, ...} | null,   (body constraints, activated)
+               "fit": {...} | null,                                 (conform the head to a target mesh, see
+                                                                      char_fit.py; replaces face_blend)
                "skin": {"u": .., "v": .., "roughness": .., "face_texture_index": ..} | null,
                "iris": {"primary_color_u": .., "global_saturation": .., ...} | null,  (both eyes)
                "grooms": {"Hair": "WI_Hair_S_SlickBack", ...}, "clear_slots": ["Beard", "Mustache"],
@@ -18,13 +20,16 @@ and assembly are char_build.py).
                "dump_landmarks": true}]}                            (positions of every face landmark)
 """
 
+import importlib
 import json
 import os
+import sys
 import time
 import traceback
 
 import unreal
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # char_fit beside this file
 FOLDER = "/Game/Char"
 EAL = unreal.EditorAssetLibrary
 mhs = unreal.get_editor_subsystem(unreal.MetaHumanCharacterEditorSubsystem)
@@ -127,10 +132,52 @@ def make(spec, folder=None):
         inst.set_single_slot_selection(slot, col.try_add_item_from_wardrobe_item(slot, item))
     if not spec.get("outfit", False):
         inst.set_single_slot_selection("Outfits", unreal.MetaHumanPaletteItemKey())
+    if spec.get("head_scale"):
+        # on the asset before it is opened for edit: commit_face_state writes the editing state's own
+        # face_evaluation_settings back over the asset's
+        fe = c.get_editor_property("face_evaluation_settings")
+        fe.head_scale = float(spec["head_scale"])
+        c.set_editor_property("face_evaluation_settings", fe)
     if not mhs.try_add_object_to_edit(c):
         raise RuntimeError("try_add_object_to_edit failed")
+
+    def apply_body():
+        # Iterating an unreal.Array of structs yields copies (edits made in a `for b in cons` loop are lost and
+        # set_body_constraints then gets the untouched, all-inactive list), so build a new list by index.
+        if spec.get("body"):
+            cons = mhs.get_body_constraints(c)
+            new = []
+            for i in range(len(cons)):
+                b = cons[i].copy()
+                if str(b.name) in spec["body"]:
+                    b.target_measurement = float(spec["body"][str(b.name)])
+                    b.is_active = True
+                new.append(b)
+            mhs.set_body_constraints(c, new)
+            mhs.commit_body_state(c)
+            got = {str(b.name): [round(b.target_measurement, 1), b.is_active] for b in mhs.get_body_constraints(c)}
+            r["body"] = {k: got.get(k) for k in spec["body"]}
+            missed = [k for k, v in spec["body"].items() if not got.get(k) or not got[k][1]]
+            if missed:
+                raise RuntimeError(f"body constraints not active after set: {missed}")
+
     try:
-        if mix is not None:
+        fit = spec.get("fit")
+        body_after_fit = bool(fit) and fit.get("mode", "auto") == "auto"   # the auto solve resets the body state
+        if not body_after_fit:
+            apply_body()          # before the face: a body change refits the face from the body (neck seam)
+        if fit:
+            import char_fit
+            importlib.reload(char_fit)
+            if spec.get("dump_landmarks"):
+                r["landmarks_before_fit"] = [[round(p.x, 2), round(p.y, 2), round(p.z, 2)]
+                                             for p in mhs.get_face_landmarks(c)]
+            char_fit.fit_face(c, fit, r)
+        if fit:
+            # any face fit (auto or face-only) leaves the body at the template's: measured 1.55 m head joint
+            # against 1.73 m when the body was set only before a face-only fit. Set it again after.
+            apply_body()
+        if mix is not None and not fit:
             mhs.set_face_model_coefficients(c, mix)
             r["coeff_set"] = len(mix)
         if spec.get("landmarks"):
@@ -138,22 +185,7 @@ def make(spec, folder=None):
             deltas = [unreal.Vector(*d) for _, d in spec["landmarks"]]
             mhs.translate_face_landmarks(c, idx, deltas)
             r["landmarks_moved"] = len(idx)
-        if spec.get("head_scale"):
-            fe = c.get_editor_property("face_evaluation_settings")
-            fe.head_scale = float(spec["head_scale"])
-            c.set_editor_property("face_evaluation_settings", fe)
         mhs.commit_face_state(c)
-        if spec.get("body"):
-            cons = mhs.get_body_constraints(c)
-            for b in cons:
-                if str(b.name) in spec["body"]:
-                    b.target_measurement = float(spec["body"][str(b.name)])
-                    b.is_active = True
-            mhs.set_body_constraints(c, cons)
-            mhs.commit_body_state(c)
-            r["body"] = {str(b.name): round(b.target_measurement, 1) for b in mhs.get_body_constraints(c)
-                         if str(b.name) in ("Height", "Chest", "Waist", "Hip", "Across Shoulder", "Inseam", "Fat",
-                                            "Muscularity", "Masculine/Feminine")}
         skin = c.get_editor_property("skin_settings")
         for k, v in (spec.get("skin") or {}).items():
             skin.skin.set_editor_property(k, v)
@@ -182,6 +214,15 @@ def make(spec, folder=None):
                 sub = {}
                 set_params(ins, spec.get("params"), sub)
                 r[f"instance_params_{k_}"] = sub.get("instance_params")
+            # the parameters were set on the editor's preview collection, a transient copy: copy it back into the
+            # asset's internal collection, or the build assembles the groom with its defaults (melanin 0.8,
+            # redness 0.25: brown-red hair, whatever was asked)
+            mhs.on_edit_preview_collection(c)
+            ic = c.get_editor_property("internal_collection").get_editor_property("default_instance")
+            saved = {}
+            set_params(ic, None, saved)
+            r["instance_params_saved"] = {k: {n: v[1] for n, v in p.items() if n in ("Melanin", "Redness", "Roughness")}
+                                          for k, p in (saved.get("instance_params") or {}).items()}
         except Exception:
             r["instance_params_error"] = traceback.format_exc()
         r["slots"] = sorted(f"{col.get_item_slot_name(k)}" for k in col.get_all_item_keys())

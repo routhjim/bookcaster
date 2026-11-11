@@ -1,6 +1,6 @@
 """Submit a character editor job (char_render.py) to the asset scheduler's resident UE editor (run_asset.py --ue-job).
 
-    python tools/assets/characters/char_submit.py job.json [--timeout S] [--id NAME]
+    python tools/assets/characters/char_submit.py job.json [--timeout S] [--id NAME] [--script FILE]
 
 No private editor and no card lock of our own: the scheduler places the job on its editor's card (swapping the
 editor to our project when its queue allows) and returns {"rc", "result", "seconds", "error"}. The character job's
@@ -31,6 +31,7 @@ def main():
     ap.add_argument("job")
     ap.add_argument("--timeout", type=float, default=3600)
     ap.add_argument("--id")
+    ap.add_argument("--script", help="editor script other than char_render.py (e.g. char_inspect_mat.py)")
     a = ap.parse_args()
     jp = Path(a.job).resolve()
     job = json.loads(jp.read_text())
@@ -41,7 +42,7 @@ def main():
             os.remove(job["result"])
     log_dir = Path(job.get("out") or jp.parent) / "sched"
     log_dir.mkdir(parents=True, exist_ok=True)
-    sj = {"project": str(PROJECT), "script": str(HERE / "char_render.py"), "job": job, "outputs": outs,
+    sj = {"project": str(PROJECT), "script": str(Path(a.script).resolve() if a.script else HERE / "char_render.py"), "job": job, "outputs": outs,
           "timeout_s": a.timeout, "id": a.id or jp.stem, "log_dir": str(log_dir)}
     sp = jp.with_suffix(".sched.json")
     sp.write_text(json.dumps(sj, indent=1))
