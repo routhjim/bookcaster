@@ -12,6 +12,9 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
                                               region of the frame (box + lora_pad) and their sheet as a reference;
                                               replaces sheet/lora/trigger/wear/wear_back)
       "look": "...",                          (the closing words on the picture's look; default: real skin, film grain)
+      "room_surfaces": "...",                 (the set's walls, floor and drapes in words, said in every shot)
+      "set": "/abs/library set dir", "light_words": true,   (say where the light comes from, from the set's lit
+                                              things and daylight, the same in every shot)
       "wear": "what the character wears",     (words; the scene tool does not know clothes yet)
       "wear_back": "what shows from behind",  (method image: said instead of "wear" for a person turned away)
       "set_words": "what the room holds",     (the set's library description)
@@ -86,7 +89,13 @@ def kind_of(cam: str, shot: dict) -> str:
     for k in ("close", "medium", "wide"):
         if cam.startswith(k):
             return k
-    return "wide" if shot.get("kind") in ("wide", "full") else shot.get("kind", "medium")
+    k = "wide" if shot.get("kind") in ("wide", "full") else shot.get("kind", "medium")
+    if k == "wide":       # a placed camera is "wide" to the scene tool; a person filling the frame's height is not
+        tall = max(((v.get("box") or [0, 0, 0, 0])[3] - (v.get("box") or [0, 0, 0, 0])[1]
+                    for v in shot.get("people", {}).values()), default=0.0)
+        if tall > 0.75:
+            return "medium"
+    return k
 
 
 def body_words(deg: float, near: str | None, who: str = "His", pos: str = "his", back: str = "") -> str:
@@ -252,6 +261,29 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
+def light_words(set_dir: str | None) -> str:
+    """Where the light comes from, from the set's own facts (setfacts: lit things, a fire, daylight through a window):
+    the same sentence for every shot of the set, so the redraw keeps one light and mood across cuts."""
+    if not set_dir:
+        return ""
+    import setfacts
+    th = setfacts.things(set_dir)
+    src = []
+    for t in th:
+        if t.get("fire"):
+            src.append("the fire in the grate")
+        elif t.get("lit"):
+            src.append("the " + " ".join(w for i, w in enumerate(t["name"].split("_")) if i == 0 or len(w) > 2))
+    day = setfacts.daylight(set_dir)
+    if day and any(t["kind"] == "window" for t in th):
+        src.append(f"the {day} from the window")
+    if not src:
+        return ""
+    lst = ", ".join(src[:-1]) + (" and " if len(src) > 1 else "") + src[-1]
+    return (f"The room is lit only by {lst}: pools of light near them, deep shadows in the corners and under the "
+            f"furniture, the walls away from the light falling into darkness.")
+
+
 def main():
     run = json.loads(Path(sys.argv[1]).read_text())
     out = Path(run["out"])
@@ -263,6 +295,7 @@ def main():
         truth = json.loads((sd / "truth.json").read_text())
         res = json.loads((sd / "result.json").read_text())
         room = run["set_words"]
+        lights = light_words(run.get("set")) if run.get("light_words") else ""
         for cam, sh in truth["shots"].items():
             sid = f"{sd.name}/{cam}"
             if only and sid not in only:
@@ -301,7 +334,9 @@ def main():
                     j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
                          "prompt": image_prompt(kind, ppl, run.get("wear", ""), room, run.get("trigger", ""),
                                                 set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
-                                                run.get("body_words", False), cast or None, run.get("look", "")),
+                                                run.get("body_words", False), cast or None,
+                                                " ".join(x for x in (run.get("room_surfaces", ""), lights,
+                                                                     run.get("look", "")) if x)),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": sheets + list(run.get("extra_refs") or []),
                          "loras": loras,

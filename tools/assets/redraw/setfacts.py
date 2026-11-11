@@ -31,6 +31,26 @@ def _size(lib: Path, asset: str) -> list:
     return [0.5, 0.5, 0.5]
 
 
+def _short(lib: Path, asset: str) -> str | None:
+    """The asset's own short words: its library description up to the first colon or comma ("Victorian paraffin
+    (oil) table lamp, lit, 0.60 m: ..." -> "Victorian paraffin (oil) table lamp"). Naming the very thing (which
+    lamp, what the picture shows) keeps a redraw from swapping it for another of its kind between shots."""
+    for cls in ("prop", "set", "character"):
+        p = lib / cls / asset / "asset.json"
+        if p.exists():
+            d = json.loads(p.read_text()).get("description") or ""
+            s = d.split(":")[0].split(". ")[0]
+            depth, cut = 0, len(s)
+            for i, ch in enumerate(s):               # the first clause, commas inside brackets kept
+                depth += (ch == "(") - (ch == ")")
+                if ch == "," and depth == 0:
+                    cut = i
+                    break
+            s = s[:cut].split(" 0.")[0].split(" front -Y")[0].strip()
+            return s if s and len(s) <= 160 else None
+    return None
+
+
 def things(set_dir) -> list:
     set_dir = Path(set_dir)
     spec = json.loads((set_dir / "spec.json").read_text())
@@ -48,7 +68,7 @@ def things(set_dir) -> list:
             c, s = abs(math.cos(yaw)), abs(math.sin(yaw))
             hx, hy = (sz[0] * c + sz[1] * s) / 2, (sz[0] * s + sz[1] * c) / 2
             z0 = float(f.get("on_z_m", f["position"][2] if len(f["position"]) > 2 else 0.0))
-            t = {"name": f["name"], "asset": f["asset"], "kind": kind[:-1],
+            t = {"name": f["name"], "asset": f["asset"], "kind": kind[:-1], "short": _short(lib, f["asset"]),
                  "center": [f["position"][0], f["position"][1], z0 + sz[2] / 2], "half": [hx, hy, sz[2] / 2],
                  "on": f.get("on"), "lit": False, "fire": False}
             out.append(t)
@@ -90,7 +110,7 @@ def things(set_dir) -> list:
     view = next((f.get("view_words") for k in ("fixtures", "props") for f in spec.get(k, [])
                  if f.get("outside") and f.get("view_words")), None)
     for t in out:
-        n = t["name"].replace("_", " ")
+        n = " ".join(w for i, w in enumerate(t["name"].split("_")) if i == 0 or len(w) > 2)   # "candle_w" -> "candle"
         if t["kind"] == "window":
             t["words"] = "the window"
             if view:                      # what the set puts outside it (a backdrop's own words in the spec)
@@ -98,7 +118,8 @@ def things(set_dir) -> list:
         elif t["kind"] == "door":
             t["words"] = "the door"
         else:
-            t["words"] = f"the {n}" + (f" on the {by_name[t['on']]['name'].replace('_', ' ')}" if t.get("on") in by_name else "")
+            what = f"the {n}" + (f" ({t['short']})" if t.get("short") and t["kind"] in ("fixture", "prop") else "")
+            t["words"] = what + (f" on the {by_name[t['on']]['name'].replace('_', ' ')}" if t.get("on") in by_name else "")
         if t["fire"]:
             t["words"] += " with a fire burning in the grate, flames and glowing coals"
         elif t["lit"]:
