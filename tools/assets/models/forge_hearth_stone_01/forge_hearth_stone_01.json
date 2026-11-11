@@ -1,0 +1,23 @@
+{
+ "id": "forge_hearth_stone_01",
+ "class": "prop",
+ "description": "Village blacksmith's forge hearth of rough grey fieldstone, cold (fire out): waist-high stone fire bed (top 0.74 m) with capstones round a sunken fire pit of black charcoal under grey ash, a flat-lintelled ash pit under the front, a stone back wall to 2.4 m, a riveted black sheet-iron lean-to hood over the fire narrowing into a square stone chimney to ~3.45 m, an iron tuyere (air pipe) entering the left (-X) side at 0.62 m with a flared mouth for a bellows nozzle. Soot up the hood, wall and chimney. Back flat against a wall. Lit twin: forge_hearth_stone_lit_01.",
+ "tags": ["forge", "hearth", "blacksmith", "smithy", "fire", "stone", "masonry", "chimney", "hood", "medieval", "fixture"],
+ "tier": "hero",
+ "size_m": [1.73, 1.24, 3.46],
+ "size_tolerance": 0.1,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 4096,
+ "cameras": [
+  {"name": "fire", "position": [0.15, -1.25, 1.45], "target": [-0.05, -0.05, 0.7], "focal": 45},
+  {"name": "fire_close", "position": [0.05, -0.62, 1.08], "target": [-0.06, -0.06, 0.72], "focal": 50},
+  {"name": "tuyere", "position": [-1.35, -0.9, 0.95], "target": [-0.8, -0.03, 0.62], "focal": 50},
+  {"name": "hood", "position": [0.9, -2.6, 1.9], "target": [0.0, 0.0, 2.0], "focal": 35}
+ ],
+ "paint": {
+  "prompt": "rough grey fieldstone blocks of different sizes laid in thick lime mortar, chipped and weathered, soot-blackened above the fire and up the chimney, heat-cracked and pale around the fire pit, ash dust on the ledges; a riveted black sheet-iron hood, sooty and rust-streaked; black charcoal lumps in the fire pit; a rusty iron air pipe",
+  "close": {"box": [0.2, 0.0, 0.12, 0.8, 0.7, 0.26], "ring": 6, "el": 40, "top": true}
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "id": "workbench_leg_vise_01",
+ "class": "prop",
+ "description": "Heavy blacksmith's workbench, 2.0 m long, 0.7 m deep, top at 0.86 m: two thick rough oak planks on four stout square legs with aprons, low stretchers and a back shelf board; burn marks and soot on the top. A leg (post) vise on the front left corner: iron leg to the floor, jaws just above the top, screw with a tommy bar. Stands with its back to a wall.",
+ "tags": ["workbench", "bench", "vise", "leg-vise", "blacksmith", "forge", "smithy", "oak", "furniture", "medieval"],
+ "tier": "mid",
+ "size_m": [2.0, 0.84, 0.94],
+ "size_tolerance": 0.1,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "cameras": [{"name": "vise", "position": [-0.35, -1.0, 1.15], "target": [-0.72, -0.4, 0.8], "focal": 45}],
+ "paint": {
+  "prompt": "a rough heavy workbench of old dark oak: burn marks, soot, hammer dents and scattered iron filings on the planks, worn edges; a black hand-forged iron leg vise with rust",
+  "views": {"ring": 8, "upper": 4},
+  "close": {"box": [0.0, 0.0, 0.6, 0.35, 0.5, 1.0], "ring": 3, "el": 35, "top": false}
+ }
+}
