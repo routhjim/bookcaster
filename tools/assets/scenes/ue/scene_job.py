@@ -132,6 +132,42 @@ def cine(name, pos, target, focal, aperture, focus_m, res):
     return cam
 
 
+def _face_from_body_anim(body, face, curves, name):
+    """Face-skeleton AnimSequence holding the body's current local pose for every shared bone plus expression
+    curves (mirrors the character tools' function of the same name until it is merged here)."""
+    path = f"/Game/Scene/Anim/{name}"
+    if EAL.does_asset_exist(path):
+        EAL.delete_asset(path)
+    f = unreal.AnimSequenceFactory()
+    sk = face.get_skinned_asset()
+    if sk is None:
+        raise RuntimeError("face component has no mesh (replaced while posing?)")
+    f.set_editor_property("target_skeleton", sk.get_editor_property("skeleton"))
+    anim = unreal.AssetToolsHelpers.get_asset_tools().create_asset(name, "/Game/Scene/Anim", unreal.AnimSequence, f)
+    ctrl = anim.get_editor_property("controller")
+    ctrl.open_bracket("face_from_body", False)
+    ctrl.set_frame_rate(unreal.FrameRate(30, 1), False)
+    ctrl.set_number_of_frames(unreal.FrameNumber(2), False)
+    n = 0
+    for i in range(face.get_num_bones()):
+        b = face.get_bone_name(i)
+        if body.get_bone_index(b) < 0:
+            continue
+        t = body.get_socket_transform(b, unreal.RelativeTransformSpace.RTS_PARENT_BONE_SPACE)
+        try:
+            ctrl.add_bone_curve(b, False)
+        except Exception:
+            ctrl.add_bone_track(b, False)
+        ctrl.set_bone_track_keys(b, [t.translation] * 3, [t.rotation] * 3, [t.scale3d] * 3, False)
+        n += 1
+    for cname, val in (curves or {}).items():
+        unreal.AnimationLibrary.add_curve(anim, cname, unreal.RawCurveTrackTypes.RCT_FLOAT, False)
+        for tt in (0.0, 1.0 / 30, 2.0 / 30):
+            unreal.AnimationLibrary.add_float_curve_key(anim, cname, tt, float(val))
+    ctrl.close_bracket(False)
+    return anim, n
+
+
 def settle_attach(job, comps, limit):
     """Tick until every character's face skeleton has caught up with its body (the face follows the body a few
     frames late after a pose change: the head floats off the neck until then). Returns the ticks it took."""
@@ -314,19 +350,39 @@ def run(job):
                     bp["t"] = tt
                     bp.pop("scan", None)
                     CR.apply_anim(body, anim, tt)
-                fp = spec.get("face_pose")
-                if fp:
-                    if fp.get("curves"):
-                        if "_anim" not in fp:
-                            fp["_anim"] = CR.curve_anim(face.get_skinned_asset().get_editor_property("skeleton"),
-                                                        fp["curves"], f"AS_scene_{job['id']}_{key}")
-                        CR.apply_anim(face, fp["_anim"], 1.0 / 30)
-                    elif fp.get("anim"):
-                        CR.apply_anim(face, EAL.load_asset(fp["anim"]), fp.get("t", 0.0))
+
+        def pose_faces():
+            """The face carries the body's pose: a leader-pose follower of the Body (exact; the assembled
+            Blueprint's Face is only attached to it in an editor world, so it otherwise keeps its reference pose and
+            the head floats off the neck). A follower ignores the face's own expression curves, so a face pose
+            plays a face anim holding the body's current pose for the shared bones plus the curves (the character
+            tools' face_from_body_anim when they have it)."""
+            for key, spec in job["characters"].items():
+                a, body, face = comps(key)
+                fp = spec.get("face_pose") or {}
+                if fp.get("curves"):
+                    face.set_leader_pose_component(None, True, False)
+                    a, body, face = comps(key)              # the call can replace the Blueprint's components
+                    mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
+                    anim, n = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
+                    CR.apply_anim(face, anim, 1.0 / 30)
+                    r["subjects"].setdefault(key, {})["face_follow"] = f"anim ({n} bones from the body)"
+                elif fp.get("anim"):
+                    face.set_leader_pose_component(None, True, False)
+                    a, body, face = comps(key)
+                    CR.apply_anim(face, EAL.load_asset(fp["anim"]), fp.get("t", 0.0))
+                    r["subjects"].setdefault(key, {})["face_follow"] = "clip (head pose from the clip)"
+                else:
+                    CR.clear_anim(face)
+                    a, body, face = comps(key)
+                    face.set_leader_pose_component(body, True, False)
+                    r["subjects"].setdefault(key, {})["face_follow"] = "leader"
         pose_all()
         yield from frames(10)
         pose_all()                       # a paused single-node pose shows from the second application
         yield from frames(5)
+        pose_faces()
+        yield from frames(3)
         # the face skeleton only follows a new body pose while it is drawn: look at each character through a
         # helper camera until the face has caught up, then measure (else the eye line is the pre-pose one)
         for key, spec in job["characters"].items():
@@ -338,6 +394,8 @@ def run(job):
             les.pilot_level_actor(mc)
             yield from frames(5)
             pose_all()
+            yield from frames(3)
+            pose_faces()
             n = yield from settle_attach(job, comps, 240)
             les.eject_pilot_level_actor()
             act.destroy_actor(mc)
@@ -362,19 +420,23 @@ def run(job):
                            (subj["feet_z"] + subj["head_top_z"]) / 2 + c.get("target_dz", 0.0)]
                 cs = {"position": c["position"], "target": tgt, "focal_mm": c.get("focal_mm", 24)}
             chk = framing.check(cs, subj, c["kind"], res) if subj else None
+            everyone = {k: framing.check(cs, v["measured"], "wide" if c["kind"] in ("wide", "full") else c["kind"], res)
+                        for k, v in r["subjects"].items() if k != c.get("subject")}
             eyes = [subj["eye_xy"][0], subj["eye_xy"][1], subj["eye_z"]] if subj else cs["target"]
             focus = math.dist(cs["position"], eyes)
             ap = c.get("aperture", {"close": 2.8, "medium": 4.0}.get(c["kind"], 8.0))
             cam = cine(c["name"], cs["position"], cs["target"], cs["focal_mm"], ap, focus, res)
             temp.append(cam)
-            cams.append((c, cs, chk, cam))
+            cams.append((c, cs, chk, cam, everyone))
         # stills
         t_r = time.time()
-        for c, cs, chk, cam in cams:
+        for c, cs, chk, cam, everyone in cams:
             ts = time.time()
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()
+            yield from frames(3)
+            pose_faces()
             yield from frames(job.get("settle_frames", 60))
             path = os.path.join(job["out"], f"{c['name']}.png")
             if os.path.exists(path):
@@ -393,7 +455,7 @@ def run(job):
                     raise RuntimeError(f"screenshot not written: {path}")
                 yield
             les.eject_pilot_level_actor()
-            shot = {"name": c["name"], "path": path, "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk,
+            shot = {"name": c["name"], "path": path, "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):
                 shot["reject"] = "head detached from the body at capture"
