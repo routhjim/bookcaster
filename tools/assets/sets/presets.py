@@ -9,6 +9,7 @@ Overrides any preset accepts (all optional):
   metallic     0..1
   grime        0..1        how much of the surface carries dirt (0 clean .. 1 filthy)
   grime_color  "#rrggbb"
+  grime_contrast  edge hardness of stains (1 soft wash .. 3 hard blotches; default 1.6)
   streaks      true/false  stretch the grime vertically (rain/drip streaks on walls)
   panel_m      [x, y, z]   joint grid in metres along set X, Y, Z (0 or null = no joints on that axis)
   joint_m      joint line width in metres
@@ -63,7 +64,32 @@ def srgb_to_linear(h):
     return [round(x, 5) for x in out]
 
 
+# Custom-primitive-data layout: must match ue/set_materials.py CPD (vectors take 4 floats).
+CPD = {
+    "surface": {"ColorA": 0, "ColorB": 4, "GrimeColor": 8, "GrimeStretch": 12, "PanelSizeM": 16,
+                "ColorScaleM": 20, "MottleScaleM": 21, "MottleAmount": 22, "GrimeAmount": 23, "GrimeScaleM": 24,
+                "RoughA": 25, "RoughB": 26, "RoughScaleM": 27, "GrimeRough": 28, "JointWidthM": 29,
+                "JointDarken": 30, "JointRough": 31, "Metallic": 32, "Specular": 33, "GrimeContrast": 34},
+    "glass": {"Tint": 0, "Opacity": 4, "Roughness": 5, "Specular": 6},
+    "emissive": {"Color": 0, "Intensity": 4},
+}
+
+
 def resolve(m):
+    r = _resolve(m)
+    lay = CPD[r["master"]]
+    n = max(i + (4 if k in r.get("vectors", {}) else 1) for k, i in lay.items())
+    f = [0.0] * n
+    for k, v in r.get("vectors", {}).items():
+        f[lay[k]:lay[k] + 3] = [float(x) for x in v]
+        f[lay[k] + 3] = 1.0
+    for k, v in r.get("scalars", {}).items():
+        f[lay[k]] = float(v)
+    r["cpd"] = [round(x, 6) for x in f]
+    return r
+
+
+def _resolve(m):
     if m.get("preset") not in PRESETS:
         raise ValueError(f"unknown material preset {m.get('preset')!r}; known: {sorted(PRESETS)}")
     p = dict(PRESETS[m["preset"]])
@@ -85,11 +111,11 @@ def resolve(m):
     mot = p.get("mottle", [0.8, 0.08])
     return {"master": "surface",
             "vectors": {"ColorA": a, "ColorB": b, "GrimeColor": srgb_to_linear(p.get("grime_color", "#333333")),
-                        "GrimeStretch": stretch, "PanelSizeM": panel,
-                        "PanelOffsetM": p.get("panel_offset_m", [0, 0, 0])},
+                        "GrimeStretch": stretch, "PanelSizeM": panel},
             "scalars": {"ColorScaleM": p.get("feature_m", 3.0), "MottleScaleM": mot[0], "MottleAmount": mot[1],
                         "GrimeAmount": p.get("grime", 0.2), "GrimeScaleM": p.get("grime_m", 1.5),
                         "RoughA": p["roughness"][0], "RoughB": p["roughness"][1], "RoughScaleM": p.get("rough_m", 2.0),
                         "GrimeRough": p.get("grime_rough", 0.8), "JointWidthM": p.get("joint_m", 0.01),
                         "JointDarken": p.get("joint_darken", 0.5), "JointRough": p.get("joint_rough", 0.9),
-                        "Metallic": p.get("metallic", 0.0), "Specular": p.get("specular", 0.5)}}
+                        "Metallic": p.get("metallic", 0.0), "Specular": p.get("specular", 0.5),
+                        "GrimeContrast": p.get("grime_contrast", 1.6)}}

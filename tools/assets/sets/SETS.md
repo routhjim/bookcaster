@@ -4,8 +4,12 @@
 python tools/assets/sets/build_set.py tools/assets/sets/specs/hangar_bay_01.json            # plan, check, build, 5 stills
 python tools/assets/sets/build_set.py SPEC.json --render-only [--cameras wide_south,low]    # re-render the saved level
 python tools/assets/sets/build_set.py SPEC.json --plan-only                                 # expand + plan checks, no UE
-python tools/assets/sets/build_set.py --stop-editor
+python tools/assets/sets/build_set.py SPEC.json --private-editor   # fallback: a short-lived editor of its own
 ```
+
+By default a set job goes to the asset scheduler's resident editor (`run_asset.py --ue-job`; the editor-side
+script is `ue/set_job.py`), in the chain's own project (`ASSETS_UE_PROJECT`): library assets are already
+imported there, nothing is copied, and the job reloads the chain's stage level when it is done.
 
 A set is a whole room or hall, built by script from a JSON spec, out of the engine's basic shapes (cube, cylinder,
 sphere, scaled) with procedural world-aligned materials, plus library assets (`<library>/manifest.json`) as
@@ -17,9 +21,10 @@ a rebuild empties and refills it, so the map always equals the spec.
 | `build_set.py` | caller, stdlib | validate, expand, plan checks, start/feed the set editor, write `<out>/<id>/` |
 | `layout.py` | caller, stdlib | spec -> explicit primitives / lights / assets / cameras in UE units, plan checks |
 | `presets.py` | caller, stdlib | material presets -> master + parameters |
-| `ue/set_server.py` | UE editor | job loop: build (via `set_build.py`), spawn cameras + 1.8 m figures, stills |
+| `ue/set_job.py` | UE editor | scheduler job: build (via `set_build.py`), cameras + 1.8 m figures, stills |
+| `ue/set_server.py` | UE editor | the same for the `--private-editor` fallback (own job loop) |
 | `ue/set_build.py` | UE editor | empties/creates the level, spawns everything, saves |
-| `ue/set_materials.py` | UE editor | three master materials (made once) and the set's material instances |
+| `ue/set_materials.py` | UE editor | three master materials, made once per project; no per-set material assets |
 | `specs/*.json` | | the two proof sets |
 
 Output: `<out>/<id>/asset.json` (manifest entry, class `set`), `spec.json`, `scene.json`, `ue/<id>_<camera>.png`,
@@ -74,7 +79,8 @@ checks that it lies fully on the host and ignores their overlap).
 |---|---|
 | `floor` | `material`, `thickness_m` (0.4), `extend_m` (1.0: slab runs under the walls) |
 | `ground` | `material`, `extent_m`: outdoor ground around the building (what windows look down on) |
-| `wall` | `side`, `material`, `thickness_m` (0.3), `height_m` (H), `dado: {height_m, material}` (lower band), `openings: [...]`, `columns: [{at_m: [...], depth_m, width_m, material, height_m}]` (I-section pilasters), `trim: [{z_m, height_m, depth_m, material, from_m, to_m}]` (ledges) |
+| `wall` | `side`, `material`, `thickness_m` (0.3), `height_m` (H), `dado: {height_m, material}` (lower band), `openings: [...]`, `columns: [{at_m: [...], depth_m, width_m, material, height_m}]` (I-section pilasters), `trim: [{z_m, height_m, depth_m, material, from_m, to_m}]` (ledges), `plates: [{z_m: [z0, z1], size_m: [w, h], gap_m, depth_m, material or materials: [...]}]` (raised panels in a grid, skipping openings; several materials alternate) |
+| `partition` | an interior wall: `from: [x, y]`, `to: [x, y]` plus every `wall` key; along-wall positions run from 0 at `from`; its thickness lies to the right walking from `from` to `to` |
 | opening `window_band` / `glass_wall` | `from_m`, `to_m`, `sill_m`, `head_m`, `bay_m` (mullion spacing), `panes: [cols, rows]` per bay, `mullion_m: [width, depth]`, `bar_m`, `frame_material`, `glass_material`, `brace_bays: [bay indices]`, `brace_z_m: [z0, z1]`, `brace_material` |
 | opening `door` | `from_m`, `to_m`, `sill_m`, `head_m`, `panel_m: [w, h]` (frame grid), `material` (leaf), `frame_material`, `brace_material`, `braced` (X brace per cell, default true), `frame_m`, `header_m: [h, depth]` |
 | `trusses` | `span_axis` (`x`/`y`), `spacing_m`, `bottom_m`, `top_m`, `rise_m` (pitched top chord), `chord_m: [depth, width]` (I-section), `web_m`, `panel_m`, `material`, `columns` (I-columns under each end, default true), `column_m`, `purlins: {spacing_m, size_m: [d, w]}`, `bottom_ties: {at_m: [...]}`, `roof_bracing: {every}`, `deck: {material, thickness_m}` |
@@ -98,6 +104,12 @@ Big boxes are split into tiles of at most 8 m so Lumen's surface cache keeps its
 `roughness`; emissive `color`, `nits`. Every material is world-aligned (no UVs): colour patches, mottle, grime,
 roughness patches and joint lines are the same size on a 60 m wall and on a 10 cm bar.
 
+**No shader compiles per set.** Every parameter of the three masters reads Custom Primitive Data, written into
+each mesh component (35 floats for the surface master, saved in the level). A set's materials are therefore not
+assets at all: a new look, a new set or a changed colour costs nothing but the spawn. (Measured before this:
+material instances per set cost 3-6 min of shader compiling on a set's first build and ~150 s per new instance.)
+The masters themselves compile once per project.
+
 ### Lights
 
 | type | keys |
@@ -111,7 +123,8 @@ roughness patches and joint lines are the same size on a 60 m wall and on a 10 c
 Every strip-light fixture is a housing + an emissive face + a rect light of the same size (the lamp you see is
 the light that lights). Lumen global illumination and reflections, hardware ray tracing when the project has
 it (the chain's `DefaultEngine.ini`), manual exposure from `exposure_ev100` (bias = -EV100), hit-lighting
-reflections, quality 2. `post: {bloom, vignette, saturation, contrast, lumen_*}` tunes the post volume.
+reflections, quality 2. `post: {bloom, vignette, saturation, contrast, lumen_*, cvars: {name: value}}` tunes the post volume; `cvars`
+are set for the job's stills and restored after (e.g. a finer volumetric-fog grid against haze grain).
 
 ## Checks
 
@@ -124,16 +137,29 @@ reflections, quality 2. `post: {bloom, vignette, saturation, contrast, lumen_*}`
 
 ## Writing a spec from a place description (for a language model)
 
-What the writer must decide, explicitly, because nothing is inferred:
-1. The room's inside size `[W, D, H]`, and which wall is which (pick north = the far end of the main view).
-2. For each wall: material, what openings it has (absolute from/to along the wall, sill and head heights).
-3. The roof/ceiling kind (trusses or flat or grid), its heights, and the services (pipes, ducts) with points.
-4. Every fixture/prop by library id with position and facing, keeping aisles clear; heights for stacked props.
-5. Light sources that exist in the place (sun through which windows, strip lights with counts and lumens,
-   practicals) and an EV100 that fits them.
-6. Five cameras that show the place from opposite ends, eye height, low and high.
-The plan checks catch overlaps, out-of-room and floating items before any GPU time; the writer re-asks itself
-with the printed problems.
+A book gives one or two sentences ("a vast industrial space with high steel ceilings..."); the spec needs a few
+hundred explicit numbers. What a model needs to write a good one:
+1. **This document and the library list** (`<library>/manifest.json`: ids, classes, `size_m`, descriptions), so
+   it uses only assets that exist and knows their footprints and which way they face.
+2. **A size and a plan first.** Decide `[W, D, H]` from the kind of place (a hangar for one fighter: tens of
+   metres; a fab bay: ~15 x 30 x 4.5 m) and name the walls by the main view (north = the far end). Write openings
+   with absolute coordinates; keep doors and windows off columns and corners.
+3. **Picture references, when the pipeline has them**, read for layout: which wall has the windows, what is at
+   the far end, catwalks, colours. Both proof sets were written against such pictures; without them the model
+   must choose, and should say what it chose in `style`.
+4. **Wear and dirt as numbers.** "Battered" means grime 0.5-0.6 with streaks on walls, stains on floors
+   (grime_contrast ~1.3), joints, worn paint lines; "sterile" means grime < 0.1, epoxy, white panels. The model
+   should map the adjectives to the material overrides in this document, never invent new keys.
+5. **Light that exists in the place**, with counts and physical values: which windows the sun comes through
+   (`toward_sun`), how many strip lights in which rows and their lumens, practical and accent lights (coloured
+   accents as `color`), fog for dusty air, and an `exposure_ev100` (dim hall ~7, lit interior 8-9). A colour
+   mood ("blue ambient") belongs on the main lights, not only on an accent.
+6. **Five cameras** that show the place from both ends at eye height, low and high, aimed at what matters
+   (the fixture, the far wall) and standing in open floor (not inside a partition or a fixture).
+7. **The plan checks as its feedback.** `build_set.py --plan-only` prints overlaps, out-of-room and floating
+   items in seconds and without a GPU; the model re-asks itself with that list until it is empty (structural
+   pieces that rest in walls, like truss ends, may stand). After the stills, a vision check of the five
+   pictures against the description is the second loop.
 
 ## Editor, cards and the shared scheduler
 

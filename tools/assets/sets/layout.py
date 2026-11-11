@@ -210,6 +210,23 @@ def build_wall(S, spec, wd, W, D, H):
         for uc in b["at_m"]:
             p0, p1 = w.p(uc, 0, -b["depth_m"] / 2), w.p(uc, b.get("height_m", top), -b["depth_m"] / 2)
             S.ibeam(p0, p1, b["depth_m"], b["width_m"], b["material"], f"{folder}/columns", up=w.inward())
+    for pl in wd.get("plates", []):         # raised panels (relief) on the inner face, skipping openings
+        pw, ph = pl["size_m"]
+        gap, dep = pl.get("gap_m", 0.03), pl.get("depth_m", 0.025)
+        za, zb = pl["z_m"]
+        ua = pl.get("from_m", w.u0 + (t if side in ("north", "south") else 0))
+        ub = pl.get("to_m", w.u1 - (t if side in ("north", "south") else 0))
+        nu, nz = max(1, int((ub - ua) // pw)), max(1, int((zb - za) // ph))
+        cw, chh = (ub - ua) / nu, (zb - za) / nz
+        for i in range(nu):
+            for k in range(nz):
+                u0_, u1_ = ua + i * cw + gap / 2, ua + (i + 1) * cw - gap / 2
+                z0_, z1_ = za + k * chh + gap / 2, za + (k + 1) * chh - gap / 2
+                if any(o["from_m"] < u1_ and u0_ < o["to_m"] and o.get("sill_m", 0) < z1_ and z0_ < o["head_m"]
+                       for o in ops):
+                    continue
+                mat_ = pl["materials"][(i * 7 + k * 3) % len(pl["materials"])] if "materials" in pl else pl["material"]
+                wall_block(S, w, u0_, u1_, z0_, z1_, mat_, f"{folder}/plates", -dep, 0.0)
     for f in wd.get("trim", []):           # horizontal ledges / skirting on the inner face
         a, b2 = f.get("from_m", w.u0 + (t if side in ("north", "south") else 0)), \
             f.get("to_m", w.u1 - (t if side in ("north", "south") else 0))

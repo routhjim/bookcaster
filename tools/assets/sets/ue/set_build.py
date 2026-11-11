@@ -83,7 +83,9 @@ def build(set_id, level, scene):
     t = {}
     t0 = time.time()
     mats = _mod("set_materials")
-    mi = {name: mats.instance(set_id, name, m) for name, m in scene["materials"].items()}
+    ms = mats.masters()
+    mi = {name: ms[m["master"]] for name, m in scene["materials"].items()}
+    cpd = {name: m["cpd"] for name, m in scene["materials"].items()}
     t["materials"] = round(time.time() - t0, 2)
     t1 = time.time()
     open_clean_level(level)
@@ -98,7 +100,8 @@ def build(set_id, level, scene):
                 rot = ML.make_rot_from_xz(V(p["x"]), V(p["z"]))
         else:
             rot = unreal.Rotator(0, 0, p.get("yaw", 0.0))
-        spawn_mesh(meshes[p["m"]], V(p["c"]), rot, V(p["s"]), mi[p["mat"]], p["f"])
+        a = spawn_mesh(meshes[p["m"]], V(p["c"]), rot, V(p["s"]), mi[p["mat"]], p["f"])
+        mats.apply_cpd(a.static_mesh_component, cpd[p["mat"]])
     t["prims"] = round(time.time() - t1, 2)
     t1 = time.time()
     cache = {}
@@ -137,8 +140,9 @@ def build(set_id, level, scene):
         c.set_editor_property("attenuation_radius", float(l.get("radius_m", 30)) * 100)
         if "color" in l:
             c.set_editor_property("use_temperature", False)
-            c.set_editor_property("light_color", unreal.Color(*[int(l["color"].lstrip("#")[i:i + 2], 16)
-                                                                for i in (0, 2, 4)], 255))
+            rgb = [int(l["color"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+            # keyword arguments: unreal.Color's positional order is B, G, R, A (blue lights came out red)
+            c.set_editor_property("light_color", unreal.Color(r=rgb[0], g=rgb[1], b=rgb[2], a=255))
         a.set_folder_path(l["f"])
     t["lights"] = round(time.time() - t1, 2)
     env = scene["env"]

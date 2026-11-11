@@ -295,6 +295,51 @@ def run_job(job, adir, wait_s, timeout):
     return res
 
 
+# ------------------------------------------------------------------ scheduler (default)
+def run_sched(job, adir, timeout):
+    """Submit the set job to the asset scheduler's resident editor (run_asset.py --ue-job): no editor, guard or
+    card lock of our own. The stills are the job's outputs."""
+    ej = dict(job)
+    ej.pop("script", None)
+    want = ej.get("cameras")
+    outs = [] if not ej.get("render") else [str(Path(ej["out"]) / f"{ej['id']}_{c['name']}.png")
+                                           for c in json.loads(Path(ej["scene"]).read_text())["cameras"]
+                                           if not want or c["name"] in want]
+    if PROJECT.resolve() == Path(C.UE_PROJECT).resolve():
+        ej["restore_map"] = C.UE_STAGE_MAP           # the chain's asset jobs expect their stage level loaded
+    jd = {"project": str(PROJECT), "script": str(HERE / "ue" / "set_job.py"), "job": ej, "outputs": outs,
+          "timeout_s": timeout, "id": f"set_{ej['id']}", "log_dir": str(adir)}
+    jp = adir / "logs" / "ue_job_sched.json"
+    jp.write_text(json.dumps(jd, indent=1))
+    for o in outs:
+        Path(o).unlink(missing_ok=True)
+    t0 = time.time()
+    for attempt in range(3):              # a scheduler restart (code update) drops queued jobs: resubmit
+        p = subprocess.run([sys.executable, str(HERE.parent / "run_asset.py"), "--ue-job", str(jp)],
+                           capture_output=True, text=True, env=dict(os.environ, ASSETS_SCHED="1"))
+        if "scheduler went away" not in p.stderr:
+            break
+        log(f"the scheduler restarted under the job; resubmitting ({attempt + 1})")
+        time.sleep(5)
+    dt = round(time.time() - t0, 1)
+    (adir / "logs" / "sched_client.log").write_text(p.stdout + "\n--- stderr\n" + p.stderr)
+    last = None
+    for ln in p.stdout.splitlines():
+        if ln.startswith("{"):
+            try:
+                last = json.loads(ln)
+            except ValueError:
+                pass
+    inner = (last or {}).get("result") or {}
+    if isinstance(inner, dict) and "result" in inner and isinstance(inner["result"], dict):
+        inner = inner["result"]
+    res = dict(inner) if isinstance(inner, dict) else {}
+    res.update({"ok": p.returncode == 0 and bool(res.get("ok")), "wall_s": dt, "editor": "scheduler",
+                "lock_wait_s": None, "card": None, "client_rc": p.returncode,
+                "error": None if p.returncode == 0 else ((last or {}).get("error") or p.stderr[-2000:] or p.stdout[-2000:])})
+    return res
+
+
 # ------------------------------------------------------------------ main
 def write_manifest(spec, adir, scene, problems, res, times):
     shots = [str(Path(s["path"]).relative_to(adir)) for s in res.get("shots", [])]
@@ -340,8 +385,10 @@ def main():
     ap.add_argument("--warm-frames", type=int, default=240)
     ap.add_argument("--settle-frames", type=int, default=180)
     ap.add_argument("--lock-wait", type=float, default=C.LOCK_WAIT_S)
-    ap.add_argument("--timeout", type=float, default=900)
+    ap.add_argument("--timeout", type=float, default=1800)
     ap.add_argument("--stop-editor", action="store_true")
+    ap.add_argument("--private-editor", action="store_true",
+                    help="fallback: start a short-lived editor of our own instead of the scheduler's")
     ap.add_argument("--guard", type=int)
     a = ap.parse_args()
     if a.guard:
@@ -371,7 +418,10 @@ def main():
            "render": not a.no_render, "cameras": [c for c in a.cameras.split(",") if c] or None,
            "out": str(adir / "ue"), "result": str(adir / "logs" / "ue_result.json"), "res": [1152, 640],
            "warm_frames": a.warm_frames, "settle_frames": a.settle_frames, "mannequin": MANNEQUIN}
-    res = run_job(job, adir, a.lock_wait, a.timeout)
+    if a.private_editor:
+        res = run_job(job, adir, a.lock_wait, a.timeout)
+    else:
+        res = run_sched(job, adir, a.timeout)
     times = {"plan": scene["plan_s"], "ue_wall": res["wall_s"], "lock_wait": res["lock_wait_s"],
              "ue": res.get("times_s"), "build": (res.get("build") or {}).get("times_s"),
              "editor": res["editor"], "total": round(time.time() - t_all, 1)}

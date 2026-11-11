@@ -16,7 +16,19 @@ EAL = unreal.EditorAssetLibrary
 MEL = unreal.MaterialEditingLibrary
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 SHARED = "/Game/Sets/_Shared"
-MASTER_VERSION = 3
+MASTER_VERSION = 6
+
+# Every parameter reads Custom Primitive Data (per mesh component, saved in the level), so one master serves all
+# sets and a new look never compiles a shader. Indices (floats): vectors take 4 slots (RGBA).
+CPD = {
+    "surface": {"ColorA": 0, "ColorB": 4, "GrimeColor": 8, "GrimeStretch": 12, "PanelSizeM": 16,
+                "ColorScaleM": 20, "MottleScaleM": 21, "MottleAmount": 22, "GrimeAmount": 23, "GrimeScaleM": 24,
+                "RoughA": 25, "RoughB": 26, "RoughScaleM": 27, "GrimeRough": 28, "JointWidthM": 29,
+                "JointDarken": 30, "JointRough": 31, "Metallic": 32, "Specular": 33, "GrimeContrast": 34},
+    "glass": {"Tint": 0, "Opacity": 4, "Roughness": 5, "Specular": 6},
+    "emissive": {"Color": 0, "Intensity": 4},
+}
+_CUR = {"master": None}
 
 
 def _expr(m, cls, x, y, **props):
@@ -27,7 +39,8 @@ def _expr(m, cls, x, y, **props):
 
 
 def _link(a, b, inp, out=""):
-    MEL.connect_material_expressions(a, out, b, inp)
+    if not MEL.connect_material_expressions(a, out, b, inp):     # returns False on a wrong pin name: fail loudly
+        raise RuntimeError(f"material link failed: {a.get_class().get_name()} -> {b.get_class().get_name()}.{inp!r}")
 
 
 def _bin(m, cls, a, b, x, y, ia="A", ib="B"):
@@ -38,12 +51,19 @@ def _bin(m, cls, a, b, x, y, ia="A", ib="B"):
 
 
 def _scalar(m, name, v, x, y):
-    return _expr(m, unreal.MaterialExpressionScalarParameter, x, y, parameter_name=name, default_value=v)
+    return _expr(m, unreal.MaterialExpressionScalarParameter, x, y, parameter_name=name, default_value=v,
+                 use_custom_primitive_data=True, primitive_data_index=CPD[_CUR["master"]][name])
 
 
 def _vector(m, name, rgb, x, y):
-    return _expr(m, unreal.MaterialExpressionVectorParameter, x, y, parameter_name=name,
-                 default_value=unreal.LinearColor(rgb[0], rgb[1], rgb[2], 1.0))
+    e = _expr(m, unreal.MaterialExpressionVectorParameter, x, y, parameter_name=name,
+              default_value=unreal.LinearColor(rgb[0], rgb[1], rgb[2], 1.0),
+              use_custom_primitive_data=True, primitive_data_index=CPD[_CUR["master"]][name])
+    if name in ("Tint", "ColorA", "ColorB", "GrimeColor", "Color", "GrimeStretch", "PanelSizeM"):
+        rgb_ = _expr(m, unreal.MaterialExpressionComponentMask, x + 150, y, r=True, g=True, b=True, a=False)
+        _link(e, rgb_, "")
+        return rgb_
+    return e
 
 
 def _mask(m, src, ch, x, y):
@@ -55,7 +75,7 @@ def _mask(m, src, ch, x, y):
 def _noise(m, pos, levels, x, y):
     e = _expr(m, unreal.MaterialExpressionNoise, x, y, scale=1.0, levels=levels, output_min=0.0, output_max=1.0,
               noise_function=unreal.NoiseFunction.NOISEFUNCTION_GRADIENT_ALU, quality=1)
-    _link(pos, e, "Position")
+    _link(pos, e, "")          # the first pin ("World Position" in 5.8; the name "Position" does not connect)
     return e
 
 
@@ -80,6 +100,7 @@ def _finish(m):
 
 
 def master_surface():
+    _CUR["master"] = "surface"
     m, fresh = _new_material("M_SetSurface")
     if not fresh:
         return m
@@ -114,7 +135,7 @@ def master_surface():
     gamt = _scalar(m, "GrimeAmount", 0.3, -1700, 760)
     gthr = _bin(m, unreal.MaterialExpressionAdd, ng, gamt, -1500, 600)              # ng + amt - 1, x3, saturate
     gthr2 = _bin(m, unreal.MaterialExpressionSubtract, gthr, one, -1350, 600)
-    three = _expr(m, unreal.MaterialExpressionConstant, -1350, 720, r=3.0)
+    three = _scalar(m, "GrimeContrast", 2.0, -1350, 720)          # edge hardness of stains
     gmul = _bin(m, unreal.MaterialExpressionMultiply, gthr2, three, -1200, 600)
     gmask = _expr(m, unreal.MaterialExpressionSaturate, -1050, 600)
     _link(gmul, gmask, "")
@@ -134,9 +155,7 @@ def master_surface():
     _link(rough, rough2, "A"); _link(grough, rough2, "B"); _link(gmask, rough2, "Alpha")
     # joints: per axis, distance to the nearest grid line, weighted by how much the face runs along that axis
     psize = _vector(m, "PanelSizeM", (1000.0, 1000.0, 1000.0), -2200, 1300)
-    poff = _vector(m, "PanelOffsetM", (0.0, 0.0, 0.0), -2200, 1400)
-    pp = _bin(m, unreal.MaterialExpressionSubtract, pm, poff, -2000, 1350)
-    pd = _bin(m, unreal.MaterialExpressionDivide, pp, psize, -1850, 1350)
+    pd = _bin(m, unreal.MaterialExpressionDivide, pm, psize, -1850, 1350)
     fr = _expr(m, unreal.MaterialExpressionFrac, -1700, 1350)
     _link(pd, fr, "")
     fr1 = _bin(m, unreal.MaterialExpressionSubtract, one, fr, -1550, 1450)
@@ -173,6 +192,7 @@ def master_surface():
 
 
 def master_glass():
+    _CUR["master"] = "glass"
     m, fresh = _new_material("M_SetGlass")
     if not fresh:
         return m
@@ -192,6 +212,7 @@ def master_glass():
 
 
 def master_emissive():
+    _CUR["master"] = "emissive"
     m, fresh = _new_material("M_SetEmissive")
     if not fresh:
         return m
@@ -207,23 +228,14 @@ def master_emissive():
 MASTERS = {"surface": master_surface, "glass": master_glass, "emissive": master_emissive}
 
 
-def instance(set_id, name, mat):
-    """mat: resolved {"master": surface|glass|emissive, "scalars": {...}, "vectors": {...}} -> MIC."""
-    parent = MASTERS[mat["master"]]()
-    folder = f"/Game/Sets/{set_id}/Materials"
-    path = f"{folder}/MI_{name}"
-    if EAL.does_asset_exist(path):
-        mi = EAL.load_asset(path)
-    else:
-        if not EAL.does_directory_exist(folder):
-            EAL.make_directory(folder)
-        mi = AT.create_asset(f"MI_{name}", folder, unreal.MaterialInstanceConstant,
-                             unreal.MaterialInstanceConstantFactoryNew())
-    if mi.get_editor_property("parent") != parent:
-        MEL.set_material_instance_parent(mi, parent)
-    for k, v in mat.get("scalars", {}).items():
-        MEL.set_material_instance_scalar_parameter_value(mi, k, float(v))
-    for k, v in mat.get("vectors", {}).items():
-        MEL.set_material_instance_vector_parameter_value(mi, k, unreal.LinearColor(v[0], v[1], v[2], 1.0))
-    EAL.save_loaded_asset(mi)
-    return mi
+def masters():
+    """The three masters (built once per project; MASTER_VERSION bumps rebuild them)."""
+    return {k: f() for k, f in MASTERS.items()}
+
+
+def apply_cpd(comp, floats):
+    """Write a material's parameter floats (presets.resolve -> "cpd") into a component's saved custom primitive
+    data, four at a time."""
+    for i in range(0, len(floats), 4):
+        q = list(floats[i:i + 4]) + [0.0] * (4 - len(floats[i:i + 4]))
+        comp.set_default_custom_primitive_data_vector4(i, unreal.Vector4(q[0], q[1], q[2], q[3]))

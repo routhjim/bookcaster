@@ -70,14 +70,15 @@
   },
   "clear_glass": {
    "preset": "glass",
-   "tint": "#e8f0f2",
-   "opacity": 0.08,
-   "roughness": 0.02
+   "tint": "#eef4f6",
+   "opacity": 0.05,
+   "roughness": 0.02,
+   "specular": 0.25
   },
   "chase_wall": {
    "preset": "worn_concrete",
-   "color": "#8a8d8e",
-   "color2": "#9a9d9e",
+   "color": "#9a9fa3",
+   "color2": "#a9aeb1",
    "grime": 0.15,
    "panel_m": [
     3,
@@ -86,7 +87,8 @@
    ]
   },
   "stainless": {
-   "preset": "stainless_steel"
+   "preset": "stainless_steel",
+   "grime": 0.0
   },
   "duct": {
    "preset": "galvanized_steel",
@@ -116,13 +118,13 @@
   },
   "light_lens": {
    "preset": "emissive",
-   "color": "#d6e2ff",
-   "nits": 9000
+   "color": "#c4d3ff",
+   "nits": 8000
   },
   "blue_lens": {
    "preset": "emissive",
-   "color": "#3b6dff",
-   "nits": 6000
+   "color": "#7f9cff",
+   "nits": 3000
   },
   "door_panel": {
    "preset": "white_panel",
@@ -134,8 +136,8 @@
   },
   "cove_lens": {
    "preset": "emissive",
-   "color": "#2f5cff",
-   "nits": 3000
+   "color": "#7a97ff",
+   "nits": 1500
   }
  },
  "structure": [
@@ -857,7 +859,6 @@
    "length_m": 1.1,
    "along": "y",
    "lumens": 4500,
-   "kelvin": 9500,
    "radius_m": 14,
    "fixture_material": "light_frame",
    "tube_material": "light_lens",
@@ -917,14 +918,15 @@
      ],
      "count": 12
     }
-   ]
+   ],
+   "color": "#c9d6ff"
   },
   {
    "type": "strip_lights",
    "z_m": 6.95,
    "length_m": 1.5,
    "along": "y",
-   "lumens": 16000,
+   "lumens": 35000,
    "radius_m": 12,
    "shadows": true,
    "fixture_material": "light_frame",
@@ -932,16 +934,28 @@
    "rows": [
     {
      "from": [
-      10.1,
+      9.5,
       -13.5
      ],
      "to": [
-      10.1,
+      9.5,
+      13.5
+     ],
+     "count": 8
+    },
+    {
+     "from": [
+      11.2,
+      -13.5
+     ],
+     "to": [
+      11.2,
       13.5
      ],
      "count": 8
     }
-   ]
+   ],
+   "color": "#9fb4ff"
   },
   {
    "type": "rect",
@@ -959,8 +973,8 @@
     0.2,
     29.0
    ],
-   "lumens": 60000,
-   "color": "#3a64ff",
+   "lumens": 40000,
+   "color": "#8aa5ff",
    "radius_m": 8,
    "shadows": false
   },
@@ -969,8 +983,8 @@
    "z_m": 4.35,
    "length_m": 2.4,
    "along": "y",
-   "lumens": 3000,
-   "color": "#3a64ff",
+   "lumens": 6000,
+   "color": "#7f9bff",
    "radius_m": 6,
    "shadows": false,
    "fixture_material": "light_frame",
@@ -986,8 +1000,103 @@
       13.2
      ],
      "count": 12
+    },
+    {
+     "from": [
+      7.7,
+      -13.2
+     ],
+     "to": [
+      7.7,
+      13.2
+     ],
+     "count": 12
     }
    ]
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    -10,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    -10,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    -3,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    -3,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    4,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    4,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    11,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    11,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
   }
  ],
  "fixtures": [
@@ -1181,5 +1290,8 @@
    ],
    "focal_mm": 18
   }
- ]
+ ],
+ "post": {
+  "saturation": 1.08
+ }
 }
