@@ -14,6 +14,7 @@ JOB (written by scene.py; set-frame metres converted to UE centimetres there):
                 "focal_mm", "aperture"}],
    "lights": [expanded lights (layout.light_items)], "exposure_ev100": float | null,
    "warm_frames", "settle_frames", "attach_tol_cm",
+   "interior": the set is a room (hair strands then take no sky light),
    "hide": [set item names hidden for these stills (a figure that brings its own chair takes the set's chair's place)]}
 Returns {"ok", "shots": [{name, path, t_s, camera, frame_check, attach}], "subjects", "times_s", "notes"}.
 Nothing is saved: the set level is loaded, dressed for the stills and left as it was (spawned actors destroyed,
@@ -287,6 +288,8 @@ def run(job):
                   "result": os.path.join(os.path.dirname(job["result"]), "char_render_side.json")}
         CR.RES = res
         CR.reset()
+        if hasattr(CR, "interior_hair"):     # a room: hair strands not lit by the open sky (restored in cleanup)
+            CR.interior_hair(job.get("interior"))
         t = time.time()
         les.load_level(job["level"])
         yield from frames(5)

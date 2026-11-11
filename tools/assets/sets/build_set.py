@@ -344,6 +344,14 @@ def run_sched(job, adir, timeout):
 
 
 # ------------------------------------------------------------------ main
+def is_interior(spec) -> bool:
+    """A room: the spec says so ("interior"), else it has a ceiling. Scenes use it (indoors hair strands must not
+    take the open sky's light)."""
+    if "interior" in spec:
+        return bool(spec["interior"])
+    return any(e.get("kind") == "ceiling" for e in spec.get("structure", []))
+
+
 def write_manifest(spec, adir, scene, problems, res, times):
     shots = [str(Path(s["path"]).relative_to(adir)) for s in res.get("shots", [])]
     ent = {"id": spec["id"], "class": "set", "description": spec["description"], "tags": spec.get("tags", []),
@@ -352,7 +360,8 @@ def write_manifest(spec, adir, scene, problems, res, times):
            "spec": "spec.json", "scene": "scene.json", "counts": scene["counts"],
            "assets_used": sorted({a["id"] for a in scene["assets"]}), "plan_problems": problems,
            "thumbnails": {"ue": shots}, "render": {k: res.get(k) for k in ("card", "editor", "cvars", "log")},
-           "times_s": times, "updated": time.strftime("%Y-%m-%dT%H:%M:%S")}
+           "times_s": times, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+           "interior": is_interior(spec)}
     (adir / "asset.json").write_text(json.dumps(ent, indent=1))
     if out_root() == Path(C.LIBRARY) / "set":
         mp = Path(C.LIBRARY) / "manifest.json"
