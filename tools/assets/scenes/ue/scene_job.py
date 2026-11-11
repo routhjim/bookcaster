@@ -341,6 +341,18 @@ def run(job):
             body, face = CR.skel_comps(a)
             return a, body, face
 
+        def live_face(key):
+            """The face component as the actor holds it NOW: clearing its leader pose can rebuild the Blueprint's
+            components, and the one fetched before is then a dead object ("ObjectInstance is null" on the next
+            call, 11-11, a figure with a face pose of curves)."""
+            a, body, face = comps(key)
+            if face is not None and unreal.SystemLibrary.is_valid(face):
+                return a, body, face
+            for c in a.get_components_by_class(unreal.SkeletalMeshComponent):
+                if "face" in c.get_name().lower() and unreal.SystemLibrary.is_valid(c):
+                    return a, body, c
+            raise RuntimeError(f"{key}: no live face component after clearing its leader pose")
+
         def rewire(key):
             a, body, face = comps(key)
             spec = job["characters"][key]
@@ -450,14 +462,14 @@ def run(job):
                 fp = spec.get("face_pose") or {}
                 if fp.get("curves"):
                     face.set_leader_pose_component(None, True, False)
-                    a, body, face = comps(key)              # the call can replace the Blueprint's components
+                    a, body, face = live_face(key)          # the call can replace the Blueprint's components
                     mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
                     anim, n = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
                     CR.apply_anim(face, anim, 1.0 / 30)
                     r["subjects"].setdefault(key, {})["face_follow"] = f"anim ({n} bones from the body)"
                 elif fp.get("anim"):
                     face.set_leader_pose_component(None, True, False)
-                    a, body, face = comps(key)
+                    a, body, face = live_face(key)
                     CR.apply_anim(face, EAL.load_asset(fp["anim"]), fp.get("t", 0.0))
                     r["subjects"].setdefault(key, {})["face_follow"] = "clip (head pose from the clip)"
                 else:

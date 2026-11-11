@@ -105,6 +105,7 @@ def resolve(spec, cams_wanted=None):
         n = (f[0] ** 2 + f[1] ** 2) ** 0.5
         chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": cj.get("garments", []),
                       "body_swap": cj.get("body_swap"), "hide_body": bool(cj.get("hide_body")),
+                      "hide_face": bool(cj.get("hide_face")),       # a whole generated figure: no face mesh shown
                       "rebuild_from": cj.get("rebuild_from"),
                       "garment_material": cj.get("garment_material"),
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
