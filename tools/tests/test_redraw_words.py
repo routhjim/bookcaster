@@ -63,3 +63,22 @@ def test_seated_figure_and_its_seat(tmp_path, monkeypatch):
     ppl = redraw.people(shot, poses)
     words = redraw.people_words(ppl, cast={"b": {"noun": "woman", "seat": "a leather armchair"}})
     assert "is sitting" in words and "She sits in a leather armchair." in words
+
+
+def test_two_men_on_one_side_are_counted_from_the_left():
+    ppl = [("a", [0.0, 0, 0.2, 1], 30.0, "standing", 30.0, None), ("c", [0.1, 0, 0.3, 1], 30.0, "standing", 30.0, None)]
+    nm = redraw.names(ppl, {"a": {"noun": "man"}, "c": {"noun": "man"}})
+    assert nm == {"a": "the first man from the left", "c": "the second man from the left"}
+
+
+def test_seated_person_sits_in_the_chair_under_her():
+    ppl = [("b", [0.6, 0.3, 0.8, 0.9], 20.0, "sitting", 20.0, None)]
+    shot = {"things": [{"name": "armchair", "words": "the armchair (gold damask)", "box": [0.55, 0.5, 0.85, 0.95]},
+                       {"name": "armchair_2", "words": "the armchair (leather)", "box": [0.9, 0.5, 1.0, 0.95]}]}
+    assert redraw.seats_of(ppl, shot) == {"b": "the armchair (gold damask)"}
+
+
+def test_unlit_thing_keeps_its_look():
+    t = {"name": "drapes", "kind": "fixture", "words": "the drapes (damask with a fringed pelmet, gold)",
+         "box": [0.1, 0.0, 0.4, 0.8], "visible_frac": 0.9, "flame_in_view": None}
+    assert "fringed pelmet, gold" in redraw.set_words({"things": [t]})

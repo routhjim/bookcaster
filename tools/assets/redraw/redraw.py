@@ -87,6 +87,33 @@ def people(shot: dict, poses: dict | None = None) -> list:
     return sorted(out, key=lambda x: (x[1][0] + x[1][2]) / 2)
 
 
+SEAT_WORDS = ("chair", "sofa", "settee", "stool", "bench", "seat")
+
+
+def seats_of(ppl: list, shot: dict) -> dict:
+    """For each sitting person, the set thing they sit in: the seat whose frame box overlaps the lower half of
+    their box most. Said in the person's words ("she sits in the armchair (...)"): with two armchairs named in a
+    wide, the redraw sat her in the wrong one (11-11)."""
+    out = {}
+    for k, b, ang, post, *_ in ppl:
+        if post != "sitting":
+            continue
+        low = [b[0], (b[1] + b[3]) / 2, b[2], b[3]]
+        best = (0.0, None)
+        for t in shot.get("things") or []:
+            if not any(w in t["name"] for w in SEAT_WORDS):
+                continue
+            tb = t["box"]
+            ix = max(0.0, min(low[2], tb[2]) - max(low[0], tb[0]))
+            iy = max(0.0, min(low[3], tb[3]) - max(low[1], tb[1]))
+            a = ix * iy
+            if a > best[0]:
+                best = (a, t)
+        if best[1] is not None:
+            out[k] = best[1]["words"]
+    return out
+
+
 def heads_out(res: dict, cam: str) -> set:
     """People in this still whose head is out of the frame (the scene's frame check: head top and chin), e.g. a
     listener's shoulder at the edge of a close shot. Named as a full person facing the camera, with their LoRA,
@@ -181,6 +208,12 @@ def names(ppl: list, cast: dict) -> dict:
     out = {}
     for p, n in zip(ppl, nouns):
         out[p[0]] = f"the {n}" if nouns.count(n) == 1 else f"the {n} {place_words(p[1]).split(',')[0]}"
+    ORD = ("first", "second", "third", "fourth")
+    for n in set(nouns):                 # two of a noun on the same side: count them from the left instead
+        ks = [p[0] for p, m in zip(ppl, nouns) if m == n]          # ppl is ordered left to right
+        if len(ks) > 1 and len({out[k] for k in ks}) < len(ks):
+            for i, k in enumerate(ks):
+                out[k] = f"the {ORD[min(i, 3)]} {n} from the left"
     return out
 
 
@@ -265,7 +298,8 @@ def set_words(shot: dict) -> str:
     th = sorted(th, key=area, reverse=True)[:MAX_THINGS]
     parts = []
     for t in sorted(th, key=lambda t: (t["box"][0] + t["box"][2]) / 2):
-        w = t["words"] if t.get("flame_in_view", True) else t["words"].split(" with ")[0].split(",")[0]
+        # only a lit thing whose flame is out of view loses its flame words (null = not a lit thing: keep its look)
+        w = t["words"] if t.get("flame_in_view") is not False else t["words"].split(" with ")[0].split(",")[0]
         if t["kind"] == "window" and t.get("view"):
             w += f" showing {t['view']}"
         elif t["kind"] == "window" and shot.get("daylight"):
@@ -274,7 +308,7 @@ def set_words(shot: dict) -> str:
     out = ("In the frame: " + "; ".join(parts) + ".") if parts else ""
     if shot.get("daylight") and not any(t["kind"] == "window" for t in th):
         out += f" Soft {shot['daylight']} comes from a window out of frame."
-    lit = [t for t in th if (t.get("fire") or t.get("lit")) and t.get("flame_in_view", True)]
+    lit = [t for t in th if (t.get("fire") or t.get("lit")) and t.get("flame_in_view") is not False]
     if lit:
         out += " " + " ".join(
             (f"The fire in {t['words'].split(' with ')[0]} burns brightly with real flames, as in Picture 1."
@@ -385,6 +419,7 @@ def main():
             out_heads = heads_out(res, cam)
             edge = [x for x in ppl if x[0] in out_heads and len(ppl) > 1]
             ppl = [x for x in ppl if x not in edge]
+            seats = seats_of(ppl, sh)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
                                 "nearer_shoulder": ns} for k, b, a, q, bd, ns in ppl]}
@@ -399,6 +434,7 @@ def main():
                 n = max(1, len(ppl))
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
                 cast = run.get("cast") or {}
+                cast = {k: (dict(v, seat=seats[k]) if k in seats else v) for k, v in cast.items()}
                 if cast:          # each person's own LoRA on their own region; their sheets as references
                     loras, sheets = [], []
                     for k, b, *_ in ppl:
