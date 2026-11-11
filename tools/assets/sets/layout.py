@@ -319,20 +319,21 @@ def build_trusses(S, td, W, D, H):
     for k in range(n):
         r = -run / 2 + run * (k + 0.5) / n
         f = f"Roof/truss_{k:02d}"
-        S.ibeam(P(-span / 2, r, zb), P(span / 2, r, zb), cd, cw, mat, f)
-        mid = 0.0
-        S.ibeam(P(-span / 2, r, ztop(-span / 2)), P(mid, r, ztop(mid)), cd, cw, mat, f)
-        S.ibeam(P(mid, r, ztop(mid)), P(span / 2, r, ztop(span / 2)), cd, cw, mat, f)
-        for i, s in enumerate(stations):
-            S.member(P(s, r, zb + cd / 2), P(s, r, ztop(s) - cd / 2), web, web, mat, f,
-                     up=[1, 0, 0] if ax == "y" else [0, 1, 0])
-            if i < npnl:
-                s2 = stations[i + 1]
-                if s2 <= 1e-6:        # Pratt: diagonals fall toward the centre
-                    a, b = P(s, r, ztop(s) - cd / 2), P(s2, r, zb + cd / 2)
-                else:
-                    a, b = P(s, r, zb + cd / 2), P(s2, r, ztop(s2) - cd / 2)
-                S.member(a, b, web, web, mat, f, up=[0, 0, 1])
+        if td.get("members", True):          # false: trusses placed as library assets; keep columns, purlins, deck
+            S.ibeam(P(-span / 2, r, zb), P(span / 2, r, zb), cd, cw, mat, f)
+            mid = 0.0
+            S.ibeam(P(-span / 2, r, ztop(-span / 2)), P(mid, r, ztop(mid)), cd, cw, mat, f)
+            S.ibeam(P(mid, r, ztop(mid)), P(span / 2, r, ztop(span / 2)), cd, cw, mat, f)
+            for i, s in enumerate(stations):
+                S.member(P(s, r, zb + cd / 2), P(s, r, ztop(s) - cd / 2), web, web, mat, f,
+                         up=[1, 0, 0] if ax == "y" else [0, 1, 0])
+                if i < npnl:
+                    s2 = stations[i + 1]
+                    if s2 <= 1e-6:        # Pratt: diagonals fall toward the centre
+                        a, b = P(s, r, ztop(s) - cd / 2), P(s2, r, zb + cd / 2)
+                    else:
+                        a, b = P(s, r, zb + cd / 2), P(s2, r, ztop(s2) - cd / 2)
+                    S.member(a, b, web, web, mat, f, up=[0, 0, 1])
         if td.get("columns", True):
             cdep = td.get("column_m", [0.5, 0.35])
             for e in (-1, 1):
@@ -534,7 +535,7 @@ def strip_lights(S, sl, idx):
                          "w_cm": (L - 0.06) * 100 if along == "x" else 16, "h_cm": 16 if along == "x" else (L - 0.06) * 100,
                          "lumens": sl["lumens"], "kelvin": sl.get("kelvin", 5000), "radius_m": sl.get("radius_m", 30),
                          "shadows": sl.get("shadows", True), "barn_door_deg": sl.get("barn_door_deg", 88),
-                         "f": f})
+                         "f": f, **({"color": sl["color"]} if "color" in sl else {})})
 
 
 def light_items(S, lights):

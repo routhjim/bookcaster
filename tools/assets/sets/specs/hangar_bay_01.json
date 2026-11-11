@@ -15,7 +15,7 @@
   60,
   14
  ],
- "exposure_ev100": 8.0,
+ "exposure_ev100": 7.6,
  "materials": {
   "concrete_floor": {
    "preset": "worn_concrete",
@@ -75,9 +75,9 @@
   },
   "window_glass": {
    "preset": "glass",
-   "tint": "#e9eeec",
-   "opacity": 0.32,
-   "roughness": 0.1
+   "tint": "#f1f4f2",
+   "opacity": 0.42,
+   "roughness": 0.15
   },
   "door_panel": {
    "preset": "painted_steel",
@@ -1563,14 +1563,14 @@
   {
    "name": "wide_north",
    "position": [
-    7,
-    28.5,
-    2.0
+    2.5,
+    23.2,
+    1.9
    ],
    "target": [
-    -2,
-    -10,
-    5.0
+    -1.5,
+    -12,
+    4.5
    ],
    "focal_mm": 18
   },
@@ -1615,6 +1615,34 @@
     0.5
    ],
    "focal_mm": 20
+  },
+  {
+   "name": "detail_truss",
+   "position": [
+    -11.5,
+    -14.5,
+    5.9
+   ],
+   "target": [
+    -5,
+    -9,
+    11.9
+   ],
+   "focal_mm": 35
+  },
+  {
+   "name": "truss_catwalk",
+   "position": [
+    4.0,
+    -29.0,
+    12.9
+   ],
+   "target": [
+    -3.0,
+    -26.6,
+    12.3
+   ],
+   "focal_mm": 24
   }
  ]
 }

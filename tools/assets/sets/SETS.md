@@ -105,7 +105,7 @@ roughness patches and joint lines are the same size on a 60 m wall and on a 10 c
 | `sun` | `toward_sun: [dx, dy, dz]` (direction from the scene to the sun), `lux`, `kelvin`, `volumetric` (shaft strength) |
 | `sky` | `intensity` (sky light scale; atmosphere on) |
 | `fog` | `density`, `falloff`, `volumetric` (light shafts), `extinction`, `distance_m` |
-| `strip_lights` | `z_m` (lamp face), `length_m`, `along` (`x`/`y`), `lumens` (each), `kelvin`, `radius_m`, `shadows`, `hang_to_m` (rods up to), `fixture_material`, `tube_material` (emissive), `rows: [{from, to, count}]` |
+| `strip_lights` | `z_m` (lamp face), `length_m`, `along` (`x`/`y`), `lumens` (each), `kelvin` or `color`, `radius_m`, `shadows`, `hang_to_m` (rods up to), `fixture_material`, `tube_material` (emissive), `rows: [{from, to, count}]` |
 | `point` / `spot` / `rect` | `position`, `lumens`, `kelvin` or `color`, `radius_m`, `toward` (spot/rect), `size_m: [w, h]` (rect), `cone_deg` (spot), `shadows` |
 
 Every strip-light fixture is a housing + an emissive face + a rect light of the same size (the lamp you see is
@@ -134,3 +134,24 @@ What the writer must decide, explicitly, because nothing is inferred:
 6. Five cameras that show the place from opposite ends, eye height, low and high.
 The plan checks catch overlaps, out-of-room and floating items before any GPU time; the writer re-asks itself
 with the printed problems.
+
+## Editor, cards and the shared scheduler
+
+Today `build_set.py` starts a short-lived editor of its own: it waits while `<ASSETS_UE_HOME>/GPU_HOLD` exists,
+takes the project lock and a free XTX lock with polled `flock -n`, starts the editor with `close_fds=True` (the
+locks are held by a small guard process, never by the editor or the zenserver / trace server it forks), feeds it
+every set job queued within `SETS_UE_IDLE_S` (20 s) and lets it quit. It never starts while the chain's editor is
+alive in the same project.
+
+The set job is already shaped for the scheduler's resident editor: one JSON (`script`, `scene`, `level`, `build`,
+`render`, `cameras`, `out`, `result`) whose UE side (`ue/set_server.py`'s `Job`) is a tick-driven state machine
+like `ue_render.py`'s (`step()` per tick, frame-counted waits, `finish()` writes the result). What the chain needs
+to run it in the shared editor instead of a private one:
+1. a generic job kind in the resident editor's queue: a job JSON naming a Python module with a `Job(job)` class
+   (`step() -> done`, `finish()`), loaded fresh per job, run by the same tick loop as the asset stills;
+2. an `assetd.py` stage kind `ue_script` (device: the editor's card) and a client call to submit it and wait
+   for its result file, so `build_set.py` becomes a thin client like `run_asset.py`;
+3. a level-safe teardown: after a set job the editor loads its stage map again (a set job loads and saves
+   `/Game/Sets/<id>/L_<id>`; asset jobs expect the stage level).
+Until then sets build in their own project copy (`SETS_UE_PROJECT`), so they never write the chain's project
+while its resident editor lives.

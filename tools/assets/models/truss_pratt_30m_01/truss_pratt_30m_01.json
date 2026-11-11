@@ -4,7 +4,7 @@
   "description": "Set piece: 30 m flat Pratt roof truss for hangars and halls. I-section top and bottom chords (350 x 250 mm) 1.6 m apart on centre, 12 panels with double-angle verticals and diagonals, bolted gusset plates at every node, end bearing plates. Dark grey painted steel with worn edges, dust on top faces and rust bleeding from bolts. Span along X, faces -Y.",
   "tags": ["truss", "roof", "steel", "hangar", "industrial", "set-piece", "modular", "hard-surface"],
   "tier": "mid",
-  "size_m": [30.0, 0.32, 1.95],
+  "size_m": [30.0, 0.25, 1.95],
   "size_tolerance": 0.15,
   "texture_px": 2048,
   "placement": "floor",

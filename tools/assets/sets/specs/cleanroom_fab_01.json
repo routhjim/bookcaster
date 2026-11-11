@@ -15,7 +15,7 @@
   30,
   4.5
  ],
- "exposure_ev100": 8.5,
+ "exposure_ev100": 8.8,
  "materials": {
   "epoxy": {
    "preset": "epoxy_floor"
@@ -116,13 +116,13 @@
   },
   "light_lens": {
    "preset": "emissive",
-   "color": "#e9f0ff",
+   "color": "#d6e2ff",
    "nits": 9000
   },
   "blue_lens": {
    "preset": "emissive",
    "color": "#3b6dff",
-   "nits": 2500
+   "nits": 6000
   },
   "door_panel": {
    "preset": "white_panel",
@@ -131,6 +131,11 @@
     0,
     0
    ]
+  },
+  "cove_lens": {
+   "preset": "emissive",
+   "color": "#2f5cff",
+   "nits": 3000
   }
  },
  "structure": [
@@ -852,7 +857,7 @@
    "length_m": 1.1,
    "along": "y",
    "lumens": 4500,
-   "kelvin": 7500,
+   "kelvin": 9500,
    "radius_m": 14,
    "fixture_material": "light_frame",
    "tube_material": "light_lens",
@@ -919,8 +924,8 @@
    "z_m": 6.95,
    "length_m": 1.5,
    "along": "y",
-   "lumens": 5000,
-   "radius_m": 10,
+   "lumens": 16000,
+   "radius_m": 12,
    "shadows": true,
    "fixture_material": "light_frame",
    "tube_material": "blue_lens",
@@ -954,10 +959,35 @@
     0.2,
     29.0
    ],
-   "lumens": 30000,
+   "lumens": 60000,
    "color": "#3a64ff",
    "radius_m": 8,
    "shadows": false
+  },
+  {
+   "type": "strip_lights",
+   "z_m": 4.35,
+   "length_m": 2.4,
+   "along": "y",
+   "lumens": 3000,
+   "color": "#3a64ff",
+   "radius_m": 6,
+   "shadows": false,
+   "fixture_material": "light_frame",
+   "tube_material": "cove_lens",
+   "rows": [
+    {
+     "from": [
+      -7.7,
+      -13.2
+     ],
+     "to": [
+      -7.7,
+      13.2
+     ],
+     "count": 12
+    }
+   ]
   }
  ],
  "fixtures": [
