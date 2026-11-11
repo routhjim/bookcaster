@@ -173,7 +173,7 @@ def mound(name, x0, x1, y0, y1, base, peak, nx, ny, centre=(0.0, 0.0), sharp=1.6
             edge = i in (0, nx) or j in (0, ny)
             z = base + (0.0 if edge else max(0.003, hgt - edge_drop * d + rough * noise.noise(Vector((x * 30, y * 30, 3.0)))))
             rt.append(bm.verts.new((x, y, z)))
-            rb.append(bm.verts.new((x, y, base - 0.02)))
+            rb.append(bm.verts.new((x, y, base - 0.02 if base > 0.05 else base)))
         top.append(rt)
         bot.append(rb)
     for i in range(nx):

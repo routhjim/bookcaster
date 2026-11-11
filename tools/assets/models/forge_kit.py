@@ -215,3 +215,140 @@ def smithy_wood(name="smithy_wood", axis="Z", base=(0.16, 0.10, 0.055), grey=0.4
         rough = k.mixf(bm_, rough, 0.95)
     h = k.m("ADD", k.m("MULTIPLY", fine, -0.6), k.m("MULTIPLY", streak, 0.4))
     return k.out(col, rough, 0.0, k.bump(h, 0.0006, 0.5))
+
+
+# ------------------------------------------------------------------ rubble masonry
+class Rubble:
+    """Rough fieldstone masonry: every stone a rounded, noise-displaced block with a per-stone colour tint (corner
+    attribute "pcol"), laid in rough courses on axis-aligned faces over a recessed mortar core (the joints are real
+    relief). rng: a random.Random; joint: mortar gap; amp: face roughness."""
+
+    TINTS = [(0.115, 0.110, 0.100), (0.140, 0.130, 0.115), (0.095, 0.095, 0.090), (0.125, 0.110, 0.090),
+             (0.165, 0.155, 0.140), (0.105, 0.095, 0.080)]
+
+    def __init__(self, rng, joint=0.018, amp=0.012, spacing=0.11):
+        self.rng, self.joint, self.amp, self.spacing = rng, joint, amp, spacing
+        self.stones = []
+
+    def stone(self, cx, cy, cz, sx, sy, sz, amp=None):
+        rng = self.rng
+        amp = self.amp if amp is None else amp
+        r = min(0.03, sx * 0.3, sy * 0.3, sz * 0.3)
+        ob = K.rbox(f"st{len(self.stones)}", (sx, sy, sz), r=r, spacing=self.spacing,
+                    bulge=(rng.uniform(0.002, 0.01), rng.uniform(0.002, 0.01), rng.uniform(0.002, 0.008)))
+        inner = [sx / 2 - r, sy / 2 - r, sz / 2 - r]
+        off = Vector((rng.uniform(0, 50), rng.uniform(0, 50), rng.uniform(0, 50)))
+        tilt = (rng.uniform(-0.05, 0.05), rng.uniform(-0.05, 0.05))
+        for v in ob.data.vertices:
+            p = v.co.copy()
+            q = Vector([max(-inner[i], min(inner[i], p[i])) for i in range(3)])
+            d = p - q
+            n = d.normalized() if d.length > 1e-9 else Vector((0, 0, 1))
+            w = Vector((cx, cy, cz)) + p
+            disp = amp * (noise.noise(w * 8.0 + off) * 0.75 + noise.noise(w * 21.0 + off) * 0.35)
+            disp += amp * 0.6 * abs(noise.noise(w * 3.5 + off))
+            p += n * disp
+            p.z += tilt[0] * p.x + tilt[1] * p.y
+            v.co = p
+        ob.data.update()
+        ob.location = (cx, cy, cz)
+        tint = rng.choice(self.TINTS)
+        j = rng.uniform(0.85, 1.12)
+        K.set_color(ob, tuple(c * j for c in tint))
+        self.stones.append(ob)
+        return ob
+
+    def lay(self, axis, sign, plane, u0, u1, courses, depth, skip=(), lmin=0.22, lmax=0.5, out=0.0, ragged=0.0):
+        """Coursed stones on an axis-aligned face ('y': normal along Y, u = X; 'x': normal along X, u = Y). sign: the
+        outward direction; plane: the face's outer coordinate; courses: z boundaries; skip: (u0, u1, z0, z1) holes;
+        ragged: up to this much off a stone's height (rubble, not ashlar)."""
+        rng, J = self.rng, self.joint
+        for ci, (z0, z1) in enumerate(zip(courses, courses[1:])):
+            u = u0 + (rng.uniform(0, lmin) if ci % 2 else 0.0)
+            segs = [(u0, u)] if u > u0 else []
+            while u < u1 - 1e-6:
+                L = rng.uniform(lmin, lmax)
+                if u1 - (u + L) < lmin * 0.6:
+                    L = u1 - u
+                segs.append((u, min(u1, u + L)))
+                u += L
+            for a, b in segs:
+                pieces = [(a, b)]
+                for (s0, s1, sz0, sz1) in skip:
+                    if z1 > sz0 + 1e-6 and z0 < sz1 - 1e-6:
+                        nxt = []
+                        for (pa, pb) in pieces:
+                            if pb <= s0 or pa >= s1:
+                                nxt.append((pa, pb))
+                            else:
+                                if pa < s0:
+                                    nxt.append((pa, s0))
+                                if pb > s1:
+                                    nxt.append((s1, pb))
+                        pieces = nxt
+                for (pa, pb) in pieces:
+                    if pb - pa < 0.06:
+                        continue
+                    L = pb - pa - J
+                    cut = rng.uniform(0, ragged)
+                    H = z1 - z0 - J - cut
+                    proud = out + rng.uniform(-0.004, 0.012)
+                    dd = depth * rng.uniform(0.85, 1.0)
+                    c_n = plane - sign * dd / 2 + sign * proud
+                    cu = (pa + pb) / 2
+                    cz = (z0 + z1) / 2 + rng.uniform(-0.5, 0.5) * cut
+                    if axis == "y":
+                        self.stone(cu, c_n, cz, L, dd, H)
+                    else:
+                        self.stone(c_n, cu, cz, dd, L, H)
+
+    @staticmethod
+    def courses(z0, z1, rng, lo=0.16, hi=0.28):
+        cs = [z0]
+        while cs[-1] < z1 - 1e-6:
+            z = cs[-1] + rng.uniform(lo, hi)
+            cs.append(z if z1 - z > lo * 0.6 else z1)
+        cs[-1] = z1
+        return cs
+
+
+def stone_material(name, kind="stone", soot_z=None, soot=0.5, grime_base=0.55):
+    """Fieldstone ('stone', tinted by pcol) or lime mortar ('mortar'): mottling, flecks, iron-stain patches, worn
+    edges, dark crevices, ash dust on ledges, soot rising with height (soot_z = (z0, z1) world heights, fading in),
+    floor grime at the foot."""
+    k = K.NK(name)
+    pos = k.geo.outputs["Position"]
+    s = k.N.new("ShaderNodeSeparateXYZ")
+    k.L.new(pos, s.inputs[0])
+    big = k.noise(pos, 3.0, 4.0, 0.55)
+    mid = k.noise(pos, 14.0, 5.0, 0.6)
+    fine = k.noise(pos, 90.0, 4.0, 0.6)
+    vor = k.voronoi(pos, 38.0, "F1", "Distance")
+    if kind == "stone":
+        base = k.pcol()
+        col = k.mix(k.mr(mid, 0.3, 0.7, 0.0, 0.45), base, k.mul_col(base, (0.62, 0.60, 0.58)))
+        col = k.mix(k.mr(fine, 0.55, 0.75, 0.0, 0.35), col, k.mul_col(base, (1.3, 1.28, 1.22)))
+        col = k.mix(k.mr(vor, 0.08, 0.0, 0.0, 0.5), col, (0.05, 0.048, 0.045))
+        col = k.mix(k.mr(big, 0.55, 0.75, 0.0, 0.4), col, (0.16, 0.11, 0.07))
+    else:
+        col = k.mix(k.mr(mid, 0.3, 0.7), (0.15, 0.14, 0.125), (0.22, 0.21, 0.19))
+        col = k.mix(k.mr(fine, 0.5, 0.7, 0.0, 0.5), col, (0.10, 0.095, 0.085))
+    e = k.edge(0.008, 0.995, 0.93)
+    cv = k.cavity(0.05, 0.92, 0.45)
+    col = k.mix(k.m("MULTIPLY", e, 0.35), col, k.mul_col(col, (1.35, 1.33, 1.3)))
+    col = k.mix(k.m("MULTIPLY", cv, 0.6), col, k.mul_col(col, (0.45, 0.43, 0.42)))
+    sm = k.m("MULTIPLY", k.m("ADD", k.m("MULTIPLY", cv, 0.3), k.mr(big, 0.25, 0.65, 0.4, 1.0)), soot, clamp=True)
+    if soot_z:
+        sm = k.m("MULTIPLY", sm, k.mr(s.outputs["Z"], soot_z[0], soot_z[1]))
+    sootc = k.mix(k.mr(fine, 0.3, 0.7), (0.016, 0.015, 0.014), (0.045, 0.040, 0.036))
+    col = k.mix(sm, col, sootc)
+    nz = k.N.new("ShaderNodeSeparateXYZ")
+    k.L.new(k.geo.outputs["Normal"], nz.inputs[0])
+    dust = k.m("MULTIPLY", k.mr(nz.outputs["Z"], 0.6, 0.95), k.mr(mid, 0.35, 0.7, 0.1, 0.5))
+    col = k.mix(dust, col, (0.22, 0.21, 0.19))
+    col = k.mix(k.m("MULTIPLY", k.mr(s.outputs["Z"], 0.3, 0.0), k.mr(big, 0.3, 0.7, 0.4 * grime_base, grime_base)),
+                col, (0.06, 0.05, 0.04))
+    rough = k.mixf(sm, k.mr(fine, 0.3, 0.7, 0.78, 0.95), 0.9)
+    h = k.m("ADD", k.m("MULTIPLY", fine, 0.6), k.m("MULTIPLY", mid, 0.5))
+    h = k.m("ADD", h, k.mr(vor, 0.0, 0.1, -0.3, 0.0))
+    return k.out(col, rough, 0.0, k.bump(h, 0.0015, 0.55 if kind == "stone" else 0.4))

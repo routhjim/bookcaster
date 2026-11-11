@@ -1,0 +1,34 @@
+{
+ "id": "coal_heap_charcoal_01",
+ "class": "prop",
+ "description": "Low heap of wood charcoal on the floor, ~0.95 x 0.8 m and 0.3 m high: an irregular mound of split charcoal sticks and broken lumps of many sizes with grey dust at the foot.",
+ "tags": [
+  "charcoal",
+  "coal",
+  "fuel",
+  "heap",
+  "pile",
+  "blacksmith",
+  "forge",
+  "smithy",
+  "dressing"
+ ],
+ "tier": "mid",
+ "size_m": [
+  0.98,
+  0.9,
+  0.34
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "paint": {
+  "prompt": "a heap of broken black wood charcoal lumps with cracked wood grain and a faint silvery sheen, grey dust",
+  "views": {
+   "ring": 6,
+   "upper": 3
+  }
+ }
+}

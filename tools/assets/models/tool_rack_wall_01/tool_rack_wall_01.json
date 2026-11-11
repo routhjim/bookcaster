@@ -1,0 +1,18 @@
+{
+ "id": "tool_rack_wall_01",
+ "class": "prop",
+ "description": "Blacksmith's wall tool rack (back against a wall at +Y): oak board ~1.3 m x 0.16 m with iron pegs; two hammers hang by their heads, handles down; punches and cold chisels hang through a drilled oak strip by their mushroomed heads; tongs hang from a peg on the right. Origin at the bottom of the lowest tool: mount with the base ~0.95 m up (board at ~1.25-1.4 m).",
+ "tags": ["tool-rack", "rack", "hammers", "punches", "chisels", "tongs", "blacksmith", "smithy", "wall", "medieval"],
+ "tier": "mid",
+ "size_m": [1.3, 0.12, 0.45],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "cameras": [{"name": "tools", "position": [0.05, -0.9, 0.45], "target": [0.0, 0.0, 0.3], "focal": 40}],
+ "paint": {
+  "prompt": "a sooty rough oak board; black hand-forged iron hammer heads, punches, chisels and tongs with hammer marks and rust spots; worn smooth pale ash hammer handles darkened by hands",
+  "views": {"ring": 6, "upper": 3}
+ }
+}

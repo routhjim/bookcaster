@@ -1,4 +1,5 @@
-"""Model script: blacksmith's tongs lying flat, ~0.5 m long along X (jaws to -X, reins to +X), jaws a little open, reins spread, ball ends.
+"""Model script: blacksmith's tongs lying flat, ~0.5 m long along X (jaws to -X, reins to +X), jaws a little open,
+reins spread, ball ends.
 
 Two hand-forged arms half-lapped at a peened rivet: each arm is one sweep whose section changes along it (deep,
 thin jaw; wide, flat boss round the rivet; round rein tapering to a rounded end). SPEC["variant"]:

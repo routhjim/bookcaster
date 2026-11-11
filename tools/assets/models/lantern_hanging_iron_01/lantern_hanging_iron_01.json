@@ -1,0 +1,15 @@
+{
+ "id": "lantern_hanging_iron_01",
+ "class": "prop",
+ "description": "Early medieval hanging lantern, lit: small round black iron cage ~0.16 m across and ~0.36 m tall to the top of its hanging ring; six straps and three bands, glowing amber horn panes, a door pane ajar at the front (-Y) showing a lit candle, a pierced conical top. Origin at its base: place the base at the hanging height under a beam.",
+ "tags": ["lantern", "light", "candle", "horn", "iron", "hanging", "lit", "medieval", "smithy", "interior"],
+ "tier": "mid",
+ "size_m": [0.18, 0.19, 0.36],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 1024,
+ "variant": "lit",
+ "paint": {"prompt": "a sooty black hand-forged iron lantern with rust spots, thin translucent amber horn panes with streaks and mottling, a pale wax candle", "views": {"ring": 6, "upper": 3}}
+}
