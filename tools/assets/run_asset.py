@@ -669,6 +669,10 @@ def build_parser():
     ap.add_argument("--hiprt", type=int, choices=(0, 1), default=C.HIPRT,
                     help="Cycles HIP RT (hardware ray tracing; default ASSETS_HIPRT=1)")
     ap.add_argument("--ue-timeout", type=float, default=2400)
+    ap.add_argument("--ue-only", action="store_true",
+                    help="engine stage only (import + stills) for an asset baked and exported before")
+    ap.add_argument("--detach", action="store_true",
+                    help="return once the job is on the line (it runs and survives restarts without the client)")
     return ap
 
 
@@ -678,16 +682,24 @@ def main():
         guard_main(int(a1[1]), a1[2])
         return 0
     if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards",
-                        "--ue-job", "--cancel"):
+                        "--ue-job", "--cancel", "--line-cmd", "--feed", "--start"):
         import assetd as S
+        if a1[0] == "--line-cmd":
+            return S.client_line_cmd(a1[1:])
+        if a1[0] == "--feed":
+            if len(a1) != 2:
+                raise SystemExit("usage: run_asset.py --feed LIST   (one run_asset.py argument line per entry)")
+            return S.feed(a1[1])
+        if a1[0] == "--start":
+            return S.start_line()
         if a1[0] == "--cancel":
             if len(a1) != 2:
                 raise SystemExit("usage: run_asset.py --cancel JOB   (job number or id, see --status)")
             return S.cancel_job(a1[1])
         if a1[0] == "--ue-job":
-            if len(a1) != 2:
-                raise SystemExit("usage: run_asset.py --ue-job JOB.json   (see assetd.client_ue_job)")
-            return S.client_ue_job(a1[1])
+            if len(a1) not in (2, 3) or (len(a1) == 3 and a1[2] != "--detach"):
+                raise SystemExit("usage: run_asset.py --ue-job JOB.json [--detach]   (see assetd.client_ue_job)")
+            return S.client_ue_job(a1[1], detach=len(a1) == 3)
         if a1[0] == "--status":
             return S.print_status()
         if a1[0] == "--release-cards":
@@ -715,6 +727,8 @@ def main():
         rc = S.client_submit(sys.argv[1:])
         if rc is not None:
             return rc
+    if args.ue_only:
+        raise SystemExit("--ue-only runs through the line only (not --local)")
     return main_local(args)
 
 

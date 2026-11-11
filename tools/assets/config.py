@@ -5,7 +5,9 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_BLENDER      Blender binary          default $BLENDER, else ~/opt/blender/current/blender (4.5 LTS)
     ASSETS_UE_HOME      UE root folder          default ~/ue
     ASSETS_UE_ENGINE    engine folder           default $ASSETS_UE_HOME/UE_5.8.1
-    ASSETS_UE_PROJECT   .uproject to import to  default $ASSETS_UE_HOME/proj/AssetLab/AssetLab.uproject
+    ASSETS_UE_PROJECT   the one engine project  default $ASSETS_UE_HOME/proj/CharLab/CharLab.uproject (props, sets,
+                                                characters and scenes share it: no project swaps; AssetLab is kept
+                                                on disk as it was)
     ASSETS_LIBRARY      asset library root      default $ASSETS_UE_HOME/library
     ASSETS_LOGS         log folder              default $ASSETS_UE_HOME/logs
     ASSETS_GPU_CARDS    cards UE may use        default "65,05" (PCI bus ids, tried in order; lock files /tmp/gpu-<bus>.lock)
@@ -35,12 +37,8 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_SCHED_IDLE_S scheduler exits after   default 60 s with no job and no editor
     ASSETS_UE_CARD      the UE editor's home    default "65"
     ASSETS_BLENDER_CARD Blender's home card     default "05" (bakes, sheets; previews too when the iGPU is taken)
-    ASSETS_BLENDER_PER_CARD  Blender jobs at once on a card   default 3
     ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 4 (the CPU-by-nature parts)
     ASSETS_BLENDER_LINGER_S  keep the Blender card after the last job   default 120
-    ASSETS_BAKE_SPILL_S  bake on the UE card (beside the editor) when an outside job has held the Blender card this
-                         long; default 20; -1 = never. Needs ASSETS_SPILL_MIN_FREE_GB (8) free there; at most
-                         ASSETS_SPILL_JOBS (2) such bakes at once. Each spill is logged and counted (--status)
     ASSETS_OUTSIDE_RELEASE_S  an outside holder of the UE card for this long = a release (video run); default 20
     ASSETS_OUTSIDE_RELEASE_BL_S  the same for the Blender card alone; default 120 (bakes spill meanwhile; a video
                          runner that needs both cards should call --release-cards rather than wait)
@@ -53,11 +51,10 @@ Every location comes from an environment variable; the defaults below are the do
                          swap; default 150 (keeps two busy projects from swapping on every job)
     ASSETS_UE_JOB_TIMEOUT_S  --ue-job time limit unless the job sets timeout_s   default 300
     ASSETS_UE_JOB_OUTPUT_GRACE_S  after a --ue-job script returns ok, its outputs must exist within this; default 10
-    ASSETS_UE_EDITORS   editors at most          default 1. 2: a second editor starts on the Blender card when the
-                                                UE backlog reaches ASSETS_UE_SECOND_AT (2) and quits after
-                                                ASSETS_UE_IDLE2_S (600) idle; measured 11-10 it made each UE job
-                                                ~3x slower (18-37 s v 6-9 s), so it is off
-    ASSETS_BLENDER_SPARES  warm Blender processes kept on the Blender card while it is in use; default 2 (0 = off)
+    ASSETS_BLENDER_SPARES  warm Blender processes kept on the Blender card while it is in use; default 1 (0 = off;
+                         a spare is a loaded idle Blender, not a second job: the card runs one job at a time)
+
+  The line (line.py): stations with one job each, short lines, batches, the power and hardware guard; see there.
 
 Stdlib only: imported by the orchestrator, never inside Blender or UE.
 """
@@ -74,7 +71,7 @@ def _p(var: str, default) -> Path:
 BLENDER = _p("ASSETS_BLENDER", os.environ.get("BLENDER") or "~/opt/blender/current/blender")
 UE_HOME = _p("ASSETS_UE_HOME", "~/ue")
 UE_ENGINE = _p("ASSETS_UE_ENGINE", UE_HOME / "UE_5.8.1")
-UE_PROJECT = _p("ASSETS_UE_PROJECT", UE_HOME / "proj" / "AssetLab" / "AssetLab.uproject")
+UE_PROJECT = _p("ASSETS_UE_PROJECT", UE_HOME / "proj" / "CharLab" / "CharLab.uproject")
 LIBRARY = _p("ASSETS_LIBRARY", UE_HOME / "library")
 LOGS = _p("ASSETS_LOGS", UE_HOME / "logs")
 GPU_CARDS = [c.strip() for c in os.environ.get("ASSETS_GPU_CARDS", "65,05").split(",") if c.strip()]
@@ -89,18 +86,15 @@ UE_CARDS = [c.strip() for c in os.environ.get("ASSETS_UE_CARDS", "65,05").split(
 BLENDER_CARDS = [c.strip() for c in os.environ.get("ASSETS_BLENDER_CARDS", "05,65").split(",") if c.strip()]
 UE_IDLE_S = float(os.environ.get("ASSETS_UE_IDLE_S", "2400"))     # the resident editor: long idle, --stop-editor
 UE_IDLE2_S = float(os.environ.get("ASSETS_UE_IDLE2_S", "600"))   # the second editor (Blender card)
-UE_EDITORS = int(os.environ.get("ASSETS_UE_EDITORS", "1"))   # 2 measured slower (11-10)
+UE_EDITORS = 1               # one engine on its card (a second on the Blender card measured 3x slower, 11-10)
 UE_SECOND_AT = int(os.environ.get("ASSETS_UE_SECOND_AT", "2"))
 SCHED_DIR = _p("ASSETS_SCHED_DIR", UE_HOME / "sched")
 SCHED_IDLE_S = float(os.environ.get("ASSETS_SCHED_IDLE_S", "60"))
 UE_CARD = os.environ.get("ASSETS_UE_CARD", "65")
 BLENDER_CARD = os.environ.get("ASSETS_BLENDER_CARD", "05")
-BLENDER_PER_CARD = int(os.environ.get("ASSETS_BLENDER_PER_CARD", "3"))
+BLENDER_PER_CARD = 1         # one job per station
 BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "4"))
 BLENDER_LINGER_S = float(os.environ.get("ASSETS_BLENDER_LINGER_S", "120"))
-BAKE_SPILL_S = float(os.environ.get("ASSETS_BAKE_SPILL_S", "20"))
-SPILL_MIN_FREE_GB = float(os.environ.get("ASSETS_SPILL_MIN_FREE_GB", "8"))
-SPILL_JOBS = int(os.environ.get("ASSETS_SPILL_JOBS", "2"))
 OUTSIDE_RELEASE_BL_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_BL_S", "120"))
 OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))
 RECLAIM_FREE_S = float(os.environ.get("ASSETS_RECLAIM_FREE_S", "5"))
@@ -111,7 +105,7 @@ UE_JOB_OUTPUT_GRACE_S = float(os.environ.get("ASSETS_UE_JOB_OUTPUT_GRACE_S", "10
 UE_SWAP_AFTER_S = float(os.environ.get("ASSETS_UE_SWAP_AFTER_S", "60"))   # serve another project after this wait
 UE_STAY_S = float(os.environ.get("ASSETS_UE_STAY_S", "150"))   # minimum stay on a project before a forced swap
 UE_IDLE_FPS = int(os.environ.get("ASSETS_UE_IDLE_FPS", "10"))   # idle editor frame cap (t.MaxFPS)
-BLENDER_SPARES = int(os.environ.get("ASSETS_BLENDER_SPARES", "2"))
+BLENDER_SPARES = int(os.environ.get("ASSETS_BLENDER_SPARES", "1"))
 BAKE_WAIT_S = float(os.environ.get("ASSETS_BAKE_WAIT_S", "45"))   # poll for a GPU this long before the CPU
 BAKE_VRAM_GB = float(os.environ.get("ASSETS_BAKE_VRAM_GB", "8"))  # free VRAM to bake beside the warm editor
 IGPU_LOCK_NAME = os.environ.get("ASSETS_IGPU_LOCK", "igpu")        # /tmp/gpu-<name>.lock

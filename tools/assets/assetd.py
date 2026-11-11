@@ -51,10 +51,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
+import line as L  # noqa: E402
 import run_asset as R  # noqa: E402
 
 SOCK = C.SCHED_DIR / "sched.sock"
-CODE_FILES = ("assetd.py", "run_asset.py", "config.py")
+CODE_FILES = ("assetd.py", "run_asset.py", "config.py", "line.py")
 UE_FILES = ("ue/ue_render.py", "ue/ue_import.py", "ue/init_unreal.py")
 
 
@@ -137,6 +138,14 @@ def other_project_editors(project=None):
 SCHED = None
 
 
+def sid_of(pid):
+    """Session id of a process (line commands start their own session: sid = the command's pid)."""
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[3])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def busy_pct(bus):
     try:
         return int(Path(f"/sys/bus/pci/devices/0000:{bus}:00.0/gpu_busy_percent").read_text())
@@ -168,6 +177,7 @@ class Card:
         self.last_used = 0.0
         self.lent = False                 # given away with --release-card: an outside holder is expected
         self.spares = []                  # warm Blender processes (bl_spare.py) waiting for a job on this card
+        self.cmd_busy = None              # a line command runs here and holds the card's lock itself
 
     def stop_spares(self):
         for sp in self.spares:
@@ -185,7 +195,7 @@ class Card:
 
     def hold(self):
         if self.fd is None:
-            if self.draining or now() < self.released_until:
+            if self.draining or now() < self.released_until or self.cmd_busy is not None:
                 return False
             self.fd = try_flock(self.lock_path)
             if self.fd is not None:
@@ -328,9 +338,18 @@ class Job:
         self.times = {}
         self.send_lock = threading.Lock()
         self.pending = None               # (state, result) once a stage failed
+        self.entry = None                 # the work-list entry (line.py), saved on every state change
+        self.seq = None
+        self.logf = None
 
     def log(self, msg):
         line = f"[{datetime.datetime.now():%H:%M:%S}] {msg}"
+        if self.logf is not None:
+            try:
+                with open(self.logf, "a") as f:
+                    f.write(line + "\n")
+            except OSError:
+                pass
         if self.conn is None:
             return
         try:
@@ -374,6 +393,17 @@ class Sched:
         self.est = self.load_est()
         self.mannequin = None
         self.stopping = False
+        # the line (line.py): work list on disk, batches, power / hardware guard
+        self.wl = L.WorkList(C.SCHED_DIR / "line")
+        self.batcher = L.Batcher()
+        self.guard = L.PowerGuard(cards=[self.ue_bus, self.bl_bus])
+        self.t_guard, self.verdict, self.said_why = 0.0, {"cards": True, "pause": False, "why": []}, None
+        self.state_written = False
+        self.child_sids = set()
+        self.inhibit = None
+        self.window = None                # the video window: {"t", "n"} while open
+        self.peak_load = 0.0
+        self.kind_cost = collections.defaultdict(list)    # kind -> [(seconds, Wh used)]
 
     # ------------------------------------------------------------ estimates (seconds), for waits and --status
     def load_est(self):
@@ -397,11 +427,140 @@ class Sched:
             pass
 
     # ------------------------------------------------------------ submissions
+    # ------------------------------------------------------------ the line: entries, stations, admission
+    def make_job(self, e, conn=None):
+        """A Job from a work-list entry (a new submission, or one reloaded after a restart)."""
+        plain = argparse.Namespace(preview=False, paint=False, skip_render=False, rebuild_stage=False, device=None,
+                                   ue_timeout=float(e.get("timeout_s") or C.UE_JOB_TIMEOUT_S), model=None,
+                                   ue_only=False)
+        if e["type"] == "asset":
+            args = R.build_parser().parse_args(e["argv"])
+            args.spec, args.model = e["spec"], e["model"]
+            spec = json.loads(Path(e["spec"]).read_text())
+            job = Job(args, spec, conn, e.get("client_pid"), e["argv"])
+        elif e["type"] == "ue_job":
+            jd = e["ue"]
+            job = Job(plain, {"id": e["id"], "class": "ue_job"}, conn, e.get("client_pid"), [])
+            job.mode, job.ue = "ue_job", jd
+            job.project = str(Path(jd["project"]).resolve())
+            job.adir = Path(jd.get("log_dir") or (C.SCHED_DIR / "jobs" / f"{e['id']}_{e['seq']}"))
+            job.adir.mkdir(parents=True, exist_ok=True)
+        else:                                               # "cmd": run this command at a station
+            job = Job(plain, {"id": e["id"], "class": "cmd"}, conn, e.get("client_pid"), [])
+            job.mode = "cmd"
+            job.adir = C.SCHED_DIR / "line" / "jobs" / f"{e['seq']:06d}_{e['id']}"
+            job.adir.mkdir(parents=True, exist_ok=True)
+        job.entry, job.seq = e, e["seq"]
+        job.t_submit = e.get("submitted") or now()
+        job.logf = C.SCHED_DIR / "line" / "logs" / f"{e['seq']:06d}.log"
+        job.logf.parent.mkdir(parents=True, exist_ok=True)
+        return job
+
+    def first_station(self, e):
+        if e["type"] == "asset":
+            if "--ue-only" in e["argv"]:
+                return f"card{self.ue_bus}"
+            return f"card{self.bl_bus}"
+        if e["type"] == "ue_job":
+            return f"card{self.ue_bus}"
+        return e["station"]
+
+    def add_entry(self, e, conn=None, resume=False):
+        """Admit an entry to the line (or say the line is full); returns (job, None) or (None, why)."""
+        if e.get("type") == "cmd":
+            e["station"] = STATION_ALIASES.get(str(e.get("station")), e.get("station"))
+        with self.lock:
+            if not resume:
+                why = L.line_full(self.heading(), self.first_station(e))
+                if why:
+                    return None, why
+                e.update(seq=self.wl.next_seq(), state="queued", submitted=now(), stages={})
+                self.wl.save(e)
+            job = self.make_job(e, conn)
+            self.submit(job)
+            self.persist(job)
+            return job, None
+
+    def persist(self, job):
+        e = job.entry
+        if e is None:
+            return
+        e["stages"] = {s.name: s.state for s in job.stages}
+        e["pids"] = {s.name: s.info["pid"] for s in job.stages if s.state == "run" and s.info.get("pid")}
+        e["state"] = {"queued": "queued", "running": "running"}.get(job.state, job.state)
+        e["n"] = job.n
+        try:
+            self.wl.save(e)
+        except OSError as ex:
+            print(f"[line] could not save entry {e.get('seq')}: {ex}", flush=True)
+
+    def station(self, st):
+        """The station a stage runs at (None: CPU bookkeeping such as finalize, which runs at once)."""
+        if st.kind == "blender":
+            return f"card{self.bl_bus}"
+        if st.kind == "ue":
+            return f"card{self.ue_bus}"
+        if st.kind == "paint":
+            return "igpu"
+        if st.kind == "cmd":
+            return st.job.entry["station"]
+        return None
+
+    def skind(self, st):
+        """The batch kind of a stage: a station runs a batch of one kind before it switches (no reloads)."""
+        if st.kind == "blender":
+            return "blender"
+        if st.kind == "ue":
+            return "ue_script" if st.name == "ue_script" else "ue_asset"
+        if st.kind == "cmd":
+            return st.job.entry.get("kind") or "cmd"
+        return st.kind
+
+    def heading(self):
+        """station -> jobs in line for it: a job whose next station stage waits there, or a job running elsewhere
+        whose next station it is (so the short line also holds back the station upstream)."""
+        out = collections.Counter()
+        for j in self.jobs:
+            if j.cancelled or j.state in ("done", "failed", "cancelled"):
+                continue
+            todo = [(st, self.station(st)) for st in j.stages if self.station(st) and st.state in ("wait", "ready", "run")]
+            if not todo:
+                continue
+            st0, b0 = todo[0]
+            if st0.state != "run":
+                out[b0] += 1
+                continue
+            nxt = next((b for st, b in todo[1:] if b != b0 and st.state != "run"), None)
+            if nxt:
+                out[nxt] += 1
+        return out
+
+    def next_station(self, st):
+        sts = st.job.stages
+        b0 = self.station(st)
+        for x in sts[sts.index(st) + 1:]:
+            b = self.station(x)
+            if b and b != b0:
+                return b
+        return None
+
+    def video_left(self):
+        return any(st.kind == "cmd" and st.job.entry["station"] == "video" and st.state in ("wait", "ready", "run")
+                   for j in self.jobs for st in j.stages)
+
     def submit(self, job):
         a = job.args
         s = []
-        if job.mode == "ue_job":
+        if job.mode == "cmd":
+            s.append(Stage(job, job.entry.get("kind") or "cmd", "cmd"))
+        elif job.mode == "ue_job":
             s.append(Stage(job, "ue_script", "ue"))
+        elif getattr(a, "ue_only", False):
+            # baked and exported before: the engine stage alone (import + stills), from the asset's Blender report
+            job.blend = json.loads((job.adir / "blender_report.json").read_text())
+            job.exported = True
+            ue = Stage(job, "ue", "ue")
+            s += [ue, Stage(job, "finalize", "cpu", [ue])]
         elif job.mode == "preview":
             s.append(Stage(job, "blender_preview", "blender"))
         else:
@@ -420,6 +579,16 @@ class Sched:
             s.append(ue)
             s.append(Stage(job, "finalize", "cpu", [bl, ue] + ([prev] if prev else [])))
         job.stages = s
+        # after a restart: a finished bake is kept (its report says ok); everything after it runs again
+        was = (job.entry or {}).get("stages") or {}
+        bl = job.blender_stage()
+        if job.mode == "final" and bl is not None and was.get(bl.name) == "done":
+            try:
+                rep = json.loads((job.adir / "blender_report.json").read_text())
+                if rep.get("status") == "ok":
+                    bl.state, job.blend, job.exported = "done", rep, True
+            except (OSError, ValueError):
+                pass
         with self.lock:
             self.jobs.append(job)
             self.last_busy = now()
@@ -452,7 +621,8 @@ class Sched:
     # ------------------------------------------------------------ asset mode / released (video runs)
     def outside_holders(self, c):
         """Pids other than ours holding a card's lock (our editor inherits our lock: /proc/locks shows our pid)."""
-        return [(p, cmd) for p, cmd in lock_holders(c.lock_path) if p != os.getpid()]
+        return [(p, cmd) for p, cmd in lock_holders(c.lock_path)
+                if p != os.getpid() and p not in self.child_sids and sid_of(p) not in self.child_sids]
 
     def card_work_queued(self):
         for j in self.jobs:
@@ -517,7 +687,7 @@ class Sched:
             r["release_s"] = round(t - r["t"], 1)
             r["vram_used_gb"] = {b: round(vram(b)[0] or 0, 1) for b in self.cards}
             print(f"[sched] both cards released in {r['release_s']}s; VRAM used {r['vram_used_gb']}", flush=True)
-        if r["done_t"] is None or not self.card_work_queued():
+        if r["done_t"] is None or not self.card_work_queued() or self.video_left():
             return
         for b in self.cards:
             if b in self.outside:
@@ -528,13 +698,6 @@ class Sched:
         grace = C.RELEASE_GRACE_S if r["manual"] else 0.0
         if t - r["t"] >= grace and free_for >= C.RECLAIM_FREE_S and all(b in self.free_since for b in self.cards):
             self.reclaim(f"both card locks free for {free_for:.0f}s and asset work is queued")
-        elif (not r["manual"] and r.get("card") == self.ue_bus and C.BAKE_SPILL_S >= 0
-              and self.ue_bus in self.free_since
-              and t - self.free_since[self.ue_bus] >= C.RECLAIM_FREE_S):
-            # an automatic release, and only the Blender card is still held from outside: take the UE card back
-            # and let bakes spill beside the editor (a video run that needs both cards uses --release-cards)
-            self.reclaim(f"UE card free for {t - self.free_since[self.ue_bus]:.0f}s; the Blender card is still "
-                         f"held from outside, so bakes spill to the UE card")
 
     def tick(self):
         t = now()
@@ -554,21 +717,9 @@ class Sched:
                     st.state, st.t_ready = "ready", t
                 if any(d.state in ("fail", "cancel") for d in st.deps) and st.state in ("wait", "ready"):
                     st.state = "cancel"
-        ready = [st for j in self.jobs if not j.cancelled for st in j.stages if st.state == "ready"]
-        ready.sort(key=lambda s: (s.job.n, s.t_ready))
-        for st in ready:
-            if st.kind == "blender":
-                pl = self.place_blender(st)
-                if pl:
-                    self.launch(st, self.run_blender, pl)
-            elif st.kind == "ue":
-                ed = self.place_ue(st)
-                if ed:
-                    self.launch(st, self.run_ue, ed)
-            elif st.kind == "paint":
-                self.launch(st, self.run_paint, None)
-            elif st.kind == "cpu":
-                self.launch(st, self.run_finalize, None)
+        self.check_guard(t)
+        self.dispatch()
+        self.keep_awake()
         self.manage_editors()
         # the Blender card stays ours while Blender work is queued, and BLENDER_LINGER_S after it (no thrash)
         bl_queued = any(st.kind == "blender" and st.state in ("wait", "ready") for j in self.jobs for st in j.stages)
@@ -581,6 +732,158 @@ class Sched:
         if self.jobs or any(e.state != "dead" for e in self.editors):
             self.last_busy = t
         self.write_tenancy()
+
+    # ------------------------------------------------------------ the line: dispatch, guard, wake lock
+    def dispatch(self):
+        """Each idle station takes its next job: same kind as its current batch while one waits (up to the batch
+        size), else the oldest. A job starts only when the guard allows it (battery floor; card jobs: charger,
+        both cards and ASPM) and the line at its next station is not full. Card stations hold new work while a video window is wanted."""
+        ready = [st for j in self.jobs if not j.cancelled for st in j.stages if st.state == "ready"]
+        for st in ready:
+            if self.station(st) is None:
+                self.launch(st, self.run_finalize, None)
+        running = [st for j in self.jobs for st in j.stages if st.state == "run" and self.station(st)]
+        busy = {self.station(st) for st in running}
+        v, head = self.verdict, self.heading()
+        cards = (f"card{self.ue_bus}", f"card{self.bl_bus}")
+        video_wanted = self.video_left()
+        if video_wanted and not self.released and not (busy & set(cards)):
+            n = sum(1 for j in self.jobs if j.mode == "cmd" and j.entry["station"] == "video" and not j.cancelled)
+            self.window = {"t": now(), "n": n}
+            self.release(f"video window: {n} clip job(s) waiting", False)
+        by = collections.defaultdict(list)
+        for st in ready:
+            b = self.station(st)
+            if b is None or b in busy:
+                continue
+            if b == "video":
+                if not (self.released and self.released.get("done_t")):
+                    continue
+            elif b in cards and (video_wanted or self.released):
+                continue
+            k = self.skind(st)
+            if v["pause"] or (b in cards and not v["cards"]):
+                continue
+            nb = self.next_station(st)
+            if nb and head.get(nb, 0) >= L.LINE_MAX:
+                continue                                    # the line after this station is full: hold here
+            by[b].append((st.job.seq or 0, k, st))
+        for b, cand in by.items():
+            prev = dict(self.batcher.cur)
+            st = self.batcher.pick(b, cand)
+            if st is None:
+                continue
+            if st.kind == "blender":
+                pl = self.place_blender(st)
+                ok = bool(pl) and self.launch(st, self.run_blender, pl)
+            elif st.kind == "ue":
+                ed = self.place_ue(st)
+                ok = bool(ed) and self.launch(st, self.run_ue, ed)
+            elif st.kind == "paint":
+                ok = self.launch(st, self.run_paint, None)
+            else:
+                ok = self.launch(st, self.run_cmd, None)
+            if not ok:
+                self.batcher.cur = prev                     # the station could not take it yet: no batch count
+
+    def power_note(self):
+        g = self.guard.update()
+        return {"t": round(now(), 1), "capacity": g.get("capacity"), "status": g.get("status"),
+                "energy_wh": g.get("energy_wh"), "load1": round(os.getloadavg()[0], 2)}
+
+    def check_guard(self, t):
+        if t - self.t_guard < 5:
+            return
+        self.t_guard = t
+        self.guard.update()
+        self.verdict = self.guard.verdict()
+        self.peak_load = max(self.peak_load, os.getloadavg()[0])
+        why = "; ".join(self.verdict["why"])
+        if why != self.said_why:
+            print(f"[line] {time.strftime('%H:%M:%S')} guard: {why or 'all clear'} ({self.guard.brief()})", flush=True)
+            self.said_why = why
+        if self.verdict["pause"] and not self.state_written:
+            self.wl.write_state([j.entry for j in self.jobs if j.entry], why)
+            self.state_written = True
+            print(f"[line] paused; list state written to {self.wl.root / 'state.json'}", flush=True)
+        elif not self.verdict["pause"]:
+            self.state_written = False
+
+    def keep_awake(self):
+        """An idle/sleep inhibitor the whole time the list has work, also while paused at the battery floor (the
+        owner: "we want to block sleep"); released when the list is empty. It exits by itself when this scheduler
+        dies."""
+        want = bool(self.jobs)
+        alive = self.inhibit is not None and self.inhibit.poll() is None
+        if want and not alive and shutil.which("systemd-inhibit"):
+            watch = ("import os, sys, time\npid = int(sys.argv[1])\n"
+                     "while os.path.exists(f'/proc/{pid}'):\n    time.sleep(5)\n")
+            self.inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle:sleep", "--who=asset line",
+                                             "--why=asset jobs on the line", "--mode=block", sys.executable, "-c",
+                                             watch, str(os.getpid())],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"[line] holding the idle/sleep inhibitor (pid {self.inhibit.pid})", flush=True)
+        elif not want and alive:
+            self.inhibit.terminate()
+            self.inhibit = None
+            print("[line] inhibitor released", flush=True)
+
+    def run_cmd(self, st, _):
+        """A generic line entry: run its command at its station. The command takes the station's lock itself
+        (existing tools do), so the line lets go of that lock first and counts the command's session as its own."""
+        job, e = st.job, st.job.entry
+        b = e["station"]
+        st.device, st.device_class = b, "cmd"
+        card = self.cards.get(b[4:]) if b.startswith("card") else None
+        if card is not None:
+            with self.lock:
+                card.cmd_busy = st
+                card.stop_spares()
+            t0 = now()
+            while any(sp.proc.poll() is None for sp in card.spares) and now() - t0 < 20:
+                time.sleep(0.2)
+            with self.lock:
+                card.spares = [sp for sp in card.spares if sp.proc.poll() is None]
+                if card.fd is not None and not card.blender:
+                    os.close(card.fd)
+                    card.fd, card.held_since = None, None
+        log = Path(e.get("log") or (job.adir / "cmd.log"))
+        log.parent.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, **{k: str(v) for k, v in (e.get("env") or {}).items()},
+                   ASSETS_LINE_STATION=b, ASSETS_LINE_SEQ=str(job.seq))
+        try:
+            job.log(f"cmd at {b} ({e.get('kind')}): {' '.join(e['cmd'])[:200]}")
+            with open(log, "a") as f:
+                p = subprocess.Popen(e["cmd"], cwd=e.get("cwd") or None, env=env, stdout=f, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
+            with self.lock:
+                self.child_sids.add(p.pid)
+            st.info["pid"] = p.pid
+            with self.lock:
+                self.persist(job)
+            while p.poll() is None:
+                if job.cancelled:
+                    os.killpg(p.pid, signal.SIGTERM)
+                    try:
+                        p.wait(15)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    st.state = "cancel"
+                    return
+                time.sleep(0.2)
+            st.info["rc"] = p.returncode
+            job.log(f"cmd rc={p.returncode}; log {log}")
+            job.result = {"rc": p.returncode, "log": str(log)}
+            if p.returncode != 0:
+                st.info["error"] = f"command failed (rc {p.returncode}); see {log}"
+                st.state = "fail"
+                return
+            st.state = "done"
+        finally:
+            with self.lock:
+                self.child_sids.discard(st.info.get("pid"))
+                if card is not None:
+                    card.cmd_busy = None
 
     def keep_spares(self, c, t):
         """Warm Blender spares on the Blender card while it is ours and in use (within its linger)."""
@@ -606,6 +909,14 @@ class Sched:
 
     def launch(self, st, fn, arg):
         st.state, st.t_start = "run", now()
+        b = self.station(st)
+        if b:
+            st.info["power_start"] = self.power_note()
+            ps = st.info["power_start"]
+            print(f"[line] {time.strftime('%H:%M:%S')} start {b} {self.skind(st)} #{st.job.seq} {st.job.id} | "
+                  f"bat {ps['capacity']}% {ps['status']} {ps['energy_wh']}Wh load {ps['load1']}", flush=True)
+            st.job.log(f"start {st.name} at {b} | battery {ps['capacity']}% {ps['status']} {ps['energy_wh']} Wh")
+        self.persist(st.job)
 
         def go():
             try:
@@ -620,10 +931,36 @@ class Sched:
                     if st.state == "run":
                         st.state = "fail"
                     st.t_end = now()
+                    if b:
+                        self.note_cost(st)
                     self.after_stage(st)
+                    self.persist(st.job)
                     self.wake.notify_all()
 
         threading.Thread(target=go, daemon=True).start()
+        return True
+
+    def note_cost(self, st):
+        """Battery energy over a job (start and end logged): what each kind of job costs."""
+        a, z = st.info.get("power_start") or {}, self.power_note()
+        st.info["power_end"] = z
+        dt = (st.t_end or now()) - (st.t_start or now())
+        d = None
+        if a.get("energy_wh") is not None and z.get("energy_wh") is not None:
+            d = round(z["energy_wh"] - a["energy_wh"], 3)
+        k = self.skind(st)
+        self.kind_cost[k].append((round(dt, 1), d))
+        rec = {"seq": st.job.seq, "id": st.job.id, "station": self.station(st), "kind": k, "stage": st.name,
+               "state": st.state, "s": round(dt, 1), "start": a, "end": z, "energy_delta_wh": d,
+               "w_avg": round(d * 3600 / dt, 1) if d is not None and dt > 0 else None}
+        try:
+            with open(self.wl.root / "power.jsonl", "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+        print(f"[line] {time.strftime('%H:%M:%S')} end {rec['station']} {k} #{st.job.seq} {st.job.id} {st.state} "
+              f"{rec['s']}s | bat {z['capacity']}% {z['status']} {z['energy_wh']}Wh (delta {d} Wh) load {z['load1']}",
+              flush=True)
 
     def after_stage(self, st):
         """A stage ended: report the job when nothing of it runs any more (a failure cancels what is queued)."""
@@ -662,6 +999,7 @@ class Sched:
         self.recent.appendleft(rec)
         if job in self.jobs:
             self.jobs.remove(job)
+        self.persist(job)
         print(f"[sched] job {job.n} {job.id} {job.mode} {state} in {rec['total_s']} s: "
               + ", ".join(f"{s['name']} {s.get('device_class') or ''} w{s['wait_s']} r{s['run_s']}"
                           for s in rec["stages"]), flush=True)
@@ -689,40 +1027,17 @@ class Sched:
         return c.free_gb() >= need
 
     def place_blender(self, st):
-        """The home device of a Blender stage, or None: the stage waits. Homes are fixed: bakes and sheets on the
-        Blender card, previews on the iGPU (or the Blender card when the iGPU is taken). The one exception is a
-        logged spill of a bake to the UE card when an outside job has held the Blender card for BAKE_SPILL_S and
-        the UE card has the VRAM. Never the CPU, unless --device cpu was asked for by hand."""
+        """The Blender card, or None (the stage waits). Bakes, sheets and previews all run on the Blender card, one
+        job at a time; never the iGPU (it has its own station) and never the CPU unless --device cpu was asked for
+        by hand."""
         want = st.job.args.device or C.BLENDER_DEVICE
         if want == "cpu":
             return ("cpu", None)
-        need = self.vram_need(st)
-        home = self.cards[self.bl_bus]
-        if self.released:                                  # cards given to a video run: previews on the iGPU only
-            if st.job.mode == "preview" and want in ("auto", "igpu") and not self.igpu.blender and R.igpu_free() \
-                    and self.igpu.hold():
-                return ("igpu", self.igpu)
+        if self.released:
             return None
-        if st.job.mode == "preview" and want in ("auto", "igpu"):
-            if not self.igpu.blender and R.igpu_free() and self.igpu.hold():
-                return ("igpu", self.igpu)
-            if want == "igpu":
-                return None
-        if want == "igpu":
-            return ("igpu", self.igpu) if not self.igpu.blender and R.igpu_free() and self.igpu.hold() else None
-        if self.card_ok(home, need):
+        home = self.cards[self.bl_bus]
+        if self.card_ok(home, self.vram_need(st)):
             return ("card", home)
-        ue = self.cards[self.ue_bus]
-        out_s = now() - home.outside_since if home.outside_since and home.fd is None else 0.0
-        if (st.job.mode == "final" and C.BAKE_SPILL_S >= 0 and not self.released and (out_s >= C.BAKE_SPILL_S or home.draining
-                                                                 or now() < home.released_until)
-                and len(ue.blender) < C.SPILL_JOBS and not ue.lent and not ue.draining
-                and (ue.fd is not None or ue.hold()) and ue.free_gb() >= max(need, C.SPILL_MIN_FREE_GB)):
-            self.spills += 1
-            st.info["spill"] = (f"Blender card {home.bus} held by an outside job for {out_s:.0f}s; "
-                                f"baking on the UE card {ue.bus} ({ue.free_gb():.1f} GB free)")
-            print(f"[sched] spill: {st.job.id}: {st.info['spill']}", flush=True)
-            return ("card", ue)
         return None
 
     def run_blender(self, st, pl):
@@ -763,6 +1078,8 @@ class Sched:
                                          stdout=f, stderr=subprocess.STDOUT, pass_fds=fds, start_new_session=True)
                 st.info["warm_spare"] = False
             st.info["pid"] = p.pid
+            with self.lock:
+                self.persist(job)
             while p.poll() is None:
                 if job.cancelled:
                     p.terminate()
@@ -1345,13 +1662,83 @@ class Sched:
         for j in self.jobs:
             for s in j.stages:
                 if s.state in ("ready", "run", "wait"):
-                    out["queue"].append({"job": j.n, "id": j.id, "mode": j.mode, "client": j.client_pid,
+                    out["queue"].append({"job": j.n, "seq": j.seq, "id": j.id, "mode": j.mode, "client": j.client_pid,
                                          "stage": s.name, "state": s.state, "device": s.device,
                                          "since_s": round(t - (s.t_start or s.t_ready or j.t_submit), 1)})
+        out["line"] = self.line_status(t)
         return out
+
+    def line_status(self, t):
+        """The one-screen view: per station what runs and how long, what waits and the oldest wait; the guard."""
+        head = self.heading()
+        names = ["igpu", f"card{self.bl_bus}", f"card{self.ue_bus}", "video"]
+        stations = {b: {"running": [], "waiting": head.get(b, 0), "oldest_wait_s": 0.0,
+                        "batch": self.batcher.state().get(b)} for b in names}
+        for j in self.jobs:
+            todo = [st for st in j.stages if self.station(st) and st.state in ("wait", "ready", "run")]
+            for st in j.stages:
+                b = self.station(st)
+                if b and st.state == "run":
+                    stations[b]["running"].append(f"#{j.seq} {j.id} {self.skind(st)} {t - st.t_start:.0f}s")
+            if todo and todo[0].state != "run":
+                b = self.station(todo[0])
+                stations[b]["oldest_wait_s"] = max(stations[b]["oldest_wait_s"], round(t - j.t_submit))
+        try:
+            hour = self.wl.recent(t - 3600)
+        except OSError:
+            hour = []
+        cost = {k: {"n": len(v), "s_mean": round(sum(a for a, _ in v) / len(v), 1),
+                    "wh_mean": (round(sum(d for _, d in v if d is not None) / max(1, sum(1 for _, d in v if d is not None)), 3))}
+                for k, v in self.kind_cost.items() if v}
+        return {"stations": stations, "line_max": L.LINE_MAX, "batch": L.BATCH,
+                "guard": self.verdict, "power": self.guard.last,
+                "power_events": [(time.strftime("%H:%M:%S", time.localtime(a)), b) for a, b in self.guard.events],
+                "load": [round(x, 2) for x in os.getloadavg()], "peak_load": round(self.peak_load, 2),
+                "mem_avail_gb": round(R.mem_avail_gb(), 1),
+                "inhibitor": self.inhibit is not None and self.inhibit.poll() is None,
+                "window": self.window if self.released else None,
+                "done_last_hour": {"n": len(hour), "done": sum(1 for e in hour if e.get("state") == "done"),
+                                   "failed": [f"#{e['seq']} {e['id']}" for e in hour if e.get("state") == "failed"]},
+                "cost_by_kind": cost}
 
 
 # ---------------------------------------------------------------- socket server
+def resume(S):
+    """Starting the line again: every unfinished entry goes back on the line in list order; what was in flight
+    runs again (a process of ours still running from before the restart is stopped first; an orphan editor's
+    holder is not an outside user of the card while it quits)."""
+    for p in R.server_dir().glob("ed-*/editor.json"):
+        try:
+            pid = json.loads(p.read_text())["pid"]
+            if Path(f"/proc/{pid}").exists():
+                S.child_sids.add(pid)
+        except (OSError, ValueError, KeyError):
+            pass
+    entries = S.wl.load()
+    for e in entries:
+        for name, pid in (e.pop("pids", None) or {}).items():
+            try:
+                cmdl = Path(f"/proc/{pid}/cmdline").read_bytes()
+            except OSError:
+                continue
+            if sid_of(pid) == pid and (b"blender" in cmdl or e["type"] == "cmd"):
+                print(f"[line] stopping {pid} left running by the previous scheduler ({e['id']} {name})", flush=True)
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        try:
+            job, _ = S.add_entry(e, None, resume=True)
+            print(f"[line] resumed entry {e['seq']} {e['id']} ({e['type']}"
+                  + (f"; re-running {', '.join(e['resumed'])}" if e.get("resumed") else "") + ")", flush=True)
+        except Exception as ex:                                # a broken entry must not stop the line
+            e["state"], e["error"] = "failed", f"could not resume: {ex}"
+            S.wl.save(e)
+            print(f"[line] entry {e.get('seq')} could not resume: {ex}", flush=True)
+    if entries:
+        print(f"[line] {len(entries)} entries back on the line", flush=True)
+
+
 def serve():
     C.SCHED_DIR.mkdir(parents=True, exist_ok=True)
     me = try_flock(C.SCHED_DIR / "daemon.lock")
@@ -1374,6 +1761,7 @@ def serve():
     if R.live_server():
         (R.server_dir() / "queue" / "quit").touch()
         print("[sched] asked the pre-scheduler warm editor to quit", flush=True)
+    resume(S)
 
     def sampler():
         buses = list(S.cards) + [C.IGPU_BUS]
@@ -1411,6 +1799,66 @@ def serve():
             c.tenant_path.unlink(missing_ok=True)
         print(f"[sched] exiting after {now() - S.t0:.0f}s", flush=True)
     return 0
+
+
+STATION_ALIASES = {"igpu": "igpu", "video": "video", "blender": f"card{C.BLENDER_CARD}",
+                   C.BLENDER_CARD: f"card{C.BLENDER_CARD}", f"card{C.BLENDER_CARD}": f"card{C.BLENDER_CARD}"}
+
+
+def entry_from_msg(S, msg, cmd, conn):
+    """The work-list entry for a submission (None after an answer was sent)."""
+    def no(text):
+        conn.sendall((json.dumps({"result": {"rc": 2, "error": text}}) + "\n").encode())
+
+    if cmd == "ue_job":
+        jd = msg["ue_job"]
+        for k in ("project", "script"):
+            if not jd.get(k) or not Path(jd[k]).exists():
+                no(f"ue job: '{k}' must name an existing file ({jd.get(k)})")
+                return None
+        return {"type": "ue_job", "id": jd.get("id") or Path(jd["script"]).stem, "ue": jd,
+                "timeout_s": jd.get("timeout_s"), "client_pid": msg.get("pid")}
+    if cmd == "cmd":
+        b = STATION_ALIASES.get(str(msg.get("station")))
+        if b is None:
+            no(f"station must be one of igpu, blender ({C.BLENDER_CARD}) or video; engine work goes through "
+               f"--ue-job (got {msg.get('station')})")
+            return None
+        if not msg.get("argv"):
+            no("no command given")
+            return None
+        return {"type": "cmd", "id": msg.get("id") or Path(msg["argv"][0]).name, "station": b,
+                "kind": msg.get("kind") or "cmd", "cmd": msg["argv"], "cwd": msg.get("cwd"),
+                "env": msg.get("env_extra") or {}, "log": msg.get("log"), "client_pid": msg.get("pid")}
+    if msg.get("env") != R.sched_env():
+        conn.sendall((json.dumps({"local": "the scheduler runs with other ASSETS_* settings"}) + "\n").encode())
+        return None
+    if msg.get("code") != S.code:
+        S.drain = True                                        # newer chain code: exit when idle, next run restarts
+    args = R.build_parser().parse_args(msg["argv"])
+    spec_p = Path(msg["cwd"], args.spec).resolve()
+    model_p = Path(msg["cwd"], args.model).resolve()
+    spec = json.loads(spec_p.read_text())
+    R.validate_spec(spec)
+    adir = C.LIBRARY / spec["class"] / spec["id"]
+    if args.ue_only:
+        try:
+            ok = json.loads((adir / "blender_report.json").read_text()).get("status") == "ok"
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            no(f"--ue-only: {adir / 'blender_report.json'} is missing or not ok; bake first")
+            return None
+    for d in ("source", "logs", "ue"):
+        (adir / d).mkdir(parents=True, exist_ok=True)
+    dst_m = adir / "source" / model_p.name
+    if dst_m.resolve() != model_p:
+        shutil.copy(model_p, dst_m)
+    (adir / "source" / "spec.json").write_text(json.dumps(spec, indent=1))
+    # the model runs from where it was given (model scripts import their kits from beside their folder)
+    return {"type": "asset", "id": spec["id"], "argv": msg["argv"], "spec": str(adir / "source" / "spec.json"),
+            "model": str(model_p), "client_pid": msg.get("pid"),
+            "kind": "preview" if args.preview else ("ue_only" if args.ue_only else "final")}
 
 
 def handle(S, conn):
@@ -1476,60 +1924,30 @@ def handle(S, conn):
                 S.drain = True
             conn.sendall(b'{"ok": true}\n')
             return
-        if cmd == "ue_job":
+        if cmd in ("ue_job", "cmd", "submit"):
             with S.lock:
-                if S.should_exit() or S.stopping:
+                if S.stopping or S.should_exit():
                     conn.sendall(b'{"retry": true}\n')
                     return
-            jd = msg["ue_job"]
-            for k in ("project", "script"):
-                if not jd.get(k) or not Path(jd[k]).exists():
-                    raise SystemExit(f"ue job: '{k}' must name an existing file ({jd.get(k)})")
-            args = argparse.Namespace(preview=False, paint=False, skip_render=False, rebuild_stage=False,
-                                      device=None, ue_timeout=float(jd.get("timeout_s", C.UE_JOB_TIMEOUT_S)),
-                                      model=None)
-            jid = jd.get("id") or Path(jd["script"]).stem
-            job = Job(args, {"id": jid, "class": "ue_job"}, conn, msg.get("pid"), [])
-            job.mode, job.ue = "ue_job", jd
-            job.project = str(Path(jd["project"]).resolve())
-            job.adir = Path(jd.get("log_dir") or (C.SCHED_DIR / "jobs" / f"{jid}_{job.n}"))
-            job.adir.mkdir(parents=True, exist_ok=True)
-            job.log(f"{jid}: UE job {job.n} for {Path(jd['project']).stem} queued with the scheduler (pid {os.getpid()})")
-            S.submit(job)
-            while True:
+            e = entry_from_msg(S, msg, cmd, conn)
+            if e is None:
+                return
+            job, why = S.add_entry(e, conn)
+            if why:
+                conn.sendall((json.dumps({"line_full": why}) + "\n").encode())
+                print(f"[line] {time.strftime('%H:%M:%S')} refused {e.get('id')}: {why}", flush=True)
+                return
+            job.log(f"{job.id}: line entry {job.seq} (job {job.n}) queued with the scheduler (pid {os.getpid()})")
+            conn.sendall((json.dumps({"queued": job.seq, "job": job.n}) + "\n").encode())
+            if msg.get("detach"):
+                job.conn = None
+                return
+            while True:                                       # EOF = the client went away; the job stays on the line
                 if not f.readline():
                     break
-            S.cancel(job, "client disconnected")
+            job.conn = None
             return
-        if cmd != "submit":
-            conn.sendall(b'{"error": "unknown command"}\n')
-            return
-        with S.lock:
-            if S.should_exit() or S.stopping:
-                conn.sendall(b'{"retry": true}\n')
-                return
-        if msg.get("env") != R.sched_env():
-            conn.sendall((json.dumps({"local": "the scheduler runs with other ASSETS_* settings"}) + "\n").encode())
-            return
-        if msg.get("code") != S.code:
-            S.drain = True                                    # newer chain code: exit when idle, next run restarts
-        args = R.build_parser().parse_args(msg["argv"])
-        args.spec = str(Path(msg["cwd"], args.spec).resolve())
-        args.model = str(Path(msg["cwd"], args.model).resolve())
-        spec = json.loads(Path(args.spec).read_text())
-        R.validate_spec(spec)
-        adir = C.LIBRARY / spec["class"] / spec["id"]
-        for d in ("source", "logs", "ue"):
-            (adir / d).mkdir(parents=True, exist_ok=True)
-        shutil.copy(args.model, adir / "source" / Path(args.model).name)
-        (adir / "source" / "spec.json").write_text(json.dumps(spec, indent=1))
-        job = Job(args, spec, conn, msg.get("pid"), msg["argv"])
-        job.log(f"{spec['id']}: job {job.n} queued with the scheduler (pid {os.getpid()})")
-        S.submit(job)
-        while True:                                           # EOF = the client went away
-            if not f.readline():
-                break
-        S.cancel(job, "client disconnected")
+        conn.sendall(b'{"error": "unknown command"}\n')
     except SystemExit as e:
         try:
             conn.sendall((json.dumps({"result": {"rc": 2, "error": str(e)}}) + "\n").encode())
@@ -1595,50 +2013,14 @@ def connect(start=True):
     raise SystemExit("could not reach or start the asset scheduler; see its log in ASSETS_LOGS")
 
 
-def client_submit(argv):
-    """Send this run to the scheduler and relay its log; returns the exit code (None = run locally instead)."""
+LINE_FULL_RC = 75                                         # EX_TEMPFAIL: the line is full, retry later
+
+
+def _client(msg, on_result, detach=False):
+    """Send one submission; relay its log. Returns an exit code (None = run locally)."""
     for _ in range(5):
         s = connect()
-        msg = {"cmd": "submit", "argv": argv, "cwd": os.getcwd(), "pid": os.getpid(), "env": R.sched_env(),
-               "code": code_hash()}
         s.sendall((json.dumps(msg) + "\n").encode())
-        f = s.makefile("rb")
-        retry = False
-        for line in f:
-            m = json.loads(line)
-            if "log" in m:
-                print(m["log"], flush=True)
-            elif m.get("retry"):
-                retry = True
-                break
-            elif "local" in m:
-                print(f"scheduler: {m['local']}; running locally", flush=True)
-                return None
-            elif "result" in m:
-                r = m["result"]
-                if r.get("error") and r.get("rc"):
-                    print(r["error"], file=sys.stderr, flush=True)
-                return int(r.get("rc", 1))
-        s.close()
-        if not retry:
-            print("the scheduler went away before the job finished; see its log in ASSETS_LOGS", file=sys.stderr)
-            return 4
-        time.sleep(0.5)
-    return 4
-
-
-def client_ue_job(path):
-    """run_asset.py --ue-job JOB.json: run an editor-side script in the scheduler's resident editor of its project.
-    JOB: {"project": .uproject, "script": editor-side .py, "job": {...} (the script's JOB), "outputs": [paths to wait
-    for], "timeout_s": 1800, "id": name, "log_dir": folder for sched.json / ue_result.json}. Prints the result."""
-    jd = json.loads(Path(path).read_text())
-    for k in ("project", "script"):
-        if jd.get(k):
-            jd[k] = str(Path(jd[k]).resolve())
-    jd["outputs"] = [str(Path(o).resolve()) for o in jd.get("outputs", [])]
-    for _ in range(5):
-        s = connect()
-        s.sendall((json.dumps({"cmd": "ue_job", "ue_job": jd, "pid": os.getpid()}) + "\n").encode())
         retry = False
         for line in s.makefile("rb"):
             m = json.loads(line)
@@ -1647,17 +2029,114 @@ def client_ue_job(path):
             elif m.get("retry"):
                 retry = True
                 break
+            elif "line_full" in m:
+                print(f"LINE FULL: {m['line_full']}", file=sys.stderr, flush=True)
+                s.close()
+                return LINE_FULL_RC
+            elif "queued" in m:
+                if detach:
+                    print(f"queued: line entry {m['queued']} (see run_asset.py --status)", flush=True)
+                    s.close()
+                    return 0
+            elif "local" in m:
+                print(f"scheduler: {m['local']}; running locally", flush=True)
+                return None
             elif "result" in m:
-                r = m["result"]
-                r.pop("sched", None)
-                print(json.dumps(r, default=str), flush=True)
-                return int(r.get("rc", 1))
+                return on_result(m["result"])
         s.close()
         if not retry:
-            print("the scheduler went away before the job finished; see its log in ASSETS_LOGS", file=sys.stderr)
+            print("the line went away before the job finished; the job stays on the work list and runs when the "
+                  "line starts again (run_asset.py --status)", file=sys.stderr)
             return 4
         time.sleep(0.5)
     return 4
+
+
+def _plain_result(r):
+    if r.get("error") and r.get("rc"):
+        print(r["error"], file=sys.stderr, flush=True)
+    return int(r.get("rc", 1))
+
+
+def client_submit(argv):
+    """Send this run to the line and relay its log; returns the exit code (None = run locally instead).
+    --detach: return as soon as the entry is on the line. A full line answers LINE FULL (exit 75): stop submitting."""
+    detach = "--detach" in argv
+    msg = {"cmd": "submit", "argv": argv, "cwd": os.getcwd(), "pid": os.getpid(), "env": R.sched_env(),
+           "code": code_hash(), "detach": detach}
+    return _client(msg, _plain_result, detach)
+
+
+def client_ue_job(path, detach=False):
+    """run_asset.py --ue-job JOB.json: run an editor-side script in the scheduler's resident editor of its project.
+    JOB: {"project": .uproject, "script": editor-side .py, "job": {...} (the script's JOB), "outputs": [paths to wait
+    for], "timeout_s": 1800, "id": name, "log_dir": folder for sched.json / ue_result.json}. Prints the result."""
+    jd = json.loads(Path(path).read_text())
+    for k in ("project", "script"):
+        if jd.get(k):
+            jd[k] = str(Path(jd[k]).resolve())
+    jd["outputs"] = [str(Path(o).resolve()) for o in jd.get("outputs", [])]
+
+    def res(r):
+        r.pop("sched", None)
+        print(json.dumps(r, default=str), flush=True)
+        return int(r.get("rc", 1))
+    return _client({"cmd": "ue_job", "ue_job": jd, "pid": os.getpid(), "detach": detach}, res, detach)
+
+
+def client_line_cmd(argv):
+    """run_asset.py --line-cmd STATION KIND [--id NAME] [--log FILE] [--detach] -- COMMAND...: run an existing tool
+    at a station (igpu, blender, video). The tool takes the station's lock itself, as it does today; the line
+    starts it only when the station is free and the guard allows. KIND names the batch (e.g. refs, paint, cloth,
+    shape, video): a station finishes a batch of one kind before it switches."""
+    if "--" not in argv or len(argv) < 4:
+        raise SystemExit("usage: run_asset.py --line-cmd STATION KIND [--id NAME] [--log FILE] [--detach] -- CMD...")
+    k = argv.index("--")
+    head, cmd = argv[:k], argv[k + 1:]
+    station, kind, opts = head[0], head[1], head[2:]
+    detach = "--detach" in opts
+    get = lambda o: opts[opts.index(o) + 1] if o in opts else None
+    msg = {"cmd": "cmd", "station": station, "kind": kind, "argv": cmd, "cwd": os.getcwd(), "pid": os.getpid(),
+           "id": get("--id"), "log": str(Path(get("--log")).resolve()) if get("--log") else None, "detach": detach}
+    return _client(msg, _plain_result, detach)
+
+
+def feed(list_path):
+    """run_asset.py --feed LIST: one submitter for a backlog. LIST is a text file, one run_asset.py argument line
+    per entry (e.g. "SPEC MODEL --ue-only", or "--line-cmd igpu refs --id X -- CMD..."), in order. Each line is submitted detached; on LINE FULL the feeder waits
+    until the line has room (it watches the status, it does not resubmit blindly). Progress is kept beside the
+    list (<LIST>.fed), so running it again skips what was already put on the line."""
+    import shlex
+    lp = Path(list_path)
+    fed_p = lp.with_name(lp.name + ".fed")
+    fed = set(fed_p.read_text().splitlines()) if fed_p.exists() else set()
+    lines = [ln.strip() for ln in lp.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    for ln in lines:
+        if ln in fed:
+            continue
+        while True:
+            argv = shlex.split(ln)
+            rc = (client_line_cmd(argv[1:k] + ["--detach"] + argv[k:]) if argv[0] == "--line-cmd" and
+                  (k := argv.index("--")) else client_submit(argv + ["--detach"]))
+            if rc != LINE_FULL_RC:
+                break
+            t0 = now()
+            while now() - t0 < 600:                      # wait for room: the station's line shrinks as jobs finish
+                st = client_cmd("status") or {}
+                ln_st = (st.get("line") or {})
+                if not ln_st:
+                    break
+                if all(v["waiting"] < ln_st["line_max"] for v in ln_st["stations"].values()):
+                    break
+                time.sleep(2)
+        if rc != 0:
+            print(f"feed: '{ln}' failed to queue (rc {rc}); stopping", file=sys.stderr)
+            return rc
+        fed.add(ln)
+        with open(fed_p, "a") as f:
+            f.write(ln + "\n")
+    print(f"feed: all {len(lines)} entries are on the line")
+    return 0
 
 
 def client_cmd(cmd, **kw):
@@ -1738,31 +2217,54 @@ def release_card(bus):
 def print_status():
     st = client_cmd("status")
     if st is None:
-        print("no scheduler running (it starts with the next run_asset.py job)")
+        wl = L.WorkList(C.SCHED_DIR / "line")
+        n = len(list(wl.edir.glob("*.json")))
+        print(f"the line is not running; {n} unfinished entries on disk (they resume when it starts: "
+              f"run_asset.py --start)")
         for name in [*C.GPU_CARDS, C.IGPU_LOCK_NAME]:
             h = lock_holders(f"/tmp/gpu-{name}.lock", True)
             print(f"  lock gpu-{name}: " + ("; ".join(f"{p} {c}" for p, c in h) if h else "free"))
         return 0
-    print(f"scheduler pid {st['pid']}, up {st['up_s']}s, code {st['code']}{' (exits when idle)' if st['drain'] else ''}"
-          f", bakes spilled to the UE card: {st.get('spills', 0)}")
-    print("devices:")
-    for d in st["devices"]:
-        print(f"  {d['device']:9} busy {d.get('busy')}%  vram {d.get('vram_gb')}  lock: {d['lock']}")
-        if d.get("editor"):
-            print(f"            editor {d['editor']}")
-        for b in d.get("blender") or []:
-            print(f"            blender {b}")
-    print("queue:" + ("" if st["queue"] else " empty") + ("   (cancel one: run_asset.py --cancel <job number or id>)"
-                                                         if st["queue"] else ""))
-    for q in st["queue"]:
-        print(f"  job {q['job']:>3} {q['id']:32} {q['mode']:7} {q['stage']:15} {q['state']:5} "
-              f"{q['since_s']:>6}s {q.get('device') or ''} (client {q['client']})")
-    print("recent:")
-    for r in st["recent"]:
-        parts = ", ".join(f"{s['name']} {s.get('device') or '-'} wait {s['wait_s']} run {s['run_s']}"
-                          for s in r["stages"])
-        print(f"  job {r['job']:>3} {r['id']:32} {r['mode']:7} {r['state']:9} {r['total_s']:>6}s  {parts}")
+    ln = st["line"]
+    pw, g = ln["power"] or {}, ln["guard"] or {}
+    print(f"asset line pid {st['pid']} up {st['up_s']}s{' (exits when idle: newer code)' if st['drain'] else ''} | "
+          f"line max {ln['line_max']} per station, batch {ln['batch']}")
+    print(f"power: battery {pw.get('capacity')}% {pw.get('status')} {pw.get('energy_wh')} Wh, "
+          f"charger {'on' if pw.get('ac') else 'OFF'} (USB-C {pw.get('usb_online')}/{pw.get('usb_n')}), "
+          f"ASPM {(pw.get('aspm') or '?').split('[')[-1].split(']')[0]} | load {ln['load']} (peak {ln['peak_load']}) | "
+          f"mem free {ln['mem_avail_gb']} GiB | awake lock {'held' if ln['inhibitor'] else 'off'}")
+    if g.get("why"):
+        print(("PAUSED: " if g.get("pause") else "HELD: ") + "; ".join(g["why"]))
+    for a, b in ln.get("power_events") or []:
+        print(f"  power event {a}: {b}")
+    if st.get("released"):
+        r = st["released"]
+        print(f"cards released: {r.get('reason')}" + (f" (both free after {r.get('release_s')}s)" if r.get("done_t") else ""))
+    devs = {d["device"].split(" (")[0]: d for d in st["devices"]}
+    for b, s in ln["stations"].items():
+        d = devs.get(f"card {b[4:]}") if b.startswith("card") else devs.get(f"igpu {C.IGPU_BUS}") if b == "igpu" else None
+        extra = ""
+        if d:
+            extra = f"  [busy {d.get('busy')}%{' vram ' + d['vram_gb'] if d.get('vram_gb') else ''}, lock {d['lock'][:60]}]"
+        bt = s.get("batch") or {}
+        print(f"{b:7} run: {', '.join(s['running']) or 'idle':55} wait {s['waiting']}"
+              f"{' (oldest ' + str(int(s['oldest_wait_s'])) + 's)' if s['waiting'] else ''}"
+              f"{' batch ' + str(bt.get('kind')) + ' x' + str(bt.get('n')) if bt else ''}{extra}")
+        if d and d.get("editor"):
+            print(f"        editor {d['editor']}")
+    h = ln["done_last_hour"]
+    print(f"last hour: {h['done']} done of {h['n']} finished" + (f"; failed {h['failed']}" if h["failed"] else ""))
+    if ln.get("cost_by_kind"):
+        print("cost by kind: " + "; ".join(f"{k} n{v['n']} {v['s_mean']}s {v['wh_mean']:+} Wh"
+                                           for k, v in ln["cost_by_kind"].items()))
     return 0
+
+
+def start_line():
+    """Start the line (it resumes the work list on disk) without submitting anything."""
+    s = connect()
+    s.close()
+    return print_status()
 
 
 def hold_run(cmd):
