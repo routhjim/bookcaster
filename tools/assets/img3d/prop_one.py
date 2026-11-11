@@ -59,9 +59,17 @@ def main():
     if not pic.exists():
         raise SystemExit(f"no reference drawing {pic}")
     glb = WORK / f"{a.id}.glb"
+    spec0 = json.loads((find_asset(a.id) / "source" / "spec.json").read_text())
     t0 = time.time()
     if not glb.exists():
-        r = subprocess.run([sys.executable, str(HERE / "img3d.py"), str(pic), str(glb), "--res", str(a.res),
+        # resolution rule: the shape and texture flows cost about the square of the occupied cells at 1024 (the
+        # port never backs off below 1024, so its token budget does not help there): a fireplace filled 22k
+        # tokens against the dragon's 7k and took 3.3x as long. Large pieces (largest side >= LARGE_M, mostly
+        # furniture and architecture that read at medium and wide) run at 512; smaller ones keep 1024.
+        res = extra.get("res") or (512 if max(spec0["size_m"]) >= float(os.environ.get("IMG3D_LARGE_M", "1.2"))
+                                   else a.res)
+        log(f"{a.id}: res {res} (largest side {max(spec0['size_m'])} m)")
+        r = subprocess.run([sys.executable, str(HERE / "img3d.py"), str(pic), str(glb), "--res", str(res),
                             "--build", os.environ.get("IMG3D_BUILD", "rocm")])
         if r.returncode:
             raise SystemExit(r.returncode)
@@ -73,7 +81,7 @@ def main():
     new = dict(keep, id=f"{a.id}_tr", source="generated", keep_uvs=True, source_glb=str(glb),
                licence="internal: reference drawn by the local image model; shape and texture by TRELLIS.2 (MIT) "
                        "through trellis.cpp (MIT)",
-               size_tolerance=0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", 0),
+               size_tolerance=0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", "auto"),
                tags=list(keep.get("tags", [])) + ["img3d", "trellis2"], replaces=a.id)
     if extra.get("regions"):
         new["regions"] = extra["regions"]

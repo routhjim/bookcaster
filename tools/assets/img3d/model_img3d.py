@@ -38,7 +38,31 @@ ob = bpy.context.view_layer.objects.active
 ob.parent = None
 ob.matrix_world = ob.matrix_world.copy()
 bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-yaw = float(SPEC.get("yaw_deg", 0))
+yaw = SPEC.get("yaw_deg", 0)
+if yaw == "auto":
+    # the generator's front is not reliable for three-quarter drawings (a fireplace came out facing +X). The front
+    # axis: the one whose extent ratio matches the spec's width:depth; the front side of it: the less flat end
+    # (the back of furniture and architecture is a flat panel or a wall face)
+    import numpy as np
+    P = np.array([v.co[:] for v in ob.data.vertices])
+    lo_, hi_ = P.min(0), P.max(0)
+    ext = hi_ - lo_
+    sw, sd = SPEC["size_m"][0], SPEC["size_m"][1]
+    swap = (sw > sd * 1.15 and ext[0] < ext[1] * 0.87) or (sd > sw * 1.15 and ext[1] < ext[0] * 0.87)
+    ax = 0 if swap else 1
+
+    def flat(end):
+        lim = (hi_[ax] - 0.02 * ext[ax]) if end > 0 else (lo_[ax] + 0.02 * ext[ax])
+        return float(((P[:, ax] >= lim) if end > 0 else (P[:, ax] <= lim)).mean())
+    front_end = 1 if flat(1) < flat(-1) else -1
+    if abs(flat(1) - flat(-1)) < 0.004 and not swap:
+        front_end = -1                     # no clear back: keep the generator's front (-Y)
+    yaw = {(1, 1): -90, (1, -1): 90, (0, 1): 180, (0, -1): 0}[(1 if swap else 0, front_end)] if True else 0
+    if ax == 1:
+        yaw = 180 if front_end > 0 else 0
+    print(f"[img3d model] auto yaw: front axis {'X' if swap else 'Y'}, front end {front_end:+d}, flat "
+          f"+{flat(1):.3f} -{flat(-1):.3f} -> yaw {yaw}")
+yaw = float(yaw)
 ob.data.transform(Matrix.Rotation(math.radians(yaw), 4, "Z"))
 zs = [v.co.z for v in ob.data.vertices]
 h = max(zs) - min(zs)
