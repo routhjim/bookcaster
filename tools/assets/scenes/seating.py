@@ -164,7 +164,7 @@ def seated_variant(library: Path, base: str, seat: dict) -> str | None:
         if not p.exists():
             continue
         cj = json.loads(p.read_text())
-        if cj.get("seat_asset") == seat.get("asset"):
+        if (cj.get("seat_asset") or (cj.get("stance") or {}).get("seat_asset")) == seat.get("asset"):
             return d.name
         z = cj.get("seat_z_m")
         if z is None:

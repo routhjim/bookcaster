@@ -103,6 +103,15 @@ def resolve(spec, cams_wanted=None):
         pos = list(c["position"]) + ([0.0] if len(c["position"]) == 2 else [])
         f = c.get("facing", [0, -1])
         n = (f[0] ** 2 + f[1] ** 2) ** 0.5
+        bpose = c.get("body_pose")
+        if (cj.get("relaxed_arm_steps") and bpose and bpose.get("pose") in ("stand", "stand_relaxed")
+                and not (bpose.get("params") or {}).get("hand_at_lapel", bpose.get("pose") == "stand_relaxed")):
+            # the character's own arm clearance (its builder measured it against its clothes) in place of the default
+            pr = dict(bpose.get("params") or {})
+            pr.setdefault("arm_clear_deg", 0.0)
+            pr.setdefault("forearm_fwd_deg", 0.0)
+            pr["steps"] = list(cj["relaxed_arm_steps"]) + list(pr.get("steps") or [])
+            bpose = dict(bpose, params=pr)
         garments = list(cj.get("garments", []))
         if c.get("wear_from"):          # another wardrobe variant's extra garments (all after its first, the base
             wj = json.loads((lib / "character" / c["wear_from"] / "character.json").read_text())   # outfit) on top
@@ -115,7 +124,7 @@ def resolve(spec, cams_wanted=None):
                       "garment_material": cj.get("garment_material"),
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
-                      "body_pose": c.get("body_pose"), "face_pose": c.get("face_pose")}
+                      "body_pose": bpose, "face_pose": c.get("face_pose")}
         bp_deps = cj.get("bp_deps", [])
     set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
     proj = proj or set_proj
