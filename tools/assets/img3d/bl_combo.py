@@ -231,7 +231,15 @@ sh = {"l": J("upperarm_l"), "r": J("upperarm_r")}
 LM = {}
 for side, sg in (("l", 1), ("r", -1)):
     shx = sh[side].x
-    hand = skin & (sg * co[:, 0] > abs(shx) + 0.12) & (co[:, 2] < sh[side].z - 0.05)
+    side_pts = (sg * co[:, 0] > abs(shx) + 0.12) & (co[:, 2] < sh[side].z - 0.05)
+    # the hand is skin at the far end of the arm (a brown cloth passes the colour test too): within HAND_LEN of the
+    # farthest point of that side from the shoulder
+    dsh = np.linalg.norm(co - np.array(sh[side]), axis=1)
+    cand_ = skin & side_pts
+    far_ = np.quantile(dsh[cand_], 0.98) if cand_.sum() > 20 else 9.0
+    hand = cand_ & (dsh > far_ - float(JOB.get("hand_len_m", 0.22)))
+    REP.setdefault("hand_search", {})[side] = {"skin_side": int(cand_.sum()), "far_m": round(float(far_), 3),
+                                               "hand": int(hand.sum())}
     if hand.sum() < 20:
         raise RuntimeError(f"no hand found on side {side}")
     hp = co[hand]
@@ -316,6 +324,16 @@ gone = skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_
 # the body's upper neck, near the neck's axis
 lum_ = col @ np.array([0.3, 0.59, 0.11])
 gone |= (co[:, 2] > J("neck_02").z - 0.01) & (nr < 0.13) & (skin | (lum_ < float(JOB.get("hair_lum_max", 0.22))))
+if HEAD is not None and gone.any():
+    # only what lies on or inside the MetaHuman's own neck and head: a brown cloth, a dark collar or a tie near the
+    # neck passes the colour tests too
+    from mathutils.bvhtree import BVHTree as _BV  # noqa: E402
+    _hb = _BV.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+    _near = float(JOB.get("neck_skin_near_m", 0.035))
+    for i in np.nonzero(gone)[0]:
+        loc_, nrm_, _, d_ = _hb.find_nearest(Vector(co[i]), 0.5)
+        if loc_ is not None and d_ > _near and (Vector(co[i]) - loc_).dot(nrm_) > 0:
+            gone[i] = False
 if STATUE:
     gone[:] = False
 if not JOB.get("keep_figure_hands"):
