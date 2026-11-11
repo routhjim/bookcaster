@@ -56,11 +56,38 @@ def _current_world():
     return w.get_path_name() if w else ""
 
 
+def import_missing(assets):
+    """Library assets this project lacks (a set built outside the chain's project): import each from its exported
+    glTF with the chain's own importer, to the same /Game path the manifest names."""
+    done = {}
+    for a in assets:
+        if a["path"] in done or EAL.does_asset_exist(a["path"]):
+            continue
+        if not a.get("glb"):
+            raise RuntimeError(f"{a['id']}: {a['path']} is not in this project and the library has no glb for it")
+        cut = a["path"].find(f"/{a['id']}/")
+        dest = a["path"][:cut + len(a["id"]) + 1] if cut > 0 else a["path"].rsplit("/", 2)[0]
+        spec = importlib.util.spec_from_file_location("assets_ue_import",
+                                                      os.path.join(HERE, "..", "..", "ue", "ue_import.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        res = m.import_asset({"file": a["glb"], "dest": dest, "id": a["id"], "nanite": True})
+        if not res.get("ok") or not EAL.does_asset_exist(a["path"]):
+            raise RuntimeError(f"import of {a['id']} failed: {res.get('error') or res.get('static_mesh')}")
+        done[a["path"]] = res["time_s"]
+        log(f"imported {a['id']} into this project in {res['time_s']} s")
+    return done
+
+
 def run(job):
     t0 = time.time()
     r = {"ok": False, "id": job["id"], "shots": [], "times_s": {}}
     scene = json.load(open(job["scene"]))
     res = job.get("res", [1152, 640])
+    t = time.time()
+    r["imported"] = import_missing(scene.get("assets", []))
+    if r["imported"]:
+        r["times_s"]["import_assets"] = round(time.time() - t, 2)
     if job.get("build"):
         t = time.time()
         r["build"] = _mod("set_build").build(job["id"], job["level"], scene)

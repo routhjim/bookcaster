@@ -1,0 +1,193 @@
+"""Scene tool: scene spec (JSON) -> one scheduler UE job -> keyframe stills.
+
+    python tools/assets/scenes/scene.py SCENE.json                # resolve, submit, wait, write the stills
+    python tools/assets/scenes/scene.py SCENE.json --dry-run      # resolve and print the UE job only
+    python tools/assets/scenes/scene.py SCENE.json --cameras wide,close
+
+A scene puts library characters into a library set and photographs them. Everything is referenced by library id
+(<library>/set/<id>/asset.json, <library>/character/<id>/character.json), so a re-render picks up whatever the set
+builder and the character tools have made of those ids since. Sets, characters and props live in ONE UE project
+(the character's: MetaHuman characters need its plugins); the tool refuses a set built in another project and
+says how to rebuild it there. See README.md for the spec.
+
+Output (<out>/<scene id>/, default $ASSETS_UE_HOME/lab/scenes/out, SCENES_OUT overrides): <camera>.png per camera,
+job.json (the UE job), result.json (cameras, measured subjects, frame checks, head-attach checks, times),
+times.json, sheet.png (all stills, when Pillow is importable; pasting only).
+Stdlib only (Pillow optional for the sheet).
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE.parent / "sets"))
+import config as C  # noqa: E402
+import layout  # noqa: E402
+
+CHAR_TOOLS = Path(os.environ.get("SCENES_CHAR_TOOLS", str(HERE.parent / "characters")))
+SET_TOOLS = HERE.parent / "sets" / "ue"
+RT_KEYS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.HardwareRayTracing": "True",
+           "r.SkinCache.CompileShaders": "True"}
+
+
+def log(m):
+    print(f"[scene {time.strftime('%H:%M:%S')}] {m}", flush=True)
+
+
+def out_root():
+    return Path(os.path.expanduser(os.environ.get("SCENES_OUT", str(Path(C.UE_HOME) / "lab" / "scenes" / "out"))))
+
+
+def project_path(name_or_path):
+    p = Path(os.path.expanduser(str(name_or_path)))
+    if p.suffix == ".uproject":
+        return p
+    return Path(C.UE_HOME) / "proj" / str(name_or_path) / f"{name_or_path}.uproject"
+
+
+def ensure_raytracing(project):
+    """Hardware ray tracing in the scene project (like the asset chain's own project). Takes effect at the next
+    editor start (the first start after a change compiles ray-tracing shaders). Returns the keys it wrote."""
+    ini = project.parent / "Config" / "DefaultEngine.ini"
+    text = ini.read_text()
+    have = {ln.split("=", 1)[0].strip() for ln in text.splitlines() if "=" in ln}
+    missing = {k: v for k, v in RT_KEYS.items() if k not in have}
+    if not missing or os.environ.get("SCENES_UE_RAYTRACING", "1") == "0":
+        return {}
+    sec = "[/Script/Engine.RendererSettings]"
+    add = "".join(f"{k}={v}\n" for k, v in missing.items())
+    text = text.replace(sec + "\n", sec + "\n" + add, 1) if sec in text else text + f"\n{sec}\n{add}"
+    ini.write_text(text)
+    return missing
+
+
+def resolve(spec, cams_wanted=None):
+    lib = Path(C.LIBRARY)
+    sp = lib / "set" / spec["set"] / "asset.json"
+    if not sp.exists():
+        raise SystemExit(f"set {spec['set']!r} is not in the library ({sp})")
+    st = json.loads(sp.read_text())
+    proj = None
+    chars = {}
+    for key, c in spec["characters"].items():
+        cp = lib / "character" / c["id"] / "character.json"
+        if not cp.exists():
+            raise SystemExit(f"character {c['id']!r} has no {cp}")
+        cj = json.loads(cp.read_text())
+        p = project_path(cj["project"]).resolve()
+        if proj and p != proj:
+            raise SystemExit(f"characters live in different UE projects ({proj} vs {p})")
+        proj = p
+        pos = list(c["position"]) + ([0.0] if len(c["position"]) == 2 else [])
+        f = c.get("facing", [0, -1])
+        n = (f[0] ** 2 + f[1] ** 2) ** 0.5
+        chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": cj.get("garments", []),
+                      "body_swap": cj.get("body_swap"), "rebuild_from": cj.get("rebuild_from"),
+                      "garment_material": cj.get("garment_material"),
+                      "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
+                      "facing": [f[0] / n, f[1] / n], "position": pos,
+                      "body_pose": c.get("body_pose"), "face_pose": c.get("face_pose")}
+        bp_deps = cj.get("bp_deps", [])
+    set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
+    if set_proj != proj:
+        raise SystemExit(f"set {spec['set']} was built in {set_proj}, the characters live in {proj}: rebuild it there "
+                         f"(SETS_UE_PROJECT={proj} SETS_OUT={lib / 'set'} python tools/assets/sets/build_set.py "
+                         f"<set spec>)")
+    S = layout.Scene()
+    layout.light_items(S, spec.get("lights", []))
+    cams = [c for c in spec["cameras"] if not cams_wanted or c["name"] in cams_wanted]
+    return proj, {"id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
+                  "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
+                  "characters": chars, "cameras": cams, "lights": S.lights,
+                  "exposure_ev100": spec.get("exposure_ev100"), "warm_frames": spec.get("warm_frames", 150),
+                  "settle_frames": spec.get("settle_frames", 60), "attach_tol_cm": spec.get("attach_tol_cm", 0.1)}
+
+
+def contact_sheet(shots, out):
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    ims = [(Image.open(s["path"]).convert("RGB"), s["name"]) for s in shots if os.path.exists(s["path"])]
+    if not ims:
+        return None
+    tw, th = 576, 320
+    cols = 2 if len(ims) > 1 else 1
+    rows = (len(ims) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * tw + (cols - 1) * 6, rows * (th + 22)), (20, 20, 20))
+    d = ImageDraw.Draw(sheet)
+    for i, (im, name) in enumerate(ims):
+        x, y = (i % cols) * (tw + 6), (i // cols) * (th + 22)
+        sheet.paste(im.resize((tw, th), Image.LANCZOS), (x, y + 22))
+        d.text((x + 4, y + 5), name, fill=(235, 235, 230))
+    sheet.save(out)
+    return str(out)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("spec")
+    ap.add_argument("--cameras", default="")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--timeout", type=float, default=1800)
+    a = ap.parse_args()
+    t_all = time.time()
+    spec = json.loads(Path(a.spec).read_text())
+    proj, job = resolve(spec, [c for c in a.cameras.split(",") if c] or None)
+    odir = out_root() / spec["id"]
+    (odir / "sched").mkdir(parents=True, exist_ok=True)
+    job["out"] = str(odir)
+    job["result"] = str(odir / "result.json")
+    wrote = ensure_raytracing(proj)
+    if wrote:
+        log(f"wrote ray-tracing settings into {proj.parent / 'Config' / 'DefaultEngine.ini'}: {wrote} "
+            f"(the next editor start compiles shaders)")
+    outs = [str(odir / f"{c['name']}.png") for c in job["cameras"]] + [job["result"]]
+    sj = {"project": str(proj), "script": str(HERE / "ue" / "scene_job.py"), "job": job, "outputs": outs,
+          "timeout_s": a.timeout, "id": f"scene_{spec['id']}", "log_dir": str(odir / "sched")}
+    jp = odir / "job.json"
+    jp.write_text(json.dumps(sj, indent=1))
+    if a.dry_run:
+        print(json.dumps(sj, indent=1))
+        return 0
+    for o in outs:
+        Path(o).unlink(missing_ok=True)
+    t0 = time.time()
+    p = subprocess.run([sys.executable, str(HERE.parent / "run_asset.py"), "--ue-job", str(jp)],
+                       capture_output=True, text=True)
+    wall = round(time.time() - t0, 1)
+    (odir / "sched" / "client.log").write_text(p.stdout + "\n--- stderr\n" + p.stderr)
+    res = json.loads(Path(job["result"]).read_text()) if Path(job["result"]).exists() else {}
+    sched = {}
+    sjp = odir / "sched" / "logs" / "sched.json"
+    if sjp.exists():
+        st = json.loads(sjp.read_text())
+        sched = {"queue_wait_s": round(sum(s.get("wait_s") or 0 for s in st.get("stages", [])), 1),
+                 "editor_run_s": round(sum(s.get("run_s") or 0 for s in st.get("stages", [])), 1)}
+    times = {"client_wall_s": wall, **sched, "editor": res.get("times_s"),
+             "stills": {s["name"]: s.get("still_s") for s in res.get("shots", [])},
+             "total_s": round(time.time() - t_all, 1)}
+    (odir / "times.json").write_text(json.dumps(times, indent=1))
+    sheet = contact_sheet(res.get("shots", []), odir / "sheet.png") if res.get("shots") else None
+    log(f"{spec['id']}: rc={p.returncode} ok={res.get('ok')} wall {wall} s; {json.dumps(times.get('editor'))}")
+    for s in res.get("shots", []):
+        fc = s.get("frame_check") or {}
+        bad = [k for k, v in s.get("attach", {}).items() if not v.get("ok")]
+        log(f"  {s['name']}: {s['path']}  problems={fc.get('problems')}  head-detached={bad or 'no'}"
+            + (f"  REJECT: {s['reject']}" if s.get("reject") else ""))
+    if sheet:
+        log(f"  sheet {sheet}")
+    if p.returncode or not res.get("ok"):
+        log(f"error: {res.get('error') or p.stderr[-1500:] or p.stdout[-1500:]}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

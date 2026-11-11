@@ -79,6 +79,40 @@ def light_common(comp, kelvin, shadows=True):
     comp.set_editor_property("cast_shadows", bool(shadows))
 
 
+def spawn_light(l):
+    """One point / spot / rect light of an expanded scene (layout.light_items) -> its actor."""
+    typ = l["type"]
+    loc = V(l["c"])
+    rot = ML.make_rot_from_x(V(l["dir"])) if "dir" in l else unreal.Rotator(0, 0, 0)
+    if typ == "rect":
+        a = act.spawn_actor_from_class(unreal.RectLight, loc, rot)
+        c = a.get_component_by_class(unreal.RectLightComponent)
+        c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
+        c.set_editor_property("source_width", float(l["w_cm"]))
+        c.set_editor_property("source_height", float(l["h_cm"]))
+        c.set_editor_property("barn_door_angle", float(l.get("barn_door_deg", 88)))
+    elif typ == "spot":
+        a = act.spawn_actor_from_class(unreal.SpotLight, loc, rot)
+        c = a.get_component_by_class(unreal.SpotLightComponent)
+        c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
+        c.set_editor_property("outer_cone_angle", float(l.get("cone_deg", 40)))
+    else:
+        a = act.spawn_actor_from_class(unreal.PointLight, loc, rot)
+        c = a.get_component_by_class(unreal.PointLightComponent)
+        c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
+        c.set_editor_property("source_radius", float(l.get("source_radius_m", 0.05)) * 100)
+    light_common(c, l.get("kelvin", 5000), l.get("shadows", True))
+    c.set_editor_property("intensity", float(l["lumens"]))
+    c.set_editor_property("attenuation_radius", float(l.get("radius_m", 30)) * 100)
+    if "color" in l:
+        c.set_editor_property("use_temperature", False)
+        rgb = [int(l["color"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+        # keyword arguments: unreal.Color's positional order is B, G, R, A (blue lights came out red)
+        c.set_editor_property("light_color", unreal.Color(r=rgb[0], g=rgb[1], b=rgb[2], a=255))
+    a.set_folder_path(l["f"])
+    return a
+
+
 def build(set_id, level, scene):
     t = {}
     t0 = time.time()
@@ -115,35 +149,7 @@ def build(set_id, level, scene):
     t["assets"] = round(time.time() - t1, 2)
     t1 = time.time()
     for l in scene["lights"]:
-        typ = l["type"]
-        loc = V(l["c"])
-        rot = ML.make_rot_from_x(V(l["dir"])) if "dir" in l else unreal.Rotator(0, 0, 0)
-        if typ == "rect":
-            a = act.spawn_actor_from_class(unreal.RectLight, loc, rot)
-            c = a.get_component_by_class(unreal.RectLightComponent)
-            c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
-            c.set_editor_property("source_width", float(l["w_cm"]))
-            c.set_editor_property("source_height", float(l["h_cm"]))
-            c.set_editor_property("barn_door_angle", float(l.get("barn_door_deg", 88)))
-        elif typ == "spot":
-            a = act.spawn_actor_from_class(unreal.SpotLight, loc, rot)
-            c = a.get_component_by_class(unreal.SpotLightComponent)
-            c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
-            c.set_editor_property("outer_cone_angle", float(l.get("cone_deg", 40)))
-        else:
-            a = act.spawn_actor_from_class(unreal.PointLight, loc, rot)
-            c = a.get_component_by_class(unreal.PointLightComponent)
-            c.set_editor_property("intensity_units", unreal.LightUnits.LUMENS)
-            c.set_editor_property("source_radius", float(l.get("source_radius_m", 0.05)) * 100)
-        light_common(c, l.get("kelvin", 5000), l.get("shadows", True))
-        c.set_editor_property("intensity", float(l["lumens"]))
-        c.set_editor_property("attenuation_radius", float(l.get("radius_m", 30)) * 100)
-        if "color" in l:
-            c.set_editor_property("use_temperature", False)
-            rgb = [int(l["color"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
-            # keyword arguments: unreal.Color's positional order is B, G, R, A (blue lights came out red)
-            c.set_editor_property("light_color", unreal.Color(r=rgb[0], g=rgb[1], b=rgb[2], a=255))
-        a.set_folder_path(l["f"])
+        spawn_light(l)
     t["lights"] = round(time.time() - t1, 2)
     env = scene["env"]
     sun = env.get("sun")

@@ -27,6 +27,11 @@ a rebuild empties and refills it, so the map always equals the spec.
 | `ue/set_materials.py` | UE editor | three master materials, made once per project; no per-set material assets |
 | `specs/*.json` | | the two proof sets |
 
+**Another project.** `SETS_UE_PROJECT` builds the set into another project (the scene tool's: the characters'
+project, see `../scenes/README.md`); with `SETS_OUT=<library>/set` it is still a library entry, and its
+`asset.json` records the project. Library assets the project lacks are imported by the set job from their
+exported glTF (the chain's own importer, same `/Game` path as the manifest), ~0.8 s each.
+
 Output: `<out>/<id>/asset.json` (manifest entry, class `set`), `spec.json`, `scene.json`, `ue/<id>_<camera>.png`,
 `logs/` (`times.json`, `ue_result.json`). `<out>` is `<library>/set` when the project is the chain's, else
 `$ASSETS_UE_HOME/lab/sets` (`SETS_OUT` overrides). Library index: `<library>/manifest.json` gets a `set` entry.
@@ -97,12 +102,15 @@ Big boxes are split into tiles of at most 8 m so Lumen's surface cache keeps its
 ### Materials
 
 `{"preset": name, ...overrides}`. Presets: `worn_concrete`, `painted_steel`, `bare_steel`, `galvanized_steel`,
-`stainless_steel`, `epoxy_floor`, `white_panel`, `paint_line`, `rubber`, `plastic` (opaque, procedural),
+`stainless_steel`, `epoxy_floor`, `white_panel`, `paint_line`, `rubber`, `plastic`, and for domestic interiors
+`painted_plaster`, `painted_wood`, `wood_floor` (boards from the joint grid), `dark_wood`, `fabric`, `brass`
+(opaque, procedural),
 `glass`, `frosted_glass` (see-through), `emissive` (lamp faces). Overrides: `color`, `color2`, `variation`,
 `roughness: [a, b]`, `metallic`, `grime` (0..1), `grime_color`, `streaks` (vertical grime), `panel_m: [x, y, z]`
 (joint grid; 0 = none), `joint_m`, `joint_darken`, `feature_m` (patch size); glass `tint`, `opacity`,
 `roughness`; emissive `color`, `nits`. Every material is world-aligned (no UVs): colour patches, mottle, grime,
-roughness patches and joint lines are the same size on a 60 m wall and on a 10 cm bar.
+roughness patches and joint lines are the same size on a 60 m wall and on a 10 cm bar. Joint lines sit half a
+panel off the set origin (master version 7), so an axis without joints never draws a line through x = 0 / y = 0.
 
 **No shader compiles per set.** Every parameter of the three masters reads Custom Primitive Data, written into
 each mesh component (35 floats for the surface master, saved in the level). A set's materials are therefore not

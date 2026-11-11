@@ -600,7 +600,8 @@ def asset_items(S, spec, assets, key):
     for o in out:
         a = assets[o["asset"]]
         S.assets.append({"id": o["asset"], "name": o["name"], "path": a["ue_path"], "c": ue_pt(o["position"]),
-                         "yaw": round(yaw_from_facing(o["facing"]), 3), "f": f"{key.capitalize()}"})
+                         "yaw": round(yaw_from_facing(o["facing"]), 3), "f": f"{key.capitalize()}",
+                         **({"glb": a["glb"]} if a.get("glb") else {})})
     return out
 
 

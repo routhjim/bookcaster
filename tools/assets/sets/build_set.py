@@ -75,6 +75,9 @@ def library_assets():
         ue = ent.get("ue") or {}
         if ue.get("bounds_cm") and a.get("ue_path"):
             out[aid] = {"ue_path": a["ue_path"].split(".")[0], "bounds_cm": ue["bounds_cm"], "class": a["class"]}
+            glb = (ent.get("export") or {}).get("glb")
+            if glb and (p.parent / glb).exists():
+                out[aid]["glb"] = str(p.parent / glb)     # imported on demand into a project that lacks it
     return out
 
 

@@ -16,7 +16,7 @@ EAL = unreal.EditorAssetLibrary
 MEL = unreal.MaterialEditingLibrary
 AT = unreal.AssetToolsHelpers.get_asset_tools()
 SHARED = "/Game/Sets/_Shared"
-MASTER_VERSION = 6
+MASTER_VERSION = 7
 
 # Every parameter reads Custom Primitive Data (per mesh component, saved in the level), so one master serves all
 # sets and a new look never compiles a shader. Indices (floats): vectors take 4 slots (RGBA).
@@ -156,8 +156,12 @@ def master_surface():
     # joints: per axis, distance to the nearest grid line, weighted by how much the face runs along that axis
     psize = _vector(m, "PanelSizeM", (1000.0, 1000.0, 1000.0), -2200, 1300)
     pd = _bin(m, unreal.MaterialExpressionDivide, pm, psize, -1850, 1350)
+    # joints sit half a panel off the origin: an axis without joints (panel 1000 m) then never draws its one
+    # line, which otherwise ran through the set's origin (x = 0, y = 0) on every surface
+    halfc = _expr(m, unreal.MaterialExpressionConstant, -1850, 1450, r=0.5)
+    pdh = _bin(m, unreal.MaterialExpressionAdd, pd, halfc, -1775, 1350)
     fr = _expr(m, unreal.MaterialExpressionFrac, -1700, 1350)
-    _link(pd, fr, "")
+    _link(pdh, fr, "")
     fr1 = _bin(m, unreal.MaterialExpressionSubtract, one, fr, -1550, 1450)
     fmin = _bin(m, unreal.MaterialExpressionMin, fr, fr1, -1400, 1350)
     dist = _bin(m, unreal.MaterialExpressionMultiply, fmin, psize, -1250, 1350)      # metres to the joint
