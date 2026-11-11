@@ -50,6 +50,15 @@ divides the guide's shading out, projects the paintings back per texel and write
 map set; see the docstring in `paint.py` and "Painted maps" in CONTRACT.md. Spec block `paint` (prompt, views,
 close-up region, strength, projection parameters) and `texture_set`.
 
+Measured 11-10 (iGPU drawer, the cards were busy): anvil 18 views (8 ring, 4 upper, top, 4 + top close) ~50 s a
+view + ~50 s model load, projection 50-70 s; winged creature 21 views ~47 s a view, projection 125-170 s at 4096.
+On an XTX a view takes ~9-19 s. Results: the anvil's striking face and edges hold at the UE close shot (forged,
+scratched, worn); a ghost edge 1-2 cm off a real edge and a hole painted as a stud show where the painter slid
+off the shape. The creature reads as one coherent scaled hide from wide to ~2 m frames, but the painter leaves
+plain-coloured parts (limbs, tail) plain and redraws the head's horns in other places, so detail on the head
+averages into lumps; macro frames do not hold. While the asset scheduler runs, paint.py stays off the cards
+(the scheduler would read its card use as an outside release) and uses the iGPU.
+
 Previews and sheets are not denoised (Blender ran OIDN on the CPU here: 0.4-4.4 s per tile, a 12 spp preview took
 12-15 s and 30 s of CPU); they path-trace more samples on the card instead (preview 32 spp: 3.8 s wall, sheet
 1.7 s; `--denoise` restores 12 spp + OIDN).
