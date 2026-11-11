@@ -582,6 +582,24 @@ for side in (() if STATUE else ("l", "r")):
             continue
         f = (1 - dd[i] / 0.22) * 0.5
         fco2[i] = fco2[i] + (np.array(loc) - fco2[i]) * f * (dist - SH_GAP) / dist
+# the collar: the drawn coat's collar stands off a thinner neck and shows as a raised tab from behind; pull what
+# stands more than COL_GAP off the body or head back to it, fading out 13 cm from the neck's axis
+COL_GAP = float(JOB.get("collar_gap_m", 0.012))
+if not STATUE and bvhs:
+    ncx = np.array(J("neck_01"))[:2]
+    rr = np.linalg.norm(fco2[:, :2] - ncx, axis=1)
+    zone = np.nonzero((rr < 0.13) & (fco2[:, 2] > J("clavicle_l").z - 0.02))[0]
+    for i in zone:
+        q = Vector(fco2[i])
+        best = None
+        for bvh in bvhs:
+            loc, nrm, _, dist = bvh.find_nearest(q, 0.15)
+            if loc is not None and (best is None or dist < best[1]):
+                best = (loc, dist)
+        if best is None or best[1] <= COL_GAP:
+            continue
+        f = 0.8 * (1 - rr[i] / 0.13)
+        fco2[i] = fco2[i] + (np.array(best[0]) - fco2[i]) * f * (best[1] - COL_GAP) / best[1]
 disp = fco2 - fco
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
