@@ -206,6 +206,16 @@ class Job:
 
     def step(self):
         j, ph = self.j, self.phase
+        if ph == "start" and j.get("map") and not self.r.get("level_checked"):
+            # a set or scene job (--ue-job) may have left its own level open in the shared editor: asset stills
+            # are taken on the stage level only (seen 11-11: props shot inside another job's room)
+            self.r["level_checked"] = True
+            w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+            if w is None or not w.get_path_name().startswith(j["map"]):
+                log(f"{j['id']}: the open level is {w.get_path_name() if w else None}; loading {j['map']}")
+                les.load_level(j["map"])
+                self.r["stage_reloaded"] = True
+                return False
         if ph == "start":
             self.setup()
             self.r["setup_s"] = round(time.time() - self.t0, 2)
