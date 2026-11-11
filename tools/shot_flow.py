@@ -5375,6 +5375,18 @@ def _plan_reach() -> set:
 
 def _render(book, stem, es, by, shots, mix, op, fz, log, pauses=None) -> Path:
     """LTX (pipelined) -> takes judged -> the takes sheet -> assembled; the saved plan goes with the finished cut."""
+    _clips(book, stem, es, shots, log, op)
+    # 10-24: judge_talk no longer re-renders - it failed all 7 forge lines and the user judged every one good
+    log(f"takes sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_takes.jpg'), takes=True)}")
+    _step(book, "assembling the cut")
+    out = assemble(book, stem, es, by, video_mix(book, stem, mix, pauses or [], log), op, log, pauses)
+    fz.unlink(missing_ok=True)
+    return out
+
+
+def _clips(book, stem, es, shots, log, op: Path | None = None) -> None:
+    """The shots' clips: LTX (pipelined) -> takes judged -> one retake round. op None: every key is given (the quiet
+    keys are not drawn beside the main hold)."""
     sys.path.insert(0, str(HERE.parent))
     from tts_reader import animate
     # the iGPU's language model holds ~90 GB the LTX memory floor needs (10-25: a resume found it restarted by the
@@ -5385,7 +5397,7 @@ def _render(book, stem, es, by, shots, mix, op, fz, log, pauses=None) -> Path:
         time.sleep(5)
         animate._flush()
     _step(book, f"LTX video ({len(shots)} shots)")
-    qs = quiet_later(shots)
+    qs = quiet_later(shots) if op is not None else []
     ltx(book, stem, es, shots, log, quiet_keys=_QuietKeys(book, stem, qs, log) if qs else None)
     if qs:
         log(f"key sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_keys.jpg'))}")
@@ -5393,9 +5405,51 @@ def _render(book, stem, es, by, shots, mix, op, fz, log, pauses=None) -> Path:
     if again:
         ltx(book, stem, es, [s for s in shots if s["id"] in again], log, retake=again)
         judge_takes(book, stem, shots, log)
-    # 10-24: judge_talk no longer re-renders - it failed all 7 forge lines and the user judged every one good
-    log(f"takes sheet: {sheet(book, stem, shots, op.with_name(op.stem + '_takes.jpg'), takes=True)}")
-    _step(book, "assembling the cut")
-    out = assemble(book, stem, es, by, video_mix(book, stem, mix, pauses or [], log), op, log, pauses)
-    fz.unlink(missing_ok=True)
-    return out
+
+
+def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
+                  review: str = "agent") -> list:
+    """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
+    by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
+    as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
+    size. Each key becomes its shot's key.png, newer than any clip of it, so the flow's own redo takes it: a clip
+    from an older key is made again, a chain starts again from its line 1. Then the render as run() does it (same
+    jobs, prompts, voice cuts, flags, judges and review cards); no assembly. -> the shots' clips."""
+    global REVIEW
+    from PIL import Image
+    if review not in ("off", "agent", "user"):
+        raise ValueError(f"review {review!r}: off, agent or user")
+    REVIEW = review
+    by = json.loads(Path(plan).read_text())
+    es = by.pop("_es")
+    for k in [k for k in by if k.startswith("_")]:
+        by.pop(k)
+    shots = [s for e in es for s in by.get(e["id"], []) if s["id"] in set(ids)]
+    if missing := sorted(set(ids) - {s["id"] for s in shots}):
+        raise RuntimeError(f"not in the plan: {missing}")
+    sd = shot_dir(book, stem)
+    for s in shots:
+        src = Path(keys) / f"{s['id']}.png"
+        with Image.open(src) as im:
+            if im.size != (W, H):
+                raise RuntimeError(f"{src}: {im.size[0]}x{im.size[1]}, the clips are {W}x{H}")
+        d = sd / s["id"].rsplit("_s", 1)[0] / s["id"]
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, d / "key.png")             # (a fresh mtime: newer than every clip of the shot)
+        log(f"{s['id']}: key from {src}")
+    _clips(book, stem, es, shots, log)
+    return [sd / "ltx" / "out" / f"{s['id']}.mp4" for s in shots]
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="clips for chosen shots of a planned stretch from supplied keys")
+    ap.add_argument("book", type=Path)
+    ap.add_argument("stem")
+    ap.add_argument("--plan", type=Path, required=True, help="a saved plan (plan_*.json)")
+    ap.add_argument("--keys", type=Path, required=True, help="a folder of <shot id>.png")
+    ap.add_argument("--shots", required=True, help="shot ids, comma-separated")
+    ap.add_argument("--review", choices=["off", "agent", "user"], default="agent")
+    a = ap.parse_args()
+    for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review):
+        print("clip:", c, "" if c.exists() else "(not made)")
