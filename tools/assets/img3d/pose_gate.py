@@ -17,9 +17,10 @@ import numpy as np
 from PIL import Image
 
 
-def runs(row):
+def runs(row, min_len=8):
+    """runs of figure pixels in a row, specks (paper texture, stray shading) under min_len dropped"""
     d = np.diff(np.r_[0, row.astype(np.int8), 0])
-    return list(zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]))
+    return [(a, b) for a, b in zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]) if b - a >= min_len]
 
 
 def gate(path, key, min_angle, min_armpit):
@@ -46,18 +47,21 @@ def gate(path, key, min_angle, min_armpit):
                 continue
             outer = max(rs, key=lambda ab: sgn * (ab[0] + ab[1]))
             gap = (outer[0] - inner[0][1]) if sgn > 0 else (inner[0][0] - outer[1])
-            gaps[r] = gap > 2
+            far = abs((outer[0] + outer[1]) / 2 - cx) > 0.10 * H     # an arm, not the other leg or a coat tail
+            gaps[r] = gap > 2 and far
             if gaps[r]:
                 arm_pts[r] = (outer[0] + outer[1]) / 2
         # the armpit: walk up from the lowest row with air beside the arm while the air holds
+        # the armpit: the highest row from which air separates the arm from the body for most of the next 0.1 H
         rows_g = sorted(r for r, g in gaps.items() if g)
         armpit = None
-        if rows_g:
-            r = rows_g[-1]
-            while gaps.get(r - 1):
-                r -= 1
-            armpit = r
-            arm_pts = [(rr, c) for rr, c in arm_pts.items() if rr >= armpit]
+        win = max(5, int(0.1 * H))
+        for r in rows_g:
+            if sum(1 for rr in range(r, r + win) if gaps.get(rr)) >= 0.8 * win:
+                armpit = r
+                break
+        if armpit is not None:
+            arm_pts = [(rr, c) for rr, c in arm_pts.items() if armpit <= rr < armpit + 2 * win]
         if armpit is None or len(arm_pts) < 5:
             out[side] = {"armpit": None, "angle_deg": None, "pass": False}
             ok = False
