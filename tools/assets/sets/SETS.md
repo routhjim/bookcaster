@@ -77,6 +77,10 @@ Output: `<out>/<id>/asset.json` (manifest entry, class `set`), `spec.json`, `sce
 "z_m": 0}}` (evenly spaced, both ends included). `z` is the height of the asset's base (0 = on the floor).
 A prop standing on another placed item: `"on": "<that item's name>", "on_z_m": <its surface height>` (the plan
 checks that it lies fully on the host and ignores their overlap).
+A picture or anything else hung on a wall: `"hang": true` with `[x, y, z]` (the plan checks that its back touches
+a wall's inner face or a side of a structure `box`, such as a chimney breast, instead of something under it). A
+backdrop seen through a window: `"outside": true` (the plan checks that it stays clear of the room and skips the
+overlap and floating checks for it).
 
 ### Structure kinds
 

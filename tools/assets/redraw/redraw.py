@@ -7,6 +7,11 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "method": "edit" | "image",
       "sheet": "/abs/character sheet.png",    identity picture (both models)
       "lora": "/abs/char.safetensors", "trigger": "chr_x", "lora_w": {"1": 0.8, "2": 0.63},   (method image)
+      "cast": {"<scene key>": {"noun": "man"|"woman", "trigger", "lora", "lora_w", "sheet", "wear", "wear_back",
+               "back_detail"}},           (several different people: each their own words, their LoRA on their own
+                                              region of the frame (box + lora_pad) and their sheet as a reference;
+                                              replaces sheet/lora/trigger/wear/wear_back)
+      "look": "...",                          (the closing words on the picture's look; default: real skin, film grain)
       "wear": "what the character wears",     (words; the scene tool does not know clothes yet)
       "wear_back": "what shows from behind",  (method image: said instead of "wear" for a person turned away)
       "set_words": "what the room holds",     (the set's library description)
@@ -44,19 +49,19 @@ SHOT = {
 }
 
 
-def facing_words(deg: float) -> str:
+def facing_words(deg: float, pos: str = "his") -> str:
     """How a person is turned relative to the camera, from the scene's measured angle (0 = facing the camera)."""
     if deg < 25:
-        return "faces the camera; his face is seen from the front"
+        return f"faces the camera; {pos} face is seen from the front"
     if deg < 60:
-        return "is turned a little to one side, a three-quarter view; his face is visible"
+        return f"is turned a little to one side, a three-quarter view; {pos} face is visible"
     if deg < 115:
         return "is seen in profile, side-on to the camera"
     if deg < 150:
-        return ("is turned away from the camera, seen three-quarters from behind: we see the back and side of his "
-                "head, his ear and the edge of his cheek, and the back of his coat; his face is not visible")
-    return ("is seen from directly behind, facing away from the camera: we see the back of his head, his hair and "
-            "the back of his coat and shoulders; his face is not visible")
+        return (f"is turned away from the camera, seen three-quarters from behind: we see the back and side of {pos} "
+                f"head, {pos} ear and the edge of {pos} cheek, and the back of {pos} clothes; {pos} face is not visible")
+    return (f"is seen from directly behind, facing away from the camera: we see the back of {pos} head, {pos} hair and "
+            f"the back of {pos} clothes and shoulders; {pos} face is not visible")
 
 
 def place_words(box) -> str:
@@ -84,33 +89,73 @@ def kind_of(cam: str, shot: dict) -> str:
     return "wide" if shot.get("kind") in ("wide", "full") else shot.get("kind", "medium")
 
 
-def body_words(deg: float, near: str | None, who: str = "His") -> str:
+def body_words(deg: float, near: str | None, who: str = "His", pos: str = "his", back: str = "") -> str:
     """The body's own orientation, apart from the head (the scene's hips-to-camera angle and nearer shoulder): a
     redraw kept a turned-away head but swung the body to profile or front when only the head was described
-    (11-11, three-quarter-away shots)."""
-    sh = f", his {near} shoulder nearer the camera" if near else ""
+    (11-11, three-quarter-away shots). `back`: what of the clothes faces the camera from behind (the cast's words)."""
+    sh = f", {pos} {near} shoulder nearer the camera" if near else ""
     if deg < 60:
         return f"{who} body faces the camera."
     if deg <= 100:
         return f"{who} body is side-on to the camera{sh}."
-    return (f"{who} body is turned away from the camera: we see his back{sh}; his chest and the front of his coat are "
-            f"not visible, and the back of his coat, with its centre seam and the vent between the tails, faces the "
-            f"camera.")
+    return (f"{who} body is turned away from the camera: we see {pos} back{sh}; the front of {pos} clothes is not "
+            f"visible" + (f", and {back} faces the camera." if back else "."))
 
 
-def people_words(ppl: list, with_body: bool = False) -> str:
+NUM = {2: "Two", 3: "Three", 4: "Four"}
+DEFAULT_WHO = {"noun": "man", "pos": "his", "subj": "he"}
+
+
+def who_of(cast: dict, key: str) -> dict:
+    """A person's words from the run's cast (noun, pronouns, trigger, clothes); a run without a cast is one man."""
+    w = dict(DEFAULT_WHO)
+    w.update(cast.get(key) or cast.get("*") or {})
+    if w["noun"] in ("woman", "girl", "lady"):
+        w.setdefault("pos", "her")
+        w.setdefault("subj", "she")
+        w["pos"], w["subj"] = ("her", "she") if w.get("pos") == "his" else (w["pos"], w["subj"])
+    return w
+
+
+def names(ppl: list, cast: dict) -> dict:
+    """What each person in frame is called in the words: 'the man' when the noun is unique in frame, else with
+    their place ('the man on the left')."""
+    nouns = [who_of(cast, p[0])["noun"] for p in ppl]
+    out = {}
+    for p, n in zip(ppl, nouns):
+        out[p[0]] = f"the {n}" if nouns.count(n) == 1 else f"the {n} {place_words(p[1]).split(',')[0]}"
+    return out
+
+
+def people_words(ppl: list, with_body: bool = False, cast: dict | None = None) -> str:
     if not ppl:
         return ""
+    cast = cast or {}
     n = len(ppl)
-    head = "One man is in the picture." if n == 1 else f"{n} men are in the picture, dressed alike."
+    nm = names(ppl, cast)
+    ws = [who_of(cast, p[0]) for p in ppl]
+    same = len({(w["noun"], w.get("trigger")) for w in ws}) == 1
+    if n == 1:
+        head = f"One {ws[0]['noun']}, {{T0}}, is in the picture."
+    elif same:
+        head = f"{NUM.get(n, n)} {ws[0]['noun']}{'e' if ws[0]['noun'].endswith('s') else ''}s, each {{T0}}, are in the picture, dressed alike."
+        head = head.replace("mans", "men").replace("womans", "women")
+    else:
+        head = (f"{NUM.get(n, n)} different people are in the picture: "
+                + " and ".join(f"{nm[p[0]]} ({{T{i}}})" for i, p in enumerate(ppl)) + ".")
     parts = [head]
-    for k, box, ang, post, bdeg, near in ppl:
-        who = "The man" if n == 1 else f"The man {place_words(box).split(',')[0]}"
-        parts.append(f"{who} is {post} {place_words(box)} and {facing_words(ang)}." if n == 1 else
-                     f"{who} is {post} and {facing_words(ang)}.")
+    for i, (k, box, ang, post, bdeg, near) in enumerate(ppl):
+        w = ws[i]
+        who = nm[k][0].upper() + nm[k][1:]
+        placed = nm[k] != f"the {w['noun']}"           # the name already says where they are
+        parts.append(f"{who} is {post} and {facing_words(ang, w['pos'])}." if placed else
+                     f"{who} is {post} {place_words(box)} and {facing_words(ang, w['pos'])}.")
         if with_body:
-            parts.append(body_words(bdeg, near))
-    return " ".join(parts)
+            parts.append(body_words(bdeg, near, w["pos"].capitalize(), w["pos"], w.get("back_detail", "")))
+    out = " ".join(parts)
+    for i, w in enumerate(ws):
+        out = out.replace(f"{{T{i}}}", w.get("trigger") or w["noun"])
+    return out
 
 
 def any_away(ppl: list) -> bool:
@@ -172,27 +217,37 @@ def room_words(kind: str, room: str, room_all: bool = False) -> str:
             "focus as it is there; do not widen the view, do not show more of the room, add nothing to the walls.")
 
 
-def wear_words(ppl: list, wear: str, wear_back: str | None) -> str:
-    """Clothes for the people who show their front; a person turned away (>= 115 deg) is given only what shows
+def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = None) -> str:
+    """Clothes for the people who show their front; a person turned away (> 100 deg) is given only what shows
     from behind (wear_back), when the run has it: with the full list a strong redraw put the cravat and waistcoat
-    on the back of a man seen from behind (11-11, strengths 0.8-0.95)."""
-    if not wear_back:
+    on the back of a man seen from behind (11-11, strengths 0.8-0.95). Each person's own clothes from the cast."""
+    cast = cast or {}
+    nm = names(ppl, cast)
+    ws = {p[0]: who_of(cast, p[0]) for p in ppl}
+    same = len({(w["noun"], w.get("trigger")) for w in ws.values()}) == 1
+    if not cast and not wear_back:
         return f"He wears {wear}." if len(ppl) <= 1 else f"Each wears {wear}."
     out = []
     for k, box, ang, post, bdeg, near in ppl:
-        who = "He" if len(ppl) == 1 else f"The man {place_words(box).split(',')[0]}"
-        out.append(f"{who} is seen from behind: we see only {wear_back}." if max(ang, bdeg) > 100 else f"{who} wears {wear}.")
+        w = ws[k]
+        wr, wb = w.get("wear", wear), w.get("wear_back", wear_back)
+        who = w["subj"].capitalize() if len(ppl) == 1 else nm[k][0].upper() + nm[k][1:]
+        if same and len(ppl) > 1 and not wb:
+            return f"Each wears {wr}."
+        out.append(f"{who} is seen from behind: we see only {wb}." if wb and max(ang, bdeg) > 100
+                   else f"{who} wears {wr}.")
     return " ".join(out)
 
 
 def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
-                 wear_back: str | None = None, with_body: bool = False) -> str:
-    return " ".join([
-        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body).replace(
-            "One man", f"One man, {trigger},").replace("men are in the picture", f"men, each {trigger}, are in the picture"),
-        wear_words(ppl, wear, wear_back),
+                 wear_back: str | None = None, with_body: bool = False, cast: dict | None = None,
+                 look: str = "") -> str:
+    cast = cast or {"*": {"trigger": trigger}}
+    return " ".join(x for x in [
+        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body, cast),
+        wear_words(ppl, wear, wear_back, cast),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
-        "Real skin and hair, woven cloth with natural folds, natural light, film grain."])
+        look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
 def main():
@@ -226,14 +281,28 @@ def main():
                 g = sd / "guides"
                 n = max(1, len(ppl))
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
+                cast = run.get("cast") or {}
+                if cast:          # each person's own LoRA on their own region; their sheets as references
+                    loras, sheets = [], []
+                    for k, b, *_ in ppl:
+                        w = who_of(cast, k)
+                        if w.get("lora"):
+                            pad = run.get("lora_pad", 0.06)
+                            loras.append([w["lora"], float(w.get("lora_w", lw)),
+                                          [max(0.0, b[0] - pad), max(0.0, b[1] - pad), min(1.0, b[2] + pad),
+                                           min(1.0, b[3] + pad)] if len(ppl) > 1 else [0.0, 0.0, 1.0, 1.0]])
+                        if w.get("sheet") and w["sheet"] not in sheets:
+                            sheets.append(w["sheet"])
+                else:
+                    loras, sheets = [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]], [run["sheet"]]
                 for st in run.get("strengths", [0.7]):
                     j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
-                         "prompt": image_prompt(kind, ppl, run["wear"], room, run["trigger"],
+                         "prompt": image_prompt(kind, ppl, run.get("wear", ""), room, run.get("trigger", ""),
                                                 set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
-                                                run.get("body_words", False)),
+                                                run.get("body_words", False), cast or None, run.get("look", "")),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
-                         "size": [1152, 640], "refs": [run["sheet"]] + list(run.get("extra_refs") or []),
-                         "loras": [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]],
+                         "size": [1152, 640], "refs": sheets + list(run.get("extra_refs") or []),
+                         "loras": loras,
                          "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}

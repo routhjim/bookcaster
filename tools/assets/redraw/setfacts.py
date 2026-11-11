@@ -39,12 +39,14 @@ def things(set_dir) -> list:
     by_name = {}
     for kind in ("fixtures", "props"):
         for f in spec.get(kind, []):
+            if f.get("outside") or "row" in f:      # a backdrop beyond the walls is seen only as the window's view
+                continue
             sz = _size(lib, f["asset"])
             fc = f.get("facing", [0, -1])
             yaw = math.atan2(fc[1], fc[0]) + math.pi / 2          # front -Y at yaw 0
             c, s = abs(math.cos(yaw)), abs(math.sin(yaw))
             hx, hy = (sz[0] * c + sz[1] * s) / 2, (sz[0] * s + sz[1] * c) / 2
-            z0 = float(f.get("on_z_m", 0.0))
+            z0 = float(f.get("on_z_m", f["position"][2] if len(f["position"]) > 2 else 0.0))
             t = {"name": f["name"], "asset": f["asset"], "kind": kind[:-1],
                  "center": [f["position"][0], f["position"][1], z0 + sz[2] / 2], "half": [hx, hy, sz[2] / 2],
                  "on": f.get("on"), "lit": False, "fire": False}
