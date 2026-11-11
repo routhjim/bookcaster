@@ -74,8 +74,18 @@ def resolve(spec, cams_wanted=None):
         raise SystemExit(f"set {spec['set']!r} is not in the library ({sp})")
     st = json.loads(sp.read_text())
     proj = None
-    chars = {}
+    chars, figs = {}, {}
+    bp_deps = []
     for key, c in spec["characters"].items():
+        if c.get("asset"):             # a plain-mesh figure (a picture-to-3D statue): placed, measured from its bounds
+            pos = list(c["position"]) + ([0.0] if len(c["position"]) == 2 else [])
+            f = c.get("facing", [0, -1])
+            n = (f[0] ** 2 + f[1] ** 2) ** 0.5
+            aj = json.loads((lib / c["asset"] / "asset.json").read_text())
+            figs[key] = {"mesh": aj["ue"]["path"], "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
+                         "facing": [f[0] / n, f[1] / n], "position": pos, "height_m": aj["size_m"][2],
+                         "id": c["asset"]}
+            continue
         cp = lib / "character" / c["id"] / "character.json"
         if not cp.exists():
             raise SystemExit(f"character {c['id']!r} has no {cp}")
@@ -96,6 +106,7 @@ def resolve(spec, cams_wanted=None):
                       "body_pose": c.get("body_pose"), "face_pose": c.get("face_pose")}
         bp_deps = cj.get("bp_deps", [])
     set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
+    proj = proj or set_proj
     if set_proj != proj:
         raise SystemExit(f"set {spec['set']} was built in {set_proj}, the characters live in {proj}: rebuild it there "
                          f"(SETS_UE_PROJECT={proj} SETS_OUT={lib / 'set'} python tools/assets/sets/build_set.py "
@@ -105,7 +116,8 @@ def resolve(spec, cams_wanted=None):
     cams = [c for c in spec["cameras"] if not cams_wanted or c["name"] in cams_wanted]
     return proj, {"id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
-                  "characters": chars, "cameras": cams, "lights": S.lights,
+                  "characters": chars, "figures": figs, "cameras": cams, "lights": S.lights,
+                  "figure_tools": str(HERE.parent / "img3d" / "ue_stage_figure.py"),
                   "exposure_ev100": spec.get("exposure_ev100"), "warm_frames": spec.get("warm_frames", 150),
                   "settle_frames": spec.get("settle_frames", 60), "attach_tol_cm": spec.get("attach_tol_cm", 0.1),
                   "guides": bool(spec.get("guides", False))}

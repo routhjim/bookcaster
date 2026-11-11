@@ -319,6 +319,12 @@ def run(job):
                 CR.character_actor(key)
             finally:
                 CR.act = real_act
+        FG = _load("scene_figure", job["figure_tools"]) if job.get("figures") else None
+        figs = {}
+        for key, f in (job.get("figures") or {}).items():
+            figs[key] = FG.spawn(key, f)
+            temp.append(figs[key])
+
         def comps(key):
             a = CR.S["actors"][key][0]
             body, face = CR.skel_comps(a)
@@ -476,6 +482,8 @@ def run(job):
             subj = measure(key, body, face, spec, head_off[key])
             r["subjects"][key]["measured"] = subj
             r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items() if k != "_anim"}
+        for key, f in (job.get("figures") or {}).items():
+            r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)
         # cameras
         cams = []
@@ -539,6 +547,9 @@ def run(job):
                     who = [a_] + list(CR.S.get("followers", {}).get(id(a_), []))
                     guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
                     yield from guide_capture(cs, res, guides[f"depth_{key}"], who)
+                for key, fa in figs.items():
+                    guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
+                    yield from guide_capture(cs, res, guides[f"depth_{key}"], [fa])
             shot = {"name": c["name"], "path": path, "guides": guides, "truth": truth(cs, r["subjects"]), "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):

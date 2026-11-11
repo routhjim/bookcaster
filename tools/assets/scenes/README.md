@@ -52,7 +52,9 @@ changing. So:
             "facing": [dx, dy],            // plan direction the character faces
             "body_pose": {"pose": "stand_relaxed", "params": {...}}     // pose.py, or
                        | {"anim": "/Game/...AnimSequence", "t": s}       // a clip frame, or {"anim", "scan": "arms_up"}
-            "face_pose": {"curves": {"CTRL_expressions_jawOpen": 0.3}} | {"anim", "t"}}
+            "face_pose": {"curves": {"CTRL_expressions_jawOpen": 0.3}} | {"anim", "t"}},
+  "<key>": {"asset": "<class>/<id>",       // or a plain-mesh figure (a picture-to-3D statue: no skeleton, no pose):
+            "position": [x, y], "facing": [dx, dy]}   // measured from its bounds (img3d/ue_stage_figure.py), guides too
  },
  "lights": [ ... ],                        // extra lights, the set builder's point / spot / rect format
  "cameras": [
