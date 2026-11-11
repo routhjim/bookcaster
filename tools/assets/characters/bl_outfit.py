@@ -1366,58 +1366,156 @@ def trousers_loft(F, P, C, tr):
     return ob
 
 
-def stand_collar(F, under, z0, sh, nang=96):
-    """Standing collar: a smooth cone around the neck (radius = the neck's largest radius over the collar's height
-    per direction, smoothed round, + gap, flaring a little), taller at the back than the front, rounded front corners
-    and a rolled top edge; open at the front."""
-    hb, hf = sh.get("collar_h_back", 0.07), sh.get("collar_h_front", 0.055)
-    gap, flare = sh.get("collar_gap", 0.007), sh.get("collar_flare", 0.006)
-    open_deg = sh.get("collar_open_deg", 10)
+def neck_sections(F, under, z0, z1, nslice=10, nang=96):
+    """The neck as a tape takes it, slice by slice from z0 to z1: per slice the convex hull of the head/body points
+    round the neck axis, as radii along fixed rays, and its centre. Slices that the jaw, chin or skull reach (girth
+    more than 8% above the neck's narrowest) are not neck: they take the last clean slice's radii and the clean
+    slices' centre line carried on, so a collar built on them follows the neck, not the jaw."""
     pts = []
     for o in under:
         mw = o.matrix_world
         for v in o.data.vertices:
             p = mw @ v.co
-            if z0 - 0.005 < p.z < z0 + hb + 0.005:
+            if z0 - 0.012 < p.z < z1 + 0.012:
                 pts.append((p.x, p.y, p.z))
     Pn = np.array(pts)
-    mid = Pn[np.abs(Pn[:, 2] - (z0 + hb * 0.5)) < 0.015]
-    cx, cy = mid[:, 0].mean(), mid[:, 1].mean()
     ang = np.linspace(0, 2 * np.pi, nang, endpoint=False)
     D = dirs(ang)
-    R = np.zeros(nang)
-    for z in np.linspace(z0, z0 + hb, 8):
-        b = Pn[np.abs(Pn[:, 2] - z) < 0.01][:, :2] - (cx, cy)
-        b = b[np.hypot(b[:, 0], b[:, 1]) < 0.11]
-        if len(b) >= 3:
-            R = np.maximum(R, ray_hull_np(hull_np(b), D))
-    for _ in range(4):
-        R = sum(np.roll(R, s) for s in range(-4, 5)) / 9
+    zs = np.linspace(z0, z1, nslice)
+    ax = np.array([F.j["neck_01"].x, F.j["neck_01"].y])
+    if "neck_02" in F.j:
+        ax2 = np.array([F.j["neck_02"].x, F.j["neck_02"].y])
+        ax2z = F.j["neck_02"].z
+    else:
+        ax2, ax2z = ax, F.neck_z + 0.05
+    Rs, Cs, G = [], [], []
+    for z in zs:
+        t = (z - F.neck_z) / max(1e-3, ax2z - F.neck_z)
+        c = ax + (ax2 - ax) * t
+        b = Pn[np.abs(Pn[:, 2] - z) < 0.006][:, :2] - c
+        b = b[np.hypot(b[:, 0], b[:, 1]) < 0.095]
+        if len(b) < 8:
+            Rs.append(None)
+            Cs.append(c)
+            G.append(np.inf)
+            continue
+        h = hull_np(b)
+        c2 = c + h.mean(0)
+        R = ray_hull_np(h - h.mean(0), D)
+        Rs.append(R)
+        Cs.append(c2)
+        G.append(float(R.mean() * 2 * np.pi))
+    G = np.array(G)
+    gmin = G.min()
+    clean = G <= gmin * 1.08
+    # the neck is clean from the bottom up to where the jaw first reaches; above that nothing is trusted
+    first_bad = next((i for i in range(nslice) if not clean[i] and i > int(np.argmin(G))), nslice)
+    ok = [i for i in range(first_bad) if clean[i] and Rs[i] is not None]
+    if not ok:
+        ok = [int(np.argmin(G))]
+    Cs = np.array(Cs)
+    if len(ok) >= 2:
+        kx = np.polyfit(zs[ok], Cs[ok, 0], 1)
+        ky = np.polyfit(zs[ok], Cs[ok, 1], 1)
+        Cl = np.stack([np.polyval(kx, zs), np.polyval(ky, zs)], 1)
+    else:
+        Cl = np.repeat(Cs[ok[0]][None], nslice, 0)
+    Rl = []
+    last = Rs[ok[0]]
+    for i in range(nslice):
+        if i in ok:
+            last = Rs[i]
+        Rl.append(last if i >= ok[0] else Rs[ok[0]])
+    Rl = np.array(Rl)
+    for _ in range(3):
+        Rl = sum(np.roll(Rl, k, 1) for k in range(-3, 4)) / 7
+    REPORT["neck"] = {"girth_cm": [round(float(g) * 100, 1) if np.isfinite(g) else None for g in G],
+                      "z": [round(float(z), 3) for z in zs], "clean_to": round(float(zs[ok[-1]]), 3),
+                      "girth_used_cm": round(float(Rl[ok[-1]].mean() * 2 * np.pi * 100), 1)}
+    return zs, Cl, Rl, ang, D
+
+
+def stand_collar(F, under, z0, sh, nang=96):
+    """Standing collar built from the neck's own measured sections (neck_sections: hull radii per direction and the
+    neck's centre line, the jaw left out), + a small gap, so it sits close all round; taller at the back than the
+    front, a rolled top edge, open at the front, with the front corners turned down as wing points. Starched: it
+    does not turn with the head."""
+    hb, hf = sh.get("collar_h_back", 0.07), sh.get("collar_h_front", 0.055)
+    gap, flare = sh.get("collar_gap", 0.004), sh.get("collar_flare", 0.002)
+    open_deg = sh.get("collar_open_deg", 10)
+    zs, Cl, Rl, ang, D = neck_sections(F, under, z0, z0 + hb, nang=nang)
+
+    def at(z):
+        i = float(np.clip((z - zs[0]) / max(1e-6, zs[-1] - zs[0]) * (len(zs) - 1), 0, len(zs) - 1))
+        i0 = min(int(i), len(zs) - 2)
+        f = i - i0
+        return Cl[i0] * (1 - f) + Cl[i0 + 1] * f, Rl[i0] * (1 - f) + Rl[i0 + 1] * f
+
     front = math.atan2(F.fwd.y, F.fwd.x)
     df = np.abs((ang - front + np.pi) % (2 * np.pi) - np.pi)
     keep = df > math.radians(open_deg)
     fdeg = math.radians(open_deg)
     top = z0 + hb + (hf - hb) * ((1 + np.cos(df)) / 2) ** 2
-    # rounded front corners: the top drops toward the opening over the last 14 degrees
-    rc = np.clip((df - fdeg) / math.radians(14), 0, 1)
-    top = top - sh.get("collar_corner", 0.012) * (1 - np.sqrt(1 - (1 - rc) ** 2))
     order = [a for a in range(nang) if keep[a]]
-    # start the sequence just after the opening so the strip is continuous around the back
     a_start = int(np.argmin(np.where(keep, df, 9)))
     order = sorted(order, key=lambda a: (ang[a] - ang[a_start]) % (2 * np.pi))
+    wing_deg = math.radians(sh.get("wing_deg", 26))
+    wing_h = sh.get("wing_h", 0.42)          # share of the collar height folded down at the front corners
     rows = []
-    nring = 10
+    nring = 12
+
+    def ring_pt(a, z, extra):
+        c, R = at(z)
+        r = R[a] + gap + extra
+        return (c[0] + r * D[a, 0], c[1] + r * D[a, 1], z)
+
     for k in range(nring + 1):
         t = k / nring
-        rows.append([(cx + (R[a] + gap + flare * t) * D[a, 0], cy + (R[a] + gap + flare * t) * D[a, 1],
-                      z0 + t * (top[a] - z0)) for a in order])
-    for dr, dz in ((0.0016, 0.0012), (0.0032, -0.0006)):   # rolled top edge
-        rows.append([(cx + (R[a] + gap + flare + dr) * D[a, 0], cy + (R[a] + gap + flare + dr) * D[a, 1],
-                      top[a] + dz) for a in order])
+        row = []
+        for a in order:
+            # the band under a wing stops at the fold line
+            wf = max(0.0, 1 - (df[a] - fdeg) / wing_deg)
+            tt = min(t, 1 - wing_h * min(1.0, 1.6 * wf)) if wf > 0 else t
+            row.append(ring_pt(a, z0 + tt * (top[a] - z0), flare * tt))
+        rows.append(row)
+    for dr, dz in ((0.0014, 0.001), (0.0028, -0.0005)):      # rolled top edge (behind the wings)
+        row = []
+        for a in order:
+            wf = max(0.0, 1 - (df[a] - fdeg) / wing_deg)
+            tt = 1 - wing_h * min(1.0, 1.6 * wf) if wf > 0 else 1.0
+            p = ring_pt(a, z0 + tt * (top[a] - z0) + dz, flare * tt + dr)
+            row.append(p)
+        rows.append(row)
     ob = mesh_from_grid("collar", rows)
+    objs = [ob]
+    # wing points: from the fold line, the corner folds out and down, a triangle that narrows away from the opening
+    for sgn in (-1, 1):
+        wrows = []
+        nw, nd = 8, 6
+        for i in range(nd + 1):
+            d = i / nd
+            row = []
+            for j in range(nw + 1):
+                u = j / nw
+                aa = front + sgn * (fdeg + wing_deg * u * (1 - 0.75 * d))
+                a = int(round((aa % (2 * np.pi)) / (2 * np.pi) * nang)) % nang
+                zf = z0 + (1 - wing_h) * (top[a] - z0)
+                c, R = at(zf)
+                L = wing_h * (top[a] - z0) * (1 - 0.35 * u)
+                r = R[a] + gap + flare + 0.0015 + L * d * 0.75
+                z = zf - L * d * 0.55 + 0.0015
+                da = np.array([math.cos(aa), math.sin(aa)])
+                row.append((c[0] + r * da[0], c[1] + r * da[1], z))
+            wrows.append(row)
+        objs.append(mesh_from_grid(f"collar_wing{sgn}", wrows))
+    ob = join(objs, "collar")
     orient_out(ob, F)
-    info = {"c": (cx, cy), "R": R, "ang": ang, "gap": gap, "flare": flare, "z0": z0, "top": top, "D": D,
-            "front": front}
+    zb = z0 + sh.get("band_at", 0.022)
+    cb, Rb = at(zb)
+    info = {"c": (float(cb[0]), float(cb[1])), "R": Rb, "ang": ang, "gap": gap, "flare": flare, "z0": z0,
+            "top": top, "D": D, "front": front}
+    REPORT["collar"] = {"z0": round(z0, 3), "top_back": round(z0 + hb, 3), "gap": gap,
+                        "girth_cm_at_band": round(float((Rb.mean() + gap) * 2 * np.pi * 100), 1)}
     return ob, info
 
 
@@ -1483,7 +1581,7 @@ def cravat_tied(F, ci, shirt, cv):
                 lat = cl + u * w * math.cos(tilt)
                 zz = z + u * w * math.sin(tilt)
                 hit = surface_point(sb, F, lat, zz)
-                bulge = 0.006 * (1 - (2 * u) ** 2) * (0.4 + 0.6 * s)
+                bulge = cv.get("end_bulge", 0.006) * (1 - (2 * u) ** 2) * (0.4 + 0.6 * s)
                 ruffle = cv.get("ruffle", 0.002) * s ** 1.5 * math.sin(5 * math.pi * s + 2.5 * math.pi * u * sgn)
                 off = cv.get("end_gap", 0.008) + 0.004 * n_end + bulge + ruffle + 0.006 * (1 - s) ** 3
                 if hit is None:
@@ -2574,6 +2672,31 @@ def main():
         with Timer("bake"):
             imgs = bake(outfit, JOB.get("bake_px", 4096), JOB.get("bake_samples", 4))
         baked_material(outfit, imgs)
+    if outfit is not None and JOB.get("hands_in_outfit", True):
+        # the visible skin (hands, wrists) rides in the outfit mesh as a second material slot "M_skin": a separate
+        # trimmed-body skeletal mesh rendered nowhere in UE (the hands vanished); in the outfit it shares the
+        # outfit's skeleton and bind, and UE gives the slot the body's own skin material
+        hands = trim.copy()
+        hands.data = trim.data.copy()
+        bpy.context.scene.collection.objects.link(hands)
+        hme = hands.data
+        while len(hme.uv_layers) > 1:
+            hme.uv_layers.remove(hme.uv_layers[-1])
+        if hme.uv_layers:
+            hme.uv_layers[0].name = outfit.data.uv_layers[0].name
+        hme.materials.clear()
+        hme.materials.append(bpy.data.materials.new("M_skin"))
+        for m in list(hands.modifiers):
+            hands.modifiers.remove(m)
+        hv = sum(1 for v in hme.vertices if any(hands.vertex_groups[g.group].name.startswith("hand_")
+                                                    for g in v.groups))
+        REPORT["hands_in_outfit"] = {"verts": len(hme.vertices), "hand_weighted": hv}
+        if hv < 50:
+            raise RuntimeError(f"the trimmed body has no hands ({hv} hand-weighted vertices)")
+        outfit = join([outfit, hands], "outfit")
+        outfit.parent = arm
+        if not any(m.type == "ARMATURE" for m in outfit.modifiers):
+            outfit.modifiers.new("arm", "ARMATURE").object = arm
     if "export" in steps:
         to_centimetres([o for o in (outfit, trim, body) if o is not None], arm)
         with Timer("export"):

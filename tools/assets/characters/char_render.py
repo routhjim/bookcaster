@@ -25,7 +25,8 @@ Job:
 A Character asset renders through the editor preview actor (spawn_meta_human_actor; no assembly needed); an
 assembled Blueprint renders as an ordinary actor. Garments are SkeletalMeshComponents added to the actor with
 set_leader_pose_component(body), so they follow every body pose; body_swap hides the body component and shows the
-trimmed copy (with the body's own materials) the same way. export_geometry (needs Slate, so the full editor, not a
+trimmed copy (with the body's own materials) the same way. Before each still: head on the neck (face and body
+agree within 1 mm) and both hands visible and attached (hands_check), or the still is refused. export_geometry (needs Slate, so the full editor, not a
 commandlet) writes the character's body/head skeletal meshes as assets and FBX files.
 """
 
@@ -126,9 +127,11 @@ def skel_comps(a):
     return body, face
 
 
-def add_follower(a, body, mesh_path, label, materials_from=None):
-    """A garment (or the trimmed body) as its own SkeletalMeshActor attached to the character, its component driven
-    by the character's body through set_leader_pose_component (bones matched by name), so it follows every pose."""
+def add_follower(a, body, mesh_path, label, skin=False):
+    """A garment (or, skin=True, the trimmed body) as its own SkeletalMeshActor attached to the character, its
+    component driven by the character's body through set_leader_pose_component (bones matched by name), so it follows
+    every pose. The trimmed body never takes the garment material: it gets the body's own materials in refresh()
+    (an assembled Blueprint has no Body component until its first construction, so they are not known here)."""
     mesh = EAL.load_asset(mesh_path)
     if mesh is None:
         raise RuntimeError(f"no skeletal mesh {mesh_path}")
@@ -142,16 +145,74 @@ def add_follower(a, body, mesh_path, label, materials_from=None):
     comp.set_editor_property("visibility_based_anim_tick_option",
                              unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
     comp.set_editor_property("bounds_scale", 2.0)
-    if JOB.get("garment_material") and materials_from is None:
+    if JOB.get("garment_material") and not skin:
         gm = EAL.load_asset(JOB["garment_material"])
+        slots = skin_slots(comp)
         for i in range(comp.get_num_materials()):
-            comp.set_material(i, gm)
-    if materials_from is not None:
-        for i, m in enumerate(materials_from.get_materials()):
-            if i < comp.get_num_materials():
-                comp.set_material(i, m)
+            if i not in slots:
+                comp.set_material(i, gm)
     S.setdefault("followers", {}).setdefault(id(a), []).append(fa)
+    if skin:
+        S.setdefault("swap", {})[id(a)] = fa
+        tweak = JOB.get("swap_bounds", "leader")
+        if tweak == "leader":
+            comp.set_editor_property("use_bounds_from_leader_pose_component", True)
+        elif tweak == "scale":
+            comp.set_editor_property("bounds_scale", 20.0)
     return comp
+
+
+def skin_slots(comp):
+    """Indices of material slots that carry skin (hands in an outfit mesh): slot name contains "skin"."""
+    sk = comp.get_skinned_asset()
+    if sk is None:
+        return []
+    return [i for i, m in enumerate(sk.get_editor_property("materials"))
+            if "skin" in str(m.get_editor_property("material_slot_name")).lower()]
+
+
+def skin_materials(body):
+    """The body's skin material(s) for the trimmed copy, slot by slot name when the names match, else the body's
+    first slot (the trim keeps one skin slot; the body's UVs, so the body's skin maps fit it)."""
+    out = {}
+    bm = body.get_skinned_asset().get_editor_property("materials") if body.get_skinned_asset() else []
+    names = [str(m.get_editor_property("material_slot_name")).lower() for m in bm]
+    mats = body.get_materials()
+    for i, n in enumerate(names):
+        if i < len(mats) and mats[i] is not None:
+            out[n] = mats[i]
+    first = next((m for m in mats if m is not None), None)
+    return out, first
+
+
+def set_skin_slots(a, body):
+    """Skin slots of every follower (hands carried in the outfit) take the body's own skin material."""
+    if body is None:
+        return
+    _, first = skin_materials(body)
+    for fa in S.get("followers", {}).get(id(a), []):
+        comp = fa.skeletal_mesh_component
+        for i in skin_slots(comp):
+            if first is not None:
+                comp.set_material(i, first)
+
+
+def set_swap_materials(a, body):
+    fa = S.get("swap", {}).get(id(a))
+    if fa is None or body is None:
+        return
+    by_name, first = skin_materials(body)
+    comp = fa.skeletal_mesh_component
+    for spec in JOB.get("characters", {}).values():
+        if spec.get("swap_material") and S["actors"].get(next((k for k, v in JOB["characters"].items()
+                                                                if v is spec), None), (None,))[0] is a:
+            first, by_name = EAL.load_asset(spec["swap_material"]), {}     # a test override
+    sk = comp.get_skinned_asset()
+    slots = [str(m.get_editor_property("material_slot_name")).lower() for m in sk.get_editor_property("materials")]
+    for i in range(comp.get_num_materials()):
+        m = by_name.get(slots[i] if i < len(slots) else "") or first
+        if m is not None:
+            comp.set_material(i, m)
 
 
 def character_actor(key):
@@ -199,7 +260,7 @@ def character_actor(key):
     for i, g in enumerate(spec.get("garments", [])):
         followers.append(add_follower(a, body, g, f"garment_{i}"))
     if spec.get("body_swap"):
-        followers.append(add_follower(a, body, spec["body_swap"], "body_swap", materials_from=body))
+        followers.append(add_follower(a, body, spec["body_swap"], "body_swap", skin=True))
     if spec.get("body_swap") or spec.get("hide_body"):
         # keep it animating (followers read its pose) but do not draw it
         body.set_editor_property("visibility_based_anim_tick_option",
@@ -394,7 +455,11 @@ def import_outfit(spec):
     mats = []
     for sm in sk.get_editor_property("materials"):       # the array holds copies: rebuild it
         sm2 = unreal.SkeletalMaterial()
-        sm2.set_editor_property("material_interface", mi)
+        # a skin slot (hands carried in the outfit) keeps its own material; refresh() gives it the body's skin
+        if "skin" not in str(sm.get_editor_property("material_slot_name")).lower():
+            sm2.set_editor_property("material_interface", mi)
+        else:
+            sm2.set_editor_property("material_interface", sm.get_editor_property("material_interface"))
         sm2.set_editor_property("material_slot_name", sm.get_editor_property("material_slot_name"))
         mats.append(sm2)
     sk.set_editor_property("materials", mats)
@@ -654,6 +719,80 @@ def head_error_mm(key):
     return out
 
 
+def hands_check(key):
+    """Both hands visible and attached: the mesh that shows the hands (the trimmed copy when the body is swapped,
+    else the body) is drawn, wears skin (never the garment material), and puts hand_l / hand_r within 1 mm of
+    where the body places them. Returns (ok, details)."""
+    a = S["actors"][key][0]
+    body, _ = skel_comps(a)
+    sw = S.get("swap", {}).get(id(a))
+    if sw is None:      # hands carried in a garment (a skin slot), else the body itself shows them
+        sw = next((f for f in S.get("followers", {}).get(id(a), []) if skin_slots(f.skeletal_mesh_component)), None)
+    comp = sw.skeletal_mesh_component if sw is not None else body
+    d = {"mesh": comp.get_skinned_asset().get_path_name() if comp.get_skinned_asset() else None}
+    ok = d["mesh"] is not None and comp.is_visible() and (sw is None or not sw.is_hidden_ed())
+    d["visible"] = bool(ok)
+    if JOB.get("debug_hands"):
+        dbg = {}
+        for nm, c_, ac in (("swap", comp, sw), ("garment0", (S.get("followers", {}).get(id(a)) or [sw])[0].skeletal_mesh_component, None)):
+            x = {}
+            for prop in ("render_in_main_pass", "render_in_depth_pass", "hidden_in_game", "visible", "owner_no_see",
+                         "only_owner_see", "bounds_scale", "use_bounds_from_leader_pose_component", "cast_shadow"):
+                try:
+                    x[prop] = str(c_.get_editor_property(prop))
+                except Exception as ex:
+                    x[prop] = "ERR"
+            try:
+                o, e = c_.get_owner().get_actor_bounds(False)
+                x["actor_bounds"] = [[round(o.x, 1), round(o.y, 1), round(o.z, 1)], [round(e.x, 1), round(e.y, 1), round(e.z, 1)]]
+            except Exception as ex:
+                x["actor_bounds"] = str(ex)
+            try:
+                lb = c_.get_skinned_asset().get_bounds()
+                x["mesh_bounds"] = [[round(lb.origin.x, 1), round(lb.origin.y, 1), round(lb.origin.z, 1)],
+                                    [round(lb.box_extent.x, 1), round(lb.box_extent.y, 1), round(lb.box_extent.z, 1)]]
+            except Exception as ex:
+                x["mesh_bounds"] = str(ex)
+            try:
+                x["leader"] = c_.get_editor_property("leader_pose_component").get_name()
+            except Exception as ex:
+                x["leader"] = str(ex)
+            try:
+                x["comp_loc"] = str(c_.get_world_location())
+                x["comp_scale"] = str(c_.get_world_scale())
+            except Exception as ex:
+                pass
+            dbg[nm] = x
+        d["debug"] = dbg
+    gm = JOB.get("garment_material") or "\0"
+    mats = [m.get_path_name() if m else None for m in comp.get_materials()]
+    if sw is not None and skin_slots(comp):
+        mats = [mats[i] for i in skin_slots(comp)]
+    d["materials"] = mats
+    d["skin"] = bool(mats) and all(m is not None and not m.startswith(gm.split(".")[0]) for m in mats)
+    ok = ok and d["skin"]
+    for b in ("hand_l", "hand_r"):
+        try:
+            if comp.get_bone_index(b) < 0:
+                raise ValueError("no bone")
+            e = round((comp.get_socket_location(b) - body.get_socket_location(b)).length() * 10, 2)
+        except Exception as ex:
+            e = str(ex)
+        d[b + "_mm"] = e
+        ok = ok and isinstance(e, float) and e <= 1.0
+    # the fingers must hang off the hand (a follower skinned to bones its leader does not evaluate collapses them
+    # toward the origin while the hand bone itself still agrees)
+    for f, h in (("middle_03_l", "hand_l"), ("middle_03_r", "hand_r"), ("thumb_03_l", "hand_l"),
+                 ("thumb_03_r", "hand_r")):
+        try:
+            e = round((comp.get_socket_location(f) - comp.get_socket_location(h)).length(), 1)
+        except Exception as ex:
+            e = str(ex)
+        d[f + "_cm"] = e
+        ok = ok and isinstance(e, float) and 3.0 <= e <= 25.0
+    return bool(ok), d
+
+
 def curve_anim(skel, curves, name):
     folder = "/Game/Char/Anim"
     path = f"{folder}/{name}"
@@ -791,10 +930,17 @@ def refresh(key):
             fa.skeletal_mesh_component.set_leader_pose_component(body, True, False)
         else:
             fa.skeletal_mesh_component.set_leader_pose_component(None, True, False)
+    set_skin_slots(a, body)
+    if spec.get("body_swap"):
+        set_swap_materials(a, body)
     if spec.get("body_swap") or spec.get("hide_body"):
         body.set_editor_property("visibility_based_anim_tick_option",
                                  unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
-        body.set_visibility(False, False)          # still posed (always tick), so followers keep following
+        if spec.get("hide_mode", "visibility") == "visibility":
+            body.set_visibility(False, False)      # still posed (always tick), so followers keep following
+        else:
+            body.set_visibility(True, False)
+            body.set_render_in_main_pass(False)
         body.set_cast_shadow(False)
     for comp in (body, face):
         if comp is not None:
@@ -820,10 +966,22 @@ def refresh(key):
     return a, body, face
 
 
+def aim_point(sh):
+    """World location of the bone a shot aims at ("aim_bone", e.g. hand_r for a hands close-up), from the body."""
+    a = S["actors"][sh["char"]][0]
+    body, _ = skel_comps(a)
+    p = body.get_socket_location(sh["aim_bone"])
+    off = sh.get("aim_offset", [0, 0, 0])
+    return p + unreal.Vector(*off)
+
+
 def frame_camera(sh, head):
-    """(location, rotation, focal) of a shot's camera for the head position."""
+    """(location, rotation, focal) of a shot's camera for the head position (or the shot's aim bone)."""
     fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
-    if fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+    focal = None
+    if sh.get("aim_bone"):
+        target, dist, focal = aim_point(sh), sh.get("dist", 120), sh.get("focal", 50)
+    elif fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
         target, dist, focal = head + unreal.Vector(0, 0, sh.get("dz", 1)), sh.get("dist", 230), 85
     elif fr == "medium":
         target, dist, focal = head + unreal.Vector(0, 0, -38), 260, 50
@@ -831,7 +989,7 @@ def frame_camera(sh, head):
         target, dist, focal, el = unreal.Vector(head.x, head.y, head.z * 0.52), 420, 35, sh.get("el", 4)
     a, e = math.radians(az), math.radians(el)
     loc = target + unreal.Vector(math.sin(a) * math.cos(e), math.cos(a) * math.cos(e), math.sin(e)) * dist
-    return loc, unreal.MathLibrary.find_look_at_rotation(loc, target), target
+    return loc, unreal.MathLibrary.find_look_at_rotation(loc, target), target, focal
 
 
 def reframe(cam, sh, info):
@@ -845,7 +1003,7 @@ def reframe(cam, sh, info):
         return
     if head.z < 30:
         return
-    loc, rot, _ = frame_camera(sh, head)
+    loc, rot, _, _ = frame_camera(sh, head)
     cam.set_actor_location(loc, False, False)
     cam.set_actor_rotation(rot, False)
     info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
@@ -887,7 +1045,9 @@ def setup_shot(sh):
         head = unreal.Vector(0, 0, 165)
     info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
     fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
-    if fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+    if sh.get("aim_bone"):
+        cam = camera(sh["name"], aim_point(sh), az, el, sh.get("dist", 120), sh.get("focal", 50))
+    elif fr == "close":               # head and shoulders: aim near the eyes (the head joint sits low in the skull)
         cam = camera(sh["name"], head + unreal.Vector(0, 0, sh.get("dz", 1)), az, el, sh.get("dist", 230), 85)
     elif fr == "medium":
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -38), az, el, 260, 50)
@@ -1055,10 +1215,21 @@ def _run():
             pose_face(sh, info)
             yield from frames(15)
         info["head_err_mm"] = err
+        # both hands visible and attached (the trimmed copy wears skin and follows the body); one refresh to
+        # re-wire it if not, then refuse the still
+        hok, hands = hands_check(sh["char"])
+        if not hok and not sh.get("hands_optional"):
+            note(f"{sh['name']}: hands not right {hands}; refreshing")
+            refresh(sh["char"])
+            yield from frames(15)
+            hok, hands = hands_check(sh["char"])
+        info["hands"] = hands
         reframe(cam, sh, info)
         yield from frames(5)
         if not all(isinstance(v, float) and v <= 1.0 for v in err.values()):
             raise RuntimeError(f"{sh['name']}: face does not follow the body ({err} mm); still refused")
+        if not hok and not sh.get("hands_optional"):
+            raise RuntimeError(f"{sh['name']}: hands not visible and attached ({hands}); still refused")
         path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
             os.remove(path)
