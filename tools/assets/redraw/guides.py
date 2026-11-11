@@ -8,6 +8,9 @@ and each person's own depth (only that person drawn). From those, per still, int
   <cam>_normal.png     camera-space surface normals from the depth (R right, G up, B toward the camera)
   <cam>_lines.png      outlines: depth jumps, creases (normal turns) and every person's silhouette, white on black
   <cam>_mask_<key>.png the person's visible part (where their own depth meets the scene's)
+  <cam>_mask_people.png all people, grown a few pixels (a per-pixel strength mask)
+  <cam>_pose.png       the people's own bones as an OpenPose picture (left/right by colour; face points only where
+                       the head shows them), when the scene recorded joints
 and <scene>/truth.json: per still, per person the visible box (0-1, x0 y0 x1 y1), area, the fraction of the
 person that is visible, with the scene's angles (head and body to the camera) and camera distance copied from
 result.json. With --set (the scene's library set): the set's things (setfacts.py) seen in each still, each with its
@@ -154,6 +157,72 @@ def seen_things(things, cam: dict, d: torch.Tensor, n: int = 7) -> list:
     return out
 
 
+# OpenPose 18-point body (COCO order) and its usual colours: the ControlNet Union reads left and right from them
+OP_COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0],
+             [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255],
+             [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
+OP_LIMBS = [[2, 3], [2, 6], [3, 4], [4, 5], [6, 7], [7, 8], [2, 9], [9, 10], [10, 11], [2, 12], [12, 13], [13, 14],
+            [2, 1], [1, 15], [15, 17], [1, 16], [16, 18]]
+
+
+def op_points(m: dict, cam: dict) -> list:
+    """18 set-frame points (None where the camera cannot see them) from a person's measured joints: the face points
+    (nose, eyes) only when the head faces the camera enough to show them, each ear unless the head hides it."""
+    j = m.get("joints") or {}
+    need = ("upperarm_l", "upperarm_r", "head", "FACIAL_L_Eye", "FACIAL_R_Eye")
+    if not all(n in j for n in need):
+        return []
+    mid = lambda a, b: [(a[i] + b[i]) / 2 for i in range(3)]
+    f = m["head_fwd_xy"]
+    right = [f[1], -f[0], 0.0]                          # the person's right, in plan
+    eye_l, eye_r = j["FACIAL_L_Eye"], j["FACIAL_R_Eye"]
+    em = mid(eye_l, eye_r)
+    nose = [em[0] + f[0] * 0.07, em[1] + f[1] * 0.07, em[2] - 0.04]
+    hd = j["head"]
+    ear_r = [hd[0] + right[0] * 0.075, hd[1] + right[1] * 0.075, em[2] - 0.01]
+    ear_l = [hd[0] - right[0] * 0.075, hd[1] - right[1] * 0.075, em[2] - 0.01]
+    to_cam = [cam["position"][i] - hd[i] for i in range(2)]
+    n = math.hypot(*to_cam) or 1.0
+    to_cam = [to_cam[0] / n, to_cam[1] / n]
+    facing = f[0] * to_cam[0] + f[1] * to_cam[1]        # 1 = facing the camera, -1 = turned away
+    side_r = right[0] * to_cam[0] + right[1] * to_cam[1]
+    show_face = facing > -0.17                          # nose and eyes: up to ~100 deg off the camera
+    pts = [nose if show_face else None, mid(j["upperarm_l"], j["upperarm_r"]),
+           j["upperarm_r"], j.get("lowerarm_r"), j.get("hand_r"), j["upperarm_l"], j.get("lowerarm_l"), j.get("hand_l"),
+           j.get("thigh_r"), j.get("calf_r"), j.get("foot_r"), j.get("thigh_l"), j.get("calf_l"), j.get("foot_l"),
+           eye_r if show_face and (facing > 0.5 or side_r > 0) else None,
+           eye_l if show_face and (facing > 0.5 or side_r < 0) else None,
+           ear_r if side_r > -0.6 else None, ear_l if side_r < 0.6 else None]
+    return pts
+
+
+def pose_picture(res: dict, cam: dict, w: int, h: int, path: Path):
+    """The engine's own bones as an OpenPose picture (black ground, coloured limbs, left and right by colour)."""
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", (w, h), (0, 0, 0))
+    d = ImageDraw.Draw(im)
+    n = 0
+    for key, sub in res.get("subjects", {}).items():
+        pts = op_points(sub.get("measured") or {}, cam)
+        if not pts:
+            continue
+        uv = []
+        for q in pts:
+            pr = framing.project(cam, q, (w, h)) if q else None
+            uv.append((pr[0] * w, pr[1] * h) if pr else None)
+        sw = max(3, int(w / 1152 * 5))
+        for i, (a, b) in enumerate(OP_LIMBS):
+            pa, pb = uv[a - 1], uv[b - 1]
+            if pa and pb:
+                d.line([pa, pb], fill=tuple(int(c * 0.6) for c in OP_COLORS[i]), width=sw * 2)
+        for i, q in enumerate(uv):
+            if q:
+                d.ellipse([q[0] - sw, q[1] - sw, q[0] + sw, q[1] + sw], fill=tuple(OP_COLORS[i]))
+        n += 1
+    im.save(path)
+    return n
+
+
 def one_scene(sd: Path, dev, things=None, day=None):
     res = json.loads((sd / "result.json").read_text())
     g = sd / "guides"
@@ -203,15 +272,20 @@ def one_scene(sd: Path, dev, things=None, day=None):
             people[key] = {"box": box, "area": round(nv / (w * h), 5), "visible_frac": round(nv / nd, 3) if nd else 0.0,
                            **(sh.get("truth") or {}).get(key, {})}
         if people:                       # all people at once, grown a little: the per-pixel strength mask
-            allp = torch.zeros_like(d, dtype=torch.bool)
-            for key in people:
-                allp |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
-            allp = F.max_pool2d(allp.float()[None, None], 9, 1, 4)[0, 0] > 0.5
-            save(allp.float() * 255, g / f"{cam}_mask_people.png")
+            for name, keep in (("people", lambda v: True),
+                               ("front", lambda v: (v.get("body_to_camera_deg") or 0) <= 100)):
+                allp = torch.zeros_like(d, dtype=torch.bool)
+                for key, v in people.items():
+                    if keep(v):
+                        allp |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
+                allp = F.max_pool2d(allp.float()[None, None], 9, 1, 4)[0, 0] > 0.5
+                save(allp.float() * 255, g / f"{cam}_mask_{name}.png")
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,
                                "depth_range_cm": [round(float(d[valid].min()), 1), round(float(d[valid].max()), 1)]}
+        if pose_picture(res, sh["camera"], w, h, g / f"{cam}_pose.png"):
+            truth["shots"][cam]["pose"] = str(g / f"{cam}_pose.png")
         if things is not None:
             truth["shots"][cam]["things"] = seen_things(things, sh["camera"], d)
             truth["shots"][cam]["daylight"] = day

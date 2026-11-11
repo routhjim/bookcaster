@@ -1,10 +1,11 @@
 """Measure redrawn engine stills against the scene's own truth (GPU: Grounding DINO, DINOv2, the local vision judge).
 
-    DETECT_DEVICE=cuda python -I tools/assets/redraw/measure.py MEASURE.json
+    DETECT_DEVICE=cuda python -I tools/assets/redraw/measure.py MEASURE.json [MEASURE.json ...]
     MEASURE: {"out": "/abs/metrics.json", "sheet": "/abs/character sheet.png",
               "items": [{"id", "redraw": "/abs/x.png", "engine": "/abs/still.png", "kind": "wide|medium|close",
                          "people": [{"key", "box": [x0, y0, x1, y1], "head_to_camera_deg"}]}],
-              "engine_baseline": true}   (also run every check on the engine stills themselves)
+              "engine_baseline": true,   (also run every check on the engine stills themselves)
+              "body_only": false}        (only the torso checks below)
 
 Per picture (counts are built from these by the caller):
   people   Grounding DINO "person" boxes; each scene person matched to the best-overlapping box: IoU with the
@@ -14,6 +15,9 @@ Per picture (counts are built from these by the caller):
            detection inside their box); expected from the scene's angle: < 60 front, 60-115 side, >= 115 back.
   room     the judge with both pictures: anything added, removed or covered; window / fireplace / armchair
            detections in both (each class found in the engine still: held when a box overlaps >= 0.4).
+  torso    per scene person, apart from the head: the judge's front / side / back for the torso alone, and whether
+           any front of the clothes shows (lapels, buttons, waistcoat, shirt front, cravat); expected from the scene's
+           body angle (the hips' facing to the camera). A front of the clothes on a body past 100 deg is a failure.
   identity DINOv2 cosine between the largest face crop in each scene person's box and the sheet's face crop.
   look     the judge: "photograph or computer render".
   lights   each lit thing of the set in frame (item "things": guides.py --set): the judge on its box, in the engine
@@ -67,6 +71,11 @@ ROOM_Q = ("Picture 1 is the original frame and Picture 2 a redrawn version of it
           "object that is not in Picture 1, remove or move one, or cover one (for example with a cloth)? Answer "
           "'same' if the room's objects are all still there in the same places, else name what changed in a few "
           "words.")
+BODY_Q = ("Ignore the man's head and face; look only at his torso and coat. Which way does his torso face the camera: "
+          "front (we see his chest), side (we see one side of his body, side-on), or back (we see his back and the "
+          "back of his coat)? Answer with one word: front, side or back.")
+FRONTWEAR_Q = ("Look only at this man's body and clothes, not his head. Can you see the front of his clothes: coat "
+               "lapels, front buttons, a waistcoat, a shirt front or a cravat? Answer yes or no.")
 LIT_Q = ("Is there a lit flame or a burning fire in this picture (flames, glowing coals, or a lamp's lit flame)? "
          "Answer yes or no.")
 FRAME_Q = ("Picture 1 is the original frame and Picture 2 a redrawn version of it. Is the camera the same: the "
@@ -90,13 +99,17 @@ def light_side(im, mask_path):
 
 
 def main():
-    cfg = json.loads(Path(sys.argv[1]).read_text())
     if not torch.cuda.is_available():
         raise SystemExit("no GPU visible: measuring runs on a card, never on the CPU")
     t0 = time.time()
     dp, dm, ep, em = D.load()
     judge = VJ.Judge("cuda")
     print(json.dumps({"phase": "load", "s": round(time.time() - t0, 1)}), flush=True)
+    for a in sys.argv[1:]:             # several measure files, the models loaded once
+        run_cfg(json.loads(Path(a).read_text()), dp, dm, ep, em, judge)
+
+
+def run_cfg(cfg, dp, dm, ep, em, judge):
     sheet = Image.open(cfg["sheet"]).convert("RGB")
     sf = D.detect(dp, dm, sheet, ["face"]).get("face", [])
     sheet_face = max(sf, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if sf else None
@@ -118,8 +131,17 @@ def main():
             faces = [f for f in det.get("face", []) if iou(f, b) > 0 and
                      b[0] - 0.02 <= (f[0] + f[2]) / 2 <= b[2] + 0.02 and b[1] - 0.02 <= (f[1] + f[3]) / 2 <= b[3]]
             q["face_boxes"] = len(faces)
-            a = judge.ask(crop(im, b), FACING_Q, 4).strip().lower()
-            q["judge_facing"] = next((w for w in ("front", "side", "back") if w in a), a[:12])
+            q["truth_body_deg"] = p.get("body_to_camera_deg")
+            if not cfg.get("body_only"):
+                a = judge.ask(crop(im, b), FACING_Q, 4).strip().lower()
+                q["judge_facing"] = next((w for w in ("front", "side", "back") if w in a), a[:12])
+            a = judge.ask(crop(im, b), BODY_Q, 4).strip().lower()
+            q["judge_body"] = next((w for w in ("front", "side", "back") if w in a), a[:12])
+            a = judge.ask(crop(im, b), FRONTWEAR_Q, 3).strip().lower()
+            q["front_wear_visible"] = "yes" in a
+            if cfg.get("body_only"):
+                r["people"][p["key"]] = q
+                continue
             if faces and sheet_emb is not None:
                 f = max(faces, key=lambda x: (x[2] - x[0]) * (x[3] - x[1]))
                 c = crop(im, f, 0.01)
@@ -128,6 +150,8 @@ def main():
                     q["face_sim"] = round(float(e @ sheet_emb), 3)
                     q["_emb"] = e.tolist()
             r["people"][p["key"]] = q
+        if cfg.get("body_only"):
+            return r
         for p in it["people"]:
             if p.get("mask"):
                 r["people"][p["key"]]["light_side"] = light_side(im, p["mask"])
@@ -141,6 +165,8 @@ def main():
         r["look"] = "photo" if "photo" in a else "render" if "render" in a else a[:12]
         if engine_path:
             ims = [Image.open(engine_path).convert("RGB"), im]
+            if cfg.get("body_only"):
+                return r
             r["room_judge"] = judge.ask_images(ims, ROOM_Q, 24, 768)
             r["frame_judge"] = judge.ask_images(ims, FRAME_Q, 3, 768)
         return r
@@ -153,6 +179,11 @@ def main():
             if it["engine"] not in eng_cache:
                 eng_cache[it["engine"]] = one(it["engine"], it, None)
             rec["engine"] = eng_cache[it["engine"]]
+            if cfg.get("body_only"):
+                out[it["id"]] = rec
+                print(json.dumps({"id": it["id"], "body": {k: (v.get("truth_body_deg"), v.get("judge_body"),
+                                  v.get("front_wear_visible")) for k, v in rec["redraw"]["people"].items()}}), flush=True)
+                continue
             ed = rec["engine"]["room_dets"]
             rd = rec["redraw"]["room_dets"]
             rec["room_held"] = {k: (max((iou(a, b) for a in rd[k] for b in ed[k]), default=0.0) >= 0.4)

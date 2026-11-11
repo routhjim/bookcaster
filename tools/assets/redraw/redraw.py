@@ -12,8 +12,12 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "set_words": "what the room holds",     (the set's library description)
       "strengths": [0.55, 0.7],               (method image: img2img strength of the engine still)
       "control": {"type": "depth", "scale": 0.8, "end": 1.0} | null,    (method image: the engine's own guide)
-      "mask_people": false,                   (method image: the still's people masks as the per-pixel strength,
-                                               "strength_bg" for the room)
+      "controls": [{"type": "depth"|"pose"|"canny", ...}, ...]          (several: depth, the bones' OpenPose
+                                              picture, the outlines)
+      "body_words": false,                    (say each body's orientation apart from the head)
+      "mask_people": false | true | "front",  (method image: the still's people masks as the per-pixel strength,
+                                               "strength_bg" for the room; "front": only people whose body is
+                                               within 100 deg of the camera, the others at "strength_bg")
       "set_facts": true,                      (name the set's things the frame holds, lit ones as lit: guides.py --set)
       "room_all": false,                      (the room's contents for every shot; default: wide shots only)
       "seed": 7, "only": ["scene/cam", ...]}
@@ -65,7 +69,8 @@ def people(shot: dict, poses: dict | None = None) -> list:
     scene posed them seated (pose name), else "standing"."""
     poses = poses or {}
     out = [(k, v["box"], v.get("head_to_camera_deg", 0.0),
-            "sitting" if any(w in (poses.get(k) or "") for w in ("sit", "seat")) else "standing")
+            "sitting" if any(w in (poses.get(k) or "") for w in ("sit", "seat")) else "standing",
+            v.get("body_to_camera_deg", v.get("head_to_camera_deg", 0.0)), v.get("nearer_shoulder"))
            for k, v in shot["people"].items() if v.get("box") and v.get("area", 0) > 0.002]
     return sorted(out, key=lambda x: (x[1][0] + x[1][2]) / 2)
 
@@ -77,16 +82,32 @@ def kind_of(cam: str, shot: dict) -> str:
     return "wide" if shot.get("kind") in ("wide", "full") else shot.get("kind", "medium")
 
 
-def people_words(ppl: list) -> str:
+def body_words(deg: float, near: str | None, who: str = "His") -> str:
+    """The body's own orientation, apart from the head (the scene's hips-to-camera angle and nearer shoulder): a
+    redraw kept a turned-away head but swung the body to profile or front when only the head was described
+    (11-11, three-quarter-away shots)."""
+    sh = f", his {near} shoulder nearer the camera" if near else ""
+    if deg < 60:
+        return f"{who} body faces the camera."
+    if deg <= 100:
+        return f"{who} body is side-on to the camera{sh}."
+    return (f"{who} body is turned away from the camera: we see his back{sh}; his chest and the front of his coat are "
+            f"not visible, and the back of his coat, with its centre seam and the vent between the tails, faces the "
+            f"camera.")
+
+
+def people_words(ppl: list, with_body: bool = False) -> str:
     if not ppl:
         return ""
     n = len(ppl)
     head = "One man is in the picture." if n == 1 else f"{n} men are in the picture, dressed alike."
     parts = [head]
-    for k, box, ang, post in ppl:
+    for k, box, ang, post, bdeg, near in ppl:
         who = "The man" if n == 1 else f"The man {place_words(box).split(',')[0]}"
         parts.append(f"{who} is {post} {place_words(box)} and {facing_words(ang)}." if n == 1 else
                      f"{who} is {post} and {facing_words(ang)}.")
+        if with_body:
+            parts.append(body_words(bdeg, near))
     return " ".join(parts)
 
 
@@ -156,16 +177,16 @@ def wear_words(ppl: list, wear: str, wear_back: str | None) -> str:
     if not wear_back:
         return f"He wears {wear}." if len(ppl) <= 1 else f"Each wears {wear}."
     out = []
-    for k, box, ang, *_ in ppl:
+    for k, box, ang, post, bdeg, near in ppl:
         who = "He" if len(ppl) == 1 else f"The man {place_words(box).split(',')[0]}"
-        out.append(f"{who} is seen from behind: we see only {wear_back}." if ang >= 115 else f"{who} wears {wear}.")
+        out.append(f"{who} is seen from behind: we see only {wear_back}." if max(ang, bdeg) > 100 else f"{who} wears {wear}.")
     return " ".join(out)
 
 
 def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
-                 wear_back: str | None = None) -> str:
+                 wear_back: str | None = None, with_body: bool = False) -> str:
     return " ".join([
-        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl).replace(
+        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body).replace(
             "One man", f"One man, {trigger},").replace("men are in the picture", f"men, each {trigger}, are in the picture"),
         wear_words(ppl, wear, wear_back),
         (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
@@ -191,10 +212,12 @@ def main():
             poses = {k: ((v.get("body_pose") or {}).get("pose") or "") for k, v in res.get("subjects", {}).items()}
             ppl = people(sh, poses)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
-                    "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q} for k, b, a, q in ppl]}
+                    "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
+                                "nearer_shoulder": ns} for k, b, a, q, bd, ns in ppl]}
             if run["method"] == "edit":
                 jobs.append({"id": f"{sd.name}__{cam}", "prompt": edit_prompt(kind, ppl, run["wear"], room, run.get("room_all", False),
-                                                     set_words(sh) if run.get("set_facts") else "", run.get("wear_back")),
+                                                     set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
+                                                run.get("body_words", False)),
                              "images": [sh["still"], run["sheet"]], "seed": seed,
                              "path": str(out / f"{sd.name}__{cam}.png"), "size": [1152, 640], "_meta": base})
             else:
@@ -204,18 +227,22 @@ def main():
                 for st in run.get("strengths", [0.7]):
                     j = {"id": f"{sd.name}__{cam}__s{int(round(st * 100))}",
                          "prompt": image_prompt(kind, ppl, run["wear"], room, run["trigger"],
-                                                set_words(sh) if run.get("set_facts") else "", run.get("wear_back")),
+                                                set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
+                                                run.get("body_words", False)),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}__s{int(round(st * 100))}.png"),
                          "size": [1152, 640], "refs": [run["sheet"]],
                          "loras": [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]],
                          "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st)}
-                    c = run.get("control")
-                    if c:
-                        img = g / f"{cam}_{'depth' if c['type'] == 'depth' else 'lines'}.png"
-                        j["control"] = {"image": str(img), "type": c["type"], "scale": c.get("scale", 0.8),
-                                        "end": c.get("end", 1.0), "prepared": True}
+                    cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
+                    pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
+                    cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
+                           "scale": c.get("scale", 0.8), "end": c.get("end", 1.0), "prepared": True}
+                          for c in cl if (g / f"{cam}_{pics[c['type']]}.png").exists()]
+                    if cj:
+                        j["control"] = cj[0] if len(cj) == 1 else cj
                     if run.get("mask_people") and ppl:      # people redrawn harder than the room
-                        j["init"]["mask"] = str(g / f"{cam}_mask_people.png")
+                        mk = run.get("mask_people") if isinstance(run.get("mask_people"), str) else "people"
+                        j["init"]["mask"] = str(g / f"{cam}_mask_{mk}.png")
                         j["init"]["strength_bg"] = run.get("strength_bg", 0.6)
                     jobs.append(j)
     if run["method"] == "edit":

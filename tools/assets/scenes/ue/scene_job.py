@@ -39,6 +39,8 @@ act = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 EYES = ("FACIAL_L_Eye", "FACIAL_R_Eye")
 HEAD = "head"
 FEET = ("foot_l", "foot_r", "ball_l", "ball_r")
+POSE_JOINTS = ("head", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r", "hand_l", "hand_r",
+               "thigh_l", "thigh_r", "calf_l", "calf_r", "foot_l", "foot_r")
 
 
 def log(m):
@@ -101,7 +103,12 @@ def measure(key, body, face, spec, head_top_off):
            "jaw_z": to_set(chin)[2],
            "feet_above_floor_m": to_set(unreal.Vector(0, 0, feet_z))[2] - head_top_off.get("sole_below_foot_m", 0.0)
            - spec["loc_cm"][2] / 100.0}
-    return {k: ([round(x, 4) for x in v] if isinstance(v, list) else round(v, 4)) for k, v in out.items()}
+    out = {k: ([round(x, 4) for x in v] if isinstance(v, list) else round(v, 4)) for k, v in out.items()}
+    # joints for a skeleton picture (guide pass): body joints, the head joint and the eyes, set-frame metres
+    J = {n: sock(body, n) for n in POSE_JOINTS if body.does_socket_exist(n)}
+    J.update({n: sock(face, n) for n in EYES})
+    out["joints"] = {n: [round(c, 4) for c in to_set(v)] for n, v in J.items()}
+    return out
 
 
 def attach_check(body, face, tol_cm):
@@ -209,7 +216,13 @@ def truth(cs, subjects):
     out = {}
     for k, v in subjects.items():
         m = v["measured"]
+        j = m.get("joints") or {}
+        near = None
+        if "upperarm_l" in j and "upperarm_r" in j:
+            near = "left" if math.dist(j["upperarm_l"], cs["position"]) < math.dist(j["upperarm_r"], cs["position"]) \
+                else "right"
         out[k] = {"head_to_camera_deg": plan_angle(m["head_fwd_xy"], m["eye_xy"], cs["position"]),
+                  "nearer_shoulder": near,
                   "body_to_camera_deg": plan_angle(m["facing"], m["pelvis_xy"], cs["position"]),
                   "distance_m": round(math.dist(m["eye_xy"] + [m["eye_z"]], cs["position"]), 3)}
     return out

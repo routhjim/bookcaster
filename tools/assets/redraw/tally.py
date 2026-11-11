@@ -80,6 +80,33 @@ def tally(m: dict) -> dict:
     return out
 
 
+def torso(m: dict) -> dict:
+    """The body apart from the head: per person the judge's torso class against the scene's body angle, and front
+    clothing seen on a body the scene turns past 100 deg (a failure)."""
+    T = defaultdict(lambda: defaultdict(int))
+    fails = []
+    for iid, rec in m.items():
+        r, e = rec["redraw"], rec.get("engine") or {}
+        for k, q in r["people"].items():
+            bd = q.get("truth_body_deg")
+            if bd is None:
+                continue
+            c = cls(bd)
+            eq = (e.get("people") or {}).get(k, {})
+            for cell in (f"all/{c}", "all/all", "away100/all" if bd > 100 else "toward100/all"):
+                t = T[cell]
+                t["people"] += 1
+                t["torso_class"] += int(q.get("judge_body") == c)
+                t["torso_class_engine"] += int(eq.get("judge_body") == c)
+                t["front_wear"] += int(bool(q.get("front_wear_visible")))
+                t["front_wear_engine"] += int(bool(eq.get("front_wear_visible")))
+            if bd > 100 and q.get("front_wear_visible"):
+                fails.append(f"{iid}/{k} body {bd:.0f} deg: front clothes visible (torso judged {q.get('judge_body')})")
+    out = {c: dict(v) for c, v in sorted(T.items())}
+    out["failures"] = fails
+    return out
+
+
 def by_strength(m: dict) -> dict:
     g = defaultdict(dict)
     for iid, rec in m.items():
@@ -94,6 +121,20 @@ def main():
     if jo:
         args.remove(jo)
     res = {}
+    if "--torso" in args:
+        args.remove("--torso")
+        for a in args:
+            m = json.loads(Path(a).read_text())
+            for s, sub in by_strength(m).items():
+                t = torso(sub)
+                res[f"{Path(a).parent.name}/{s}"] = t
+                aw = t.get("away100/all", {})
+                print(f"{Path(a).parent.name}/{s}: bodies past 100 deg {aw.get('people')}: front clothes visible "
+                      f"{aw.get('front_wear')} (engine {aw.get('front_wear_engine')}), torso judged back/side/front as "
+                      f"the scene's class {aw.get('torso_class')} (engine {aw.get('torso_class_engine')})")
+        if jo:
+            Path(jo).write_text(json.dumps(res, indent=1))
+        return
     for a in args:
         m = json.loads(Path(a).read_text())
         for s, sub in by_strength(m).items():
