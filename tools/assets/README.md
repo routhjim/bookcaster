@@ -112,8 +112,9 @@ the editor lives, so a `--local` run never starts a second editor writing the sa
 either calls `run_asset.py --release-cards` first (stages in flight finish, the queue holds, the editor stops,
 both locks are freed; it returns when both cards are free) or simply polls `/tmp/gpu-05.lock` and
 `/tmp/gpu-65.lock` with `flock -n`: the scheduler treats an outside holder of the UE card for
-`ASSETS_OUTSIDE_RELEASE_S` (20), or of the Blender card alone for `ASSETS_OUTSIDE_RELEASE_BL_S` (120), as the
-same release (it never fights for a lock). Meanwhile, with the Blender card held from outside for
+`ASSETS_OUTSIDE_RELEASE_S` (20), or of the Blender card alone for `ASSETS_OUTSIDE_RELEASE_BL_S` (120) while
+leaving it idle (mean busy under 10%: a runner holding one card while it waits for the other), as the same
+release (it never fights for a lock). An outside job that works on the Blender card does not cause a release. Meanwhile, with the Blender card held from outside for
 `ASSETS_BAKE_SPILL_S` (20), bakes spill to the UE card beside the editor when it has `ASSETS_SPILL_MIN_FREE_GB`
 (8) free, at most `ASSETS_SPILL_JOBS` (2) at once; each spill is logged and counted in `--status`. While released, asset jobs wait
 (previews may still run on the iGPU); nothing runs on the CPU. Asset mode returns by itself when both locks have

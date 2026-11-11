@@ -498,6 +498,12 @@ class Sched:
                 if self.cards[bus].lent:
                     continue
                 lim = C.OUTSIDE_RELEASE_S if self.cards[bus].role == "ue" else C.OUTSIDE_RELEASE_BL_S
+                if self.cards[bus].role != "ue" and t - since >= lim:
+                    # a job working on the Blender card (busy) is not a video run waiting for the UE card: no
+                    # release, bakes spill instead; a holder that leaves the card idle is waiting for the other
+                    busy = self.load_between(bus, since, t).get("busy_mean")
+                    if busy is None or busy >= 10:
+                        continue
                 if t - since >= lim and (ours or self.card_work_queued()):
                     who = "; ".join(f"{p} {cmd[:60]}" for p, cmd in self.outside_holders(self.cards[bus]))
                     self.release(f"an outside job holds card {bus} ({who or '?'}) for {t - since:.0f}s", False, bus)
