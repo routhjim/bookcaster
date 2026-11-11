@@ -56,6 +56,16 @@ if tris > limit:
     md.use_collapse_triangulate = True
     bpy.ops.object.modifier_apply(modifier=md.name)
     t_dec = time.time() - t
+import bmesh  # noqa: E402
+
+bm = bmesh.new()
+bm.from_mesh(ob.data)
+loose = [e for e in bm.edges if not e.link_faces]
+bmesh.ops.delete(bm, geom=loose, context="EDGES")
+bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+bmesh.ops.recalc_face_normals(bm, faces=bm.faces)       # the collapse can leave a face wound against its neighbours
+bm.to_mesh(ob.data)
+bm.free()
 print(f"[img3d model] tris {tris} -> {sum(len(p.vertices) - 2 for p in ob.data.polygons)} (decimate {t_dec:.1f}s on "
       f"CPU); height {h:.3f} -> {want_h} m; yaw {yaw}")
 # material: the port's colour, plus derived bump and roughness

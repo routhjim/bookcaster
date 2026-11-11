@@ -5,8 +5,9 @@ locating parts (bounds.json gives their scale), and aimed close-ups.
 
 DEVICE is a substring of the HIP device name ("7900" for a card, "8060" for the iGPU); the caller sets
 HIP_VISIBLE_DEVICES to the one device it holds the lock for. SHOTS.json (optional) lists aimed shots:
-[{"name", "target": [x, y, z] (Blender metres, after import), "az": deg (0 = from -Y, 90 = from +X), "el": deg,
-  "dist": m, "lens": mm}]. Without it: ring (front, three-quarters, side, back) and ortho front/side/top.
+[{"name", "target": [x, y, z] (Blender metres, after import) or "top:F" (centre of the top F of the height, e.g.
+  a head), "az": deg (0 = from -Y, 90 = from +X), "el": deg, "dist": m or "0.2h" (a fraction of the height),
+  "lens": mm, "res": [w, h] (default 1152x640; the lens covers 36 mm across the wider side)}]. Without it: ring (front, three-quarters, side, back) and ortho front/side/top.
 Prints BOUNDS and writes OUT_DIR/bounds.json.
 """
 
@@ -79,10 +80,25 @@ def shot(name, az, el, dist, target, lens=50, ortho=None):
     bpy.ops.render.render(write_still=True)
 
 
+def top_centre(frac):
+    """Centre of the vertices in the top frac of the height (a standing figure's head)."""
+    zc = hi.z - frac * (hi.z - lo.z)
+    pts = [o.matrix_world @ v.co for o in objs for v in o.data.vertices]
+    pts = [p for p in pts if p.z >= zc]
+    a = Vector((min(p.x for p in pts), min(p.y for p in pts), zc))
+    b = Vector((max(p.x for p in pts), max(p.y for p in pts), hi.z))
+    return (a + b) / 2
+
+
 if shots:
     for s in shots:
-        shot(s["name"], s.get("az", 0), s.get("el", 10), s.get("dist", size * 0.4), Vector(s["target"]),
-             s.get("lens", 50))
+        tg = s["target"]
+        tg = top_centre(float(tg.split(":")[1])) if isinstance(tg, str) else Vector(tg)
+        dist = s.get("dist", size * 0.4)
+        if isinstance(dist, str):                       # "0.2h": a fraction of the height
+            dist = float(dist[:-1]) * (hi.z - lo.z)
+        sc.render.resolution_x, sc.render.resolution_y = s.get("res", [1152, 640])
+        shot(s["name"], s.get("az", 0), s.get("el", 10), dist, tg, s.get("lens", 50))
 else:
     d = size * 1.9
     for nm, az, el in (("front", 0, 8), ("front34", 35, 12), ("side", 90, 8), ("back34", 215, 15), ("back", 180, 8),
