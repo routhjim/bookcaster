@@ -103,7 +103,7 @@ def measures(k, s, W, H) -> dict:
     for side, sl in (("l", HAND_L), ("r", HAND_R)):
         hk, hs = k[sl], s[sl]
         good = hk[hs >= 0.3]
-        out[f"{side}_hand"] = (float(good[:, 0].mean()) / W, float(good[:, 1].mean()) / H) if len(good) >= 5 else None
+        out[f"{side}_hand"] = (float(good[:, 0].mean()) / W, float(good[:, 1].mean()) / H) if len(good) >= 4 else None
     e = [out["l_eye"], out["r_eye"]]
     sh = [out["l_sh"], out["r_sh"]]
     if all(e) and all(sh) and out["chin"]:
@@ -121,7 +121,8 @@ def near(p, q, tol):
 def arm_hand(m: dict, j2: dict, box) -> dict:
     """Which arms and hands the engine shows (joints in frame and seen) and whether the pose model found each."""
     tol = ARM_TOL * max(0.05, box[3] - box[1])
-    shown = lambda n: n in j2 and j2[n][2]
+    # shown: the joint is seen by the engine and has room in the frame (a hand on the frame's edge is half cut)
+    shown = lambda n: n in j2 and j2[n][2] and 0.03 < j2[n][0] < 0.97 and j2[n][1] < 0.96
     found_pts = [m.get(x) for x in ("l_el", "r_el", "l_wr", "r_wr", "l_hand", "r_hand")]
     res = {"arms_shown": 0, "arms_found": 0, "hands_shown": 0, "hands_found": 0, "missing": []}
     for side in ("l", "r"):
@@ -180,9 +181,19 @@ def main():
                 continue
             bp = [b[0] * 1152, b[1] * 640, b[2] * 1152, b[3] * 640]
             q = {}
+            j2 = p.get("joints2d") or {}
+            hy = [j2[n][1] for n in ("hand_l", "hand_r") if n in j2 and 0 <= j2[n][1] < 1]
             for kk, im in imgs.items():
                 k, s = pose(im, bp)
                 m = measures(k, s, 1152, 640)
+                if hy:              # again on the body down to the hands only: hands of 15 px were missed whole-body
+                    ub = [bp[0], bp[1], bp[2], min(640.0, (max(hy) + 0.06 * (b[3] - b[1]) + 0.03) * 640)]
+                    if ub[3] - ub[1] < (bp[3] - bp[1]) * 0.85:
+                        k2, s2 = pose(im, ub)
+                        m2 = measures(k2, s2, 1152, 640)
+                        for n in ("l_hand", "r_hand", "l_wr", "r_wr", "l_el", "r_el"):
+                            m[n] = m[n] or m2[n]
+                        m["hand_scores2"] = m2["hand_scores"]
                 ah = arm_hand(m, p.get("joints2d") or {}, b)
                 q[kk] = dict(ah, neck_ratio=m.get("neck_ratio"), scores=m["scores"], hand_scores=m["hand_scores"])
             j2 = p.get("joints2d") or {}
