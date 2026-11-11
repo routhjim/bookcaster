@@ -4,22 +4,25 @@
  "shirt": {
   "gap": 0.004,
   "collar_gap": 0.007,
-  "cuff_past_wrist": -0.01
+  "cuff_past_wrist": -0.01,
+  "tuck_below_waist": 0.07
  },
  "trousers": {
   "gap": 0.006,
   "thigh_ease": 0.6,
   "leg_ease": 0.9,
-  "leg_extra": 0.015,
+  "leg_extra": 0.02,
   "hem_z": 0.035,
-  "hem_flare": 1.12
+  "hem_flare": 1.25,
+  "smooth": 14
  },
  "shoes": {
   "gap": 0.007,
-  "top_above_ankle": 0.03,
+  "top_above_ankle": 0.0,
   "heel_back": 0.008,
-  "toe_ext": 0.02,
-  "sole_bottom": -0.004
+  "toe_ext": 0.012,
+  "sole_bottom": -0.004,
+  "toe_round": 0.55
  },
  "waistcoat": {
   "gap": 0.004,
@@ -44,9 +47,9 @@
   "tail_fan": 0.018
  },
  "coat": {
-  "gap": 0.006,
-  "open_waist": 0.085,
-  "open_widen": 0.03,
+  "gap": 0.008,
+  "open_waist": 0.11,
+  "open_widen": 0.035,
   "sleeve_short_of_wrist": -0.025,
   "sleeve_ease": 0.85,
   "cuff_len": 0.075,
@@ -54,7 +57,7 @@
   "roll_t": 0.35,
   "lapel_w": 0.08,
   "notch_t": 0.86,
-  "lapel_proud": 0.008,
+  "lapel_proud": 0.006,
   "collar_rise": 0.035,
   "collar_gap": 0.012,
   "hem_vs_knee": -0.05,
@@ -65,26 +68,27 @@
   "flap_below_waist": 0.07,
   "flap_lat": 0.15,
   "flap_w": 0.16,
-  "flap_h": 0.05,
+  "flap_h": 0.055,
   "button_r": 0.009,
   "button_dz": [
    0.06,
    0.0,
    -0.08
   ],
-  "smooth": 25
+  "smooth": 25,
+  "flap_proud": 0.005
  },
  "thickness": {
-  "coat": 0.004,
-  "skirt": 0.004,
-  "lapels": 0.003,
-  "coat_collar": 0.004,
+  "coat": 0.006,
+  "skirt": 0.006,
+  "lapels": 0.004,
+  "coat_collar": 0.005,
   "waistcoat": 0.003,
   "collar": 0.002,
   "trousers": 0.003,
   "shirt": 0.0015,
   "shoes": 0.004,
-  "flaps": 0.003,
+  "flaps": 0.004,
   "cravat": 0.0015
  },
  "materials": {
@@ -97,8 +101,8 @@
    "rough": 0.85,
    "sheen": 0.35,
    "weave": "twill",
-   "scale": 900,
-   "bump": 0.3,
+   "scale": 260,
+   "bump": 0.2,
    "vary": 0.12
   },
   "wool_vest": {
@@ -110,8 +114,8 @@
    "rough": 0.8,
    "sheen": 0.3,
    "weave": "twill",
-   "scale": 1300,
-   "bump": 0.25,
+   "scale": 320,
+   "bump": 0.18,
    "vary": 0.1
   },
   "wool_trousers": {
@@ -123,8 +127,8 @@
    "rough": 0.85,
    "sheen": 0.3,
    "weave": "twill",
-   "scale": 1100,
-   "bump": 0.25,
+   "scale": 280,
+   "bump": 0.18,
    "vary": 0.1
   },
   "cotton": {
@@ -136,8 +140,8 @@
    "rough": 0.7,
    "sheen": 0.1,
    "weave": "plain",
-   "scale": 1600,
-   "bump": 0.12
+   "scale": 420,
+   "bump": 0.08
   },
   "silk": {
    "color": [
@@ -173,12 +177,25 @@
    ],
    "rough": 0.25,
    "spec": 0.6
+  },
+  "wool_lapel": {
+   "color": [
+    0.02,
+    0.02,
+    0.024
+   ],
+   "rough": 0.7,
+   "sheen": 0.5,
+   "weave": "twill",
+   "scale": 300,
+   "bump": 0.12,
+   "vary": 0.08
   }
  },
  "material_of": {
   "coat": "wool",
   "skirt": "wool",
-  "lapels": "wool",
+  "lapels": "wool_lapel",
   "coat_collar": "wool",
   "flaps": "wool",
   "coat_buttons": "horn",

@@ -1,9 +1,13 @@
 """UE side, GPU: render a MetaHuman character, optionally dressed in skinned garments, posed, at fixed framings.
 
-Run by the MetaHuman lab's start-up shim inside a full offscreen editor started by
-    python tools/assets/metahuman/mh_run.py render job.json        (job["script"] = this file)
+Two ways to run it:
+  - through the asset scheduler's resident editor (preferred; no private editor, no card lock of our own):
+        python tools/assets/characters/char_submit.py job.json
+    the scheduler calls run(job), a generator advanced once per editor tick;
+  - in a private editor (fallback) by the lab shim: python tools/assets/characters/char_job.py job.json
+    (job["script"] = this file; the module then drives run() from a Slate tick callback and quits the editor).
 
-Job (env MH_JOB):
+Job:
   {"script", "map", "out", "result", "res": [1152, 640], "warm_frames": 150, "settle_frames": 40,
    "backdrop": true,                              (grey cyclorama instead of the template sky)
    "characters": {"<key>": {"path": "/Game/.../Character" or "/Game/.../BP_X" (assembled Blueprint),
@@ -36,10 +40,15 @@ les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
 act = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 mhs = unreal.get_editor_subsystem(unreal.MetaHumanCharacterEditorSubsystem)
 at = unreal.AssetToolsHelpers.get_asset_tools()
-JOB = json.load(open(os.environ["MH_JOB"]))
-RES = JOB.get("res", [1152, 640])
-S = {"n": 0, "busy": False, "t0": time.time(), "phase": "boot", "f_phase": 0, "i": 0, "actors": {}, "scene": [],
-     "r": {"ok": False, "shots": [], "notes": []}, "edit": []}
+JOB = {}
+RES = [1152, 640]
+S = {}
+
+
+def reset():
+    S.clear()
+    S.update({"t0": time.time(), "actors": {}, "scene": [], "edit": [],
+              "r": {"ok": False, "shots": [], "notes": []}})
 
 
 def log(m):
@@ -414,15 +423,28 @@ ARM_R = ["root", "pelvis", "spine_01", "spine_02", "spine_03", "spine_04", "spin
          "lowerarm_r", "hand_r"]
 
 
+LEG_L = ["root", "pelvis", "thigh_l", "calf_l"]
+HEAD = ["root", "pelvis", "spine_01", "spine_02", "spine_03", "spine_04", "spine_05", "neck_01", "neck_02", "head"]
+
+
 def scan_body(anim, kind):
-    """Time in a body clip where the right hand is highest (arms_up)."""
-    n, length = 80, unreal.AnimationLibrary.get_sequence_length(anim)
+    """Time in a body clip that best shows a wanted pose: arms_up (right hand highest), knee_up (left knee furthest
+    forward and up, the nearest the range-of-motion clip comes to sitting), head_turn (head yaw nearest 35 deg)."""
+    n, length = 120, unreal.AnimationLibrary.get_sequence_length(anim)
     best, best_t = None, 0.0
     for i in range(n + 1):
         t = length * i / n
-        z = bone_world(anim, ARM_R, t).translation.z
-        if best is None or z > best:
-            best, best_t = z, t
+        if kind == "arms_up":
+            score = bone_world(anim, ARM_R, t).translation.z
+        elif kind == "knee_up":
+            k = bone_world(anim, LEG_L, t).translation
+            score = k.z + abs(k.y)
+        else:
+            h = bone_world(anim, HEAD, t)
+            fwd = h.rotation.rotate_vector(unreal.Vector(0, 1, 0))
+            score = -abs(abs(math.degrees(math.atan2(fwd.x, fwd.y))) - 35)
+        if best is None or score > best:
+            best, best_t = score, t
     return best_t, best, length
 
 
@@ -497,8 +519,8 @@ def setup_shot(sh):
         head = unreal.Vector(0, 0, 165)
     info["head"] = [round(head.x, 1), round(head.y, 1), round(head.z, 1)]
     fr, az, el = sh.get("frame", "close"), sh.get("az", 0), sh.get("el", 3)
-    if fr == "close":
-        cam = camera(sh["name"], head + unreal.Vector(0, 0, -6), az, el, 200, 85)
+    if fr == "close":                 # head and shoulders: aim near the eyes (the head joint sits low in the skull)
+        cam = camera(sh["name"], head + unreal.Vector(0, 0, sh.get("dz", 1)), az, el, sh.get("dist", 230), 85)
     elif fr == "medium":
         cam = camera(sh["name"], head + unreal.Vector(0, 0, -38), az, el, 260, 50)
     else:
@@ -506,120 +528,181 @@ def setup_shot(sh):
     return cam, info
 
 
-def finish():
-    for c in S["edit"]:
+def track_images(spec):
+    """Face contour tracking (the conform tool's NNE tracker) on raw BGRA8 images: {name: [path, w, h]} ->
+    {name: {curve: [[x, y], ...]}} in image pixels."""
+    out = {}
+    for name, (path, w, h) in spec.items():
+        t0 = time.time()
+        b = open(path, "rb").read()
+        px = [unreal.Color(b[i + 2], b[i + 1], b[i], 255) for i in range(0, len(b), 4)]
+        res = mhs.track_face_landmarks_from_image(px, int(w), int(h))
+        curves = {}
+        if res:
+            for k, v in res.items():
+                pts = None
+                for attr in ("points", "Points", "key_points", "tracking_points"):
+                    try:
+                        pts = [[round(p.x, 2), round(p.y, 2)] for p in getattr(v, attr)]
+                        break
+                    except Exception:
+                        pass
+                curves[str(k)] = pts if pts is not None else v.export_text()
+        out[name] = {"curves": curves, "time_s": round(time.time() - t0, 2)}
+        log(f"tracked {name}: {len(curves)} curves in {out[name]['time_s']} s")
+    S["r"]["track"] = out
+
+
+def cleanup():
+    """Leave the (possibly resident) editor as it was: our actors gone, characters released."""
+    try:
+        les.eject_pilot_level_actor()
+    except Exception:
+        pass
+    for a in S.get("scene", []) + [t[0] for t in S.get("actors", {}).values()]:
+        try:
+            act.destroy_actor(a)
+        except Exception:
+            pass
+    for c in S.get("edit", []):
         try:
             mhs.remove_object_to_edit(c)
         except Exception:
             pass
     S["r"]["elapsed_s"] = round(time.time() - S["t0"], 1)
-    json.dump(S["r"], open(JOB["result"], "w"), indent=1, default=str)
+    if JOB.get("result"):
+        json.dump(S["r"], open(JOB["result"], "w"), indent=1, default=str)
     log(f"done ok={S['r']['ok']} in {S['r']['elapsed_s']} s")
-    unreal.unregister_slate_post_tick_callback(HANDLE)
-    unreal.SystemLibrary.quit_editor()
 
 
-def goto(p):
-    S["phase"], S["f_phase"], S["t_phase"] = p, S["n"], time.time()
+def frames(n):
+    for _ in range(int(n)):
+        yield
 
 
-def waited(frames):
-    return S["n"] - S["f_phase"] >= frames
-
-
-def _tick():
-    S["n"] += 1
-    ph, shots = S["phase"], JOB.get("shots", [])
-    if ph == "boot":
-        w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
-        if JOB.get("map") and (w is None or not w.get_path_name().startswith(JOB["map"])):
-            les.load_level(JOB["map"])
-        if JOB.get("make"):
-            import sys
-            sys.path.insert(0, os.path.dirname(os.path.abspath(JOB["script"])))
-            import char_make
-            char_make.scan()
-            S["r"]["make"] = {}
-            for spec in JOB["make"]:
-                S["r"]["make"][spec["name"]] = char_make.make(spec)
-                log(f"made {spec['name']}: {json.dumps(S['r']['make'][spec['name']], default=str)[:300]}")
-        if JOB.get("cloud"):
+def _run():
+    shots = JOB.get("shots", [])
+    w = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    if JOB.get("map") and (w is None or not w.get_path_name().startswith(JOB["map"])):
+        les.load_level(JOB["map"])
+        yield from frames(5)
+    if JOB.get("track"):
+        track_images(JOB["track"])
+        yield
+    if JOB.get("make"):
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import importlib
+        import char_make
+        importlib.reload(char_make)          # the resident editor keeps modules between jobs
+        if JOB.get("coeff_cache"):
+            char_make.COEFF_CACHE = JOB["coeff_cache"]
+        char_make.scan()
+        S["r"]["make"] = {}
+        for spec in JOB["make"]:
+            S["r"]["make"][spec["name"]] = char_make.make(spec)
+            log(f"made {spec['name']}: {json.dumps(S['r']['make'][spec['name']], default=str)[:300]}")
+            yield
+    if JOB.get("cloud"):
+        try:
             cloud_build(JOB["cloud"])
-            bp = S["r"]["cloud"].get("blueprint")
-            for k, spec in JOB.get("characters", {}).items():
-                if spec.get("path") == "@built":
-                    if not bp:
-                        raise RuntimeError("no assembled blueprint to render")
+        except Exception:
+            S["r"].setdefault("cloud", {})["error"] = traceback.format_exc()
+            note(S["r"]["cloud"]["error"])
+        bp = S["r"]["cloud"].get("blueprint")
+        for k, spec in JOB.get("characters", {}).items():
+            if spec.get("path") == "@built":
+                if not bp:
+                    note("no assembled blueprint: rendering the editor preview actor instead")
+                    spec["path"] = JOB["cloud"]["path"]
+                else:
                     spec["path"] = bp
-        if JOB.get("import_outfit"):
-            import_outfit(JOB["import_outfit"])
-        if JOB.get("export_geometry"):
-            try:
-                export_geometry(JOB["export_geometry"])
-            except Exception:
-                S["r"]["export_geometry"] = {"error": traceback.format_exc()}
-                note(S["r"]["export_geometry"]["error"])
-        if not shots:
-            S["r"]["ok"] = True
-            finish()
-            return
-        les.editor_set_game_view(True)
-        unreal.AutomationLibrary.set_scalability_quality_to_epic(
-            unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
-        light_scene()
-        for sh in shots:
-            character_actor(sh["char"])
-        S["r"]["setup_s"] = round(time.time() - S["t0"], 1)
-        goto("warm")
-    elif ph == "warm" and waited(JOB.get("warm_frames", 150)):
-        t = time.time()
-        unreal.AutomationLibrary.finish_loading_before_screenshot()
-        S["r"]["finish_loading_s"] = round(time.time() - t, 1)
-        goto("pose")
-    elif ph == "pose":
-        S["cam"], S["info"] = setup_shot(shots[S["i"]])
-        les.pilot_level_actor(S["cam"])
-        goto("settle")
-    elif ph == "settle" and waited(JOB.get("settle_frames", 40)):
-        path = os.path.join(JOB["out"], f"{shots[S['i']]['name']}.png")
+        yield
+    if JOB.get("import_outfit"):
+        import_outfit(JOB["import_outfit"])
+        yield
+    if JOB.get("export_geometry"):
+        try:
+            export_geometry(JOB["export_geometry"])
+        except Exception:
+            S["r"]["export_geometry"] = {"error": traceback.format_exc()}
+            note(S["r"]["export_geometry"]["error"])
+        yield
+    if not shots:
+        S["r"]["ok"] = True
+        return
+    les.editor_set_game_view(True)
+    unreal.AutomationLibrary.set_scalability_quality_to_epic(
+        unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world())
+    try:
+        unreal.SystemLibrary.execute_console_command(None, "t.MaxFPS 60")
+    except Exception:
+        pass
+    light_scene()
+    for sh in shots:
+        character_actor(sh["char"])
+    S["r"]["setup_s"] = round(time.time() - S["t0"], 1)
+    yield from frames(JOB.get("warm_frames", 150))
+    t = time.time()
+    unreal.AutomationLibrary.finish_loading_before_screenshot()
+    S["r"]["finish_loading_s"] = round(time.time() - t, 1)
+    for sh in shots:
+        cam, info = setup_shot(sh)
+        les.pilot_level_actor(cam)
+        yield from frames(JOB.get("settle_frames", 40))
+        path = os.path.join(JOB["out"], f"{sh['name']}.png")
         if os.path.exists(path):
             os.remove(path)
-        S["pending"] = path
-        goto("shoot")
-        unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], path, camera=S["cam"],
-                                                         force_game_view=True)
-    elif ph == "shoot":
-        if os.path.exists(S["pending"]) and os.path.getsize(S["pending"]) > 0:
-            S["info"]["path"] = S["pending"]
-            S["info"]["t_s"] = round(time.time() - S["t0"], 1)
-            S["r"]["shots"].append(S["info"])
-            log(f"shot {json.dumps(S['info'])}")
-            les.eject_pilot_level_actor()
-            S["i"] += 1
-            if S["i"] >= len(shots):
-                S["r"]["ok"] = True
-                finish()
-                return
-            goto("pose")
-        elif time.time() - S["t_phase"] > 90:
-            raise RuntimeError(f"screenshot not written: {S['pending']}")
+        unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], path, camera=cam, force_game_view=True)
+        t1 = time.time()
+        while not (os.path.exists(path) and os.path.getsize(path) > 0):
+            if time.time() - t1 > 90:
+                raise RuntimeError(f"screenshot not written: {path}")
+            yield
+        info["path"], info["t_s"] = path, round(time.time() - S["t0"], 1)
+        S["r"]["shots"].append(info)
+        log(f"shot {json.dumps(info)}")
+        les.eject_pilot_level_actor()
+    S["r"]["ok"] = True
 
 
-def tick(dt):
-    if S["busy"] or S["phase"] == "over":
-        return
-    S["busy"] = True
+def run(job):
+    """Entry point (scheduler or private editor): a generator, one step per editor tick; returns the result."""
+    global JOB, RES
+    JOB = job
+    RES = job.get("res", [1152, 640])
+    reset()
+    if job.get("out"):
+        os.makedirs(job["out"], exist_ok=True)
     try:
-        _tick()
+        yield from _run()
     except Exception:
         S["r"]["error"] = traceback.format_exc()
         unreal.log_error(S["r"]["error"])
-        S["phase"] = "over"
-        finish()
-    finally:
-        S["busy"] = False
+        cleanup()
+        raise                       # the scheduler then reports the job failed instead of waiting for outputs
+    cleanup()
+    return S["r"]
 
 
-os.makedirs(JOB["out"], exist_ok=True)
-HANDLE = unreal.register_slate_post_tick_callback(tick)
-log("registered")
+if __name__ == "__mh_job__":          # private editor started by char_job.py: drive run() from the Slate tick
+    _GEN = run(json.load(open(os.environ["MH_JOB"])))
+
+    _BUSY = [False]
+
+    def _tick(dt):
+        if _BUSY[0]:                  # Slate ticks re-enter while a long step (asset build, import) pumps messages
+            return
+        _BUSY[0] = True
+        try:
+            next(_GEN)
+        except StopIteration:
+            unreal.unregister_slate_post_tick_callback(_HANDLE)
+            unreal.SystemLibrary.quit_editor()
+        except Exception:
+            unreal.unregister_slate_post_tick_callback(_HANDLE)
+            unreal.SystemLibrary.quit_editor()
+        finally:
+            _BUSY[0] = False
+
+    _HANDLE = unreal.register_slate_post_tick_callback(_tick)

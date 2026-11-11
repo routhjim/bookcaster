@@ -218,11 +218,30 @@ def bm_of(ob):
     return bm
 
 
-def smooth(ob, iters, factor=0.5, pin_boundary=False):
+def smooth(ob, iters, factor=0.5, pin_boundary=True):
+    """Laplacian smoothing; open edges stay put by default (an unpinned neckline or hem creeps several cm)."""
     bm = bm_of(ob)
     vs = [v for v in bm.verts if not (pin_boundary and v.is_boundary)]
     for _ in range(iters):
         bmesh.ops.smooth_vert(bm, verts=vs, factor=factor, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+    bm.to_mesh(ob.data)
+    bm.free()
+
+
+def smooth_edges(ob, iters=12, factor=0.5):
+    """Smooth open edges along themselves (each boundary vertex toward its boundary neighbours): a cut that follows
+    the body's faces is stair-stepped; this makes it a clean line without letting it creep."""
+    bm = bm_of(ob)
+    for _ in range(iters):
+        new = {}
+        for v in bm.verts:
+            if not v.is_boundary:
+                continue
+            nb = [e.other_vert(v).co for e in v.link_edges if e.is_boundary]
+            if len(nb) == 2:
+                new[v] = v.co * (1 - factor) + (nb[0] + nb[1]) * (factor / 2)
+        for v, c in new.items():
+            v.co = c
     bm.to_mesh(ob.data)
     bm.free()
 
@@ -522,11 +541,12 @@ def build(arm, body, head):
     sh = S("shirt", {})
     keep = []
     for i, c in enumerate(cls):
-        k = c in ("torso", "upperarm", "lowerarm") and co[i].z > F.pelvis_z - 0.06
+        k = c in ("torso", "upperarm", "lowerarm") and co[i].z > F.waist_z - sh.get("tuck_below_waist", 0.07)
         if c == "lowerarm" and wrist_t(i, f"hand_{side(i)}", sh.get("cuff_past_wrist", -0.01)) > 0:
             k = False
         keep.append(k)
     shirt = body_subset("shirt", body, keep)
+    smooth_edges(shirt)
     smooth(shirt, 6)
     fit_layer(shirt, under, sh.get("gap", 0.004))
     parts["shirt"] = shirt
@@ -541,7 +561,8 @@ def build(arm, body, head):
     keep = [(c in ("thigh", "calf") or (c == "torso" and co[i].z < top)) and co[i].z > F.ankle_z + 0.02
             for i, c in enumerate(cls)]
     trousers = body_subset("trousers", body, keep)
-    smooth(trousers, 8)
+    smooth_edges(trousers)
+    smooth(trousers, tr.get("smooth", 14))
     for s_ in ("l", "r"):
         knee = F.j[f"calf_{s_}"]
         ank = F.j[f"foot_{s_}"]
@@ -554,7 +575,7 @@ def build(arm, body, head):
         straighten(trousers, hip, knee, tr.get("thigh_ease", 0.5), 0.0, on_leg)
         straighten(trousers, knee, ank, tr.get("leg_ease", 0.85), tr.get("leg_extra", 0.012), on_leg)
     extend_hems(trousers, F, F.ankle_z + 0.03, tr.get("hem_z", 0.035), tr.get("hem_flare", 1.12))
-    fit_layer(trousers, under, tr.get("gap", 0.006), rounds=2, smooth_iters=2)
+    fit_layer(trousers, under + [shirt], tr.get("gap", 0.006), rounds=2, smooth_iters=2)
     parts["trousers"] = trousers
 
     # ---- shoes: lofted along each foot from heel to toe, convex-hull cross-sections + gap (no toes)
@@ -575,7 +596,8 @@ def build(arm, body, head):
     keep = []
     for i, c in enumerate(cls):
         lat, fw, z = loc[i]
-        if c != "torso" or frac[i].get("upperarm", 0) > 0.15:
+        if c != "torso" or (frac[i].get("upperarm", 0) > wc.get("armhole_frac", 0.35)
+                            and abs(lat) > wc.get("armhole_lat", 0.10)):
             keep.append(False)
             continue
         front = fw > 0
@@ -587,6 +609,7 @@ def build(arm, body, head):
             k = False
         keep.append(k)
     waistcoat = body_subset("waistcoat", body, keep)
+    smooth_edges(waistcoat)
     smooth(waistcoat, 8)
     fit_layer(waistcoat, under + [shirt, trousers], wc.get("gap", 0.004))
     parts["waistcoat"] = waistcoat
@@ -608,7 +631,7 @@ def build(arm, body, head):
             k = True                      # the back of the neck base, so the coat meets its collar
         if c == "torso" and z > F.neck_z + ct.get("back_neck_rise", 0.02):
             k = False
-        if k and fw > 0 and c in ("torso", "neck") and z > F.neck_z - 0.06:
+        if k and fw > 0 and c in ("torso", "neck") and z > F.neck_z - 0.06 and abs(lat) < ct.get("front_neck_half", 0.09):
             k = False                     # front of the neck: the shirt collar and cravat show here
         if k and fw > 0 and c == "torso":
             t = (z - F.waist_z) / max(1e-3, F.neck_z - F.waist_z)
@@ -617,6 +640,7 @@ def build(arm, body, head):
                 k = False
         keep.append(k)
     coat = body_subset("coat", body, keep)
+    smooth_edges(coat)
     smooth(coat, ct.get("smooth", 25))
     for s_ in ("l", "r"):
         sgn = 1 if F.local(F.j[f"upperarm_{s_}"])[0] > 0 else -1
@@ -625,7 +649,7 @@ def build(arm, body, head):
             return F.local(coat.matrix_world @ v.co)[0] * sgn > 0.17
         straighten(coat, F.j[f"upperarm_{s_}"], F.j[f"lowerarm_{s_}"], ct.get("sleeve_ease", 0.6), 0.008, on_arm)
         straighten(coat, F.j[f"lowerarm_{s_}"], F.j[f"hand_{s_}"], ct.get("sleeve_ease", 0.6), 0.012, on_arm)
-    fit_layer(coat, under + [shirt, waistcoat, parts["wc_buttons"], parts["cravat"]], ct.get("gap", 0.006))
+    fit_layer(coat, under + [shirt, collar, waistcoat, parts["wc_buttons"], parts["cravat"]], ct.get("gap", 0.006))
     cuffs(F, coat, ct)
     parts["coat"] = coat
     parts["lapels"] = lapels(F, coat, ct)
@@ -880,6 +904,7 @@ def lapels(F, coat, ct):
         v.co += v.normal * ct.get("lapel_proud", 0.005)
     bml.to_mesh(ob.data)
     bml.free()
+    smooth(ob, ct.get("lapel_edge_smooth", 6), 0.5, pin_boundary=False)   # even out the face-stepped outline
     return ob
 
 
@@ -967,7 +992,7 @@ def shoe(F, pts, side, so, nst=22, nang=40):
         cz = max(0.02, sum(p.z for p in band) / len(band))
         hull = convex_hull_2d([(round(p.dot(lat) - cl, 4), round(p.z - cz, 4)) for p in band])
         # toe: taper the last stretch to a rounded point
-        taper = 1.0 if t < 0.8 else max(0.25, 1 - (t - 0.8) / 0.2 * 0.75) ** 0.5
+        taper = 1.0 if t < 0.8 else max(so.get("toe_round", 0.55), 1 - (t - 0.8) / 0.2 * 0.75) ** 0.5
         ring = []
         for a in range(nang):
             ang = 2 * math.pi * a / nang
@@ -988,27 +1013,31 @@ def shoe(F, pts, side, so, nst=22, nang=40):
 
 
 def flaps(F, skirt_ob, ct):
-    bvh = collider([skirt_ob])
-    objs = []
-    z = F.waist_z - ct.get("flap_below_waist", 0.07)
-    for sgn in (-1, 1):
-        lat = sgn * ct.get("flap_lat", 0.15)
-        p = F.world(lat * 2.5, 0.6, z)
-        tgt = F.world(lat, 0.0, z)
-        d = (tgt - p).normalized()
-        hit = bvh.ray_cast(p, d, 2.0)
-        if hit[0] is None:
-            continue
-        n = hit[1]
-        tang = n.cross(Vector((0, 0, 1))).normalized()
-        w, h = ct.get("flap_w", 0.16), ct.get("flap_h", 0.05)
-        c = hit[0] + n * 0.003
-        quad = [c + tang * (-w / 2) + Vector((0, 0, 0)), c + tang * (w / 2), c + tang * (w / 2) + Vector((0, 0, -h)),
-                c + tang * (-w / 2) + Vector((0, 0, -h))]
-        me = bpy.data.meshes.new("flap")
-        me.from_pydata([tuple(q) for q in quad], [], [(0, 1, 2, 3)])
-        objs.append(new_obj("flap", me))
-    ob = join(objs, "flaps")
+    """Pocket flaps: the skirt's own faces in a window at each hip (cut from the surface, so they follow its curve),
+    laid a few millimetres proud; solidified later like the rest of the coat."""
+    z1 = F.waist_z - ct.get("flap_below_waist", 0.07)
+    z0 = z1 - ct.get("flap_h", 0.055)
+    half_w = ct.get("flap_w", 0.16) / 2
+    lat0 = ct.get("flap_lat", 0.15)
+    me = skirt_ob.data.copy()
+    ob = new_obj("flaps", me)
+    bm = bm_of(ob)
+    bm.faces.ensure_lookup_table()
+    kill = []
+    for f in bm.faces:
+        c = f.calc_center_median()
+        lat, fw, z = F.local(c)
+        if not (z0 < z < z1 and abs(abs(lat) - lat0) < half_w and fw > -0.02):
+            kill.append(f)
+    bmesh.ops.delete(bm, geom=kill, context="FACES")
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+    bm.normal_update()
+    cx, cy = F.center
+    for v in bm.verts:
+        d = Vector((v.co.x - cx, v.co.y - cy, 0)).normalized()
+        v.co += d * ct.get("flap_proud", 0.005)
+    bm.to_mesh(ob.data)
+    bm.free()
     return ob
 
 
@@ -1370,11 +1399,15 @@ def preview(objs, tag, views=(("front", 0), ("three_q", 35), ("side", 90), ("bac
     cam = new_obj("cam", cd)
     sc.camera = cam
     paths = []
-    for name, az in views:
+    for view in views:
+        name, az = view[0], view[1]
+        vz = view[2] if len(view) > 2 else tz
+        vd = view[3] if len(view) > 3 else dist
+        cd.lens = view[4] if len(view) > 4 else focal
         a = math.radians(az)
         d = F.fwd * math.cos(a) + F.lat * math.sin(a)
-        tgt = Vector((F.center[0], F.center[1], tz))
-        cam.location = tgt + d * dist + Vector((0, 0, 0.05))
+        tgt = Vector((F.center[0], F.center[1], vz))
+        cam.location = tgt + d * vd + Vector((0, 0, 0.05))
         cam.rotation_euler = (tgt - cam.location).to_track_quat("-Z", "Y").to_euler()
         p = os.path.join(OUT, "preview", f"{tag}_{name}.png")
         sc.render.filepath = p
@@ -1432,7 +1465,7 @@ def main():
                 with Timer(f"preview_{kind}"):
                     REPORT.setdefault("preview_pose", []).extend(
                         preview(garments + [trim] + ([head] if head else []), kind,
-                                views=(("front", 0), ("side", 90)), **JOB.get("preview_args", {})))
+                                **{**JOB.get("preview_args", {}), "views": (("front", 0), ("side", 90))}))
         test_pose(arm, "rest")
     outfit = None
     if "bake" in steps or "export" in steps:
