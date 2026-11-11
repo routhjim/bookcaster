@@ -97,6 +97,16 @@ HOLD = Path(os.environ.get("ASSETS_GPU_HOLD", str(C.UE_HOME / "GPU_HOLD")))
 def sched_active():
     """The asset scheduler (assetd.py) owns the cards while it runs (tenant files /tmp/gpu-<bus>.tenant); it reads
     any outside holder of a card for ~20 s as a release and stops its editor, so paint.py stays off the cards then."""
+    dl = Path(os.environ.get("ASSETS_SCHED_DIR", str(C.UE_HOME / "sched"))) / "daemon.lock"
+    if dl.exists():                          # the scheduler holds this flock while it lives
+        fd = os.open(dl, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
     for t in Path("/tmp").glob("gpu-*.tenant"):
         try:
             pid = json.loads(t.read_text()).get("sched_pid")
