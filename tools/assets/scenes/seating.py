@@ -158,6 +158,8 @@ def seated_variant(library: Path, base: str, seat: dict) -> str | None:
     import re
     best = (0.031, None)
     for d in sorted((library / "character").glob(f"{base}_seated_*")):
+        if "_veil" in d.name[len(base) + 8:]:     # a wardrobe variant of a stance, not a stance (seated_variant
+            continue                               # picks the stance; "variant" in the spec adds its suffix)
         p = d / "character.json"
         if not p.exists():
             continue
@@ -212,6 +214,10 @@ def plan(spec: dict, library: Path) -> dict:
                 vid = seated_variant(library, base, S[n])
                 if not vid:
                     continue                     # no stance of this person settled for that seat
+                if c.get("variant"):              # the same stance's wardrobe variant (e.g. "veiled")
+                    vv = f"{vid}_{c['variant']}"
+                    if (library / "character" / vv / "character.json").exists():
+                        vid = vv
                 c = dict(c, id=vid)
             spec["characters"][k] = place(c, S[n], fitd)
             pr = spec["characters"][k]["body_pose"]["params"]
