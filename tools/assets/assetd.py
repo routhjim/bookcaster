@@ -494,7 +494,8 @@ class Sched:
             for bus, since in self.outside.items():
                 if self.cards[bus].lent:
                     continue
-                if t - since >= C.OUTSIDE_RELEASE_S and (ours or self.card_work_queued()):
+                lim = C.OUTSIDE_RELEASE_S if self.cards[bus].role == "ue" else C.OUTSIDE_RELEASE_BL_S
+                if t - since >= lim and (ours or self.card_work_queued()):
                     who = "; ".join(f"{p} {cmd[:60]}" for p, cmd in self.outside_holders(self.cards[bus]))
                     self.release(f"an outside job holds card {bus} ({who or '?'}) for {t - since:.0f}s", False)
                     break
@@ -698,7 +699,8 @@ class Sched:
         out_s = now() - home.outside_since if home.outside_since and home.fd is None else 0.0
         if (st.job.mode == "final" and C.BAKE_SPILL_S >= 0 and not self.released and (out_s >= C.BAKE_SPILL_S or home.draining
                                                                  or now() < home.released_until)
-                and ue.fd is not None and len(ue.blender) < 1 and ue.free_gb() >= need + 2):
+                and len(ue.blender) < C.SPILL_JOBS and not ue.lent and not ue.draining
+                and (ue.fd is not None or ue.hold()) and ue.free_gb() >= max(need, C.SPILL_MIN_FREE_GB)):
             self.spills += 1
             st.info["spill"] = (f"Blender card {home.bus} held by an outside job for {out_s:.0f}s; "
                                 f"baking on the UE card {ue.bus} ({ue.free_gb():.1f} GB free)")

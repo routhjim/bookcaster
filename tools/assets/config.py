@@ -38,9 +38,12 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_BLENDER_PER_CARD  Blender jobs at once on a card   default 3
     ASSETS_BLENDER_THREADS   Blender CPU threads per job      default 4 (the CPU-by-nature parts)
     ASSETS_BLENDER_LINGER_S  keep the Blender card after the last job   default 120
-    ASSETS_BAKE_SPILL_S  bake on the UE card when an outside job has held the Blender card this long; default -1
-                         (never: an outside holder releases both cards instead, see ASSETS_OUTSIDE_RELEASE_S)
-    ASSETS_OUTSIDE_RELEASE_S  an outside holder of either card for this long = a release (video run); default 20
+    ASSETS_BAKE_SPILL_S  bake on the UE card (beside the editor) when an outside job has held the Blender card this
+                         long; default 20; -1 = never. Needs ASSETS_SPILL_MIN_FREE_GB (8) free there; at most
+                         ASSETS_SPILL_JOBS (2) such bakes at once. Each spill is logged and counted (--status)
+    ASSETS_OUTSIDE_RELEASE_S  an outside holder of the UE card for this long = a release (video run); default 20
+    ASSETS_OUTSIDE_RELEASE_BL_S  the same for the Blender card alone; default 120 (bakes spill meanwhile; a video
+                         runner that needs both cards should call --release-cards rather than wait)
     ASSETS_RECLAIM_FREE_S  after a release, both locks free this long (and asset work queued) = reclaim; default 5
     ASSETS_RELEASE_GRACE_S  after --release-card the card is not retaken for this long   default 120
     ASSETS_UE_VRAM_GB   free VRAM to start the editor           default 8
@@ -89,7 +92,10 @@ BLENDER_CARD = os.environ.get("ASSETS_BLENDER_CARD", "05")
 BLENDER_PER_CARD = int(os.environ.get("ASSETS_BLENDER_PER_CARD", "3"))
 BLENDER_THREADS = int(os.environ.get("ASSETS_BLENDER_THREADS", "4"))
 BLENDER_LINGER_S = float(os.environ.get("ASSETS_BLENDER_LINGER_S", "120"))
-BAKE_SPILL_S = float(os.environ.get("ASSETS_BAKE_SPILL_S", "-1"))
+BAKE_SPILL_S = float(os.environ.get("ASSETS_BAKE_SPILL_S", "20"))
+SPILL_MIN_FREE_GB = float(os.environ.get("ASSETS_SPILL_MIN_FREE_GB", "8"))
+SPILL_JOBS = int(os.environ.get("ASSETS_SPILL_JOBS", "2"))
+OUTSIDE_RELEASE_BL_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_BL_S", "120"))
 OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))
 RECLAIM_FREE_S = float(os.environ.get("ASSETS_RECLAIM_FREE_S", "5"))
 RELEASE_GRACE_S = float(os.environ.get("ASSETS_RELEASE_GRACE_S", "120"))

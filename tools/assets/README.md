@@ -108,12 +108,38 @@ the editor lives, so a `--local` run never starts a second editor writing the sa
 **Asset work and video work alternate; they do not overlap.** The video model needs both cards. A video runner
 either calls `run_asset.py --release-cards` first (stages in flight finish, the queue holds, the editor stops,
 both locks are freed; it returns when both cards are free) or simply polls `/tmp/gpu-05.lock` and
-`/tmp/gpu-65.lock` with `flock -n`: the scheduler treats any outside holder of either card for
-`ASSETS_OUTSIDE_RELEASE_S` (20) as the same release (it never fights for a lock). While released, asset jobs wait
+`/tmp/gpu-65.lock` with `flock -n`: the scheduler treats an outside holder of the UE card for
+`ASSETS_OUTSIDE_RELEASE_S` (20), or of the Blender card alone for `ASSETS_OUTSIDE_RELEASE_BL_S` (120), as the
+same release (it never fights for a lock). Meanwhile, with the Blender card held from outside for
+`ASSETS_BAKE_SPILL_S` (20), bakes spill to the UE card beside the editor when it has `ASSETS_SPILL_MIN_FREE_GB`
+(8) free, at most `ASSETS_SPILL_JOBS` (2) at once; each spill is logged and counted in `--status`. While released, asset jobs wait
 (previews may still run on the iGPU); nothing runs on the CPU. Asset mode returns by itself when both locks have
 been free for `ASSETS_RECLAIM_FREE_S` (5) with asset work queued (after `ASSETS_RELEASE_GRACE_S`, 120, for a
 manual release), or at `--reclaim-cards`; the cost is the editor's reload. `--release-card 05` gives up only the
 Blender card for an outside job that needs one card.
+
+**Other UE work goes through the same editor (`--ue-job`).** Tools that need a UE editor (the set builder, the
+character and MetaHuman tools) should not start private editors: those hold a card the scheduler cannot plan
+around. They submit a job instead:
+
+```
+python tools/assets/run_asset.py --ue-job JOB.json
+# JOB.json: {"project": ".../SetLab/SetLab.uproject", "script": "editor-side .py", "job": {...},
+#            "outputs": [files to wait for], "timeout_s": 1800, "id": "name", "log_dir": "folder"}
+```
+
+The script runs inside the resident editor with `JOB` (the "job" dict) in its globals. If it defines
+`run(job)`, that is called: a dict return is the result; a generator is advanced one step per editor tick (for
+anything that needs rendered frames: yield between steps) and its return value is the result. The client prints
+`{"rc", "result", "result_file", "seconds", "error"}` as JSON and exits 0 when the script succeeded and every
+listed output exists. The job's stage record is `<log_dir>/logs/sched.json`.
+
+One editor serves one project at a time: when the oldest queued UE work is for another project and the current
+project has nothing queued, the editor quits and restarts on that project (the swap costs one editor start,
+measured below). A project keeps its own start-up shim (`Content/Python/init_unreal.py`): the job file is passed
+as both `ASSETS_UE_JOB` and `MH_JOB`, so the asset chain's shim and the character tools' shim both start the
+scheduler's server loop (`ue/ue_render.py`); a project without a shim gets the chain's. Other projects are not
+given the stage level, ray-tracing settings or mannequin.
 
 ## Settings
 
