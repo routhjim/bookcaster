@@ -797,6 +797,10 @@ class Sched:
         self.t_guard = t
         self.guard.update()
         self.verdict = self.guard.verdict()
+        hold = Path(os.environ.get("ASSETS_GPU_HOLD", str(C.UE_HOME / "GPU_HOLD")))
+        if hold.exists():                                   # the machine's hold file: no new card job
+            self.verdict["cards"] = False
+            self.verdict["why"].append(f"{hold} exists: no new card job")
         self.peak_load = max(self.peak_load, os.getloadavg()[0])
         why = "; ".join(self.verdict["why"])
         if why != self.said_why:
@@ -2114,6 +2118,12 @@ def feed(list_path):
     for ln in lines:
         if ln in fed:
             continue
+        t0 = now()                                       # leave one place in each line for other builders
+        while now() - t0 < 600:
+            ln_st = (client_cmd("status") or {}).get("line") or {}
+            if not ln_st or all(v["waiting"] < ln_st["line_max"] - 1 for v in ln_st["stations"].values()):
+                break
+            time.sleep(2)
         while True:
             argv = shlex.split(ln)
             rc = (client_line_cmd(argv[1:k] + ["--detach"] + argv[k:]) if argv[0] == "--line-cmd" and

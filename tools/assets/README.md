@@ -9,8 +9,7 @@ python tools/assets/run_asset.py --status                            # the sched
 python tools/assets/run_asset.py --stop-editor                       # unload the resident UE editor
 ```
 
-Stdlib Python 3 only on the calling side. Any number of runs may go at once: they queue in one scheduler (see
-"Scheduler, devices and the box").
+Stdlib Python 3 only on the calling side. Runs go through one serial line with short queues (see "The line").
 
 | Step | Where | What |
 |---|---|---|
@@ -68,43 +67,72 @@ sheet when UE stills follow (`--sheet` = 320 px, 16 spp; `--full-sheet` = 512 px
 `--formats glb,fbx,usd`, `--device auto|xtx|igpu` (`cpu`: manual debugging only), `--hiprt 0|1` (Cycles HIP RT, default on), `--warm-frames`, `--settle-frames`,
 `--warm-s`, `--settle-s`, `--ue-timeout`.
 
-## Scheduler, devices and the box
+## The line: stations, the work list, batches and the power guard
 
-`run_asset.py` is a thin client of one scheduler per box (`assetd.py`): it sends its command line over
-`$ASSETS_SCHED_DIR/sched.sock`, prints the job's log and exits with the job's code (same outputs as before). The
-scheduler starts on first use (detached, log `$ASSETS_LOGS/assets_sched_<mmdd>.log`) and exits after
-`ASSETS_SCHED_IDLE_S` (60) with no job and no editor. `--local` (or `ASSETS_SCHED=0`) runs the old in-process path (debugging); a
-client whose `ASSETS_*` environment differs from the scheduler's runs locally too.
+All GPU work on this box goes through ONE door: the asset line (`assetd.py`, logic in `line.py`; `run_asset.py` is
+its client). Nothing outside the line takes a card or iGPU lock.
 
 ```
-python tools/assets/run_asset.py --status          # devices (who holds each card), queue, recent jobs with per-stage times
-python tools/assets/run_asset.py --release-cards   # make way for a video run (both cards); prints how long it took
-python tools/assets/run_asset.py --reclaim-cards   # back to asset mode: reload the editor, resume the queue
-python tools/assets/run_asset.py --release-card 05 # give up the Blender card only (the editor stays)
-python tools/assets/run_asset.py --stop-editor     # unload the resident UE editor
-python tools/assets/run_asset.py --cancel 12       # cancel job 12 (or by asset id); see --status
+python tools/assets/run_asset.py SPEC MODEL [--detach]                      # an asset (bake -> engine -> manifest)
+python tools/assets/run_asset.py SPEC MODEL --ue-only --detach              # engine stage only (baked before)
+python tools/assets/run_asset.py --ue-job JOB.json [--detach]               # an editor script (sets, characters, scenes)
+python tools/assets/run_asset.py --line-cmd igpu refs --id X [--log F] [--detach] -- CMD...   # an existing tool at a station
+python tools/assets/run_asset.py --feed LIST       # one submitter for a backlog (one argument line per entry, in order)
+python tools/assets/run_asset.py --status          # the one-screen view
+python tools/assets/run_asset.py --start           # start the line: it resumes the work list on disk
 ```
 
-**Stages.** A job is a chain of stages; each starts the moment its device is free, so stages of different assets
-overlap (asset B bakes while asset A renders in UE): `blender_preview`; or `blender_final` (bake, export, then a
-small sheet) -> `paint` (with `--paint`; paint.py takes its own locks) -> `ue` (import + stills in the editor) ->
-`finalize` (manifest). The UE stage starts as soon as Blender has written the glTF (blender_report.json status
-`exported`), while Blender still renders its sheet. One asset id never runs twice at once (a second job of the
-same id waits). Every job writes `logs/sched.json` (per stage: device, seconds waited, seconds run) and asset.json
-gets `sched`. A client that is killed cancels its job: queued stages are dropped, a running Blender is stopped.
+**Stations, one job each.** `igpu` (reference drawing, paint, cloth drape), `card05` (Blender bakes, sheets and
+previews; image-to-3D), `card65` (the one resident UE editor). A job waits for its station; nothing runs on CPU
+cores as a fallback. `video` is a booked window: when a video entry waits, the card stations finish what runs,
+both cards are released, every waiting clip runs, then the cards are reclaimed (the editor reloads). Generic
+`--line-cmd` entries run existing tools unchanged: the tool takes the station's lock itself as it does today; the
+line starts it only when the station is free, lets go of its own hold on that card first, and does not count the
+tool's process session as an outside user. Engine work is never a `--line-cmd` (use `--ue-job`).
 
-**Fixed homes, GPU only.** Loading models is the expensive part, so nothing moves between devices:
+**The work list and restarts.** Every submission is an entry file under `$ASSETS_SCHED_DIR/line/entries/` (done
+ones move to `line/done/`; per-entry logs in `line/logs/`). A client that goes away no longer cancels its job
+(`--cancel` does); `--detach` returns once the entry is on the line. Starting the line again (`--start`, or any
+client) reloads every unfinished entry in list order: a finished bake is kept, whatever was in flight runs again
+(a Blender or command left running by the dead scheduler is stopped first; its orphan editor is asked to quit).
 
-| Work | Home | Notes |
-|---|---|---|
-| model script, contract, checks, UV unwrap, glTF export, manifest | CPU | CPU work by nature (each under ~1 s); not a fallback. Blender runs with `-t 4` (`ASSETS_BLENDER_THREADS`) |
-| bake, final contact sheet | card 05 (`ASSETS_BLENDER_CARD`) | up to `ASSETS_BLENDER_PER_CARD` (3) Blender jobs at once; `ASSETS_BLENDER_SPARES` (2) warm Blender processes wait there (Cycles already on the card; one job each, then they exit) |
-| preview | the iGPU (its lock, when idle), else card 05 | keep the iGPU light: it draws the desktop and hosts the image model |
-| UE import + stills | one resident editor on card 65 (`ASSETS_UE_CARD`) | loaded on the first final job, kept for `ASSETS_UE_IDLE_S` (2400) without work or until `--stop-editor`; restarted between jobs when `ue/*.py` changed |
-| UE, second editor | off (`ASSETS_UE_EDITORS`=1) | UE is the bottleneck with one editor (8 serial UE jobs ~65 s of a 72 s batch), but a second editor on card 05 made it worse on this box: each UE job took 18-37 s instead of 6-9 s and previews doubled (two editors tick and import at once). `ASSETS_UE_EDITORS=2` still starts one when the UE backlog reaches `ASSETS_UE_SECOND_AT` (2); it is safe for the project because every job imports its own asset id into its own folder, one id never runs in both, autosave is off and the stage level is never saved |
+**Short lines.** At most `ASSETS_LINE_MAX` (3) jobs wait in front of a station; a submission past that gets
+`LINE FULL ... retry later` and exit code 75, and nothing is accepted. A station also holds a job whose next
+station's line is full, so the line never grows upstream. A flood of 40 submissions puts 4 on the line (one
+running, three waiting) and refuses 36. `--feed` is the way to put a backlog through: it submits one entry at a
+time, waits for room (leaving one place free in each line for other builders) and records progress beside the list,
+so re-running it skips what was fed.
 
-Nothing is ever baked or rendered on the CPU: with its home busy, a stage waits in the queue (`--device cpu`
-exists only as a manual debugging switch). The harness refuses to fall back to the CPU when its GPU is missing.
+**Batches.** Each station runs up to `ASSETS_LINE_BATCH` (8) jobs of one kind before another waiting kind gets its
+turn (oldest first), and keeps going with the same kind while no other kind waits: the engine takes waiting
+imports/stills (`ue_asset`) and editor scripts (`ue_script`) in turns of 8; Blender stays warm (one warm spare
+process); on the iGPU a batch of drawings runs before the paint passes and the cloth solver. Load times that
+decide whether batching pays (measured): UE editor start 11.8 s (then ~4 s per warm import + stills); Blender
+start ~1-2 s (a bake of a small prop is ~4.5 s in all); the image model on the iGPU 73 s (reference drawer) to
+157 s (paint), i.e. more than a drawing; image-to-3D 21 s load v 49 s per shape; cloth solver ~5 s. The image
+model's batch only saves its load when the tool takes several items per run (refs/ref_draw.py's batch mode does).
+
+**Power and hardware guard.** The battery (`/sys/class/power_supply/BAT0`) is watched and logged with every job
+start and end (percent, status, energy_now; `line/power.jsonl` has the energy used per job and kind). At or below
+`ASSETS_POWER_PAUSE_PCT` (20%) nothing new starts, running jobs finish, the list's state is written to
+`line/state.json` and the status says "paused: battery N%"; work resumes by itself at `ASSETS_POWER_RESUME_PCT`
+(40%). A lost charger (AC0 offline, or no USB-C source online) or a card missing from the PCI bus is logged with
+its time, shown in the status, and holds card jobs until both are back. Card jobs are refused while
+`/sys/module/pcie_aspm/parameters/policy` does not read `[performance]` (a reboot resets it), and while
+`$ASSETS_UE_HOME/GPU_HOLD` exists. While the list has work the line holds a `systemd-inhibit --what=idle:sleep`
+block (also while paused at the floor), released when the list is empty; it ends by itself if the line dies.
+
+**One engine project.** Props, sets, characters and scenes share one project (`ASSETS_UE_PROJECT`, default
+`CharLab`): no project swaps. Props import to `/Game/Assets/Props/<id>` there as before; the stage level was copied
+from AssetLab (which stays on disk unchanged); the start-up shim runs a job named by `ASSETS_UE_JOB` or `MH_JOB`.
+
+`--status` shows, per station, what runs and for how long, what waits and the oldest wait, the batch kind; the
+battery, load, memory, why work is paused or held; and the jobs finished in the last hour.
+
+**Stages.** An asset job is a chain of stages: `blender_preview`; or `blender_final` (bake, export, then a small
+sheet) -> `paint` (with `--paint`, iGPU station) -> `ue` (import + stills in the editor) -> `finalize` (manifest).
+The UE stage may start as soon as Blender has written the glTF. One asset id never runs twice at once. Every job
+writes `logs/sched.json` (per stage: device, seconds waited, seconds run) and asset.json gets `sched`.
 
 **Locks.** All locks are `flock -n`, polled, and never held while waiting for another. While asset work is going
 on the scheduler holds a visible tenancy on both cards: card 65 for the editor's life (`/tmp/gpu-65.tenant` names
@@ -118,21 +146,14 @@ does exactly that, forwarding SIGTERM). An editor that inherits the fd hands it 
 and keep the card locked. The project lock (`<project>/Saved/AssetServer/project.lock`) is held while
 the editor lives, so a `--local` run never starts a second editor writing the same project.
 
-**Asset work and video work alternate; they do not overlap.** The video model needs both cards. A video runner
-either calls `run_asset.py --release-cards` first (stages in flight finish, the queue holds, the editor stops,
-both locks are freed; it returns when both cards are free) or simply polls `/tmp/gpu-05.lock` and
-`/tmp/gpu-65.lock` with `flock -n`: the scheduler treats an outside holder of the UE card for
-`ASSETS_OUTSIDE_RELEASE_S` (20), or of the Blender card alone for `ASSETS_OUTSIDE_RELEASE_BL_S` (120) while
-leaving it idle (mean busy under 10%: a runner holding one card while it waits for the other), as the same
-release (it never fights for a lock). An outside job that works on the Blender card does not cause a release. Meanwhile, with the Blender card held from outside for
-`ASSETS_BAKE_SPILL_S` (20), bakes spill to the UE card beside the editor when it has `ASSETS_SPILL_MIN_FREE_GB`
-(8) free, at most `ASSETS_SPILL_JOBS` (2) at once; each spill is logged and counted in `--status`. While released, asset jobs wait
-(previews may still run on the iGPU); nothing runs on the CPU. Asset mode returns by itself when both locks have
-been free for `ASSETS_RECLAIM_FREE_S` (5) with asset work queued (when the release came from an outside holder
-of the UE card, the UE card alone being free is enough: bakes then spill beside the editor while the Blender card
-stays held) (after `ASSETS_RELEASE_GRACE_S`, 120, for a
-manual release), or at `--reclaim-cards`; the cost is the editor's reload. `--release-card 05` gives up only the
-Blender card for an outside job that needs one card.
+**Asset work and video work alternate; they do not overlap.** The video model needs both cards. Put video runs on
+the line as `--line-cmd video video -- CMD...` entries: they get the window described above. The older ways still
+work for a runner outside the line: `run_asset.py --release-cards` (stages in flight finish, the queue holds, the
+editor stops, both locks are freed; it returns when both cards are free), or an outside holder of the UE card for
+`ASSETS_OUTSIDE_RELEASE_S` (20) (of the Blender card alone, idle, for `ASSETS_OUTSIDE_RELEASE_BL_S`, 120), which
+counts as the same release. While released, card jobs wait; nothing runs on the CPU. Asset mode returns when both
+locks have been free for `ASSETS_RECLAIM_FREE_S` (5) with card work queued and no video entry left (after
+`ASSETS_RELEASE_GRACE_S`, 120, for a manual release), or at `--reclaim-cards`; the cost is the editor's reload.
 
 **Other UE work goes through the same editor (`--ue-job`).** Tools that need a UE editor (the set builder, the
 character and MetaHuman tools) should not start private editors: those hold a card the scheduler cannot plan
@@ -151,12 +172,12 @@ anything that needs rendered frames: yield between steps) and its return value i
 listed output exists. A result dict with `"ok": false` or an `"error"`, or an exception, fails the job at once;
 the outputs are checked once when the script returns (within `ASSETS_UE_JOB_OUTPUT_GRACE_S`, 10 s). The time
 limit is `ASSETS_UE_JOB_TIMEOUT_S` (300 s) unless the job sets `timeout_s`. A killed client, or
-`run_asset.py --cancel <job>` (numbers and ids are in `--status`), stops a generator script at its next tick; a
+`run_asset.py --cancel <job>` (numbers and ids are in `--status`; a client that goes away no longer cancels), stops a generator script at its next tick; a
 script that blocks in one call cannot be interrupted until it returns. The job's stage record is `<log_dir>/logs/sched.json`.
 
-One editor serves one project at a time: when the oldest queued UE work is for another project and the current
-project has nothing queued (or that work has waited `ASSETS_UE_SWAP_AFTER_S`, 60 s), the editor quits and
-restarts on that project. A swap measured 12.1-12.9 s from quit to ready (AssetLab <-> CharLab, warm caches). A project keeps its own start-up shim (`Content/Python/init_unreal.py`): the job file is passed
+All engine work uses the one project (above), so the editor does not swap. A job that names another project still
+works: the editor quits and restarts on it when that project's oldest job has waited `ASSETS_UE_SWAP_AFTER_S` (60 s)
+(a swap costs 12-18 s), so do not. A project keeps its own start-up shim (`Content/Python/init_unreal.py`): the job file is passed
 as both `ASSETS_UE_JOB` and `MH_JOB`, so the asset chain's shim and the character tools' shim both start the
 scheduler's server loop (`ue/ue_render.py`); a project without a shim gets the chain's. Other projects are not
 given the stage level, ray-tracing settings or mannequin.
