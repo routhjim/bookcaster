@@ -145,6 +145,17 @@ def blocked(cam_pos, eye, others):
     return False
 
 
+def all_in_frame(cam, subjects, res, margin=0.03):
+    """Every person's head top and feet inside the frame."""
+    for v in subjects.values():
+        m = v["measured"]
+        for p in ([m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], [m["pelvis_xy"][0], m["pelvis_xy"][1], m["feet_z"]]):
+            pr = framing.project(cam, p, res)
+            if not pr or not (margin < pr[0] < 1 - margin and margin < pr[1] < 1 - margin):
+                return False
+    return True
+
+
 def in_room(p, room):
     W, D, H = room
     return abs(p[0]) < W / 2 - ROOM_MARGIN_M and abs(p[1]) < D / 2 - ROOM_MARGIN_M and 0.3 < p[2] < H - 0.2
@@ -225,17 +236,16 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
         for az in azs:
             cs = framing.shot(m, kind, c.get("focal_mm", 50), res, az, c.get("el", 0.0), c.get("screen_x", 0.5))
             out.append({"position": cs["position"], "target": cs["target"], "focal_mm": cs["focal_mm"]})
-    else:                                    # a placed (wide) camera: orbit the speaker
-        cam = shot["camera"]
-        px, py = m["pelvis_xy"]
-        for k in sorted(range(-180, 181, 10), key=abs):
-            if k == 0:
-                continue
-            a = math.radians(k)
-            rot = lambda p: [px + (p[0] - px) * math.cos(a) - (p[1] - py) * math.sin(a),
-                             py + (p[0] - px) * math.sin(a) + (p[1] - py) * math.cos(a), p[2]]
-            out.append({"position": [round(x, 3) for x in rot(cam["position"])],
-                        "target": [round(x, 3) for x in rot(cam["target"])], "focal_mm": cam["focal_mm"]})
+    else:                                    # a placed (wide) camera: another standpoint aimed at the same point,
+        cam = shot["camera"]                 # nearest first, that keeps everyone in the frame
+        W, D, _ = room
+        z = cam["position"][2]
+        grid = [[x / 10.0, y / 10.0, z] for x in range(-int(W * 5), int(W * 5) + 1, 2)
+                for y in range(-int(D * 5), int(D * 5) + 1, 2)]
+        for p in sorted(grid, key=lambda p: math.dist(p, cam["position"])):
+            q = {"position": [round(v, 3) for v in p], "target": cam["target"], "focal_mm": cam["focal_mm"]}
+            if all_in_frame(q, subjects, res):
+                out.append(q)
     keep = []
     for q in out:
         p = q["position"]
@@ -332,6 +342,8 @@ def main():
         for c in fails:
             cands = candidates(c, shots[c["name"]], c["speaker"], subjects, res, room, line, est_side, tried[c["name"]])
             if not cands:
+                shots[c["name"]]["reject"] = ("no camera left that shows the speaker's face: "
+                                              + "; ".join(shots[c["name"]]["speaker_check"]["why"]))
                 continue
             q = cands[0]
             c.update(position=q["position"], target=q["target"], focal_mm=q["focal_mm"])
@@ -339,8 +351,6 @@ def main():
                 c.pop(k, None)
             todo.append(c["name"])
         if not todo:
-            for c in fails:
-                shots[c["name"]]["reject"] = "no camera left that shows the speaker's face"
             break
     (odir / "result.json").write_text(json.dumps(master, indent=1))
     report["seconds"] = round(time.time() - t0, 1)
