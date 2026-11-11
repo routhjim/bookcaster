@@ -67,12 +67,25 @@ class WorkList:
         return n
 
     def save(self, e):
+        """Atomic and durable (fsync before the rename): a state written here survives a crash or power loss."""
         p = self.edir / f"{e['seq']:06d}.json"
         tmp = self.edir / f".{e['seq']:06d}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps(e, indent=1, default=str))
+        with open(tmp, "w") as f:
+            f.write(json.dumps(e, indent=1, default=str))
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(p)
         if e.get("state") in ("done", "failed", "cancelled"):
             p.replace(self.ddir / p.name)
+
+    def get(self, seq):
+        """One entry by its number (unfinished or done), or None."""
+        for d in (self.edir, self.ddir):
+            try:
+                return json.loads((d / f"{int(seq):06d}.json").read_text())
+            except (OSError, ValueError):
+                continue
+        return None
 
     def load(self):
         """Unfinished entries in list order; what was running goes back to the line (it is re-run)."""
@@ -245,3 +258,48 @@ class PowerGuard:
         s = self.last
         return (f"bat {s.get('capacity')}% {s.get('status')} {s.get('energy_wh') or 0:.2f}Wh "
                 f"ac={'on' if s.get('ac') else 'off'} usb={s.get('usb_online')}/{s.get('usb_n')}")
+
+
+# ---------------------------------------------------------------- the recording runner for command entries
+def read_rc(path):
+    """The exit code a command's runner recorded ({"rc", "t"}), or None when it has not ended (or never ran)."""
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def run_recorded(rc_file, cmd):
+    """Run cmd and write its exit code to rc_file (atomic, fsynced) the moment it ends, before anything else.
+
+    The line starts every command entry through this (python line.py --run RC_FILE -- CMD...), in the command's own
+    session. The record does not depend on the line: if the line restarts while the command runs, or between the
+    command's end and the line's own bookkeeping, the next line reads the record and never runs a finished entry
+    again. SIGTERM / SIGINT to the runner are passed on to the command."""
+    import signal
+    import subprocess
+    p = subprocess.Popen(cmd)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda n, f: p.send_signal(n))
+    while True:
+        try:
+            rc = p.wait()
+            break
+        except InterruptedError:
+            continue
+    rc_file = Path(rc_file)
+    tmp = rc_file.with_name(f".{rc_file.name}.{os.getpid()}.tmp")
+    with open(tmp, "w") as f:
+        f.write(json.dumps({"rc": rc, "t": time.time()}))
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(rc_file)
+    return rc
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 4 and sys.argv[1] == "--run" and sys.argv[3] == "--":
+        rc = run_recorded(sys.argv[2], sys.argv[4:])
+        sys.exit(rc if rc >= 0 else 128 - rc)
+    sys.exit("usage: line.py --run RC_FILE -- CMD...")
