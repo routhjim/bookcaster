@@ -1,6 +1,6 @@
 """Blender 4.5: turn a skinned image-to-3D figure (bl_orbit_skin.py output) into a garment shell for a rigged body.
 
-    blender -b -t 4 --factory-startup --python bl_orbit_garment.py -- job.json
+    blender -b -t 0 --factory-startup --python bl_orbit_garment.py -- job.json
 
 job: {"body_fbx": "...Body.fbx" (the character's body, exported from UE: skeleton + skin weights, centimetres),
       "figure_blend": ".../orbit_fig.blend", "figure": "orbit_fig", "out": dir,

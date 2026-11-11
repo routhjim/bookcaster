@@ -108,7 +108,7 @@ def drape_passes(job, jp):
         pp = jp.with_name(jp.stem + f".drape_{key}.json")
         pp.write_text(json.dumps(pj, indent=1))
         t0 = time.time()
-        rc = subprocess.call([BLENDER, "-b", "--factory-startup", "-t", "4", "--python", str(HERE / "bl_outfit.py"),
+        rc = subprocess.call([BLENDER, "-b", "--factory-startup", "-t", "0", "--python", str(HERE / "bl_outfit.py"),
                               "--", str(pp)])
         if rc != 0 or not inp.exists():
             raise SystemExit(f"drape export for {key} failed (rc={rc})")
@@ -145,7 +145,7 @@ def main():
     run_job = Path(a.job).with_suffix(".run.json")
     run_job.write_text(json.dumps(job, indent=1))
     t0 = time.time()
-    cmd = [BLENDER, "-b", "--factory-startup", "-t", "4", "--python", str(HERE / "bl_outfit.py"), "--", str(run_job)]
+    cmd = [BLENDER, "-b", "--factory-startup", "-t", "0", "--python", str(HERE / "bl_outfit.py"), "--", str(run_job)]
     env = dict(os.environ)
     # show Blender only the GPUs this job may use: HIP sets up every visible device, and a reset of one it never
     # uses (the shared iGPU) otherwise aborts the bake

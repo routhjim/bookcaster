@@ -1,7 +1,7 @@
 """Blender 4.5, CPU bookkeeping only (a few dozen ray casts): put the front frame's tracked 2D face landmarks onto the
 skinned head mesh (bl_orbit_skin.py output) as 3D points.
 
-    blender -b -t 4 --factory-startup --python bl_head_landmarks.py -- head.blend skin_report.json track.json \
+    blender -b -t 0 --factory-startup --python bl_head_landmarks.py -- head.blend skin_report.json track.json \
         track_key out.json
 
 The front view (azimuth 0) maps frame pixels to the mesh exactly as bl_orbit_skin.py projected it (orthographic,
