@@ -1009,7 +1009,9 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
     if top0 is not None:
         lift = (chin_ - float(JOB.get("collar_under_chin_m", 0.012))) - top0
         if lift > 0.003 and top0 > z_sh + 0.02:
-            t_ = np.clip((P_[:, 2] - z_sh) / (top0 - z_sh), 0, 1)
+            # spread over a long run (from mid-chest, inside the lapels) so the stretch per centimetre is small
+            z_lo_ = min(z_sh, float(J("spine_04").z))
+            t_ = np.clip((P_[:, 2] - z_lo_) / (top0 - z_lo_), 0, 1)
             t_ = t_ * t_ * (3 - 2 * t_)
             rw = np.clip((0.15 - rr_) / 0.06, 0, 1)
             dz = lift * t_ * rw
