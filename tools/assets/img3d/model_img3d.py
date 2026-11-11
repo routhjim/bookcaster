@@ -1,0 +1,107 @@
+"""Model script (run_asset.py) for a picture-to-3D asset: the .glb that img3d.py wrote, with its own texture.
+
+Spec keys:
+    "source_glb"   img3d.py's .glb (base-colour texture on xatlas UVs)
+    "yaw_deg"      turn about Z after import so the asset's front faces -Y (contract)       [0]
+    "height_m"     scale so the height is this (else the spec's size_m[2])
+    "max_tris"     decimate to this many triangles when over it (tier budget)              [the tier's budget - 2%]
+    "bump_m"       detail-normal depth from the colour's luminance (0 = none)              [0.002 x height]
+    "rough"        [lo, hi]: roughness from luminance, bright -> lo, dark -> hi              [0.45, 0.8]
+    "keep_uvs": true (the port's atlas is non-overlapping and inside 0-1)
+
+The port gives base colour only. A normal map and a roughness map are derived here as node maths on the colour (a
+bump from its luminance, roughness from its luminance) and the harness bakes them on its GPU like any material.
+The decimation (Blender's collapse) is the one CPU step: ~1-3 s for a few tens of thousands of faces.
+"""
+import math
+import time
+
+import bpy
+from mathutils import Matrix
+
+aid = SPEC["id"]
+TIER_TRIS = {"hero": 250000, "mid": 60000, "background": 8000}
+t0 = time.time()
+before = set(bpy.data.objects)
+bpy.ops.import_scene.gltf(filepath=SPEC["source_glb"])
+meshes = [o for o in bpy.data.objects if o not in before and o.type == "MESH"]
+for o in bpy.data.objects:
+    if o not in before and o.type != "MESH":
+        o.select_set(False)
+bpy.ops.object.select_all(action="DESELECT")
+for o in meshes:
+    o.select_set(True)
+bpy.context.view_layer.objects.active = meshes[0]
+if len(meshes) > 1:
+    bpy.ops.object.join()
+ob = bpy.context.view_layer.objects.active
+ob.parent = None
+ob.matrix_world = ob.matrix_world.copy()
+bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+yaw = float(SPEC.get("yaw_deg", 0))
+ob.data.transform(Matrix.Rotation(math.radians(yaw), 4, "Z"))
+zs = [v.co.z for v in ob.data.vertices]
+h = max(zs) - min(zs)
+want_h = float(SPEC.get("height_m") or SPEC["size_m"][2])
+ob.data.transform(Matrix.Scale(want_h / h, 4))
+ob.data.update()
+# triangle budget
+limit = int(SPEC.get("max_tris") or TIER_TRIS[SPEC.get("tier", "hero")] * 0.98)
+tris = sum(len(p.vertices) - 2 for p in ob.data.polygons)
+t_dec = 0.0
+if tris > limit:
+    t = time.time()
+    md = ob.modifiers.new("dec", "DECIMATE")
+    md.ratio = limit / tris
+    md.use_collapse_triangulate = True
+    bpy.ops.object.modifier_apply(modifier=md.name)
+    t_dec = time.time() - t
+print(f"[img3d model] tris {tris} -> {sum(len(p.vertices) - 2 for p in ob.data.polygons)} (decimate {t_dec:.1f}s on "
+      f"CPU); height {h:.3f} -> {want_h} m; yaw {yaw}")
+# material: the port's colour, plus derived bump and roughness
+src = None
+for m in ob.data.materials:
+    if m and m.use_nodes:
+        for n in m.node_tree.nodes:
+            if n.type == "TEX_IMAGE" and n.image is not None:
+                src = n.image
+                break
+    if src:
+        break
+if src is None:
+    raise RuntimeError("the .glb has no base-colour image")
+m = bpy.data.materials.new(f"img3d_{aid}")
+m.use_nodes = True
+nt = m.node_tree
+pr = nt.nodes["Principled BSDF"]
+uv = nt.nodes.new("ShaderNodeUVMap")
+uv.uv_map = ob.data.uv_layers[0].name
+tx = nt.nodes.new("ShaderNodeTexImage")
+tx.image = src
+tx.image.colorspace_settings.name = "sRGB"
+tx.interpolation = "Cubic"
+nt.links.new(uv.outputs["UV"], tx.inputs["Vector"])
+nt.links.new(tx.outputs["Color"], pr.inputs["Base Color"])
+lum = nt.nodes.new("ShaderNodeRGBToBW")
+nt.links.new(tx.outputs["Color"], lum.inputs["Color"])
+lo, hi = SPEC.get("rough", [0.45, 0.8])
+mr = nt.nodes.new("ShaderNodeMapRange")
+mr.inputs["From Min"].default_value, mr.inputs["From Max"].default_value = 0.05, 0.6
+mr.inputs["To Min"].default_value, mr.inputs["To Max"].default_value = hi, lo
+nt.links.new(lum.outputs["Val"], mr.inputs["Value"])
+nt.links.new(mr.outputs["Result"], pr.inputs["Roughness"])
+bump_m = float(SPEC.get("bump_m", 0.002 * want_h))
+if bump_m > 0:
+    bp = nt.nodes.new("ShaderNodeBump")
+    bp.inputs["Distance"].default_value = bump_m
+    bp.inputs["Strength"].default_value = 1.0
+    nt.links.new(lum.outputs["Val"], bp.inputs["Height"])
+    nt.links.new(bp.outputs["Normal"], pr.inputs["Normal"])
+pr.inputs["Specular IOR Level"].default_value = 0.4
+pr.inputs["Metallic"].default_value = 0.0
+ob.data.materials.clear()
+ob.data.materials.append(m)
+for p in ob.data.polygons:
+    p.material_index = 0
+ob.name = f"img3d_{aid}"
+print(f"[img3d model] done in {time.time() - t0:.1f}s")
