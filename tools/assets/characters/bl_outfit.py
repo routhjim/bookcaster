@@ -1502,7 +1502,8 @@ def stand_collar(F, under, z0, sh, nang=96):
                 zf = z0 + (1 - wing_h) * (top[a] - z0)
                 c, R = at(zf)
                 L = wing_h * (top[a] - z0) * (1 - 0.35 * u)
-                r = R[a] + gap + flare + 0.0015 + L * d * 0.75
+                # clear of the cravat band wound below the fold (wing_clear), more toward the tip
+                r = R[a] + gap + flare + 0.0015 + L * d * 0.75 + sh.get("wing_clear", 0.0) * (0.4 + 0.6 * d)
                 z = zf - L * d * 0.55 + 0.0015
                 da = np.array([math.cos(aa), math.sin(aa)])
                 row.append((c[0] + r * da[0], c[1] + r * da[1], z))
