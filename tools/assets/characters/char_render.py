@@ -376,7 +376,10 @@ def cloud_build(cb):
         r["blueprint"] = bps[0].split(".")[0] if bps else None
         for a in out:
             EAL.save_asset(a.split(".")[0], True)
-        step("saved")
+        # the shared folder (skeletons, post-process Animation Blueprints, face rig) is written by the build too; left
+        # unsaved, every later editor loads the body with no skeleton and no pose ever evaluates on it
+        EAL.save_directory(b.common_folder_path, False, True)
+        step("saved", common=len(EAL.list_assets(b.common_folder_path, recursive=True, include_folder=False)))
     r["ok"] = ok
 
 

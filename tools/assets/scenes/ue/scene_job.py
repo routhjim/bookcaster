@@ -6,7 +6,7 @@ JOB (written by scene.py; set-frame metres converted to UE centimetres there):
    "char_tools": folder of the character tools (char_render.py is loaded from there and called),
    "set_tools": folder of the set builder's UE scripts (set_build.spawn_light is called for extra lights),
    "bp_deps": [assets to load before any character Blueprint],
-   "characters": {key: {"path", "garments", "body_swap", "rebuild_from", "garment_material",
+   "characters": {key: {"path", "garments", "body_swap", "hide_body", "rebuild_from", "garment_material",
                         "loc_cm": [x, y, z], "yaw": deg, "facing": [dx, dy] (set frame),
                         "body_pose": {"anim", "t" | "scan"} | null, "face_pose": {"curves": {...}} | {"anim", "t"} | null}},
    "cameras": [{"name", "kind": wide|full|medium|close, "subject": key,
@@ -88,7 +88,11 @@ def measure(key, body, face, spec, head_top_off):
     spine = sock(body, "spine_05")
     chin = sock(face, "FACIAL_C_Jaw")
     s_eye = to_set(eye)
-    out = {"eye_z": s_eye[2], "eye_xy": s_eye[:2],
+    # where the head faces, in plan: from the head joint (over the neck) to the eyes' midpoint
+    s_head = to_set(head)
+    hf = [s_eye[0] - s_head[0], s_eye[1] - s_head[1]]
+    hn = math.hypot(*hf) or 1.0
+    out = {"eye_z": s_eye[2], "eye_xy": s_eye[:2], "head_fwd_xy": [hf[0] / hn, hf[1] / hn],
            "head_top_z": to_set(head)[2] + head_top_off["top_above_head_m"],
            "chin_z": s_eye[2] - head_top_off["chin_below_eye_m"],
            "waist_z": (to_set(pelvis)[2] * 0.4 + to_set(sock(body, "spine_02"))[2] * 0.6),
@@ -193,6 +197,58 @@ class _SpawnAt:
         return getattr(self._real, name)
 
 
+def plan_angle(fwd, frm, to):
+    """Degrees between a plan direction and the direction from `frm` to `to` (0 = facing it, 180 = facing away)."""
+    d = [to[0] - frm[0], to[1] - frm[1]]
+    a = math.degrees(math.atan2(d[1], d[0]) - math.atan2(fwd[1], fwd[0]))
+    return round(abs((a + 180) % 360 - 180), 1)
+
+
+def truth(cs, subjects):
+    """Per person, from the scene itself: the angle between where the head (and the body) faces and the camera."""
+    out = {}
+    for k, v in subjects.items():
+        m = v["measured"]
+        out[k] = {"head_to_camera_deg": plan_angle(m["head_fwd_xy"], m["eye_xy"], cs["position"]),
+                  "body_to_camera_deg": plan_angle(m["facing"], m["pelvis_xy"], cs["position"]),
+                  "distance_m": round(math.dist(m["eye_xy"] + [m["eye_z"]], cs["position"]), 3)}
+    return out
+
+
+def guide_capture(cs, res, path, show_only=None):
+    """The camera's linear scene depth (UE centimetres, float RGBA) through a SceneCapture2D with the still's own
+    position, aim and horizontal field of view, written to `path` (.exr); show_only: only these actors drawn."""
+    world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    loc, tgt = to_ue(cs["position"]), to_ue(cs["target"])
+    a = act.spawn_actor_from_class(unreal.SceneCapture2D, loc, unreal.MathLibrary.find_look_at_rotation(loc, tgt))
+    try:
+        comp = a.capture_component2d
+        rt = unreal.RenderingLibrary.create_render_target2d(world, res[0], res[1],
+                                                            unreal.TextureRenderTargetFormat.RTF_RGBA32F)
+        comp.set_editor_property("texture_target", rt)
+        comp.set_editor_property("capture_source", unreal.SceneCaptureSource.SCS_SCENE_DEPTH)
+        comp.set_editor_property("fov_angle", math.degrees(2 * math.atan(18.0 / cs["focal_mm"])))
+        comp.set_editor_property("capture_every_frame", False)
+        comp.set_editor_property("capture_on_movement", False)
+        if show_only is not None:
+            comp.set_editor_property("primitive_render_mode",
+                                     unreal.SceneCapturePrimitiveRenderMode.PRM_USE_SHOW_ONLY_LIST)
+            for x in show_only:
+                comp.show_only_actor_components(x, True)
+        comp.capture_scene()
+        yield
+        yield
+        # EXR keeps the float depth (the render-target export's .hdr is RGBE: 8-bit steps, banded normals)
+        opt = unreal.ImageWriteOptions()
+        opt.set_editor_property("format", unreal.DesiredImageFormat.EXR)
+        opt.set_editor_property("overwrite_file", True)
+        opt.set_editor_property("async_", False)
+        opt.set_editor_property("compression_quality", 1)        # 1 = uncompressed EXR (read without OpenEXR)
+        unreal.ImageWriteBlueprintLibrary.export_to_disk(rt, path, opt)
+    finally:
+        act.destroy_actor(a)
+
+
 def find_post():
     for a in act.get_all_level_actors():
         if isinstance(a, unreal.PostProcessVolume) and a.get_actor_label() == "SetPost":
@@ -289,9 +345,11 @@ def run(job):
             # the face follows the body through its own Animation Blueprint, which by default only updates while
             # the face is rendered: off-view (or before the first camera) it keeps the last pose and the head
             # floats off the neck after a body pose change. Always tick it.
-            a, body, face = comps(key)
-            face.set_editor_property("visibility_based_anim_tick_option",
-                                     unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
+            # the same for the body: an assembled Blueprint's Body only refreshes its bones while drawn, so a pose
+            # applied before a camera sees it (or on a hidden body) never reaches the bones, the face or the garments
+            for i in (1, 2):             # fetched again each time: the property set can replace the components
+                comps(key)[i].set_editor_property("visibility_based_anim_tick_option",
+                                                  unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
         yield from frames(3)
         for key in job["characters"]:
             rewire(key)
@@ -455,7 +513,20 @@ def run(job):
                     raise RuntimeError(f"screenshot not written: {path}")
                 yield
             les.eject_pilot_level_actor()
-            shot = {"name": c["name"], "path": path, "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
+            guides = {}
+            if job.get("guides"):
+                # guide passes for an image model: the scene's depth, and each person's own depth (their mask is
+                # where it meets the scene's: the visible part)
+                g = os.path.join(job["out"], "guides")
+                os.makedirs(g, exist_ok=True)
+                guides["depth"] = os.path.join(g, f"{c['name']}_depth.exr")
+                yield from guide_capture(cs, res, guides["depth"])
+                for key in job["characters"]:
+                    a_ = CR.S["actors"][key][0]
+                    who = [a_] + list(CR.S.get("followers", {}).get(id(a_), []))
+                    guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
+                    yield from guide_capture(cs, res, guides[f"depth_{key}"], who)
+            shot = {"name": c["name"], "path": path, "guides": guides, "truth": truth(cs, r["subjects"]), "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):
                 shot["reject"] = "head detached from the body at capture"

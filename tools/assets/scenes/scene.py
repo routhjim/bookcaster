@@ -88,7 +88,8 @@ def resolve(spec, cams_wanted=None):
         f = c.get("facing", [0, -1])
         n = (f[0] ** 2 + f[1] ** 2) ** 0.5
         chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": cj.get("garments", []),
-                      "body_swap": cj.get("body_swap"), "rebuild_from": cj.get("rebuild_from"),
+                      "body_swap": cj.get("body_swap"), "hide_body": bool(cj.get("hide_body")),
+                      "rebuild_from": cj.get("rebuild_from"),
                       "garment_material": cj.get("garment_material"),
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
@@ -106,7 +107,8 @@ def resolve(spec, cams_wanted=None):
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
                   "characters": chars, "cameras": cams, "lights": S.lights,
                   "exposure_ev100": spec.get("exposure_ev100"), "warm_frames": spec.get("warm_frames", 150),
-                  "settle_frames": spec.get("settle_frames", 60), "attach_tol_cm": spec.get("attach_tol_cm", 0.1)}
+                  "settle_frames": spec.get("settle_frames", 60), "attach_tol_cm": spec.get("attach_tol_cm", 0.1),
+                  "guides": bool(spec.get("guides", False))}
 
 
 def contact_sheet(shots, out):
