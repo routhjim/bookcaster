@@ -683,7 +683,7 @@ def render_sheet(ob, tag, px=512, samples=32):
     sc.render.engine = "CYCLES"
     set_device()
     sc.cycles.samples = samples
-    sc.cycles.use_denoising = True
+    sc.cycles.use_denoising = bool(JOB.get("denoise", True))   # OIDN runs on the CPU here (0.4-4 s a tile)
     sc.render.resolution_x = sc.render.resolution_y = px
     sc.render.resolution_percentage = 100
     sc.render.image_settings.file_format = "PNG"

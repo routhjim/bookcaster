@@ -74,14 +74,18 @@ def make_blender_job(spec, model, adir, args, mode, ue_follows=True):
     the 512 px sheet is made as before; --no-sheet drops it always."""
     full = getattr(args, "full_sheet", False) or not ue_follows
     sheet_px = getattr(args, "sheet_px", None) or (512 if full else 320)
-    sheet_samples = args.sheet_samples or (32 if full else 16)
+    # no denoiser by default: Blender runs OIDN on the CPU here, 0.4-4.4 s a tile under load (a 12 spp preview
+    # took 12-15 s, 30 s of CPU); path tracing more samples on the card costs ~0.03 s a tile instead
+    dn = bool(getattr(args, "denoise", False))
+    sheet_samples = args.sheet_samples or ((32 if full else 16) if dn else (128 if full else 64))
+    preview_samples = args.preview_samples or (12 if dn else 32)
     # with UE stills following, the sheet is off unless asked for (it cost 10-13 s per asset on a shared card)
     want_sheet = not args.no_sheet and bool(not ue_follows or getattr(args, "sheet", False) or full
                                             or getattr(args, "sheet_px", None) or args.sheet_samples)
     return {"spec": spec, "model": str(Path(model).resolve()), "out": str(adir), "mode": mode,
             "formats": args.formats.split(","), "source_sheet": args.source_sheet, "sheet": want_sheet,
-            "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": args.preview_samples,
-            "sheet_px": sheet_px, "sheet_samples": sheet_samples}
+            "hiprt": args.hiprt, "preview_px": args.preview_px, "preview_samples": preview_samples,
+            "sheet_px": sheet_px, "sheet_samples": sheet_samples, "denoise": dn}
 
 
 def blender_step(spec, model, adir, args, mode="final"):
@@ -646,7 +650,10 @@ def build_parser():
     ap.add_argument("--fresh-editor", action="store_true",
                     help="start and quit an editor for this asset instead of using the long-lived one")
     ap.add_argument("--preview-px", type=int, default=320, help="preview sheet tile size (px)")
-    ap.add_argument("--preview-samples", type=int, default=12, help="preview sheet Cycles samples")
+    ap.add_argument("--preview-samples", type=int, default=None,
+                    help="preview sheet Cycles samples (default 32; 12 with --denoise)")
+    ap.add_argument("--denoise", action="store_true",
+                    help="denoise the preview / sheet (OIDN runs on the CPU here: seconds per tile); default off")
     ap.add_argument("--sheet-samples", type=int, default=None,
                     help="final contact sheet Cycles samples (default 16 when UE stills follow, else 32)")
     ap.add_argument("--sheet-px", type=int, default=None,

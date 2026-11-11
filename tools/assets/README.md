@@ -50,6 +50,9 @@ divides the guide's shading out, projects the paintings back per texel and write
 map set; see the docstring in `paint.py` and "Painted maps" in CONTRACT.md. Spec block `paint` (prompt, views,
 close-up region, strength, projection parameters) and `texture_set`.
 
+Previews and sheets are not denoised (Blender ran OIDN on the CPU here: 0.4-4.4 s per tile, a 12 spp preview took
+12-15 s and 30 s of CPU); they path-trace more samples on the card instead (preview 32 spp: 3.8 s wall, sheet
+1.7 s; `--denoise` restores 12 spp + OIDN).
 Other flags: `--preview-px`, `--preview-samples` (preview sheet size and samples); a final pass makes no Blender
 sheet when UE stills follow (`--sheet` = 320 px, 16 spp; `--full-sheet` = 512 px, 32 spp; `--sheet-px`,
 `--sheet-samples`; it ran 10-13 s per asset on a shared card), `--skip-render` (Blender + import only, through the editor), `--source-sheet` (also render the unbaked model),
