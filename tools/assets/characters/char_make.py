@@ -173,7 +173,9 @@ def make(spec, folder=None):
                 r["landmarks_before_fit"] = [[round(p.x, 2), round(p.y, 2), round(p.z, 2)]
                                              for p in mhs.get_face_landmarks(c)]
             char_fit.fit_face(c, fit, r)
-        if body_after_fit:
+        if fit:
+            # any face fit (auto or face-only) leaves the body at the template's: measured 1.55 m head joint
+            # against 1.73 m when the body was set only before a face-only fit. Set it again after.
             apply_body()
         if mix is not None and not fit:
             mhs.set_face_model_coefficients(c, mix)

@@ -678,21 +678,27 @@ def pose_anim(skel, name, rots):
     fwd.z = 0
     fwd = fwd.normal()
     lat = unreal.Vector(fwd.y, -fwd.x, 0.0)
-    child = {"thigh_l": "calf_l", "thigh_r": "calf_r", "calf_l": "foot_l", "calf_r": "foot_r"}
+    child = {"thigh_l": "calf_l", "thigh_r": "calf_r", "calf_l": "foot_l", "calf_r": "foot_r",
+             "upperarm_l": "lowerarm_l", "upperarm_r": "lowerarm_r", "lowerarm_l": "hand_l", "lowerarm_r": "hand_r"}
     out = {}
-    for b, parent, deg in rots:
+    for rot in rots:
+        b, parent, deg = rot[:3]
+        # axis: "lat" (default; pitch: thighs forward, elbows bend forward) or "fwd" (roll: arms down to the sides,
+        # the sign that lowers the child is taken)
+        axis_name = rot[3] if len(rot) > 3 else "lat"
+        ax_v = fwd if axis_name == "fwd" else lat
         pw = W(parent)
         bw = unreal.MathLibrary.compose_transforms(L(b), pw)       # current world (parent may have moved)
         best = None
         for sgn in (1, -1):
             a = math.radians(deg * sgn) / 2
-            q = unreal.Quat(lat.x * math.sin(a), lat.y * math.sin(a), lat.z * math.sin(a), math.cos(a))
+            q = unreal.Quat(ax_v.x * math.sin(a), ax_v.y * math.sin(a), ax_v.z * math.sin(a), math.cos(a))
             nw = unreal.Transform(bw.translation, unreal.Rotator(), bw.scale3d)
             nw.rotation = q * bw.rotation
             c = child.get(b)
             if c:
                 cp = unreal.MathLibrary.compose_transforms(L(c), nw).translation - nw.translation
-                score = cp.dot(fwd) if deg > 0 else -cp.z
+                score = -cp.z if axis_name == "fwd" else (cp.dot(fwd) if deg > 0 else -cp.z)
             else:
                 score = 0
             if best is None or score > best[0]:
@@ -701,7 +707,7 @@ def pose_anim(skel, name, rots):
         world[b] = nw
         out[b] = unreal.MathLibrary.compose_transforms(nw, unreal.MathLibrary.invert_transform(pw))
         local[b] = out[b]
-        for c in [k for k, v in ((r[0], r[1]) for r in rots) if v == b]:
+        for c in [k for k, v in ((r_[0], r_[1]) for r_ in rots) if v == b]:
             world.pop(c, None)
     folder = "/Game/Char/Anim"
     path = f"{folder}/{name}"
