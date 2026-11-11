@@ -678,8 +678,12 @@ def main():
         guard_main(int(a1[1]), a1[2])
         return 0
     if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards",
-                        "--ue-job"):
+                        "--ue-job", "--cancel"):
         import assetd as S
+        if a1[0] == "--cancel":
+            if len(a1) != 2:
+                raise SystemExit("usage: run_asset.py --cancel JOB   (job number or id, see --status)")
+            return S.cancel_job(a1[1])
         if a1[0] == "--ue-job":
             if len(a1) != 2:
                 raise SystemExit("usage: run_asset.py --ue-job JOB.json   (see assetd.client_ue_job)")

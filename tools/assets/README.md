@@ -82,6 +82,7 @@ python tools/assets/run_asset.py --release-cards   # make way for a video run (b
 python tools/assets/run_asset.py --reclaim-cards   # back to asset mode: reload the editor, resume the queue
 python tools/assets/run_asset.py --release-card 05 # give up the Blender card only (the editor stays)
 python tools/assets/run_asset.py --stop-editor     # unload the resident UE editor
+python tools/assets/run_asset.py --cancel 12       # cancel job 12 (or by asset id); see --status
 ```
 
 **Stages.** A job is a chain of stages; each starts the moment its device is free, so stages of different assets
@@ -147,7 +148,11 @@ The script runs inside the resident editor with `JOB` (the "job" dict) in its gl
 `run(job)`, that is called: a dict return is the result; a generator is advanced one step per editor tick (for
 anything that needs rendered frames: yield between steps) and its return value is the result. The client prints
 `{"rc", "result", "result_file", "seconds", "error"}` as JSON and exits 0 when the script succeeded and every
-listed output exists. The job's stage record is `<log_dir>/logs/sched.json`.
+listed output exists. A result dict with `"ok": false` or an `"error"`, or an exception, fails the job at once;
+the outputs are checked once when the script returns (within `ASSETS_UE_JOB_OUTPUT_GRACE_S`, 10 s). The time
+limit is `ASSETS_UE_JOB_TIMEOUT_S` (300 s) unless the job sets `timeout_s`. A killed client, or
+`run_asset.py --cancel <job>` (numbers and ids are in `--status`), stops a generator script at its next tick; a
+script that blocks in one call cannot be interrupted until it returns. The job's stage record is `<log_dir>/logs/sched.json`.
 
 One editor serves one project at a time: when the oldest queued UE work is for another project and the current
 project has nothing queued, the editor quits and restarts on that project (the swap costs one editor start,

@@ -1137,6 +1137,7 @@ class Sched:
         st.device, st.device_class = f"editor {ed.card.bus}", "xtx"
         res_p = job.adir / "ue_result.json"
         res_p.unlink(missing_ok=True)
+        Path(str(res_p) + ".cancel").unlink(missing_ok=True)
         ed.n_jobs += 1
         q = ed.qdir / f"{job.id}.{job.n}.job.json"
         tmp = ed.qdir / f".{job.id}.{job.n}.tmp"
@@ -1145,26 +1146,48 @@ class Sched:
         tmp.replace(q)
         job.log(f"UE script {Path(jd['script']).name} on {Path(ed.project).stem}: editor on card {ed.card.bus} "
                 f"after {round(st.t_start - st.t_ready, 1)}s")
-        t0, limit = now(), float(jd.get("timeout_s", 1800))
+        t0, limit = now(), float(jd.get("timeout_s", C.UE_JOB_TIMEOUT_S))
         outs = [Path(o) for o in jd.get("outputs", [])]
-        res = None
-        while now() - t0 < limit:
-            if res is None and res_p.exists():
+        res, why = None, None
+        while True:
+            if res_p.exists():
                 try:
                     res = json.loads(res_p.read_text())
+                    break
                 except ValueError:
                     pass
-            if res is not None and (not res.get("ok") or all(o.exists() for o in outs)):
+            if job.cancelled:                               # --cancel, or the client went away: stop it in the editor
+                Path(str(res_p) + ".cancel").touch()
+                t1 = now()
+                while not res_p.exists() and ed.alive() and now() - t1 < 15:
+                    time.sleep(0.1)
+                why = "cancelled"
                 break
             if not ed.alive():
+                why = "the editor died"
+                break
+            if now() - t0 > limit:
+                why = f"timed out after {limit:.0f}s (timeout_s)"
+                Path(str(res_p) + ".cancel").touch()        # a generator script stops at its next tick
                 break
             time.sleep(0.05)
+        Path(str(res_p) + ".cancel").unlink(missing_ok=True)
+        missing = []
+        if res is not None and res.get("ok") and not why:
+            t1 = now()                                      # outputs: checked once, with a short grace
+            while now() - t1 < C.UE_JOB_OUTPUT_GRACE_S and not all(o.exists() for o in outs):
+                time.sleep(0.1)
+            missing = [str(o) for o in outs if not o.exists()]
         dt = round(now() - t0, 1)
-        missing = [str(o) for o in outs if not o.exists()]
-        ok = bool(res and res.get("ok")) and not missing
-        err = None if ok else ((res or {}).get("error") or (f"outputs missing: {missing}" if res else
-                               f"no result ({'editor died' if not ed.alive() else 'timed out'} after {dt}s); "
-                               f"see {ed.log}"))
+        ok = bool(res and res.get("ok")) and not missing and not why
+        err = None if ok else (why or (res or {}).get("error") or (f"outputs missing: {missing}" if missing else
+                                                                    "the script failed"))
+        if why == "cancelled":
+            st.info["error"] = err
+            job.log(f"UE script cancelled after {dt}s")
+            job.result = {"rc": 130, "error": err, "result_file": str(res_p), "seconds": dt}
+            st.state = "cancel"
+            return
         job.result = {"rc": 0 if ok else 1, "result": (res or {}).get("result"), "result_file": str(res_p),
                       "seconds": dt, "error": err}
         job.log(f"UE script done in {dt}s ok={ok}" + (f": {err}" if err else ""))
@@ -1415,6 +1438,14 @@ def handle(S, conn):
                 S.wake.notify_all()
             conn.sendall(b'{"ok": true}\n')
             return
+        if cmd == "cancel":
+            want = str(msg.get("job"))
+            with S.lock:
+                hit = [j for j in S.jobs if str(j.n) == want or j.id == want]
+                for j in hit:
+                    S.cancel(j, f"cancelled by client pid {msg.get('pid')} (--cancel)")
+            conn.sendall((json.dumps({"ok": bool(hit), "jobs": [f"{j.n} {j.id}" for j in hit]}) + "\n").encode())
+            return
         if cmd == "drain":
             with S.lock:
                 S.drain = True
@@ -1430,7 +1461,8 @@ def handle(S, conn):
                 if not jd.get(k) or not Path(jd[k]).exists():
                     raise SystemExit(f"ue job: '{k}' must name an existing file ({jd.get(k)})")
             args = argparse.Namespace(preview=False, paint=False, skip_render=False, rebuild_stage=False,
-                                      device=None, ue_timeout=float(jd.get("timeout_s", 1800)), model=None)
+                                      device=None, ue_timeout=float(jd.get("timeout_s", C.UE_JOB_TIMEOUT_S)),
+                                      model=None)
             jid = jd.get("id") or Path(jd["script"]).stem
             job = Job(args, {"id": jid, "class": "ue_job"}, conn, msg.get("pid"), [])
             job.mode, job.ue = "ue_job", jd
@@ -1613,6 +1645,17 @@ def client_cmd(cmd, **kw):
     return json.loads(line) if line else None
 
 
+def cancel_job(which):
+    """run_asset.py --cancel N|ID: drop its queued stages; a running Blender is stopped, a running editor script is
+    told to stop (at its next tick), a running asset import/render finishes first."""
+    r = client_cmd("cancel", job=which, pid=os.getpid())
+    if r is None:
+        print("no scheduler running")
+        return 1
+    print(f"cancelled: {r['jobs']}" if r.get("ok") else f"no queued or running job {which}")
+    return 0 if r.get("ok") else 1
+
+
 def release_cards():
     """Asset work makes way for a video run: in-flight stages finish, the queue holds, the editor stops, both
     card locks are freed. Waits until both cards are free and prints how long that took."""
@@ -1684,7 +1727,8 @@ def print_status():
             print(f"            editor {d['editor']}")
         for b in d.get("blender") or []:
             print(f"            blender {b}")
-    print("queue:" + ("" if st["queue"] else " empty"))
+    print("queue:" + ("" if st["queue"] else " empty") + ("   (cancel one: run_asset.py --cancel <job number or id>)"
+                                                         if st["queue"] else ""))
     for q in st["queue"]:
         print(f"  job {q['job']:>3} {q['id']:32} {q['mode']:7} {q['stage']:15} {q['state']:5} "
               f"{q['since_s']:>6}s {q.get('device') or ''} (client {q['client']})")

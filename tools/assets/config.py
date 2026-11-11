@@ -47,6 +47,8 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_RECLAIM_FREE_S  after a release, both locks free this long (and asset work queued) = reclaim; default 5
     ASSETS_RELEASE_GRACE_S  after --release-card the card is not retaken for this long   default 120
     ASSETS_UE_VRAM_GB   free VRAM to start the editor           default 8
+    ASSETS_UE_JOB_TIMEOUT_S  --ue-job time limit unless the job sets timeout_s   default 300
+    ASSETS_UE_JOB_OUTPUT_GRACE_S  after a --ue-job script returns ok, its outputs must exist within this; default 10
     ASSETS_UE_EDITORS   editors at most          default 1. 2: a second editor starts on the Blender card when the
                                                 UE backlog reaches ASSETS_UE_SECOND_AT (2) and quits after
                                                 ASSETS_UE_IDLE2_S (600) idle; measured 11-10 it made each UE job
@@ -100,6 +102,8 @@ OUTSIDE_RELEASE_S = float(os.environ.get("ASSETS_OUTSIDE_RELEASE_S", "20"))
 RECLAIM_FREE_S = float(os.environ.get("ASSETS_RECLAIM_FREE_S", "5"))
 RELEASE_GRACE_S = float(os.environ.get("ASSETS_RELEASE_GRACE_S", "120"))
 UE_VRAM_GB = float(os.environ.get("ASSETS_UE_VRAM_GB", "8"))
+UE_JOB_TIMEOUT_S = float(os.environ.get("ASSETS_UE_JOB_TIMEOUT_S", "300"))   # --ue-job default; set timeout_s for more
+UE_JOB_OUTPUT_GRACE_S = float(os.environ.get("ASSETS_UE_JOB_OUTPUT_GRACE_S", "10"))
 UE_IDLE_FPS = int(os.environ.get("ASSETS_UE_IDLE_FPS", "10"))   # idle editor frame cap (t.MaxFPS)
 BLENDER_SPARES = int(os.environ.get("ASSETS_BLENDER_SPARES", "2"))
 BAKE_WAIT_S = float(os.environ.get("ASSETS_BAKE_WAIT_S", "45"))   # poll for a GPU this long before the CPU

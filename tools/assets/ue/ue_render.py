@@ -283,14 +283,24 @@ class ScriptJob:
             if hasattr(out, "__next__"):
                 self.gen = out
                 return False
-            self.r.update(ok=True, result=out)
+            self.done(out)
             return True
         try:
             next(self.gen)
             return False
         except StopIteration as e:
-            self.r.update(ok=True, result=e.value)
+            self.done(e.value)
             return True
+
+    def done(self, out):
+        """A result that says it failed (ok False or an "error") fails the job."""
+        bad = isinstance(out, dict) and (out.get("ok") is False or bool(out.get("error")))
+        self.r.update(ok=not bad, result=out)
+        if bad:
+            self.r["error"] = str(out.get("error") or "the script returned ok=False")
+
+    def cancelled(self):
+        return os.path.exists(self.j["result"] + ".cancel")
 
     def finish(self):
         self.r["elapsed_s"] = round(time.time() - self.t0, 2)
@@ -374,6 +384,13 @@ def _tick():
         return
     job = S["job"]
     if job is not None:
+        if isinstance(job, ScriptJob) and job.cancelled():     # run_asset.py --cancel, or the client went away
+            job.r.update(ok=False, error="cancelled")
+            job.finish()
+            S["job"] = None
+            S["idle_since"] = time.time()
+            set_fps(FIRST.get("idle_fps", 10))
+            return
         if job.step():
             job.finish()
             S["job"] = None
