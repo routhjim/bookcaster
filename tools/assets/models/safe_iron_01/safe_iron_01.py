@@ -10,7 +10,7 @@ import period_kit as K  # noqa: E402
 
 W, D, H = 0.72, 0.58, 1.25
 Z0 = 0.075                               # body bottom (feet + plinth below)
-iron = K.metal("cast_iron", tarnish=0.5, polish=0.55, rust=0.35)
+iron = K.metal("cast_iron", tarnish=0.5, polish=0.55, rust=0.18)
 iron_dark = K.metal("iron", tarnish=0.6, polish=0.4, rust=0.25)
 brass = K.metal("brass", tarnish=0.8, polish=0.6)
 parts = []
@@ -69,7 +69,7 @@ boss = K.lathe("boss", K.keys([(0.0, 0.0001, "c"), (0.0, 0.035, "c"), (0.012, 0.
 boss.location, boss.rotation_euler = (-0.12, FY - 0.026, HZ), (math.pi / 2, 0, 0)
 tbar = K.lathe("tbar", K.keys([(0.0, 0.0001, "c"), (0.0, 0.012, "c"), (0.16, 0.012, "l"), (0.16, 0.0001, "c")], 0.02),
                seg=16, mat=iron_dark)
-tbar.location, tbar.rotation_euler = (-0.12, FY - 0.068, HZ - 0.08), (0, 0, 0)
+tbar.location, tbar.rotation_euler = (-0.20, FY - 0.068, HZ), (0, math.pi / 2, 0)
 parts += [boss, tbar]
 esc = K.lathe("keyplate", K.keys([(0.0, 0.0001, "c"), (0.0, 0.032, "c"), (0.004, 0.032), (0.007, 0.026), (0.007, 0.0001, "c")],
                                  0.001), seg=32, mat=brass)

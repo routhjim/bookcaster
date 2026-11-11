@@ -1,0 +1,15 @@
+{
+  "id": "cane_walking_01",
+  "class": "prop",
+  "description": "Victorian gentleman's walking cane, 0.90 m, lying on the floor along X: malacca shaft (mottled tan-brown, varnished, faint nodes) tapering to a brass ferrule at +X, a tarnished silver collar, and a bent crook handle at -X curling toward +Y. Grip worn dark and smooth.",
+  "tags": ["cane", "walking-stick", "stick", "crook", "malacca", "victorian", "gentleman", "hand-prop", "accessory"],
+  "tier": "hero",
+  "texture_px": 1024,
+  "size_m": [0.90, 0.13, 0.026],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "crook", "position": [-0.25, -0.35, 0.25], "target": [-0.38, 0.03, 0.01], "focal": 60}],
+  "paint": {"prompt": "antique malacca walking cane, mottled tan and brown varnished cane with small nodes, silver collar, brass ferrule, worn dark crook handle", "views": {"ring": 6, "upper": 3, "top": true}}
+}

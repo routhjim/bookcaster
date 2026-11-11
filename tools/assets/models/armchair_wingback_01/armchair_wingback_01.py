@@ -57,8 +57,9 @@ for s in (-1, 1):
     ax = s * (ARM_X0 + ARM_X1) / 2
     body = K.rbox(f"arm{s}", (ARM_X1 - ARM_X0, 0.74, 0.30), r=0.025, spacing=0.025, bulge=(0.012, 0.0, 0.0),
                   loc=(ax, -0.03, BASE_Z1 + 0.15 - 0.01), mat=LEATHER)
-    roll = K.rbox(f"roll{s}", (0.165, 0.76, 0.115), r=0.05, spacing=0.018, bulge=(0.004, 0.0, 0.006),
-                  loc=(ax + s * 0.008, -0.035, 0.6125), mat=LEATHER)
+    # rolled arm: a fat roll overhanging outward (the period scroll arm)
+    roll = K.rbox(f"roll{s}", (0.19, 0.76, 0.125), r=0.06, spacing=0.018, bulge=(0.006, 0.0, 0.008),
+                  loc=(ax + s * 0.022, -0.035, 0.6075), mat=LEATHER)
     panel = K.rbox(f"armfront{s}", (0.165, 0.035, 0.40), r=0.012, spacing=0.02, bulge=(0.0, 0.006, 0.0),
                    loc=(ax + s * 0.008, -0.4125, 0.465), mat=LEATHER)
     K.warp(panel, lambda c: (c.x, c.y, c.z + (0.012 if c.z > 0.19 else 0.0) * 0.0))
@@ -91,9 +92,11 @@ for s in (-1, 1):
                     tuft={"face": ("-x" if s > 0 else "+x"), "cw": 0.10, "ch": 0.12, "depth": 0.022 if TUFT else 0.0, "margin": 0.055},
                     loc=(s * 0.36, 0.16, 0.92), mat=LEATHER)
 
-    def wf(c):
+    def wf(c, s=s):
         f = K.smooth((-c.y) / 0.2) * K.smooth((-c.z + 0.05) / 0.3)
-        return (c.x, c.y + 0.13 * f, c.z)
+        # wings flare outward toward the top and front
+        flare = 0.05 * K.smooth((c.z + 0.25) / 0.5) * K.smooth((0.2 - c.y) / 0.4)
+        return (c.x + s * flare, c.y + 0.13 * f, c.z)
 
     K.warp(wg, wf)
     btn_w = [(K.Vector(wf(p)), n) for p, n in wb]

@@ -1,0 +1,76 @@
+{
+ "id": "revolver_service_01",
+ "class": "prop",
+ "description": "Late-Victorian six-shot service revolver (break-top type), 0.26 m, lying on its right side on the floor, muzzle to +X, grip to -X and +Y (its top edge toward -Y): round 4-inch barrel with a top rib and blade foresight, fluted cylinder with six chambers, frame with a barrel latch, spurred hammer, curved trigger in a round guard, bird's-head grip with chequered walnut panels and a lanyard ring. Blued steel worn bright on edges and the cylinder, oily; grips darkened by handling.",
+ "tags": [
+  "revolver",
+  "pistol",
+  "gun",
+  "firearm",
+  "weapon",
+  "service-revolver",
+  "victorian",
+  "hand-prop",
+  "steel"
+ ],
+ "tier": "hero",
+ "texture_px": 2048,
+ "size_m": [
+  0.26,
+  0.15,
+  0.04
+ ],
+ "size_tolerance": 0.2,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "cylinder",
+   "position": [
+    0.05,
+    0.02,
+    0.25
+   ],
+   "target": [
+    0.0,
+    -0.0,
+    0.01
+   ],
+   "focal": 60
+  },
+  {
+   "name": "grip",
+   "position": [
+    -0.15,
+    0.2,
+    0.2
+   ],
+   "target": [
+    -0.06,
+    0.05,
+    0.01
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "Victorian service revolver, worn blued steel with bright wear on the edges and cylinder, chequered walnut grips",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  },
+  "close": {
+   "box": [
+    0.2,
+    0.0,
+    0.0,
+    0.7,
+    1.0,
+    1.0
+   ],
+   "ring": 3
+  }
+ }
+}

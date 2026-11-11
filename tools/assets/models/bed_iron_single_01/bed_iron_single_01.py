@@ -93,13 +93,13 @@ for j in range(nv + 1):
         hang = math.hypot(dx, dy)
         x = math.copysign(min(abs(u), A) + 0.012 + 0.03 * K.smooth(hang / 0.2) * (dx > 0), u)
         y = max(v, Y0) - 0.012 * (dy > 0)
-        z = MT + 0.012 - hang
+        z = MT + 0.038 - hang
         # wrinkles: long folds across the top, deeper near the head edge where it is turned back
         w = 0.010 * math.sin(u * 17 + v * 3) + 0.007 * math.sin(v * 23 + u * 5) + 0.012 * math.sin(u * 9 - v * 6) ** 3
         if hang > 0:
             x += math.copysign(0.012 * math.sin(v * 31) ** 2, u) * (dx > 0)
             y += 0.0
-        z += w * (1.0 if hang == 0 else 0.4) + (0.025 * K.smooth((v - Y1 + 0.15) / 0.15) if hang == 0 else 0.0)
+        z += 0.7 * w * (1.0 if hang == 0 else 0.4) + (0.025 * K.smooth((v - Y1 + 0.15) / 0.15) if hang == 0 else 0.0)
         row.append(bm.verts.new((x, y, max(z, MT - 0.33))))
     grid.append(row)
 for j in range(nv):

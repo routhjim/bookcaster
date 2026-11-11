@@ -1,0 +1,14 @@
+{
+  "id": "vent_grille_wall_01",
+  "class": "prop",
+  "description": "Small wall ventilator: a cast-iron air grille 0.24 W x 0.16 H m with a moulded border and a lattice of square holes, screwed to the wall over a dark opening, front -Y. Black paint with dust and soot streaks, rusted screw heads. The back of the bounds is the wall face (0.03 m deep incl. the dark cavity box behind, which sits inside the wall); the bounds' bottom is the grille's lower edge (mount it high on a wall).",
+  "tags": ["ventilator", "vent", "grille", "air-brick", "cast-iron", "victorian", "wall", "fixture"],
+  "tier": "mid",
+  "size_m": [0.24, 0.05, 0.16],
+  "size_tolerance": 0.2,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "face", "position": [0.05, -0.45, 0.12], "target": [0.0, 0.0, 0.08], "focal": 50}],
+  "paint": {"prompt": "small Victorian cast iron wall ventilator grille painted black, dusty, soot streaks, rusty screws", "views": {"ring": 3, "upper": 2, "top": false}}
+}

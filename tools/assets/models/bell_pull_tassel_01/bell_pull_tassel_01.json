@@ -1,0 +1,17 @@
+{
+  "id": "bell_pull_tassel_01",
+  "class": "prop",
+  "description": "Bell-pull: a thick three-strand twisted rope, 1.75 m, hanging from a small brass ceiling plate and ring, ending in a knotted tassel of loose cords; faded hemp/cream with dirt where handled. Hangs straight: its top (the plate) is the top of the bounds and goes against the ceiling; the bounds' floor point is the tassel's lowest strand (origin is there, not at the top).",
+  "tags": ["bell-pull", "rope", "tassel", "cord", "bell", "victorian", "bedroom", "fixture", "hanging"],
+  "tier": "mid",
+  "size_m": [0.10, 0.10, 1.80],
+  "size_tolerance": 0.2,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "tassel", "position": [0.15, -0.45, 0.25], "target": [0.0, 0.0, 0.14], "focal": 60},
+    {"name": "top", "position": [0.2, -0.6, 1.55], "target": [0.0, 0.0, 1.70], "focal": 60}
+  ],
+  "paint": {"prompt": "thick twisted hemp bell-pull rope with a knotted tassel, faded cream, grubby where pulled", "views": {"ring": 4, "upper": 2, "top": false}}
+}

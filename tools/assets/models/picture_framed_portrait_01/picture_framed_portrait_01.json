@@ -1,0 +1,58 @@
+{
+ "id": "picture_framed_portrait_01",
+ "class": "prop",
+ "description": "Small Victorian oil portrait of a bearded gentleman, varnished, in a gilt frame, 0.50 x 0.58 m. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
+ "tags": [
+  "picture",
+  "frame",
+  "gilt",
+  "wall",
+  "art",
+  "victorian",
+  "interior",
+  "decor",
+  "oil-painting"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.5,
+  0.045,
+  0.58
+ ],
+ "size_tolerance": 0.12,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script; picture drawn by the local image model)",
+ "picture": {
+  "w": 0.36,
+  "h": 0.44,
+  "frame_w": 0.07,
+  "mount_w": 0.0,
+  "oil": true
+ },
+ "cameras": [
+  {
+   "name": "corner",
+   "position": [
+    0.35,
+    -0.45,
+    0.5220000000000001
+   ],
+   "target": [
+    0.2,
+    0.0,
+    0.53
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "antique gilt picture frame with worn gilding showing red bole, dark grime in the mouldings",
+  "views": {
+   "ring": 3,
+   "upper": 2,
+   "top": false
+  }
+ }
+}

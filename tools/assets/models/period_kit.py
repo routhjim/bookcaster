@@ -825,6 +825,15 @@ def fabric(kind="leather", colour=(0.10, 0.035, 0.018), wear=0.5, figure=None, n
         if kind == "damask":
             # faint woven figure: lobed repeat from two crossed sine fields + a voronoi rosette
             v = k.vec(k.obj, (14.0 * scale, 14.0 * scale, 14.0 * scale))
+            # warp the lattice with noise so the motif reads as scrolling foliage, not a grid of dots
+            wn = k.node("ShaderNodeTexNoise", Scale=1.3, Detail=3.0, Roughness=0.5)
+            k.L.new(v, wn.inputs["Vector"])
+            vw = k.N.new("ShaderNodeVectorMath")
+            vw.operation = "MULTIPLY_ADD"
+            k.L.new(wn.outputs["Color"], vw.inputs[0])
+            vw.inputs[1].default_value = (1.6, 1.6, 1.6)
+            k.L.new(v, vw.inputs[2])
+            v = vw.outputs[0]
             sx = k.N.new("ShaderNodeSeparateXYZ")
             k.L.new(v, sx.inputs[0])
             a = k.m("SINE", k.m("ADD", sx.outputs["X"], sx.outputs["Z"]))
@@ -832,8 +841,8 @@ def fabric(kind="leather", colour=(0.10, 0.035, 0.018), wear=0.5, figure=None, n
             c2 = k.m("SINE", k.m("MULTIPLY", sx.outputs["Y"], 2.0))
             pat = k.m("MULTIPLY", k.m("ADD", a, b), k.m("ADD", 1.2, k.m("MULTIPLY", c2, 0.4)))
             pat = k.m("ADD", pat, k.m("MULTIPLY", k.noise(k.obj, 60.0 * scale, 2.0, 0.5), 0.6))
-            figm = k.mr(pat, 0.4, 0.9)
-            col = k.mix(figm, c, fig)
+            figm = k.mr(pat, 0.2, 1.1)
+            col = k.mix(k.m("MULTIPLY", figm, 0.55), c, fig)
             col = k.mix(k.mr(big, 0.3, 0.7, 0, 0.35), col, tuple(x * 0.75 for x in c))
             col = k.mix(k.m("MULTIPLY", e, 0.5 * wear), col, tuple(min(1, x * 1.35 + 0.02) for x in c))
             col = k.mix(k.m("MULTIPLY", cv, 0.75), col, tuple(x * 0.35 for x in c))
@@ -1180,3 +1189,135 @@ def rrect_path(w, h, r, n_corner=6, plane="xz", centre=(0, 0, 0), top_r=None):
     if (Vector(ded[0]) - Vector(ded[-1])).length < 1e-5:
         ded.pop()
     return ded
+
+
+def image_material(path, name, fallback=(0.45, 0.40, 0.30), varnish=0.0):
+    """A picture/print surface: the image at `path` mapped by the part's Generated X / Y (so a flat box part shows it
+    across its face), with a little paper/varnish noise. Falls back to a plain colour when the file is missing."""
+    import os as _os
+    key = ("img", path, name)
+
+    def make():
+        k = NK(name)
+        tc = k.N["Texture Coordinate"]
+        if path and _os.path.exists(path):
+            im = k.N.new("ShaderNodeTexImage")
+            im.image = bpy.data.images.load(path)
+            im.extension = "EXTEND"
+            k.L.new(tc.outputs["Generated"], im.inputs["Vector"])
+            col = k.mul_col(im.outputs["Color"], (0.82, 0.80, 0.74, 1))
+        else:
+            col = fallback
+        n = k.noise(k.obj, 60.0, 3.0, 0.5)
+        col = k.mix(k.mr(n, 0.4, 0.7, 0.0, 0.15), col, (0.30, 0.24, 0.14, 1))
+        rough = lerp(0.85, 0.35, varnish)
+        return k.out(col, rough, 0.0, k.bump(n, 0.0002, 0.1))
+
+    return _cached(key, make)
+
+
+def gilt(name="gilt"):
+    """Old gilding on gesso: gold with the red bole showing on worn high points, dark grime in the hollows."""
+    key = ("gilt", name)
+
+    def make():
+        k = NK(name)
+        big = k.noise(k.obj, 12.0, 3.0, 0.5)
+        mid = k.noise(k.obj, 70.0, 4.0, 0.55)
+        e = k.edge(0.0015)
+        cv = k.cavity(0.012, 0.9, 0.45)
+        col = k.mix(k.mr(big, 0.3, 0.7), (0.42, 0.29, 0.10, 1), (0.55, 0.40, 0.15, 1))
+        bole = k.m("MULTIPLY", e, k.mr(mid, 0.55, 0.7))
+        col = k.mix(bole, col, (0.20, 0.07, 0.03, 1))
+        col = k.mix(k.m("MULTIPLY", cv, 0.85), col, (0.05, 0.035, 0.015, 1))
+        metal_v = k.mixf(k.m("ADD", bole, k.m("MULTIPLY", cv, 0.8)), 0.85, 0.1)
+        rough = k.mixf(cv, k.mr(mid, 0.3, 0.7, 0.28, 0.45), 0.8)
+        return k.out(col, rough, metal_v, k.bump(mid, 0.0002, 0.25))
+
+    return _cached(key, make)
+
+
+def framed_picture(pid, img_w, img_h, frame_w=0.065, mount_w=0.06, depth=0.045, picture_path=None, oil=False):
+    """A wall picture: gilt moulded frame (four mitred runs), pale mount (none for an oil), the picture, a backboard.
+    Built flat (front +Z) then turned upright: front -Y, back flat at the back of the bounds."""
+    parts = []
+    mw = 0.0 if oil else mount_w
+    ow, oh = img_w + 2 * mw, img_h + 2 * mw          # frame opening
+    fw = frame_w
+    prof = [(0.0, 0.0), (0.0, 0.010), (-0.004, 0.012), (-0.010 * fw / 0.065, depth * 0.40),
+            (-0.018 * fw / 0.065, depth * 0.48)]
+    for k_ in range(7):                                # bead and cove up to the outer roll
+        t = k_ / 6
+        prof.append((-(0.022 + 0.026 * t) * fw / 0.065, depth * (0.52 + 0.40 * t ** 1.6 + 0.04 * math.sin(math.pi * t * 2))))
+    for k_ in range(6):                                # outer roll
+        a = math.pi / 2 * k_ / 5
+        prof.append((-(0.050 + 0.015 * math.sin(a)) * fw / 0.065, depth * (0.92 + 0.08 * math.cos(a)) - depth * 0.35 * (1 - math.cos(a))))
+    prof += [(-fw, depth * 0.25), (-fw, 0.0)]
+    gm = gilt()
+    runs = ((0, -oh / 2, 0.0, ow), (0, oh / 2, math.pi, ow), (ow / 2, 0, math.pi / 2, oh), (-ow / 2, 0, -math.pi / 2, oh))
+    for i, (x, y, rz, L) in enumerate(runs):
+        m = moulding(f"{pid}_fr{i}", prof, -L / 2, L / 2, 1, 1, gm)
+        m.rotation_euler = (0, 0, rz)
+        m.location = (x, y, 0)
+        parts.append(m)
+    back = box(f"{pid}_back", (ow + 0.01, oh + 0.01, 0.006), (0, 0, 0.003), bev=0.0,
+               mat=wood("pine", "X", wear=0.0, gloss=0.0, grime=1.0))
+    parts.append(back)
+    pic = box(f"{pid}_pic", (img_w + 0.004, img_h + 0.004, 0.002), (0, 0, 0.007), bev=0.0,
+              mat=image_material(picture_path, f"{pid}_print", varnish=0.8 if oil else 0.0))
+    parts.append(pic)
+    if mw > 0:
+        mount = paper((0.55, 0.51, 0.40), name="mount")
+        for (x, y, sx, sy) in ((0, -(img_h / 2 + mw / 2), ow, mw), (0, img_h / 2 + mw / 2, ow, mw),
+                               (-(img_w / 2 + mw / 2), 0, mw, img_h), (img_w / 2 + mw / 2, 0, mw, img_h)):
+            parts.append(box(f"{pid}_mt{x:.2f}{y:.2f}", (sx, sy, 0.003), (x, y, 0.0095), bev=0.0006, seg=1, mat=mount))
+    # glass is left out on purpose: a glazed print reflects the room and hides the picture in keyframes
+    for o in parts:
+        mw_ = Matrix.Rotation(math.pi / 2, 4, "X")
+        o.matrix_world = mw_ @ o.matrix_basis
+    # hanging wire hooks are behind (not modelled)
+    return parts
+
+
+def plate(name, outline, thick, y=0.0, mat=None, bev=0.0015, seg=2):
+    """A flat part cut from a 2D outline in the XZ plane (list of (x, z), counter-clockwise seen from -Y), extruded
+    `thick` along Y centred on y. Bevelled edges."""
+    bm = bmesh.new()
+    f = [bm.verts.new((x, y - thick / 2, z)) for x, z in outline]
+    b = [bm.verts.new((x, y + thick / 2, z)) for x, z in outline]
+    bm.faces.new(f)
+    bm.faces.new(list(reversed(b)))
+    n = len(outline)
+    for i in range(n):
+        j = (i + 1) % n
+        bm.faces.new((f[j], f[i], b[i], b[j]))
+    bmesh.ops.triangulate(bm, faces=[fc for fc in bm.faces if len(fc.verts) > 4])
+    ob = from_bm(name, bm)
+    if bev:
+        bevel(ob, bev, seg, 30)
+    shade(ob, 30)
+    if mat is not None:
+        assign(ob, mat)
+    return ob
+
+
+def bail_handle(prefix, x, y, z, w=0.075, mat=None):
+    """Brass swan-neck bail drawer handle on a face at y (front -Y): two oval backplates, two posts and a hanging
+    curved bail. Returns the parts."""
+    parts = []
+    for s in (-1, 1):
+        bp = lathe(f"{prefix}_bp{s}", [(0.0001, 0.0), (0.011, 0.0), (0.010, 0.002), (0.0001, 0.0025)], seg=20, mat=mat)
+        bp.data.transform(Matrix.Diagonal((1.0, 1.45, 1.0, 1.0)))
+        bp.location, bp.rotation_euler = (x + s * w / 2, y, z), (math.pi / 2, 0, 0)
+        po = lathe(f"{prefix}_po{s}", [(0.0001, 0.0), (0.0035, 0.0), (0.003, 0.012), (0.0045, 0.014), (0.0001, 0.017)],
+                   seg=12, mat=mat)
+        po.location, po.rotation_euler = (x + s * w / 2, y, z), (math.pi / 2, 0, 0)
+        parts += [bp, po]
+    pts = []
+    for k in range(21):
+        t = k / 20
+        xx = x + (t - 0.5) * w
+        sag = 0.020 * math.sin(math.pi * t) + 0.004 * math.sin(3 * math.pi * t)
+        pts.append((xx, y - 0.015, z - sag))
+    parts.append(tube(f"{prefix}_bail", pts, 0.0028, seg=8, mat=mat))
+    return parts

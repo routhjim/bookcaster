@@ -1,0 +1,53 @@
+{
+ "id": "lantern_dark_lit_01",
+ "class": "prop",
+ "description": "Victorian dark lantern (bull's-eye lantern), 0.27 m tall, front -Y: japanned tinplate cylinder body with a swivelling inner shutter, a thick plano-convex bull's-eye lens in a short brass-rimmed tube at the front, a conical hood with a ventilated chimney cap, a ring handle on top and a flat strap handle at the back; black japanning worn to bright tin on the edges, soot round the chimney, dents. Lit: the lamp inside burns and the lens glows warm (emissive behind the glass); light shows at the chimney vents. Unlit twin: lantern_dark_01.",
+ "tags": [
+  "lantern",
+  "dark-lantern",
+  "bulls-eye",
+  "light",
+  "victorian",
+  "police",
+  "hand-prop",
+  "tin",
+  "brass",
+  "lit"
+ ],
+ "tier": "hero",
+ "texture_px": 1024,
+ "size_m": [
+  0.13,
+  0.16,
+  0.27
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "variant": "lit",
+ "cameras": [
+  {
+   "name": "lens",
+   "position": [
+    0.15,
+    -0.4,
+    0.22
+   ],
+   "target": [
+    0.0,
+    -0.04,
+    0.13
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "Victorian bull's eye dark lantern, black japanned tinplate worn to bright tin on the edges, brass lens rim, soot on the chimney, dents",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

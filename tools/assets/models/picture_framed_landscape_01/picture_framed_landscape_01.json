@@ -1,0 +1,59 @@
+{
+ "id": "picture_framed_landscape_01",
+ "class": "prop",
+ "description": "Hand-tinted landscape engraving (river, old trees, distant church) behind a pale mount in a gilt frame, 0.62 x 0.55 m. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
+ "tags": [
+  "picture",
+  "frame",
+  "gilt",
+  "wall",
+  "art",
+  "victorian",
+  "interior",
+  "decor",
+  "engraving",
+  "print"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.63,
+  0.045,
+  0.555
+ ],
+ "size_tolerance": 0.12,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script; picture drawn by the local image model)",
+ "picture": {
+  "w": 0.4,
+  "h": 0.325,
+  "frame_w": 0.055,
+  "mount_w": 0.06,
+  "oil": false
+ },
+ "cameras": [
+  {
+   "name": "corner",
+   "position": [
+    0.41500000000000004,
+    -0.45,
+    0.49950000000000006
+   ],
+   "target": [
+    0.265,
+    0.0,
+    0.505
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "antique gilt picture frame with worn gilding showing red bole, dark grime in the mouldings",
+  "views": {
+   "ring": 3,
+   "upper": 2,
+   "top": false
+  }
+ }
+}
