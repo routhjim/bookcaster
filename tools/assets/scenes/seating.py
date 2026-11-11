@@ -1,7 +1,9 @@
 """Seating: a seated person is placed from the chair's own geometry and checked from the engine's facts (stdlib).
 
 A character in a scene spec with a sitting pose ("sit..." / "seated") and "seat": "<set item name>" (or "seat":
-true: the set's nearest seat to its "position") gets, before staging,
+true: the set's nearest seat to its "position") gets, before staging (with "seated_from": "<base id>" in place of
+"id", the library's "<base>_seated_*" stance settled for that seat is chosen: seated_variant; params "hands": "lap"
+adds the character tools' hands-in-lap steps for the seat's height),
   position  the hip point on the seat: centred between the arms (or on the nearest of a sofa's places), at the
             seat's depth with the hips a hip's depth in front of the back,
   facing    the seat's real front (its library "seat" block, scenes/seatbox.py: the front found from the mesh, so a
@@ -149,6 +151,42 @@ def check(measured: dict, seat: dict, fitd: dict, place_x: float) -> dict:
             "error_m": [round(e, 3) for e in err]}
 
 
+def seated_variant(library: Path, base: str, seat: dict) -> str | None:
+    """The library character settled for this seat: among "<base>_seated_*", the one whose record names the seat's
+    asset ("seat_asset"), else whose settled seat height ("seat_z_m", else "seat N m" in its note) is nearest the
+    seat's own (within 3 cm). A dress settled for one seat height and width passes through another chair."""
+    import re
+    best = (0.031, None)
+    for d in sorted((library / "character").glob(f"{base}_seated_*")):
+        p = d / "character.json"
+        if not p.exists():
+            continue
+        cj = json.loads(p.read_text())
+        if cj.get("seat_asset") == seat.get("asset"):
+            return d.name
+        z = cj.get("seat_z_m")
+        if z is None:
+            m = re.search(r"seat (\d\.\d+) m", cj.get("note") or "")
+            z = float(m.group(1)) if m else None
+        if z is not None and abs(z - seat["box"]["seat_z_m"]) < best[0]:
+            best = (abs(z - seat["box"]["seat_z_m"]), d.name)
+    return best[1]
+
+
+def lap_steps(seat_z_m: float) -> list:
+    """Hands resting in the lap, from the character tools' poses_extra.hands_in_lap (SCENES_CHAR_TOOLS)."""
+    import importlib.util
+    import os
+    d = os.environ.get("SCENES_CHAR_TOOLS")
+    f = Path(d) / "poses_extra.py" if d else None
+    if not f or not f.exists():
+        return []
+    sp = importlib.util.spec_from_file_location("poses_extra", f)
+    mod = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(mod)
+    return mod.hands_in_lap(seat_z_m)
+
+
 def plan(spec: dict, library: Path) -> dict:
     """Seat every seated character that names a seat (or seat: true). Returns {key: seat name}; edits spec."""
     set_dir = library / "set" / spec["set"]
@@ -159,7 +197,8 @@ def plan(spec: dict, library: Path) -> dict:
     for k, c in spec["characters"].items():
         if not c.get("seat") or not is_seated(c) or c.get("asset"):
             continue
-        cj_p = library / "character" / c["id"] / "character.json"
+        base = c.get("seated_from")             # a stance per chair: pick the one settled for the chosen seat
+        cj_p = library / "character" / (c.get("id") or "") / "character.json"
         fitd = fit(json.loads(cj_p.read_text()) if cj_p.exists() else None)
         if c["seat"] is True:
             order = sorted(S, key=lambda n: math.dist(S[n]["pos"], c["position"][:2]))
@@ -169,7 +208,16 @@ def plan(spec: dict, library: Path) -> dict:
         for n in order:
             if n in taken.values() or not fits(S[n], fitd):
                 continue
+            if base:
+                vid = seated_variant(library, base, S[n])
+                if not vid:
+                    continue                     # no stance of this person settled for that seat
+                c = dict(c, id=vid)
             spec["characters"][k] = place(c, S[n], fitd)
+            pr = spec["characters"][k]["body_pose"]["params"]
+            if pr.get("hands") == "lap":
+                pr["steps"] = lap_steps(pr["seat_z_m"]) + list(pr.get("steps") or [])
+                pr.pop("hands")
             spec["characters"][k]["_seat"]["fit"] = fitd
             if n != (c["seat"] if c["seat"] is not True else n):
                 spec["characters"][k]["_seat"]["note"] = f"{c['seat']} is narrower than the sitter; {n} fits"
