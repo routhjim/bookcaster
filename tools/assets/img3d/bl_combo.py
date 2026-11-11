@@ -842,8 +842,14 @@ EASE_ALL = float(JOB.get("body_ease_m", 0.014))
 HEAD_EASE = float(JOB.get("head_ease_m", 0.014))      # the statue's head must cover the hidden head and its hair
 disp = np.zeros_like(fco)
 zfeet = float(JOB.get("push_above_m", 0.14))          # shoes stay as drawn (the body's feet are bigger)
+# HEAD_PUSH_R: only cloth within this distance of the neck's axis is pushed out of the head mesh (the head mesh's
+# shoulder skin reaches under a puffed shoulder; pushing there raised the shoulders into points)
+HEAD_PUSH_R = float(JOB.get("head_push_r_m", 9.0))
+_nax = np.array(J("neck_01"))[:2]
 for i, p in enumerate(fco):
     if p[2] < zfeet:
+        continue
+    if np.linalg.norm(p[:2] - _nax) > HEAD_PUSH_R:
         continue
     for bvh in bvhs:
         q = Vector(p) + Vector(disp[i])
@@ -1002,6 +1008,8 @@ if DSM > 0 and not STATUE:
         hb_ = bvhs[-1]
         nfix = 0
         for i in range(len(fco)):
+            if np.linalg.norm(fco[i, :2] - _nax) > HEAD_PUSH_R:
+                continue
             q = Vector(fco[i] + disp[i])
             loc, nrm, _, dist = hb_.find_nearest(q, 0.05)
             if loc is None:
@@ -1051,6 +1059,19 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
             REP["collar_height"]["lift_cm"] = round(lift * 100, 1)
             top0 = top0 + lift
         REP["bare_neck_cm"] = round((chin_ - top0) * 100, 1)
+        # a clean top edge: the cut at the neck leaves a torn line; everything round the neck that stands above a
+        # smooth tilted surface just under the jaw (front at the collar top, rising toward the nape) is laid down
+        # onto it (no vertex removed: the stance settle keeps its vertex ids), so the cloth ends in one even loop
+        if JOB.get("collar_clean_edge", True):
+            P2 = fco + disp
+            rr2 = np.linalg.norm(P2[:, :2] - nc_[:2], axis=1)
+            tilt_c = math.radians(float(JOB.get("collar_edge_tilt_deg", 22)))
+            z_front = min(top0, chin_ - 0.004)
+            # height of the edge surface at each vertex: front at z_front, rising backward (+y) by tan(tilt)
+            zedge = z_front + np.maximum(P2[:, 1] - (nc_[1] - 0.06), 0) * math.tan(tilt_c)
+            sel = (rr2 < float(JOB.get("collar_edge_r_m", 0.11))) & (P2[:, 2] > zedge)
+            disp[sel, 2] -= (P2[sel, 2] - zedge[sel])
+            REP["collar_height"]["edge_laid_verts"] = int(sel.sum())
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
 # the cravat: the drawn one is crumpled; smooth its surface (light, unsaturated cloth in front of the neck)

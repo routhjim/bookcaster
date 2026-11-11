@@ -8,11 +8,11 @@ right half, plain paper). Measured on it:
   - preset: the shipped preset whose thumbnail head is most alike in shape (DINOv2 cosine of GREYSCALE head crops,
     so the presets' tinted thumbnails and the drawing's colours do not count), among presets of the measured gender,
     weighted by agreement of the CLIP age band;
-  - hair, beard, moustache and eyebrows: the shipped groom whose name, read as words ("Hair_S_SlickBack" -> "short
-    slicked back hair"), CLIP finds most like the head crop (beard and moustache have a "clean-shaven" option);
-  - hair colour: CLIP over named colours, mapped to the groom's melanin / redness;
-  - build: CLIP over slim / average / stocky / very heavily built for the full figure, mapped to the body
-    constraints (Fat, Muscularity, Chest, Waist, Across Shoulder) around the measured gender's defaults.
+  - hair, beard, moustache and eyebrows, hair colour and build: one question per case to the vision model
+    (tools/vl_judge.py: the image model's own Qwen3-VL) with the sheet's head or figure, choosing by number from the
+    shipped grooms (their names read as words, "Hair_S_SlickBack" -> "short slick back hair"; beard and moustache
+    with a "none" option), named colours (-> melanin / redness) and builds (-> body constraints round the measured
+    gender's defaults).
 The --look text (the story's look line), when given, is only used as CLIP's subject words ("a man", "a woman").
 Writes choice.json: {"base", "grooms", "clear_slots", "params", "body", "scores": {...}}.
 Thumbnails: <DIR>/<Preset>_<n>.(png|jpg): the shipped preset pictures (the bust renders are used: any whose
@@ -70,6 +70,8 @@ def main():
     ap.add_argument("--thumbs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--look", default="")
+    ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()),
+                    help="a Python with the vision model's packages (tools/vl_judge.py)")
     a = ap.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("no GPU visible (HIP_VISIBLE_DEVICES): refusing to run on the CPU")
@@ -130,30 +132,64 @@ def main():
     base = max(score, key=score.get)
     sc["preset_top5"] = sorted(((round(v, 4), n, round(sims[n], 3), round(pa[n], 1)) for n, v in score.items()),
                                reverse=True)[:5]
-    grooms, clear = {}, []
-    subj = f"a drawing of a {gender} with"
+    # hair, facial hair, hair colour and build: one question per case to the vision model (the image model's own
+    # Qwen3-VL, tools/vl_judge.py) with the sheet, choosing from the shipped sets by number; CLIP's similarity picked
+    # long loose hair for an up-do and stubble for a clean-shaven face
+    head_p = Path(a.out).with_name("sheet_head.png")
+    fig_p = Path(a.out).with_name("sheet_figure.png")
+    head.save(head_p)
+    fig.save(fig_p)
+
+    def menu(items):
+        return "\n".join(f"{i}. {t}" for i, t in enumerate(items))
+    asks, opts_by = {}, {}
     for slot, opts in GROOMS.items():
         if gender == "woman" and slot in ("Beard", "Mustache"):
-            clear.append(slot)
             continue
-        texts = [f"{subj} {words(slot, o)}" for o in opts]
+        items = [words(slot, o) for o in opts]
         if slot in ("Beard", "Mustache"):
-            texts.append(f"a drawing of a clean-shaven {gender} with no {NOUN[slot]}")
-        pr = clip_probs(head, texts)
-        k = int(np.argmax(pr))
-        sc[slot] = [(round(float(pr[i]), 3), texts[i].replace(subj + " ", "")) for i in np.argsort(-pr)[:3]]
-        if k == len(opts):
-            clear.append(slot)
-        else:
-            grooms[slot] = f"WI_{slot}_{opts[k]}"
-    cpr = clip_probs(head, [f"a drawing of a {gender} with {c} hair" for c in COLOURS])
-    col = list(COLOURS)[int(np.argmax(cpr))]
-    sc["hair_colour"] = [(round(float(cpr[i]), 3), list(COLOURS)[i]) for i in np.argsort(-cpr)[:3]]
+            items = [f"no {NOUN[slot]} at all"] + items
+        opts_by[slot] = items
+        asks[slot] = (f"Look at the {NOUN[slot]} of the person in this drawing. Which description below matches it "
+                      f"best? Consider length, shape and how it is worn. Reply with the number only.\n" + menu(items))
+    asks["colour"] = ("What colour is this person's hair in the drawing? Reply with the number only.\n"
+                      + menu([f"{c} hair" for c in COLOURS]))
+    q = [{"id": "head", "image": str(head_p), "ask": asks, "max_new_tokens": 4}]
+    q.append({"id": "fig", "image": str(fig_p), "max_new_tokens": 4,
+              "ask": {"build": "How is this person built, as drawn? Reply with the number only.\n" + menu(list(BUILDS))}})
+    import subprocess
+    vl = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
+                        input="".join(json.dumps(x) + "\n" for x in q), capture_output=True, text=True)
+    ans = {}
+    for ln in vl.stdout.splitlines():
+        if ln.startswith("{"):
+            ans.update(json.loads(ln)["answers"])
+    if not ans:
+        raise SystemExit(f"vision model gave no answers: {vl.stderr[-800:]}")
+
+    def num(v, n):
+        import re as _re
+        m = _re.search(r"\d+", v or "")
+        return min(max(int(m.group()), 0), n - 1) if m else 0
+    sc["vlm_answers"] = ans
+    grooms, clear = {}, []
+    if gender == "woman":
+        clear += ["Beard", "Mustache"]
+    for slot, items in opts_by.items():
+        k = num(ans.get(slot), len(items))
+        opts = GROOMS[slot]
+        if slot in ("Beard", "Mustache"):
+            if k == 0:
+                clear.append(slot)
+                continue
+            k -= 1
+        grooms[slot] = f"WI_{slot}_{opts[k]}"
+    col = list(COLOURS)[num(ans.get("colour"), len(COLOURS))]
+    sc["hair_colour"] = col
     mel, red = COLOURS[col]
     params = {f"Bindings/{d}/": {"Melanin": mel, "Redness": red} for d in ("Hair", "Eyebrows", "Beards", "Mustaches")}
-    bpr = clip_probs(fig, [f"a full-length drawing of a {b} {gender}" for b in BUILDS])
-    build = list(BUILDS)[int(np.argmax(bpr))]
-    sc["build"] = [(round(float(bpr[i]), 3), list(BUILDS)[i]) for i in np.argsort(-bpr)]
+    build = list(BUILDS)[num(ans.get("build"), len(BUILDS))]
+    sc["build"] = build
     B = BUILDS[build]
     if gender == "man":
         body = {"Height": 180 + (6 if build == "very heavily built" else 0), "Chest": 98 + B["d"], "Waist": 84 + B["d"],
