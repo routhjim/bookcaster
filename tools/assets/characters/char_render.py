@@ -149,6 +149,15 @@ def add_follower(a, body, mesh_path, label, materials_from=None):
         for i, m in enumerate(materials_from.get_materials()):
             if i < comp.get_num_materials():
                 comp.set_material(i, m)
+    elif body is not None and body.get_num_materials():
+        # an outfit's hands (slot M_skin: the body's own hands, its UVs) wear the body's skin material; the import
+        # gives every slot the cloth's baked atlas, which painted the hands with cloth texels (dark, white specks)
+        try:
+            names = [str(n) for n in comp.get_material_slot_names()]
+        except Exception:
+            names = []
+        if "M_skin" in names:
+            comp.set_material(names.index("M_skin"), body.get_material(0))
     S.setdefault("followers", {}).setdefault(id(a), []).append(fa)
     return comp
 

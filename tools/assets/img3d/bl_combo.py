@@ -348,8 +348,15 @@ if JOB.get("collar_build") and not STATUE:
     rr_ = np.linalg.norm(co[:, :2] - nc_[:2], axis=1)
     reg = (((co[:, 2] > J("spine_03").z) & (co[:, 1] < nc_[1]) & (np.abs(co[:, 0] - nc_[0]) < 0.11))
            | ((co[:, 2] > J("clavicle_l").z - 0.01) & (rr_ < 0.10)))
-    light = reg & (lum_c > coat_l + float(JOB["collar_build"].get("light_margin", 0.12))) & ~skin
+    # in the throat (the cravat, the collar) anything clearly lighter than the coat goes; lower down only what is
+    # nearer the shirt's white than the coat (a mid-grey waistcoat between the lapels stays)
+    lm_ = float(JOB["collar_build"].get("light_margin", 0.12))
+    q90 = float(np.quantile(lum_c[reg], 0.9)) if reg.sum() > 20 else coat_l + 2 * lm_
+    throat = (co[:, 2] > J("spine_05").z - 0.04) & (np.abs(co[:, 0] - nc_[0]) < 0.06)
+    thr = np.where(throat, coat_l + lm_, max(coat_l + lm_, 0.5 * (coat_l + q90)))
+    light = reg & (lum_c > thr) & ~skin
     REP["collar_region"] = {"coat_lum": round(coat_l, 3), "light_verts": int(light.sum())}
+    COAT_RGB = np.median(col[shz_], 0).tolist() if shz_.sum() > 20 else [0.05, 0.05, 0.05]
     if light.sum() > 50:
         ll = np.sort(lum_c[light])
         cl = col[light][np.argsort(lum_c[light])]
@@ -365,6 +372,8 @@ if JOB.get("collar_build") and not STATUE:
             if strip.sum() > 20:
                 COLLAR_RGB["cravat"] = np.median(col[strip], 0).tolist()
                 gone |= strip
+    COLLAR_RGB = COLLAR_RGB or {}
+    COLLAR_RGB.setdefault("dress", COAT_RGB)
     for k_ in ("collar", "cravat"):
         if JOB["collar_build"].get(f"{k_}_rgb"):
             COLLAR_RGB = COLLAR_RGB or {}
@@ -831,6 +840,50 @@ if not STATUE and SLIM_K < 1:
         nslim += 1
     REP["side_slim"] = {"verts": nslim, "max_excess_cm": round(worst * 100, 1), "k": SLIM_K,
                         "z": [round(z_lo, 2), round(z_hi, 2)]}
+# the sleeves: a drawn sleeve is often a wide tube (a puffed dress sleeve, a loose coat sleeve) that merges with the
+# body once the arm is down; sleeve cloth standing more than SLEEVE_GAP outside the body's own arm (its radius
+# measured per 2 cm along each arm bone) is pulled in to SLEEVE_GAP + SLEEVE_K of the excess, radially about the bone
+SLEEVE_K = float(JOB.get("sleeve_slim_k", 1.0))
+if not STATUE and SLEEVE_K < 1:
+    SLEEVE_GAP = float(JOB.get("sleeve_slim_gap_m", 0.012))
+    beval = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    BP2 = np.array([v.co[:] for v in beval.data.vertices])
+    bgn2 = {g.index: g.name for g in body.vertex_groups}
+    bdom = [bgn2[max(v.groups, key=lambda g: g.weight).group] if v.groups else "" for v in body.data.vertices]
+    gnf2 = {g.index: g.name for g in fig.vertex_groups}
+    nsl = 0
+    for side in ("l", "r"):
+        for a_b, b_b in (("upperarm", "lowerarm"), ("lowerarm", "hand")):
+            A_ = np.array(pose_head(f"{a_b}_{side}"))
+            B_ = np.array(pose_head(f"{b_b}_{side}"))
+            L_ = np.linalg.norm(B_ - A_)
+            ax_ = (B_ - A_) / L_
+            mine = np.array([n.startswith(a_b) and n.endswith(f"_{side}") for n in bdom])
+            tb = (BP2[mine] - A_) @ ax_
+            rb = np.linalg.norm((BP2[mine] - A_) - tb[:, None] * ax_[None, :], axis=1)
+            bins = np.arange(0, L_ + 0.02, 0.02)
+            rmax = np.array([np.quantile(rb[np.abs(tb - t_) < 0.015], 0.95) if (np.abs(tb - t_) < 0.015).sum() > 8
+                             else np.nan for t_ in bins])
+            if np.isnan(rmax).all():
+                continue
+            rmax = np.where(np.isnan(rmax), np.nanmedian(rmax), rmax)
+            w_bone = np.array([sum(g.weight for g in v.groups if gnf2[g.group].startswith(a_b)
+                                   and gnf2[g.group].endswith(f"_{side}")) for v in fig.data.vertices])
+            t_ = (fco2 - A_) @ ax_
+            sel = (w_bone > 0.5) & (t_ > 0.04 * L_) & (t_ < L_)
+            for i in np.nonzero(sel)[0]:
+                c_ = A_ + t_[i] * ax_
+                rv = fco2[i] - c_
+                r_ = np.linalg.norm(rv)
+                e_ = float(np.interp(t_[i], bins, rmax)) + SLEEVE_GAP
+                if r_ <= e_ or r_ < 1e-6:
+                    continue
+                # fade in from the armhole over the bone's first quarter (the shoulder's own shape stays)
+                f_ = float(np.clip(t_[i] / (0.25 * L_), 0, 1)) if a_b == "upperarm" else 1.0
+                new_r = e_ + (r_ - e_) * SLEEVE_K
+                fco2[i] = c_ + rv / r_ * (r_ + (new_r - r_) * f_)
+                nsl += 1
+    REP["sleeve_slim"] = {"verts": nsl, "k": SLEEVE_K}
 disp = fco2 - fco
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
@@ -1149,9 +1202,11 @@ if JOB.get("collar_build") and not STATUE and HEAD is not None:
         m_ = max(cr[k_])
         if m_ > cmax:
             cr[k_] = [c_ * cmax / m_ for c_ in cr[k_]]
-    sw = bl_collar.free_swatches(fig, img, [cr.get("collar", [0.72, 0.72, 0.70]), cr.get("cravat", [0.3, 0.3, 0.32])])
+    sw = bl_collar.free_swatches(fig, img, [cr.get("collar", [0.72, 0.72, 0.70]), cr.get("cravat", [0.3, 0.3, 0.32]),
+                                            cr.get("dress", [0.05, 0.05, 0.05])])
     PIECES = bl_collar.build(J, HEAD, body, arm, img, JOB, REP,
-                             {"_uv": {"collar": sw[0], "cravat": sw[1]}, "_uv_name": fig.data.uv_layers.active.name})
+                             {"_uv": {"collar": sw[0], "cravat": sw[1], "dress": sw[2]},
+                              "_uv_name": fig.data.uv_layers.active.name}, PH=pose_head)
     nfig = len(fig.data.vertices)
     for o in PIECES:
         o.data.materials.clear()

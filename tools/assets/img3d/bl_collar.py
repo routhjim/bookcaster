@@ -71,11 +71,30 @@ def free_swatches(fig, img, colours, cell=32):
     uv = uv.reshape(-1, 2)
     nx, ny = W // cell, H // cell
     used = np.zeros((ny, nx), bool)
-    for p in me.polygons:
-        u = uv[p.loop_start:p.loop_start + p.loop_total]
-        x0, x1 = int(np.floor(u[:, 0].min() * nx)), int(np.floor(u[:, 0].max() * nx))
-        y0, y1 = int(np.floor(u[:, 1].min() * ny)), int(np.floor(u[:, 1].max() * ny))
-        used[max(y0 - 1, 0):min(y1 + 2, ny), max(x0 - 1, 0):min(x1 + 2, nx)] = True
+    # each face marks the cells under its corners, centre and edge midpoints (faces are far smaller than a cell
+    # on these meshes); a cell is free when it and its eight neighbours are unmarked (bilinear and mip margin)
+    li = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", li)
+    starts = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_start", starts)
+    tots = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_total", tots)
+    pts = [uv]
+    for k in range(3):
+        a_ = uv[starts + np.minimum(k, tots - 1)]
+        b_ = uv[starts + np.minimum(k + 1, tots - 1) % np.maximum(tots, 1)]
+        pts.append((a_ + b_) / 2)
+    cen = np.add.reduceat(uv, starts) / tots[:, None]
+    pts.append(cen)
+    P_ = np.vstack(pts)
+    xi = np.clip((P_[:, 0] * nx).astype(int), 0, nx - 1)
+    yi = np.clip((P_[:, 1] * ny).astype(int), 0, ny - 1)
+    used[yi, xi] = True
+    grown = used.copy()
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            grown |= np.roll(np.roll(used, dy, 0), dx, 1)
+    used = grown
     free = np.argwhere(~used)
     if len(free) < len(colours):
         raise RuntimeError("no free atlas cells for the collar swatches")
@@ -118,7 +137,7 @@ def _ellipsoid(c, axes, R, seg=14, ring=8):
     return verts, faces
 
 
-def build(J, HEAD, body, arm, img, JOB, REP, colours):
+def build(J, HEAD, body, arm, img, JOB, REP, colours, PH=None):
     """-> list of new objects (weighted, UV'd onto the swatches), not yet joined. colours: {"collar", "cravat"}."""
     C = JOB.get("collar_build") or {}
     rep = {}
@@ -152,7 +171,7 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours):
     NA, NR = 64, 7
     gap = float(C.get("gap_m", 0.007))
     rise = float(C.get("back_rise_m", 0.012))
-    open_deg = float(C.get("open_deg", 3))
+    open_deg = float(C.get("open_deg", 0))
     fa = math.atan2(-1.0, 0.0)          # the front: -Y
     rings, girth = [], []
     R_top = None
@@ -191,8 +210,16 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours):
             if keep[a] and keep[b]:
                 faces.append((k * NA + a, k * NA + b, (k + 1) * NA + b, (k + 1) * NA + a))
     objs = []
-    collar = _obj("collar", verts, faces)
-    objs.append(("collar", collar))
+    white_top = C.get("white_top_m")
+    if white_top:
+        # a dress's own high collar in the dress colour with a narrow white band (lace) along its top edge
+        kw = max(1, min(NR - 1, int(round(NR * float(white_top) / max(z_top - z_bot, 1e-3)))))
+        lo = [f for f in faces if f[0] < (NR - kw) * NA]
+        hi = [f for f in faces if f[0] >= (NR - kw) * NA]
+        objs.append(("dress", _obj("collar_dress", verts, lo)))
+        objs.append(("collar", _obj("collar", verts, hi)))
+    else:
+        objs.append(("collar", _obj("collar", verts, faces)))
     # wing tips: the two front top corners turned out and down
     if C.get("style", "wing") == "wing":
         wv, wf = [], []
@@ -232,8 +259,35 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours):
         for ix in range(gx):
             a = iz * (gx + 1) + ix
             pf.append((a, a + 1, a + gx + 2, a + gx + 1))
-    plate = _obj("shirt_front", pv, pf)
-    objs.append(("collar", plate))
+    if C.get("plate", True):
+        objs.append(("collar", _obj("shirt_front", pv, pf)))
+    if C.get("cuffs") and PH is not None:
+        # white cuffs: a band round each wrist where the sleeve ends, at the body's wrist radius + the sleeve ease
+        cw = float(C["cuffs"].get("width_m", 0.03)) if isinstance(C["cuffs"], dict) else 0.03
+        bev2 = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        BV2 = np.array([v.co[:] for v in bev2.data.vertices])
+        for side in ("l", "r"):
+            E_, W_ = np.array(PH(f"lowerarm_{side}")), np.array(PH(f"hand_{side}"))
+            ax = (W_ - E_) / np.linalg.norm(W_ - E_)
+            t_ = (BV2 - W_) @ ax
+            rr = np.linalg.norm((BV2 - W_) - t_[:, None] * ax[None, :], axis=1)
+            near = (np.abs(t_ + 0.02) < 0.015) & (rr < 0.06)
+            r0 = (float(np.quantile(rr[near], 0.95)) if near.sum() > 8 else 0.03) + float(C.get("cuff_ease_m", 0.016))
+            u_ = np.cross(ax, [0, 0, 1.0])
+            u_ = u_ / np.linalg.norm(u_) if np.linalg.norm(u_) > 1e-6 else np.array([1.0, 0, 0])
+            v_ = np.cross(ax, u_)
+            cv_, cf_ = [], []
+            for k in range(3):
+                c0 = W_ - ax * (0.005 + cw * k / 2)
+                for a in range(24):
+                    ang = 2 * math.pi * a / 24
+                    cv_.append(c0 + (u_ * math.cos(ang) + v_ * math.sin(ang)) * (r0 + 0.002 * (1 - k / 2)))
+            for k in range(2):
+                for a in range(24):
+                    b = (a + 1) % 24
+                    cf_.append((k * 24 + a, k * 24 + b, (k + 1) * 24 + b, (k + 1) * 24 + a))
+            ob_ = _obj(f"cuff_{side}", cv_, cf_)
+            objs.append(("collar", ob_))
     if C.get("cravat", True):
         cv = C.get("cravat_shape") or {}
         # band: the collar's lower rings, 4 mm out
@@ -305,6 +359,11 @@ def build(J, HEAD, body, arm, img, JOB, REP, colours):
         g4 = ob.vertex_groups.new(name="spine_04")
         for i, p in enumerate(P):
             t = float(np.clip((p[2] - z_bot) / max(z_top - z_bot, 1e-3), 0, 1))
+            if ob.name.startswith("cuff_"):
+                sd = ob.name[-1]
+                g5.remove([i])
+                (ob.vertex_groups.get(f"lowerarm_{sd}") or ob.vertex_groups.new(name=f"lowerarm_{sd}")).add([i], 1.0, "REPLACE")
+                continue
             if ob.name.startswith("shirt_front"):
                 u = float(np.clip((p[2] - z_pl0) / max(J("spine_05").z - z_pl0, 1e-3), 0, 1))
                 g4.add([i], 1 - u, "REPLACE")

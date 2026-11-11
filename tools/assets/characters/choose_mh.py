@@ -105,7 +105,10 @@ def main():
     th = {}
     for p in sorted(Path(a.thumbs).glob("*_*.*")):
         name = p.stem.rsplit("_", 1)[0]
-        im = Image.open(p).convert("RGB")
+        try:
+            im = Image.open(p).convert("RGB")
+        except OSError:
+            continue
         if im.size[0] >= 1000:
             continue
         th.setdefault(name, []).append(im)

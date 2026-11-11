@@ -73,8 +73,8 @@ def with_look(body_pose, face_pose, pitch, yaw=0.0, roll=0.0):
 def hands_in_lap(seat_z_m, clear_m=0.10):
     hz = (seat_z_m + clear_m) * 100
     return [
-        ["ik", "upperarm_l", "lowerarm_l", "hand_l", [3.0, 27.0, hz + 8.0], [30.0, -10.0, hz + 10.0]],
-        ["ik", "upperarm_r", "lowerarm_r", "hand_r", [-5.0, 24.0, hz + 10.0], [-30.0, -10.0, hz + 10.0]],
+        ["ik", "upperarm_l", "lowerarm_l", "hand_l", [6.0, 28.0, hz + 8.0], [48.0, -5.0, hz + 12.0]],
+        ["ik", "upperarm_r", "lowerarm_r", "hand_r", [-8.0, 25.0, hz + 10.0], [-48.0, -5.0, hz + 12.0]],
         ["aim", "hand_l", "middle_01_l", [-0.75, 0.55, -0.35]],
         ["aim", "hand_r", "middle_01_r", [0.75, 0.6, -0.3]],
         ["curl", "l", 25, 10], ["curl", "r", 25, 10]]
@@ -85,14 +85,14 @@ def veil_lift(head, t=0.0, fwd_cm=None):
     chin, in front of the face; at t = 1 above the crown, a little behind the brow (the veil turned back)."""
     hx, hy, hz = head
     pts0 = (8.0, 14.0, -9.0)       # lateral, forward, up from the head joint: hem under the chin
-    pts1 = (7.0, 6.0, 17.0)        # over the crown
+    pts1 = (9.0, 11.0, 10.0)       # at the brow, the hem turned back over the bonnet
     lat = pts0[0] + (pts1[0] - pts0[0]) * t
     fwd = (fwd_cm if fwd_cm is not None else pts0[1] + (pts1[1] - pts0[1]) * t)
     up = pts0[2] + (pts1[2] - pts0[2]) * t
     steps = []
     for side, sx in (("l", 1.0), ("r", -1.0)):
         tgt = [hx + sx * lat, hy + fwd, hz + up]
-        pole = [hx + sx * 45.0, hy - 5.0, hz - 30.0]          # elbows out and down
+        pole = [hx + sx * 35.0, hy + 20.0, hz - 45.0]         # elbows forward, out and down
         steps.append(["ik", f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", [round(v, 2) for v in tgt],
                       [round(v, 2) for v in pole]])
         # fingers toward each other and up, pinching the hem
