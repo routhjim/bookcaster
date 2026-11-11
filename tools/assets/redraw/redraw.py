@@ -8,10 +8,11 @@ RUN: {"scenes": ["/abs/scene_out", ...]   scene tool outputs with truth.json (to
       "sheet": "/abs/character sheet.png",    identity picture (both models)
       "lora": "/abs/char.safetensors", "trigger": "chr_x", "lora_w": {"1": 0.8, "2": 0.63},   (method image)
       "cast": {"<scene key>": {"noun": "man"|"woman", "trigger", "lora", "lora_w", "sheet", "wear", "wear_back",
-               "back_detail", "face_ref"}},   (several different people: each their own words, their LoRA on their own
+               "back_detail", "face_ref", "seat"}},   (several different people: each their own words, their LoRA on their own
                                               region of the frame (box + lora_pad) and their sheet as a reference;
                                               replaces sheet/lora/trigger/wear/wear_back; face_ref: a crop of their
-                                              face from an accepted shot, facecrop.py, given where their face shows)
+                                              face from an accepted shot, facecrop.py, given where their face shows;
+                                              seat: what they sit in, said when they are seated)
       "look": "...",                          (the closing words on the picture's look; default: real skin, film grain)
       "room_surfaces": "...",                 (the set's walls, floor and drapes in words, said in every shot)
       "set": "/abs/library set dir", "light_words": true,   (say where the light comes from, from the set's lit
@@ -84,6 +85,26 @@ def people(shot: dict, poses: dict | None = None) -> list:
             v.get("body_to_camera_deg", v.get("head_to_camera_deg", 0.0)), v.get("nearer_shoulder"))
            for k, v in shot["people"].items() if v.get("box") and v.get("area", 0) > 0.002]
     return sorted(out, key=lambda x: (x[1][0] + x[1][2]) / 2)
+
+
+def scene_poses(sd: Path) -> dict:
+    """Each person's posture word source, from the scene's own job (job.json): a posed character's pose name, a
+    plain-mesh figure's library tags ("seated": a figure made sitting). The scene result's subjects do not carry the
+    pose name, so before this every person was said to be standing."""
+    jp = sd / "job.json"
+    if not jp.exists():
+        return {}
+    j = json.loads(jp.read_text())
+    j = j.get("job", j)
+    out = {k: ((v.get("body_pose") or {}).get("pose") or "") for k, v in (j.get("characters") or {}).items()}
+    lib = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(lib))
+    import config as C
+    for k, f in (j.get("figures") or {}).items():
+        a = C.LIBRARY / f.get("id", "") / "asset.json"
+        tags = json.loads(a.read_text()).get("tags", []) if a.exists() else []
+        out[k] = "seated" if "seated" in tags else ""
+    return out
 
 
 def kind_of(cam: str, shot: dict) -> str:
@@ -162,6 +183,8 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
                      f"{who} is {post} {place_words(box)} and {facing_words(ang, w['pos'])}.")
         if with_body:
             parts.append(body_words(bdeg, near, w["pos"].capitalize(), w["pos"], w.get("back_detail", "")))
+        if post == "sitting" and w.get("seat"):         # what they sit in, in the same words as the set's own chair
+            parts.append(f"{w['subj'].capitalize() if n == 1 else who} sits in {w['seat']}.")
     out = " ".join(parts)
     if speaker and speaker in nm:
         out += f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, mouth slightly open mid-word."
@@ -331,7 +354,7 @@ def main():
                 print(f"skip {sid}: {sh['reject']}")
                 continue
             kind = kind_of(cam, sh)
-            poses = {k: ((v.get("body_pose") or {}).get("pose") or "") for k, v in res.get("subjects", {}).items()}
+            poses = scene_poses(sd)
             ppl = people(sh, poses)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
