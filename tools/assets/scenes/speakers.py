@@ -15,6 +15,17 @@ Rules (general; no per-shot wording):
   the listener's head, offset toward the side of the line the scene has established, aimed at the speaker's eyes.
 - Screen direction. The first wide shot sets the side of the line between the two people; every later shot that is
   not a wide stays on that side (a cut across it flips who looks left and who looks right).
+- Framing (11-11, the shots a plain key won): in a talk shot that is not a close the LISTENER stays in view (their
+  head in the frame; in an over-the-shoulder their head or near shoulder), the speaker's face is at least
+  TALK_FACE_H of the frame height for the shot's kind, and nobody is cut by the frame's left, right or top edge (a
+  person half in the frame) except the listener of an over-the-shoulder. A shot without a speaker keeps the people
+  the director names for it ("show": [keys]) in the frame, uncut. A two-shot favours the speaker: the listener's
+  head is not bigger in the frame than the speaker's. A failure is re-framed by a placed camera that
+  frames the speaker and the listener (aimed between their faces, nearer the speaker: a two-shot favouring the
+  speaker), the passing standpoint nearest the old one.
+- Seating (seating.py): a seated person with "seat" is placed from the chair's own seat box before round 0 and
+  checked from their measured joints after every round; a failure moves them (the measured error off) and renders
+  every camera again.
 - The check uses the engine's own facts for each still: the speaker's head angle to the camera (the scene tool's
   measured truth), the visible fraction of points over the speaker's face (each point is seen where the speaker's own
   depth pass is drawn and is what the scene's depth sees there: nothing nearer covers it), and the face's height in
@@ -45,10 +56,14 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
 import framing  # noqa: E402
+import seating  # noqa: E402
 
 MAX_HEAD_DEG = 45.0
 MIN_FACE_VISIBLE = 0.6
 MIN_FACE_H = {"wide": 0.03, "full": 0.045, "medium": 0.07, "close": 0.18}
+TALK_FACE_H = {"wide": 0.10, "full": 0.10, "medium": 0.10, "close": 0.18}    # a speaker's face in a talk shot
+EDGE = 0.01                  # a point this near the frame's edge counts as outside
+SIDE_EDGE = 0.03             # left and right: a joint this near the side has the body's outer side past it
 ROOM_MARGIN_M = 0.3
 PERSON_R_M = 0.22            # a person, for the planner's "is someone between the camera and the face" test
 
@@ -156,13 +171,144 @@ def all_in_frame(cam, subjects, res, margin=0.03):
     return True
 
 
+def body_points(m):
+    """Set-frame points over a measured person: head top, eyes, chin, and the joints when measured (shoulders,
+    elbows, hands, hips, knees, feet); a plain-mesh figure has only the head and its pelvis and feet."""
+    e = m["eye_xy"]
+    pts = {"head_top": [e[0], e[1], m["head_top_z"]], "eyes": [e[0], e[1], m["eye_z"]], "chin": [e[0], e[1], m["chin_z"]]}
+    j = m.get("joints") or {}
+    for k in ("upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r", "hand_l", "hand_r", "thigh_l", "thigh_r",
+              "calf_l", "calf_r", "foot_l", "foot_r"):
+        if k in j:
+            pts[k] = j[k]
+    if not j:
+        pts["pelvis"] = [m["pelvis_xy"][0], m["pelvis_xy"][1], m.get("waist_z", m["feet_z"] + 0.9)]
+        pts["feet"] = [m["pelvis_xy"][0], m["pelvis_xy"][1], m["feet_z"]]
+    return pts
+
+
+def frame_facts(cam, m, res):
+    """Where a person lands in the frame: head in (eyes and chin inside), how much of them is inside, and whether the
+    frame's left, right or top edge cuts them (some points in, some out that way)."""
+    pr = {k: framing.project(cam, p, res) for k, p in body_points(m).items()}
+    inside = {k: bool(q) and SIDE_EDGE < q[0] < 1 - SIDE_EDGE and EDGE < q[1] < 1 - EDGE for k, q in pr.items()}
+    side_in = [q for k, q in pr.items() if q and SIDE_EDGE < q[0] < 1 - SIDE_EDGE and q[1] < 1 - EDGE]
+    left = any(q and q[0] <= SIDE_EDGE for q in pr.values())
+    right = any(q and q[0] >= 1 - SIDE_EDGE for q in pr.values())
+    top = bool(pr["head_top"]) and pr["head_top"][1] <= EDGE and bool(pr["chin"]) and pr["chin"][1] > EDGE
+    cut = bool(side_in) and (left or right) or top
+    near_sh = [k for k in ("upperarm_l", "upperarm_r") if inside.get(k)]
+    return {"head_in": inside["eyes"] and inside["chin"], "in_frac": round(sum(inside.values()) / len(inside), 2),
+            "head_any": any(inside[k] for k in ("head_top", "eyes", "chin")),
+            "cut": cut, "any_in": any(inside.values()), "shoulder_in": bool(near_sh),
+            "cut_edges": [n for n, b in (("left", left and bool(side_in)), ("right", right and bool(side_in)),
+                                         ("top", top)) if b]}
+
+
+def framing_why(cam, kind, speaker, listener, ots, show, subjects, res):
+    """The framing rules' failures for one camera (empty: it passes), from the measured people."""
+    why = []
+    facts = {k: frame_facts(cam, v["measured"], res) for k, v in subjects.items()}
+    if speaker and kind != "close":
+        m = subjects[speaker]["measured"]
+        top = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], res)
+        chin = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]], res)
+        fh = (chin[1] - top[1]) if top and chin else 0.0
+        if fh < TALK_FACE_H.get(kind, 0.09):
+            why.append(f"speaker's face {fh:.3f} of the frame (talk {kind}: {TALK_FACE_H.get(kind, 0.09)})")
+        if listener and not ots:             # a two-shot favours the speaker: the listener is not the bigger head
+            lm = subjects[listener]["measured"]
+            lt = framing.project(cam, [lm["eye_xy"][0], lm["eye_xy"][1], lm["head_top_z"]], res)
+            lc = framing.project(cam, [lm["eye_xy"][0], lm["eye_xy"][1], lm["chin_z"]], res)
+            if lt and lc and (lc[1] - lt[1]) > fh * 1.05 and facts[listener]["any_in"]:
+                why.append(f"the listener's head ({lc[1] - lt[1]:.3f}) is bigger than the speaker's ({fh:.3f})")
+        if listener:
+            f = facts[listener]
+            if ots and not (f["shoulder_in"] or f["head_any"]):
+                why.append("the listener's shoulder is not in the over-the-shoulder frame")
+            elif ots:                        # the listener's shoulder at one side, the speaker toward the middle
+                lm = subjects[listener]["measured"]
+                le = framing.project(cam, [lm["eye_xy"][0], lm["eye_xy"][1], lm["eye_z"]], res)
+                se = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]], res)
+                if le and 0.25 < le[0] < 0.75:
+                    why.append(f"the listener's head is in the middle of the frame ({le[0]:.2f}), not at its side")
+                if se and not 0.25 < se[0] < 0.75:
+                    why.append(f"the speaker's face is at the frame's side ({se[0]:.2f})")
+            elif not ots and not f["head_in"]:
+                why.append("the listener is not in view")
+    for k in show or []:
+        if k in facts and not facts[k]["head_in"]:
+            why.append(f"{k} (named for the shot) is not in view")
+    for k, f in facts.items():
+        if f["cut"] and not (ots and k == listener) and kind != "close":
+            why.append(f"{k} cut by the frame's {'/'.join(f['cut_edges'])} edge")
+    return why, facts
+
+
+def listener_of(c, spec_line, speaker):
+    if c.get("ots"):
+        return c["ots"]
+    if c.get("listener"):
+        return c["listener"]
+    if speaker and spec_line and speaker in spec_line:
+        return [k for k in spec_line if k != speaker][0]
+    return None
+
+
+def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried):
+    """Placed cameras that keep the speaker and the listener (or the named people) in view, each checked by the
+    framing rules: a two-shot aimed between their faces nearer the speaker, or an over-the-shoulder from behind the
+    listener aimed at the speaker (when two people face each other no lens holds both faces). Returns
+    [(camera, "two" | "ots")], the passing standpoints nearest the old camera first."""
+    cam0 = shot["camera"]
+    kind = c["kind"]
+    keys = [k for k in ([spk, lis] if spk else (c.get("show") or [])) if k]
+    if not keys:
+        return []
+    ms = [subjects[k]["measured"] for k in keys]
+    w = [0.6, 0.4] if spk and lis else [1.0 / len(ms)] * len(ms)
+    aims = {"two": [sum(wi * m["eye_xy"][0] for wi, m in zip(w, ms)), sum(wi * m["eye_xy"][1] for wi, m in zip(w, ms)),
+                    sum(wi * (m["eye_z"] - 0.12) for wi, m in zip(w, ms))]}
+    if spk and lis:
+        sm, lm = ms[0], ms[1]
+        aims["ots"] = [sm["eye_xy"][0] * 0.85 + lm["eye_xy"][0] * 0.15, sm["eye_xy"][1] * 0.85 + lm["eye_xy"][1] * 0.15,
+                       sm["eye_z"] - 0.1]
+    W, D, _ = room
+    out = []
+    m0 = subjects[spk]["measured"] if spk else ms[0]
+    for x in range(-int(W * 5), int(W * 5) + 1):
+        for y in range(-int(D * 5), int(D * 5) + 1):
+            for z in sorted({1.45, 1.6} | ({round(subjects[lis]["measured"]["eye_z"] + 0.12, 2)} if lis else set())):
+                p = [x / 10.0, y / 10.0, z]
+                if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried):
+                    continue
+                if spk and plan_angle(m0["head_fwd_xy"], m0["eye_xy"], p) > MAX_HEAD_DEG - 5:
+                    continue
+                if est_side and kind not in ("wide", "full") and side(line, p) not in (0, est_side):
+                    continue
+                for mode, aim in aims.items():
+                    others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
+                    if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
+                        continue
+                    for f in (28, 35, 40, 50):
+                        q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
+                        why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res)
+                        if not why:
+                            out.append((math.dist(p, cam0["position"]) + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5), q, mode))
+                            break
+    return [(q, mode) for _, q, mode in sorted(out, key=lambda t: t[0])]
+
+
 def in_room(p, room):
     W, D, H = room
     return abs(p[0]) < W / 2 - ROOM_MARGIN_M and abs(p[1]) < D / 2 - ROOM_MARGIN_M and 0.3 < p[2] < H - 0.2
 
 
 # ------------------------------------------------------------------ the check
-def check_shot(shot, speaker, subjects, res, kind, line, est_side):
+def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None, ots=False, show=None):
+    if not speaker:                          # a shot without a speaker: only the framing rules
+        why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res)
+        return {"speaker": None, "ok": not why, "why": why, "framing": why, "frame_facts": facts}
     m = subjects[speaker]["measured"]
     cam = shot["camera"]
     g = shot.get("guides") or {}
@@ -198,6 +344,10 @@ def check_shot(shot, speaker, subjects, res, kind, line, est_side):
         why.append(f"face {out['face_h']:.3f} of the frame height")
     if est_side and kind not in ("wide", "full") and out["side"] and out["side"] != est_side:
         why.append("across the line")
+    fw, facts = framing_why(cam, kind, speaker, listener, ots, show, subjects, res)
+    out["framing"] = fw
+    out["frame_facts"] = facts
+    why += fw
     out["ok"] = not why
     out["why"] = why
     return out
@@ -294,6 +444,7 @@ def main():
     room = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())["size_m"]
     res = spec.get("res", [1152, 640])
     spec["guides"] = True
+    seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
@@ -309,22 +460,40 @@ def main():
             guess = lambda k: {"eye_xy": ch[k]["position"][:2], "eye_z": 1.6}
             c.update(ots_camera(guess(c["speaker"]), guess(c["ots"]), est_side, line))
             c["kind"] = c.get("kind", "medium")
-    report = {"scene": spec["id"], "line": keys, "established_side": est_side, "rounds": [], "shots": {}}
+    report = {"scene": spec["id"], "line": keys, "established_side": est_side, "rounds": [], "shots": {},
+              "seating": {}}
     todo = [c["name"] for c in spec["cameras"]]
     tried = {c["name"]: [] for c in spec["cameras"]}
     master = None
     for rnd in range(a.rounds + 1):
         sp = odir / f"spec_round{rnd}.json"
         sp.write_text(json.dumps(spec, indent=1))
-        run_scene(sp, todo if rnd else None)
+        run_scene(sp, todo if todo != [c["name"] for c in spec["cameras"]] else None)
         res_j = json.loads((odir / "result.json").read_text())
-        if master is None:
+        if master is None or set(todo) == {c["name"] for c in spec["cameras"]}:
             master = res_j
         else:                                # merge the re-rendered shots into the full record
             new = {s["name"]: s for s in res_j["shots"]}
             master["shots"] = [new.get(s["name"], s) for s in master["shots"]]
         subjects = master["subjects"]
         shots = {s["name"]: s for s in master["shots"]}
+        # seating first: a person not sitting in their chair is moved and every camera rendered again
+        moved = False
+        for k, n in seat_plan["taken"].items():
+            st = spec["characters"][k]["_seat"]
+            chk = seating.check(subjects[k]["measured"], seat_plan["seats"][n], st["fit"], st["x"])
+            report["seating"].setdefault(k, []).append(dict(chk, round=rnd, seat=n, note=st.get("note")))
+            log(f"seat {k} in {n}: ok={chk['ok']} {chk['why']} hips(seat frame)={chk.get('hips_seat_frame')}")
+            if not chk["ok"] and rnd < a.rounds and max(abs(e) for e in chk.get("error_m", [0])) > 0.01:
+                nud = [st["nudge"][0] + chk["error_m"][0], st["nudge"][1] + chk["error_m"][1]]
+                c0 = {kk: vv for kk, vv in spec["characters"][k].items() if kk != "_seat"}
+                spec["characters"][k] = seating.place(c0, seat_plan["seats"][n], st["fit"], st["x"], nud)
+                spec["characters"][k]["_seat"]["fit"] = st["fit"]
+                moved = True
+        if moved:
+            todo = [c["name"] for c in spec["cameras"]]
+            report["rounds"].append({"round": rnd, "rendered": "all", "re-seated": True})
+            continue
         fails = []
         for c in spec["cameras"]:
             if c["name"] not in todo:
@@ -332,28 +501,52 @@ def main():
             sh = shots[c["name"]]
             sh["speaker"] = c.get("speaker")
             tried[c["name"]].append(sh["camera"]["position"])
-            if not c.get("speaker"):
-                report["shots"][c["name"]] = {"speaker": None, "ok": True, "rounds": rnd}
-                continue
-            chk = check_shot(sh, c["speaker"], subjects, res, c["kind"], line, est_side)
+            lis = listener_of(c, keys, c.get("speaker"))
+            chk = check_shot(sh, c.get("speaker"), subjects, res, c["kind"], line, est_side, lis, bool(c.get("ots")),
+                             c.get("show"))
             sh["speaker_check"] = chk
             report["shots"].setdefault(c["name"], {"history": []})
             report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"]))
-            report["shots"][c["name"]].update(speaker=c["speaker"], ok=chk["ok"], rounds=rnd)
+            report["shots"][c["name"]].update(speaker=c.get("speaker"), ok=chk["ok"], rounds=rnd)
             if not chk["ok"]:
                 fails.append(c)
         report["rounds"].append({"round": rnd, "rendered": todo, "failed": [c["name"] for c in fails]})
         log(f"round {rnd}: rendered {len(todo)}, failed {[c['name'] + ': ' + '; '.join(shots[c['name']]['speaker_check']['why']) for c in fails]}")
         if not fails or rnd == a.rounds:
-            for c in fails:
-                shots[c["name"]]["reject"] = "speaker's face not shown: " + "; ".join(shots[c["name"]]["speaker_check"]["why"])
+            for c in fails:                  # only a speaker's unseen face rejects; a framing miss is reported
+                chk = shots[c["name"]]["speaker_check"]
+                face = [w for w in chk["why"] if w not in chk.get("framing", [])]
+                if face:
+                    shots[c["name"]]["reject"] = "speaker's face not shown: " + "; ".join(face)
+                else:
+                    shots[c["name"]]["framing_miss"] = chk["framing"]
             break
         todo = []
         for c in fails:
-            cands = candidates(c, shots[c["name"]], c["speaker"], subjects, res, room, line, est_side, tried[c["name"]])
+            chk = shots[c["name"]]["speaker_check"]
+            face_fail = [w for w in chk["why"] if w not in chk.get("framing", [])]
+            lis = listener_of(c, keys, c.get("speaker"))
+            cands = []
+            if (face_fail or c.get("ots")) and c.get("speaker"):
+                cands = candidates(c, shots[c["name"]], c["speaker"], subjects, res, room, line, est_side,
+                                   tried[c["name"]])
+                good = [q for q in cands if not framing_why(q, c["kind"], c["speaker"], lis, bool(c.get("ots")),
+                                                            c.get("show"), subjects, res)[0]]
+                cands = good or (cands if face_fail else [])
+            if not cands and chk.get("framing"):
+                tc = two_shot_candidates(c, shots[c["name"]], c.get("speaker"), lis, subjects, res, room, line,
+                                         est_side, tried[c["name"]])
+                if tc:
+                    if tc[0][1] == "ots":        # framed again over the listener's shoulder, or as a two-shot
+                        c["ots"] = lis
+                    else:
+                        c.pop("ots", None)
+                    cands = [tc[0][0]]
             if not cands:
-                shots[c["name"]]["reject"] = ("no camera left that shows the speaker's face: "
-                                              + "; ".join(shots[c["name"]]["speaker_check"]["why"]))
+                if face_fail:
+                    shots[c["name"]]["reject"] = ("no camera left that shows the speaker's face: " + "; ".join(face_fail))
+                else:
+                    shots[c["name"]]["framing_miss"] = chk.get("framing")
                 continue
             q = cands[0]
             c.update(position=q["position"], target=q["target"], focal_mm=q["focal_mm"])

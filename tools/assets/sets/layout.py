@@ -600,8 +600,11 @@ def asset_items(S, spec, assets, key):
                         "outside": bool(it.get("outside"))})
     for o in out:
         a = assets[o["asset"]]
+        yaw = yaw_from_facing(o["facing"])
+        if a.get("front"):                      # a mesh whose real front is not -Y: turn that front onto the facing
+            yaw += math.degrees(math.atan2(a["front"][1], a["front"][0])) + 90.0
         S.assets.append({"id": o["asset"], "name": o["name"], "path": a["ue_path"], "c": ue_pt(o["position"]),
-                         "yaw": round(yaw_from_facing(o["facing"]), 3), "f": f"{key.capitalize()}",
+                         "yaw": round(yaw, 3), "f": f"{key.capitalize()}",
                          **({"glb": a["glb"]} if a.get("glb") else {})})
     return out
 

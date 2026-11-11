@@ -233,10 +233,28 @@ def _turn(s, chest_deg=0.0, head_deg=0.0, head_tilt=0.0):
 
 
 # ------------------------------------------------------------------ named poses
+ARM_OUT = 0.04          # the hanging direction's sideways and forward parts per unit down
+ARM_FWD = 0.05
+ARM_CLEAR_DEG = 12.0    # then each upper arm turned out from the body and each forearm forward (the character
+FOREARM_FWD_DEG = 10.0  # builder's measured clearance, 11-11): a sleeve-to-coat gap the still and the depth pass show
+
+
+def _arm_clear(s, p, sides=("l", "r")):
+    """Arms away from the body: hanging flush against a long coat, the sleeves merged into the coat's outline in the
+    still and the depth pass, and the redraw drew a man with no arms (11-11). With the clearance the person mask
+    shows a gap in 9-10 of 10 forearm rows at wide (0 of 10 before)."""
+    a, f = p.get("arm_clear_deg", ARM_CLEAR_DEG), p.get("forearm_fwd_deg", FOREARM_FWD_DEG)
+    for side in sides:
+        sx = 1.0 if side == "l" else -1.0
+        _rot(s, f"upperarm_{side}", [0, 1, 0], -sx * a)
+        _rot(s, f"lowerarm_{side}", [1, 0, 0], f)
+
+
 def pose_stand(s, p):
     """Arms down at the sides (the reference A-pose relaxed), square to the front."""
-    _arm_hang(s, "l")
-    _arm_hang(s, "r")
+    _arm_hang(s, "l", p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD))
+    _arm_hang(s, "r", p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD))
+    _arm_clear(s, p)
     _curl(s, "l", 22, 10)
     _curl(s, "r", 22, 10)
 
@@ -247,8 +265,10 @@ def pose_stand_relaxed(s, p):
     side = p.get("weight_on", "r")
     _weight_on(s, side, p.get("shift_cm", 3.0), p.get("knee_cm", 6.0))
     _turn(s, p.get("chest_deg", 8.0), 0.0)
-    _arm_hang(s, "l", 0.04, 0.05, 0.22)
-    _arm_hang(s, "r", 0.04, 0.05, 0.22)
+    out, fwd = p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD)
+    _arm_hang(s, "l", out, fwd, 0.22)
+    _arm_hang(s, "r", out, fwd, 0.22)
+    _arm_clear(s, p, ("r",) if p.get("hand_at_lapel", True) else ("l", "r"))
     if p.get("hand_at_lapel", True):
         sh = s.pos["clavicle_l"]
         chest = add(s.pos["spine_05"], [3.0, 12.0, -14.0])
@@ -272,7 +292,7 @@ def pose_stand_hand_on_mantel(s, p):
     _ik(s, f"upperarm_{hand}", f"lowerarm_{hand}", f"hand_{hand}", tgt,
         add(s.pos[f"lowerarm_{hand}"], [sx * 20.0, -30.0, -30.0]))
     s.aim(f"hand_{hand}", f"middle_01_{hand}", [sx * 0.5, 0.85, -0.15])
-    _arm_hang(s, other, 0.04, 0.05, 0.22)
+    _arm_hang(s, other, p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD), 0.22)
     _curl(s, hand, 18, 8)
     _curl(s, other, 28, 12)
     _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", -2.0))
@@ -289,7 +309,7 @@ def pose_gesture_point(s, p):
     _ik(s, "upperarm_r", "lowerarm_r", "hand_r", tgt, add(s.pos["lowerarm_r"], [-20.0, 0.0, -40.0]))
     s.aim("hand_r", "middle_01_r", d)
     _curl(s, "r", 70, 25, fingers=("middle", "ring", "pinky"))       # a pointing hand: index left straight
-    _arm_hang(s, "l", 0.04, 0.05, 0.22)
+    _arm_hang(s, "l", p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD), 0.22)
     _curl(s, "l", 28, 12)
     _turn(s, 0.0, p.get("head_deg", 10.0), 0.0)
 

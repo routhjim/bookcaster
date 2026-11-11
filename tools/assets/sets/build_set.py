@@ -81,6 +81,11 @@ def library_assets():
         ue = ent.get("ue") or {}
         if ue.get("bounds_cm") and a.get("ue_path"):
             out[aid] = {"ue_path": a["ue_path"].split(".")[0], "bounds_cm": ue["bounds_cm"], "class": a["class"]}
+            # the mesh's real front when it is not -Y (a seat's block from scenes/seatbox.py, or "front_asset"):
+            # placed by the spec's facing alone, such a chair stood turned and a sitter sat across its arm (11-11)
+            fr = (ent.get("seat") or {}).get("front_asset") or ent.get("front_asset")
+            if fr and [round(v, 3) for v in fr] != [0.0, -1.0]:
+                out[aid]["front"] = fr
             glb = (ent.get("export") or {}).get("glb")
             if glb and (p.parent / glb).exists():
                 out[aid]["glb"] = str(p.parent / glb)     # imported on demand into a project that lacks it
