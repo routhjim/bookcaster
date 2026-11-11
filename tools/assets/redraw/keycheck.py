@@ -13,7 +13,9 @@ Per person whose body is within 100 deg of the camera:
   arms    every arm the engine shows in the frame (its elbow or its hand joint inside the frame and seen: the
           person's own surface there in the engine's depth) is found in the redraw: the pose model's elbow or wrist
           (either side: a mirrored left/right is not a missing arm) within ARM_TOL of the person's height in frame;
-  hands   every hand the engine shows is found: a wrist, or five confident hand points, near the hand joint;
+  hands   every hand the engine shows (with room in the frame) is found near its joint: four confident hand points
+          of the pose model (whole body, then the body down to the hands), or a Grounding DINO "hand" box on the
+          person's enlarged crop;
   neck    (face within 60 deg) the chin-to-shoulder-line distance over the eyes-to-chin distance, from the pose
           model, within NECK_TOL of the same measure on the engine still and of the median over this character's
           keys in the run (the accepted set);
@@ -118,6 +120,25 @@ def near(p, q, tol):
     return p is not None and q is not None and ((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2) ** 0.5 <= tol
 
 
+def gdino_hands(det, path: str, box) -> list:
+    """Grounding DINO "hand" boxes (frame 0-1 centres) on the person's own crop, enlarged: the pose model missed
+    hands of 12-15 px that were plainly drawn at a man's sides (11-11)."""
+    dp, dm = det
+    import detect as D
+    im = Image.open(path).convert("RGB").resize((1152, 640))
+    x0, y0 = max(0.0, box[0] - 0.03), max(0.0, box[1] - 0.03)
+    x1, y1 = min(1.0, box[2] + 0.03), min(1.0, box[3] + 0.03)
+    c = im.crop((int(x0 * 1152), int(y0 * 640), int(x1 * 1152), int(y1 * 640)))
+    sc = max(1.0, 640 / max(1, c.height))
+    if sc > 1.0:
+        c = c.resize((int(c.width * sc), int(c.height * sc)), Image.BICUBIC)
+    out = []
+    for b in D.detect(dp, dm, c, ["hand"]).get("hand", []):
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        out.append((x0 + cx * (x1 - x0), y0 + cy * (y1 - y0)))
+    return out
+
+
 def arm_hand(m: dict, j2: dict, box) -> dict:
     """Which arms and hands the engine shows (joints in frame and seen) and whether the pose model found each."""
     tol = ARM_TOL * max(0.05, box[3] - box[1])
@@ -138,7 +159,7 @@ def arm_hand(m: dict, j2: dict, box) -> dict:
             hp = (j2[f"hand_{side}"][0], j2[f"hand_{side}"][1])
             # a hand is its own points (five confident ones), not a wrist: the pose model puts a wrist at the end of
             # a coat's side where no hand is drawn (11-11, the armless key scored 2 of 2 wrists)
-            if any(near(hp, q, tol * 1.2) for q in (m.get("l_hand"), m.get("r_hand"))):
+            if any(near(hp, q, tol * 1.2) for q in [m.get("l_hand"), m.get("r_hand")] + list(m.get("gd_hands") or [])):
                 res["hands_found"] += 1
             else:
                 res["missing"].append(f"{side} hand")
@@ -160,6 +181,13 @@ def main():
         sx, sy = pose.g({"input": torch.from_numpy(z["x"]).to(dev)})
         print(json.dumps({"selftest_max_abs": [float((sx.cpu() - torch.from_numpy(z["sx"])).abs().max()),
                                                float((sy.cpu() - torch.from_numpy(z["sy"])).abs().max())]}), flush=True)
+    det = None
+    if cfg.get("hand_detector", True):
+        os.environ["DETECT_DEVICE"] = "cuda"
+        import detect as D
+        D.DEVICE = "cuda"
+        dp, dm, _, _ = D.load()
+        det = (dp, dm)
     judge = None
     if cfg.get("judge", True):
         import vl_judge as VJ
@@ -186,6 +214,8 @@ def main():
             for kk, im in imgs.items():
                 k, s = pose(im, bp)
                 m = measures(k, s, 1152, 640)
+                if det is not None and hy:
+                    m["gd_hands"] = gdino_hands(det, it[kk] if kk != "redraw" else it["redraw"], b)
                 if hy:              # again on the body down to the hands only: hands of 15 px were missed whole-body
                     ub = [bp[0], bp[1], bp[2], min(640.0, (max(hy) + 0.06 * (b[3] - b[1]) + 0.03) * 640)]
                     if ub[3] - ub[1] < (bp[3] - bp[1]) * 0.85:
