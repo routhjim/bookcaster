@@ -404,6 +404,8 @@ def cam_opts(spec, c):
 
 
 def listener_of(c, spec_line, speaker):
+    if c.get("single"):
+        return None
     if c.get("ots"):
         return c["ots"]
     if c.get("listener"):
@@ -465,7 +467,12 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                         if not why:
                             out.append((math.dist(p, cam0["position"]) + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5), q, mode))
                             break
-    return [(q, mode) for _, q, mode in sorted(out, key=lambda t: t[0])]
+    if not out and spk and lis and not opts.get("_single"):
+        # no two-shot or over-the-shoulder passes (two people facing each other, one of them near): a clean single
+        # of the speaker, the listener left to the cut
+        return two_shot_candidates(dict(c, show=None), shot, spk, None, subjects, res, room, line, est_side, tried,
+                                   dict(opts, _single=True))
+    return [(q, mode if not opts.get("_single") else "single") for _, q, mode in sorted(out, key=lambda t: t[0])]
 
 
 def in_room(p, room):
@@ -729,6 +736,9 @@ def main():
                 tc = two_shot_candidates(c, shots[c["name"]], c.get("speaker"), lis, subjects, res, room, line,
                                          est_side, tried[c["name"]], cam_opts(spec, c))
                 if tc:
+                    if tc[0][1] == "single":     # a clean single: the listener is no longer required in it
+                        c["listener"] = None
+                        c["single"] = True
                     if tc[0][1] == "ots":        # framed again over the listener's shoulder, or as a two-shot / single
                         c["ots"] = lis
                     else:
