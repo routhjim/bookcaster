@@ -61,7 +61,10 @@ class ClipEmbedder(Embedder):
             return []
         x = self.proc(images=ims, return_tensors="pt")["pixel_values"].to(self.device, self.torch.float16)
         with self.torch.inference_mode():
-            f = self.m.get_image_features(pixel_values=x).float()
+            f = self.m.get_image_features(pixel_values=x)
+            if not hasattr(f, "norm"):          # newer transformers return an output object, not the tensor
+                f = getattr(f, "image_embeds", None) if getattr(f, "image_embeds", None) is not None else f.pooler_output
+            f = f.float()
         f = f / f.norm(dim=-1, keepdim=True)
         return [[round(v, 5) for v in row] for row in f.cpu().tolist()]
 
