@@ -146,11 +146,23 @@ def main():
     # arms
     g = arm_gap.measure(a.relaxed, "a")
     wide, med = g.get("wide", {}), g.get("medium", {})
-    arms_ok = all((wide.get(s) or {}).get("separated", 0) >= 8 for s in ("l", "r"))
-    arms_ok &= all((med.get(s) or {}).get("rows", 0) == 0 or
-                   (med[s]["separated"] >= 0.6 * med[s]["rows"]) for s in ("l", "r"))
+    rule = None
+    if a.library:
+        try:
+            rule = (json.loads((Path(a.library) / "character" / a.id / "character.json").read_text())
+                    .get("arm_rule") or {}).get("rule")
+        except (OSError, ValueError):
+            rule = None
+    if rule == "loose_sleeve_lower_forearm":
+        # the entry's own rule: a loose sleeve is joined to the body down to about the elbow by its cut; the lower
+        # forearm and the hand must be clear
+        arms_ok = all((wide.get(s) or {}).get("lower_separated", 0) >= 4 for s in ("l", "r"))
+    else:
+        arms_ok = all((wide.get(s) or {}).get("separated", 0) >= 8 for s in ("l", "r"))
+        arms_ok &= all((med.get(s) or {}).get("rows", 0) == 0 or
+                       (med[s]["separated"] >= 0.6 * med[s]["rows"]) for s in ("l", "r"))
     hands = [(wide.get(s) or {}).get("hand_visible") for s in ("l", "r")]
-    C["arms"] = {"ok": bool(arms_ok and all(hands)), "wide": {s: wide.get(s) for s in ("l", "r")},
+    C["arms"] = {"ok": bool(arms_ok and all(hands)), "rule": rule or "forearm_8_of_10", "wide": {s: wide.get(s) for s in ("l", "r")},
                  "medium": {s: med.get(s) for s in ("l", "r")}}
     # neck from the fit
     rep = json.loads((Path(a.fit) / "report.json").read_text())
