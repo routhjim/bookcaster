@@ -883,6 +883,100 @@ def main():
                 cj3["relaxed_arm_steps"] = arm_steps(ab)
                 (lib / "character.json").write_text(json.dumps(cj3, indent=1))
                 save()
+    # ---------------------------------------------------------------- the outer layer, made present
+    # an outer layer left out of the spread drawing (the fact) is made as its own piece: drawn alone on a plain neutral
+    # figure standing at the character's relaxed arm angle (it hangs from the shoulders; a spread pose ruins it), made
+    # 3D, fitted by bl_layer.py (placed by the neutral figure, the figure cut away, bound to the upper body, the hem on
+    # the pelvis, no relaxation), attached to the entries and checked (centred over the body, above the floor, its
+    # top at the neck); a 3D texture that came out grey is reported (and rescaled to the drawing's colour)
+    layer_p = W / "layer.json"
+    gfl = ch.get("garment") or {}
+    if gfl.get("outer_layer") and gfl.get("outer_words") and not done("check", layer_p):
+        @timed("layer")
+        def _():
+            ld = W / "layer"
+            ld.mkdir(exist_ok=True)
+            cjl = json.loads((lib / "character.json").read_text())
+            steps_ = cjl.get("relaxed_arm_steps") or []
+            ab = abs(float(steps_[0][3])) if steps_ else 8.0
+            pm = ld / f"pose{int(ab)}.png"
+            subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pm), "--deg", str(ab), "--w", "896",
+                            "--h", "1344", "--fig", "1000"], check=True)
+            phrase = " ".join(gfl["outer_words"])
+            pose_words = POSE_WORDS.replace(
+                "both arms held straight out away from the body, angled down about 45 degrees, a clear open gap between "
+                "each arm and the clothes, hands open with the fingers together and the palms facing down",
+                "both arms hanging down at the sides a little away from the body, hands relaxed").replace(
+                "A realistic full-colour photograph of a costumed actor",
+                "A realistic full-colour photograph of a garment shown on a tailor's display figure")
+            jobs = [{"id": f"{tag}_layer_s{s_}", "seed": s_, "path": str(ld / f"layer_s{s_}.png"), "size": [896, 1344],
+                     "prompt": f"a {phrase} worn over a plain smooth light grey tailor's mannequin with no face, no hair "
+                               f"and no other clothes, the {gfl['outer_words'][-1]} hanging from the shoulders, "
+                               f"{pose_words}",
+                     "refs": [a.sheet], "control": {"image": str(pm), "type": "pose", "scale": 0.8}}
+                    for s_ in (5, 11)]
+            jl = ld / "jobs.jsonl"
+            jl.write_text("".join(json.dumps(j) + "\n" for j in jobs))
+            p = line(["--line-cmd", "image", "refs", "--id", f"cast_{tag}_layer_draw", "--", "bash", "-c",
+                      f"cd {REPO} && bash {CARD} 05 {QWEN_PY} -I tools/qwen_image.py --serve < {jl}"], W / "layer_draw.log")
+            rep_l, outd = None, None
+            for j in jobs:
+                png = Path(j["path"])
+                if not png.exists():
+                    continue
+                glb_l = png.with_suffix(".glb")
+                env_ = ["env", f"ASSETS_TRELLIS_OMP={OMP}"] if OMP else []
+                p = line(["--line-cmd", "blender", "shape", "--id", f"cast_{tag}_layer_shape_{png.stem}", "--"] + env_ +
+                         [sys.executable, str(HERE / "img3d.py"), str(png), str(glb_l), "--res", "1024", "--build", "rocm"],
+                         W / f"layer_shape_{png.stem}.log")
+                if p.returncode or not glb_l.exists():
+                    continue
+                outd = ld / f"fit_{png.stem}"
+                jp_ = ld / f"fit_{png.stem}.json"
+                jp_.write_text(json.dumps({"body_fbx": str(fbx / f"{mh_name}_Body.fbx"),
+                                           "head_fbx": str(fbx / f"{mh_name}_Head.fbx"), "figure_glb": str(glb_l),
+                                           "outfit_fbx": str(combo / "outfit.fbx"), "out": str(outd), "draw_deg": ab,
+                                           "drawing_png": str(png)}, indent=1))
+                p = line(["--line-cmd", "igpu", "combo", "--id", f"cast_{tag}_layer_fit_{png.stem}", "--", "flock",
+                          "/tmp/gpu-igpu.lock", BLENDER, "-b", "--factory-startup", "-t", "0", "--python",
+                          str(HERE / "bl_layer.py"), "--", str(jp_)], W / f"layer_fit_{png.stem}.log")
+                if p.returncode or not (outd / "report.json").exists():
+                    continue
+                rep_l = json.loads((outd / "report.json").read_text())
+                if (rep_l.get("checks") or {}).get("ok") and rep_l.get("layer_verts", 0) > 2000:
+                    break
+            if rep_l is None or not (rep_l.get("checks") or {}).get("ok"):
+                layer_p.write_text(json.dumps({"ok": False, "report": rep_l}, indent=1))
+                raise RuntimeError(f"OUTER LAYER: no drawing gave a layer that hangs from the shoulders "
+                                   f"({json.dumps((rep_l or {}).get('checks'))}); the entry keeps it as a missing layer")
+            dest_l = f"/Game/Char/Outfit{tag}L"
+            ue_job(W, "import_layer", str(ASSETS / "characters" / "char_render.py"), {
+                "out": str(W / "ue" / "import_layer"),
+                "import_outfit": {"outfit_fbx": str(outd / "outfit.fbx"), "textures": str(outd / "textures"),
+                                  "dest": dest_l, "cloth_slots": False}}, 900)
+            garment = f"{dest_l}/Outfit/outfit"
+            ids = [a.id] + list(json.loads(seats_p.read_text()).values()) if seats_p.exists() else [a.id]
+            for lid in ids:
+                ep = Path(C.LIBRARY) / "character" / lid / "character.json"
+                e = json.loads(ep.read_text())
+                g_ = [x for x in e["garments"] if not x.startswith("@")]
+                t_ = [x for x in e["garments"] if x.startswith("@")]
+                if garment not in g_:
+                    g_.append(garment)
+                e["garments"] = g_ + t_
+                e["layers"] = [{"layer": phrase, "garment": garment, "drawn_at_deg": ab, "checks": rep_l.get("checks"),
+                                "colour": rep_l.get("colour_from_drawing")}]
+                e["missing_layers"] = []
+                if "facts" in e:
+                    e["facts"]["missing_layers"] = []
+                ep.write_text(json.dumps(e, indent=1))
+            col_ = rep_l.get("colour_from_drawing") or {}
+            CH["layer"] = {"phrase": phrase, "checks": rep_l.get("checks"), "colour": col_,
+                           "note": ("the 3D texture came out grey; rescaled to the drawing's colour"
+                                    if col_.get("mesh_came_out_grey") else
+                                    "colour rescaled to the drawing's" if col_.get("rescaled") else "colour as made")}
+            layer_p.write_text(json.dumps({"ok": True, **CH["layer"]}, indent=1))
+            log(f"outer layer: {CH['layer']['note']}; checks {json.dumps(rep_l.get('checks'))}")
     # ---------------------------------------------------------------- skin through the cloth, measured
     # flat-lit studio stills (no firelight to give dark cloth the face's warmth), each with a twin without the face
     # mesh: the head mesh's skin-coloured pixels at the shoulders must be under 0.2 % of the shoulder region

@@ -296,6 +296,14 @@ me.vertices.foreach_set("co", P.ravel())
 me.update()
 REP["pushed_out"] = moved
 
+Pq = np.array([v.co[:] for v in me.vertices])
+up_ = Pq[:, 2] > float(J("spine_03")[2])
+REP["checks"] = {"centre_offset_x_m": round(float(np.median(Pq[up_, 0]) - J("spine_05")[0]), 3) if up_.any() else None,
+                 "min_z_m": round(float(Pq[:, 2].min()), 3),
+                 "top_z_m": round(float(Pq[:, 2].max()), 3), "neck_z_m": round(float(J("neck_01")[2]), 3)}
+REP["checks"]["ok"] = bool(REP["checks"]["centre_offset_x_m"] is not None and abs(REP["checks"]["centre_offset_x_m"]) < 0.05
+                           and REP["checks"]["min_z_m"] > -0.01
+                           and abs(REP["checks"]["top_z_m"] - REP["checks"]["neck_z_m"]) < 0.2)
 # ------------------------------------------------------------------ 4. weights: the body's nearest, held to the upper body
 for o in oc:
     bpy.data.objects.remove(o)
@@ -393,8 +401,12 @@ if JOB.get("drawing_png"):
         pxs = pxs.reshape(-1, 4)
         pxs[:, :3] = np.clip(pxs[:, :3] * k_, 0, 1)
         img.pixels.foreach_set(pxs.ravel())
+        sat_w = float((want.max() - want.min()) / max(want.max(), 1e-3))
+        sat_m = float((kept_col.max() - kept_col.min()) / max(kept_col.max(), 1e-3))
         REP["colour_from_drawing"] = {"drawing": [round(float(x), 3) for x in want],
-                                      "mesh": [round(float(x), 3) for x in kept_col], "gain": [round(float(x), 3) for x in k_]}
+                                      "mesh": [round(float(x), 3) for x in kept_col], "gain": [round(float(x), 3) for x in k_],
+                                      "rescaled": bool(np.abs(k_ - 1).max() > 0.15),
+                                      "mesh_came_out_grey": bool(sat_w > 0.25 and sat_m < 0.1)}
 img.filepath_raw = os.path.join(OUT, "textures", "T_outfit_BaseColor.png")
 img.file_format = "PNG"
 img.save()
