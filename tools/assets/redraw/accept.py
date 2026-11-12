@@ -192,6 +192,7 @@ def action_eval(*results: dict) -> None:
 
 
 HAIR_L = 12.0            # a person's hair: lightness above the engine's in the same region, v their own median
+HAIR_PX = 3000           # judged on a hair region this big (a small head's region takes in the wall behind it)
 
 
 def hair_eval(*results: dict) -> dict:
@@ -202,14 +203,14 @@ def hair_eval(*results: dict) -> dict:
     for res in results:
         for rec in res.values():
             for k, v in (rec.get("hair") or {}).items():
-                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= 60:
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= HAIR_PX:
                     vals.setdefault(k, []).append(v["redraw"]["L"] - v["engine"]["L"])
     med = {k: statistics.median(v) for k, v in vals.items() if len(v) >= 3}
     for res in results:
         for rec in res.values():
             ok = {}
             for k, v in (rec.get("hair") or {}).items():
-                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= 60 and k in med:
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= HAIR_PX and k in med:
                     ok[k] = abs((v["redraw"]["L"] - v["engine"]["L"]) - med[k]) <= HAIR_L
             rec["hair_ok"] = ok
     return med
