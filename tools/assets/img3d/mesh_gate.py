@@ -34,6 +34,58 @@ def runs(occ):
     return list(zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]))
 
 
+def pocket(xn, zn, sg, cell):
+    """(armpit height fraction, pocket width under it) by columns, or None. xn: x / H about the body's middle."""
+    from collections import deque
+    nx, nz = int(1.6 / cell), int(1.0 / cell) + 1
+    xi = np.clip(((xn + 0.8) / cell).astype(int), 0, nx - 1)
+    zi = np.clip((zn / cell).astype(int), 0, nz - 1)
+    occ = np.zeros((nz, nx), bool)
+    occ[zi, xi] = True
+    for _ in range(2):          # close the sampling speckle
+        occ = occ | (np.roll(occ, 1, 1) & np.roll(occ, -1, 1)) | (np.roll(occ, 1, 0) & np.roll(occ, -1, 0))
+    c0 = int(0.8 / cell)
+    k35 = int(0.65 / cell)                                  # chest height (z up: 0.65 of the height)
+    rs = runs(occ[k35])
+    body = [r for r in rs if r[0] <= c0 < r[1]]
+    if not body:
+        return None
+    edge = body[0][1] if sg > 0 else body[0][0]
+    # the hand's reach on this side (the farthest occupied column above mid-height): the pocket is closed there, so
+    # the flood cannot pass round the hand and over the arm
+    up = occ[int(0.5 / cell):]
+    oc = np.nonzero(up.any(0))[0]
+    reach = int(oc.max()) if sg > 0 else int(oc.min())
+    seen = np.zeros_like(occ)
+    q = deque()
+    cols = range(edge + 1, reach) if sg > 0 else range(reach + 1, edge)
+    for c in cols:
+        if not occ[0, c]:
+            seen[0, c] = True
+            q.append((0, c))
+    lim = int(0.02 / cell)
+    while q:
+        z, x = q.popleft()
+        for dz, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            z2, x2 = z + dz, x + dx
+            if 0 <= z2 < nz and 0 <= x2 < nx and not seen[z2, x2] and not occ[z2, x2]:
+                if (sg > 0 and (x2 <= edge - lim or x2 >= reach)) or (sg < 0 and (x2 >= edge + lim or x2 <= reach)):
+                    continue
+                seen[z2, x2] = True
+                q.append((z2, x2))
+    band = range(edge, min(nx, edge + int(0.12 / cell))) if sg > 0 else range(max(0, edge - int(0.12 / cell)), edge + 1)
+    tops = [np.nonzero(seen[:, c])[0] for c in band]
+    tops = [t.max() for t in tops if len(t)]
+    if not tops:
+        return None
+    k_ap = max(tops)
+    # the pocket's width a little under the armpit (0.04 of the height)
+    kw = max(k_ap - int(0.04 / cell), 0)
+    w = int(seen[kw].sum()) if False else int(np.sum(seen[kw, edge:edge + int(0.3 / cell)] if sg > 0
+                                                       else seen[kw, max(0, edge - int(0.3 / cell)):edge]))
+    return float(k_ap * cell), float(w * cell)
+
+
 def gate(P2, min_free, min_gap, elbow, cell=0.004):
     x, z = P2[:, 0], P2[:, 1]
     H = z.max() - z.min()
@@ -85,8 +137,19 @@ def gate(P2, min_free, min_gap, elbow, cell=0.004):
                 break
         ke = int(round((elbow - 0.40) / cell))
         gap = float(max(gaps[max(ke - 2, 0):ke + 3])) if 0 <= ke < len(zs) else 0.0
+        by = None
+        if free is None:
+            # arms near horizontal: no slice parts arm from body (the arm joins the shoulder in each slice it is in),
+            # so measured by columns as pose_gate.py does: the air pocket under the arm, reached from the floor on this
+            # side, its top beside the body is the armpit; its width just under that is the gap
+            pk = pocket(xn, zn, sg, cell)
+            if pk is not None:
+                free, gap = pk
+                by = "columns"
         p = free is not None and free >= min_free and gap >= min_gap
         out[side] = {"free": round(free, 3) if free is not None else None, "gap_at_elbow": round(gap, 3), "pass": p}
+        if by:
+            out[side]["by"] = by
         allok &= p
     out["pass"] = bool(allok)
     return out

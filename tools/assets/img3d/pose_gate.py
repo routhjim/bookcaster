@@ -36,9 +36,14 @@ def pocket(fg, top, bot, cx, sgn):
         return None
     edge = body[1] if sgn > 0 else body[0]
     # background reached from the bottom row on this side of the body (a flood over background pixels)
+    # the hand's reach on this side (farthest figure column above the hips): the pocket is closed there, so the flood
+    # cannot pass round a hand inside the picture and over the arm
+    up = fg[top:top + int(0.6 * H)]
+    oc = np.nonzero(up.any(0))[0]
+    reach = int(oc.max()) if sgn > 0 else int(oc.min())
     seen = np.zeros_like(fg)
     q = deque()
-    cols = range(edge + 1, Ww) if sgn > 0 else range(0, edge)
+    cols = range(edge + 1, reach) if sgn > 0 else range(reach + 1, edge)
     for c in cols:
         if not fg[bot, c]:
             seen[bot, c] = True
@@ -48,8 +53,9 @@ def pocket(fg, top, bot, cx, sgn):
         for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             y2, x2 = y + dy, x + dx
             if top <= y2 <= bot and 0 <= x2 < Ww and not seen[y2, x2] and not fg[y2, x2]:
-                if (sgn > 0 and x2 <= edge - int(0.02 * H)) or (sgn < 0 and x2 >= edge + int(0.02 * H)):
-                    continue            # stay on this side of the body
+                if (sgn > 0 and (x2 <= edge - int(0.02 * H) or x2 >= reach)) or \
+                        (sgn < 0 and (x2 >= edge + int(0.02 * H) or x2 <= reach)):
+                    continue            # this side of the body, inside the hand's reach
                 seen[y2, x2] = True
                 q.append((y2, x2))
     # the pocket's highest point within 0.12 H of the body's edge
