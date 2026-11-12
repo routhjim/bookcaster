@@ -145,6 +145,10 @@ def main():
     fig_p = Path(a.out).with_name("sheet_figure.png")
     head.save(head_p)
     fig.save(fig_p)
+    # the upper body (head to mid-chest) at full resolution: the neckline is a few pixels in the whole figure
+    bust_p = Path(a.out).with_name("sheet_bust.png")
+    fw_, fh_ = fig.size
+    fig.crop((0, 0, fw_, int(0.4 * fh_))).save(bust_p)
 
     def menu(items):
         return "\n".join(f"{i}. {t}" for i, t in enumerate(items))
@@ -168,6 +172,9 @@ def main():
     # rules; how loose the sleeves are at the upper arm sets the spread drawing's starting arm angle
     asks["long_garment"] = ("Does this person wear a garment that reaches the ankles, such as a long skirt, a dress, "
                             "a gown or a nightgown? Answer yes or no.")
+    asks["neckline"] = ("Where is the top of this person's garment at the neck: chin (a collar, neckband or cravat "
+                        "that comes up the neck to the chin), base (a neckline at the base of the neck) or open (a "
+                        "lower, open neckline)? Answer with one word: chin, base or open.")
     asks["sleeves"] = ("How loose are this person's sleeves at the upper arm: close (fitted to the arm), medium, or "
                        "loose (full, hanging away from the arm)? Answer with one word: close, medium or loose.")
     import subprocess
@@ -198,10 +205,13 @@ def main():
     rest = {k: v for k, v in asks.items() if k not in ans}
     if rest:
         FIG_KEYS = ("build", "long_garment", "sleeves")     # asked of the whole figure, not the head
+        BUST_KEYS = ("neckline",)                         # asked of the upper body
         figq = {k: v for k, v in rest.items() if k in FIG_KEYS}
+        bustq = {k: v for k, v in rest.items() if k in BUST_KEYS}
         pans = ask_vl([{"id": "head", "image": str(head_p), "max_new_tokens": 4,
-                        "ask": {k: v for k, v in rest.items() if k not in FIG_KEYS}}]
-                      + ([{"id": "fig", "image": str(fig_p), "max_new_tokens": 4, "ask": figq}] if figq else []))
+                        "ask": {k: v for k, v in rest.items() if k not in FIG_KEYS + BUST_KEYS}}]
+                      + ([{"id": "fig", "image": str(fig_p), "max_new_tokens": 4, "ask": figq}] if figq else [])
+                      + ([{"id": "bust", "image": str(bust_p), "max_new_tokens": 4, "ask": bustq}] if bustq else []))
         for k, v in pans.items():
             ans[k], src[k] = v, "picture"
     sc["answer_source"] = src
@@ -285,8 +295,9 @@ def main():
     base = pool[0] if pool else base
     lg = ans.get("long_garment", "")
     garment = {"long": True if lg.startswith("y") else False if lg.startswith("n") else None,
+               "neckline": next((w for w in ("chin", "base", "open") if (ans.get("neckline") or "").startswith(w)), None),
                "sleeves": next((w for w in ("close", "medium", "loose") if (ans.get("sleeves") or "").startswith(w)), None),
-               "source": {k: src.get(k) for k in ("long_garment", "sleeves")}}
+               "source": {k: src.get(k) for k in ("long_garment", "sleeves", "neckline")}}
     out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params, "garment": garment,
            "body": {k: round(float(v), 1) for k, v in body.items()}, "scores": sc}
     Path(a.out).write_text(json.dumps(out, indent=1))

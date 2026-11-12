@@ -158,6 +158,10 @@ def main():
     if cb:
         frac = round((cb["chin_z"] - cb["collar_top_front_z"]) / cb["head_h"], 3)
         C["neck"] = {"ok": abs(frac - a.neck_sheet) <= 0.03, "visible_frac": frac, "sheet": a.neck_sheet}
+    elif rep.get("neckline") in ("base", "open"):
+        # a neckline at the base of the neck or lower: the bare neck is the garment's own (the same fact that keeps
+        # the fit from lifting it)
+        C["neck"] = {"ok": True, "neckline": rep["neckline"], "bare_neck_cm": rep.get("bare_neck_cm")}
     elif rep.get("bare_neck_cm") is not None:
         # the generated collar after the fit's collar lift: bare neck between its front top and the chin (rest pose)
         C["neck"] = {"ok": rep["bare_neck_cm"] <= 2.0, "bare_neck_cm": rep["bare_neck_cm"],

@@ -460,12 +460,14 @@ def main():
     combo = W / "combo"
 
     def head_check():
-        hv = json.loads((combo / "report.json").read_text()).get("head_volume_verts")
-        CH["head_volume_verts"] = hv
-        if hv is not None and hv > HEAD_VOLUME_MAX:
+        rep_ = json.loads((combo / "report.json").read_text())
+        hv = (rep_.get("head_volume_verts") or 0) + (rep_.get("head_round_verts") or 0)
+        CH["head_volume_verts"] = {"front": rep_.get("head_volume_verts"), "round": rep_.get("head_round_verts"),
+                                   "hair_stripped": rep_.get("hair_stripped_verts")}
+        if hv > HEAD_VOLUME_MAX:
             save()
             raise RuntimeError(f"GARMENT IN THE HEAD: {hv} garment vertices in front of the face or inside the head "
-                               f"above the chin (at most {HEAD_VOLUME_MAX}); the figure's own head was probably left "
+                               f"or round the head above the chin (at most {HEAD_VOLUME_MAX}); the figure's own head was probably left "
                                f"on the garment (its neck line); the build stops here")
     if not done("combo", combo / "outfit.fbx"):
         @timed("combo")
@@ -492,12 +494,18 @@ def main():
             else:
                 coat_skirt = (m["thigh_run_w_frac"] or 0) > 0.17
                 job.update(sleeve_radius_m=0.15, skirt_pelvis=1.0 if coat_skirt else 0.6)
+            job["neckline"] = (ch.get("garment") or {}).get("neckline")      # for the report and the neck check
+            # the drawn figure's hair hangs below its neck (long, or worn down): the fit removes hair left standing
+            # off the shoulders after the cut
+            va_ = (ch.get("scores") or {}).get("vlm_answers") or {}
+            job["hair_hangs"] = (va_.get("length", "").startswith("long") or va_.get("worn", "").startswith("down")) \
+                and not va_.get("worn", "").startswith(("up", "back"))
             if a.fit_base:
                 # a rebuild of an accepted character: that build's fit settings are kept (the rules above measured a
                 # coat skirt and no collar lift on a figure whose accepted fit had both); the skin rules stay
                 base_j = json.loads(Path(a.fit_base).read_text())
                 keep = {k: job[k] for k in ("body_fbx", "head_fbx", "figure_glb", "out", "head_push_r_m", "skin_mask",
-                                            "liner")}
+                                            "liner", "neckline", "hair_hangs")}
                 job.clear()
                 job.update(base_j)
                 job.update(keep)
@@ -590,7 +598,11 @@ def main():
         jp = W / "combo_job.json"
         job = json.loads(jp.read_text())
         bare = rep.get("bare_neck_measured_cm")
-        if bare is not None and bare > 2.0 and not job.get("collar_lift"):
+        nl = (ch.get("garment") or {}).get("neckline")
+        CH["neckline"] = nl
+        if bare is not None and bare > 2.0 and not job.get("collar_lift") and nl in (None, "chin"):
+            # only a collar that comes up the neck is lifted to the chin (a round or open neckline is bare by design:
+            # a lifted nightgown neckline became a boxy collar at the jaw, 11-11); the fact is asked text first
             @timed("collar_lift")
             def _():
                 job["collar_lift"] = True

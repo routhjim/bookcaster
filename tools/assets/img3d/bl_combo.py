@@ -1162,6 +1162,7 @@ if DSM > 0 and not STATUE:
 # (nothing) to the collar (full), sleeves following their shoulder end, so its top sits COLLAR_UNDER_CHIN under the
 # chin and the collar keeps its generated shape and texture. REP["bare_neck_cm"] is what remains.
 COLLAR_LIFT = bool(JOB.get("collar_lift", False))
+REP["neckline"] = JOB.get("neckline")       # the garment's neckline fact (chin / base / open): the neck check's limit
 if not STATUE and HEAD is not None:
     P_ = fco + disp
     nc_ = np.array(J("neck_01"))
@@ -1696,6 +1697,64 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
                 me_l.attributes.remove(a_)
         me_l.materials.clear()
         REP["liner"] = {"covered": int(cov.sum()), "verts": len(me_l.vertices), "s": round(time.time() - t_l, 2)}
+if not STATUE and HEAD is not None and JOB.get("strip_hair", True):
+    # the generated figure's own hair hanging below the neck line (long loose hair over the shoulders) is attached to
+    # its head, not to the garment, and stays after the cut. Removed by geometry (colour fails for black hair on a
+    # black dress): above the armpit line, (a) islands of cloth not joined to the garment's main piece, and (b) cloth
+    # within a head's width of the neck's axis standing off the body's and head's surface by more than STAND_OFF (a
+    # collar lies on the neck, a puffed sleeve's top is further out to the side than a head's width)
+    _nk = np.array(J("neck_01"))
+    _z_arm = min(float(J("upperarm_l").z), float(J("upperarm_r").z)) - 0.04
+    _fv0 = np.array([fig.matrix_world @ v.co for v in fig.data.vertices])
+    _bm = bmesh.new()
+    _bm.from_mesh(fig.data)
+    _bm.verts.ensure_lookup_table()
+    _comp = np.full(len(_bm.verts), -1)
+    _nc = 0
+    for v0 in _bm.verts:
+        if _comp[v0.index] >= 0:
+            continue
+        stack = [v0]
+        _comp[v0.index] = _nc
+        while stack:
+            v = stack.pop()
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if _comp[w.index] < 0:
+                    _comp[w.index] = _nc
+                    stack.append(w)
+        _nc += 1
+    _sizes = np.bincount(_comp)
+    _main = int(np.argmax(_sizes))
+    _island = np.zeros(len(_fv0), bool)
+    for k in range(_nc):
+        if k == _main:
+            continue
+        m = _comp == k
+        if np.median(_fv0[m, 2]) > _z_arm and _sizes[k] < 0.05 * len(_fv0):
+            _island |= m
+    _bvb = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
+    _bvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+    STAND_OFF = float(JOB.get("hair_stand_off_m", 0.05))
+    # (b) only when the figure's hair hangs below the neck (the hair facts: long, or worn down): a coat's collar
+    # rolled behind the neck stands off the body too (11-11 control on a short-haired man: 447 collar vertices)
+    _cand = np.nonzero((_fv0[:, 2] > _z_arm) & (np.abs(_fv0[:, 0] - _nk[0]) < float(JOB.get("hair_half_width_m", 0.12)))
+                       & ~_island)[0] if JOB.get("hair_hangs") else np.array([], int)
+    _off = np.zeros(len(_fv0), bool)
+    for i in _cand:
+        q = Vector(_fv0[i])
+        d1 = _bvb.find_nearest(q, STAND_OFF)[0]
+        d2 = _bvh.find_nearest(q, STAND_OFF)[0]
+        _off[i] = d1 is None and d2 is None
+    _hair = _island | _off
+    if _hair.any():
+        bmesh.ops.delete(_bm, geom=[_bm.verts[i] for i in np.nonzero(_hair)[0]], context="VERTS")
+        _bm.to_mesh(fig.data)
+        fig.data.update()
+    _bm.free()
+    REP["hair_stripped_verts"] = {"islands": int(_island.sum()), "standing_off": int(_off.sum())}
+    if JOB.get("hair_debug"):
+        np.savez_compressed(JOB["hair_debug"], fig=_fv0, hair=_hair, neck=_nk, head=np.array(J("head")))
 if not STATUE and HEAD is not None:
     # nothing of the garment in front of the face or inside the head above the chin: a generated head left on the
     # garment by a wrong neck line is thousands of vertices there (11-11); cast_char fails the build on it
@@ -1707,6 +1766,18 @@ if not STATUE and HEAD is not None:
     _sel = ((_fv[:, 2] > _chin + 0.01) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05)
             & (np.abs(_fv[:, 0] - _hx[0]) < 0.10) & (_fv[:, 1] < _face_y))
     REP["head_volume_verts"] = int(_sel.sum())
+    # all round the head above the chin (hair left at the back or the sides), away from a collar's stand
+    _rr = np.linalg.norm(_fv[:, :2] - _hx[:2], axis=1)
+    # above the collar's clean-edge surface (front at the chin, rising toward the nape at the edge's tilt)
+    _zedge = _chin + 0.01 + np.maximum(_fv[:, 1] - (_hx[1] - 0.06), 0) * math.tan(math.radians(
+        float(JOB.get("collar_edge_tilt_deg", 22)))) + 0.01
+    _round = ((_fv[:, 2] > _zedge) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05) & (_rr < 0.16) & ~_sel
+              & (_rr > float(np.median(np.linalg.norm(_hv[np.abs(_hv[:, 2] - _chin) < 0.01, :2] - _hx[:2], axis=1)))
+                 + 0.035 if (np.abs(_hv[:, 2] - _chin) < 0.01).any() else _rr > 0.12))
+    REP["head_round_verts"] = int(_round.sum())
+    if JOB.get("hair_debug"):
+        np.savez_compressed(JOB["hair_debug"].replace(".npz", "_round.npz"), fig=_fv, round=_round, front=_sel,
+                            chin=_chin, head=_hx)
 if JOB.get("skin_mask") is not None and not STATUE and HEAD is not None:
     # the head mesh's skin under the cloth, as an opacity mask in its UVs (the engine hides it: char_skinmask.py)
     t = time.time()
