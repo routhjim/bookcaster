@@ -229,6 +229,26 @@ def lora_by_head(lw: float, run: dict, hh: float | None, n: int) -> float:
     return round(lw + (one - lw) * t, 3)
 
 
+def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
+    """Whom each person in the frame is turned toward, from the staged spec ("facing_to"): the redraw kept the
+    engine's bodies, but a video model read two men at a window as looking out of it (11-12)."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds or not cast:
+        return ""
+    ch = json.loads(rounds[-1].read_text()).get("characters") or {}
+    inf = {p[0] for p in ppl}
+    nm = names(ppl, cast)
+    out = []
+    for k in [p[0] for p in ppl]:
+        t = (ch.get(k) or {}).get("facing_to")
+        if t and t in ch and t != k:
+            who = nm.get(k, "the person")
+            tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
+            if tgt:
+                out.append(f"{who[0].upper() + who[1:]} is turned toward {tgt}.")
+    return (" " + " ".join(out)) if out else ""
+
+
 def kind_of(cam: str, shot: dict) -> str:
     for k in ("close", "medium", "wide"):
         if cam.startswith(k):
@@ -632,7 +652,8 @@ def main():
                                                 run.get("body_words", False), cast or None,
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
-                                                sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge),
+                                                sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
+                         + facing_to_words(sd, ppl, cast),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
                          + [crops[t["name"]] for t in sorted(sh.get("things") or [], key=lambda t: -t.get("mask_area", 0))

@@ -397,11 +397,18 @@ def main():
                                                         if math.dist(m, entry["position"]) > 0.2]
             state[k] = entry
             placed_now.append(entry)
-        # facing from the words: a person's name, else a named thing, else the room's middle
+        # facing from the words: a person's name, else a named thing; with no words, what the shot is about (its
+        # first listed person: the one who acts, or whom the line is about); a place word ("by the window") says
+        # where someone stands, never which way they face. A person faced is kept as "facing_to": the staging
+        # re-aims the body when anyone moves (11-12: the men turned to the glass after she was moved)
+        focus = next((names[q["name"]] for q in sh.get("people") or [] if q["name"] in names), None)
         for k, v in state.items():
             fw = v.get("facing_words") or ""
             _, rel = thing_for(fw, things, {nm: kk for nm, kk in names.items() if kk != k})
             thing, _ = thing_for(fw, things, {})
+            if not fw.strip() and not rel and focus and focus != k and focus in state:
+                rel = focus
+            v["facing_to"] = rel if rel in state and rel != k else None
             tgt = (state.get(rel) or {}).get("position") if rel else (thing or {}).get("center")
             if tgt is None and len(state) > 1:                # "the camera", a group: toward the others' middle
                 o = [vv["position"] for kk, vv in state.items() if kk != k]
@@ -505,7 +512,7 @@ def main():
             else:
                 base = cv.get("id") or cv["base"]
                 vid = f"{base}_{var}" if var and (library / "character" / f"{base}_{var}").exists() else base
-                c = {"id": vid, "position": v["position"], "facing": v["facing"],
+                c = {"id": vid, "position": v["position"], "facing": v["facing"], "facing_to": v.get("facing_to"),
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
                 if v.get("marks"):
                     # the previous shot's mark first: it is kept whenever it still passes (no unmotivated move)

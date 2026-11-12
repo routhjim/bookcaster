@@ -597,6 +597,13 @@ def staged_facts(spec, subjects):
                 bad.append(f"worn '{w}': the staged figure is {c.get('id')}")
             if not c.get("wear_add"):
                 bad.append(f"worn '{w}': no words for it reach the redraw")
+        t = c.get("facing_to")
+        m_ = (subjects.get(k) or {}).get("measured") or {}
+        if t in subjects and t != k and m_.get("facing") and not c.get("reach"):
+            tp = subjects[t]["measured"]["pelvis_xy"]
+            ang = plan_angle(m_["facing"], m_["pelvis_xy"], tp)
+            if ang > FACE_TURN_DEG:
+                bad.append(f"faces {ang:.0f} deg away from {t}, whom the plan has them face")
         act = ((c.get("body_pose") or {}).get("params") or {}).get("action")
         if c.get("reach"):                   # the hand on the other's forearm, measured
             m = (subjects.get(k) or {}).get("measured") or {}
@@ -621,6 +628,25 @@ def staged_facts(spec, subjects):
                 if not how(d <= lim for d in ds):
                     bad.append(f"action '{act}': hands {min(ds):.2f}-{max(ds):.2f} m from the chin")
         out[k] = bad
+    return out
+
+
+FACE_TURN_DEG = 90.0         # a person's body within a quarter turn of whom they face (checked on the engine)
+
+
+def aim_bodies(spec):
+    """Standing people turned to whom they face ("facing_to", from the plan's facing words or what the shot is
+    about), from where everyone now stands: after a walk's start or a mark moved someone, the facings computed
+    from the plan's places pointed at the window (11-12). Returns the keys re-aimed."""
+    ch, out = spec["characters"], []
+    for k, c in ch.items():
+        t = c.get("facing_to")
+        if not t or t not in ch or t == k or any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED):
+            continue
+        d = unit2([ch[t]["position"][0] - c["position"][0], ch[t]["position"][1] - c["position"][1]])
+        if math.degrees(math.acos(max(-1.0, min(1.0, d[0] * unit2(c["facing"])[0] + d[1] * unit2(c["facing"])[1])))) > 2:
+            c["facing"] = [round(d[0], 4), round(d[1], 4)]
+            out.append(k)
     return out
 
 
@@ -1135,7 +1161,10 @@ def main():
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     assets_action_steps(spec)
     walks = clear_walks(spec, set(seat_plan.get("seats") or {}))   # before any render: clear floor paths for walks
-    if walks["moved"] and relook:            # heads re-aimed at the speaker from the new places
+    aimed = aim_bodies(spec)                 # bodies turned to whom they face, from where everyone now stands
+    if aimed:
+        log(f"bodies re-aimed: {aimed}")
+    if (walks["moved"] or aimed) and relook:   # heads re-aimed at the speaker from the new places
         for k in list(spec["characters"]):
             spec["characters"][k] = unlook(spec["characters"][k])
         look_at(spec, relook)
@@ -1182,7 +1211,12 @@ def main():
         over-the-shoulder cameras set from the old places set again; every camera renders again."""
         nonlocal line
         subj2 = shifted(subjects, spec, {k: mk}, relook)
-        apply_marks(spec, {k: mk}, relook, relook)
+        apply_marks(spec, {k: mk}, relook, None)
+        aim_bodies(spec)                     # whoever faces the moved person turns with them
+        if relook:
+            for kk in list(spec["characters"]):
+                spec["characters"][kk] = unlook(spec["characters"][kk])
+            look_at(spec, relook)
         for c_ in spec["cameras"]:
             if c_["name"] in auto_ots and not c_.get("single"):
                 c_.update(ots_camera(subj2[c_["speaker"]]["measured"], subj2[c_["ots"]]["measured"], est_side, line))
