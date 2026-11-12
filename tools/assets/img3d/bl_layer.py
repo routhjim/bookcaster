@@ -243,6 +243,10 @@ bm = bmesh.new()
 bm.from_mesh(me)
 bm.verts.ensure_lookup_table()
 bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.nonzero(drop)[0]], context="VERTS")
+# the .glb splits vertices at UV seams: welded before the pieces are counted, or every small UV island counted as a
+# crumb and was deleted, leaving the layer in holes and strips (11-12; the UVs live on the loops)
+REP["open_edges_before_weld_m"] = round(float(sum(e.calc_length() for e in bm.edges if e.is_boundary)), 2)
+bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
 # small loose pieces left by the cut
 bm.verts.ensure_lookup_table()
 comp = {}
@@ -267,6 +271,10 @@ bm.to_mesh(me)
 bm.free()
 me.update()
 REP["layer_verts"] = len(me.vertices)
+_bm = bmesh.new()
+_bm.from_mesh(me)
+REP["open_edges_m"] = round(float(sum(e.calc_length() for e in _bm.edges if e.is_boundary)), 2)   # holes and hems
+_bm.free()
 
 # ------------------------------------------------------------------ 3. outside the body and the outfit
 margin = float(JOB.get("margin_m", 0.015))
@@ -364,24 +372,40 @@ bpy.ops.object.modifier_apply(modifier="dt")
 names = {g.index: g.name for g in fig.vertex_groups}
 
 
+# an outer layer hangs from the shoulders and torso: spine, neck, clavicles and pelvis keep their weights; the upper
+# arm keeps a small share only near the shoulder (UPPERARM_SHARE at the joint, none ARM_FREE_M down the arm), the rest
+# of the arm's weight (upper arm below that, forearm, hand, fingers) goes to that side's clavicle; legs to the pelvis.
+# Cloth draped over the arm took forearm and hand weights and tore into strips when the arm left the drawn angle (11-12):
+# the arm now moves inside a still drape.
+UA_SHARE = float(JOB.get("upperarm_share", 0.25))
+ARM_FREE = float(JOB.get("arm_free_m", 0.15))
+_ua = {s_: np.array(J(f"upperarm_{s_}")) for s_ in ("l", "r")}
+
+
 def target(nm):
-    """the upper body keeps its weights; arm below the shoulder goes to the upper arm, everything else (legs, feet,
-    toes) to the pelvis, so the hem hangs free of the legs"""
     low = nm.lower()
-    if low.startswith(("spine", "clavicle", "neck", "head", "pelvis", "upperarm")):
-        return nm
+    if low.startswith(("spine", "clavicle", "neck", "head", "pelvis")):
+        return nm, None
     for side in ("_l", "_r"):
-        if low.endswith(side) and low.startswith(("lowerarm", "hand", "index", "middle", "ring", "pinky", "thumb")):
-            return "upperarm" + side
-    return "pelvis"
+        if low.endswith(side) and low.startswith(("upperarm", "lowerarm", "hand", "index", "middle", "ring", "pinky",
+                                                  "thumb")):
+            return "clavicle" + side, side[1]
+    return "pelvis", None
 
 
 W = {}
+_PB = np.array([v.co[:] for v in fig.data.vertices])
 for v in fig.data.vertices:
     w = {}
     for g in v.groups:
-        t = target(names[g.group])
-        w[t] = w.get(t, 0.0) + g.weight
+        t, arm_side = target(names[g.group])
+        if arm_side is not None:
+            d_ = float(np.linalg.norm(_PB[v.index] - _ua[arm_side]))
+            k_ = UA_SHARE * float(np.clip(1.0 - d_ / ARM_FREE, 0.0, 1.0))
+            w[f"upperarm_{arm_side}"] = w.get(f"upperarm_{arm_side}", 0.0) + k_ * g.weight
+            w[t] = w.get(t, 0.0) + (1.0 - k_) * g.weight
+        else:
+            w[t] = w.get(t, 0.0) + g.weight
     tot = sum(w.values())
     W[v.index] = {k: x / tot for k, x in w.items() if tot > 0 and x / tot > 0.01}
 for g in list(fig.vertex_groups):
@@ -471,6 +495,39 @@ bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, "outfit.fbx"), use_selection
                          use_armature_deform_only=False, primary_bone_axis="Y", secondary_bone_axis="X",
                          armature_nodetype="NULL", bake_anim=False, mesh_smooth_type="FACE", use_tspace=True,
                          path_mode="STRIP")
+# the arms moved off the drawn angle (out and forward): the layer's edges must not stretch (a drape torn into strips
+# by arm weights stretched its edges many times over, 11-12)
+try:
+    import math as _m
+    from mathutils import Matrix as _Mx
+    _e = np.empty(len(fig.data.edges) * 2, np.int64)
+    fig.data.edges.foreach_get("vertices", _e)
+    _e = _e.reshape(-1, 2)
+    _dg = bpy.context.evaluated_depsgraph_get()
+    _P0 = np.array([v.co[:] for v in fig.evaluated_get(_dg).data.vertices])
+    _L0 = np.linalg.norm(_P0[_e[:, 0]] - _P0[_e[:, 1]], axis=1)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    _test = float(JOB.get("arm_test_deg", 30))
+    for side, sg in (("l", 1), ("r", -1)):
+        pb = arm.pose.bones[f"upperarm_{side}"]
+        hd = pb.head.copy()
+        q = Vector((0.0, 1.0, 0.0)).rotation_difference(Vector((0.0, 1.0, 0.0)))
+        from mathutils import Quaternion as _Q
+        q = _Q(Vector((0.0, 1.0, 0.0)), sg * _m.radians(_test))       # out from the side (about the front axis)
+        pb.matrix = _Mx.Translation(hd) @ q.to_matrix().to_4x4() @ _Mx.Translation(-hd) @ pb.matrix
+        bpy.context.view_layer.update()
+    _dg = bpy.context.evaluated_depsgraph_get()
+    _P1 = np.array([v.co[:] for v in fig.evaluated_get(_dg).data.vertices])
+    _L1 = np.linalg.norm(_P1[_e[:, 0]] - _P1[_e[:, 1]], axis=1)
+    _r = _L1 / np.maximum(_L0, 1e-6)
+    REP["arm_test"] = {"deg": _test, "stretch_p99": round(float(np.quantile(_r, 0.99)), 3),
+                       "stretch_max": round(float(_r.max()), 2), "edges_over_1_5": int((_r > 1.5).sum())}
+    for pb in arm.pose.bones:
+        pb.matrix_basis = _Mx.Identity(4)
+    bpy.ops.object.mode_set(mode="OBJECT")
+except Exception as _ex:
+    REP["arm_test"] = {"error": str(_ex)}
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "layer.blend"), compress=True)
 REP["total_s"] = round(time.time() - T0, 1)
 json.dump(REP, open(os.path.join(OUT, "report.json"), "w"), indent=1)
