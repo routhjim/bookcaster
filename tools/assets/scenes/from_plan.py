@@ -126,6 +126,10 @@ def pick_set(shot: dict, library: Path) -> tuple:
             continue
         aj = json.loads(a.read_text())
         sets.append({"id": aj["id"], "description": aj.get("description", "")})
+        sp = d / "spec.json"                 # a set built for this very place (place_build.py) is the place
+        if shot.get("place") and sp.exists() and json.loads(sp.read_text()).get("place") == shot["place"]:
+            best = (10 ** 6, aj["id"])
+            continue
         w = words(" ".join(aj.get("tags") or []) + " " + aj.get("description", ""))
         score = len(w & words(" ".join([shot.get("place", ""), shot.get("room", "")] + (shot.get("fixtures") or []))))
         if score > best[0]:

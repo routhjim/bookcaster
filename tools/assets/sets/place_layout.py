@@ -46,6 +46,15 @@ def load_data(path=None) -> dict:
     return json.loads(Path(path or DATA).read_text())
 
 
+# a kind the layout has no rule for stands where its piece record says (places/piece_kinds.json "placement"):
+# a small thing that belongs on a surface is placed on one, not on the floor against a wall
+try:
+    SURFACE_KINDS = {k for k, v in json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json")
+                                               .read_text())["kinds"].items() if v.get("placement") == "surface"}
+except (OSError, KeyError, ValueError):
+    SURFACE_KINDS = set()
+
+
 # ------------------------------------------------------------------ geometry
 def wall_pt(side: str, u: float, W: float, D: float) -> tuple:
     return {"north": (u, D / 2), "south": (u, -D / 2), "east": (W / 2, u), "west": (-W / 2, u)}[side]
@@ -255,7 +264,7 @@ class Ctx:
     def mode(self, pid) -> tuple:
         """(how the piece stands: wall / free / floor / on, the opening it stands at or None)."""
         ag = self.pieces[pid].get("against")
-        place = self.rule(pid).get("place", "free")
+        place = self.rule(pid).get("place") or ("on" if self.pieces[pid]["kind"] in SURFACE_KINDS else "free")
         if isinstance(ag, str) and ag.startswith("opening:") and ag.split(":", 1)[1] in self.by_id:
             return "wall", self.by_id[ag.split(":", 1)[1]]
         if ag in ("wall", "free") and place in ("wall", "free"):
@@ -595,7 +604,17 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
                             and q["size_m"][2] <= 1.2 and q["kind"] != "fireplace"),
                            key=lambda q: (q["size_m"][0] * q["size_m"][1], q["name"]))
         for hst in hosts:
-            return [make(ctx, pid, hst["c"], hst["facing"], {"on": hst["name"], "on_z_m": hst["size_m"][2]})]
+            # things on one host stand side by side along its width, not through each other
+            n_on = sum(1 for q in placed.values() if q.get("on") == hst["name"])
+            step_ = ((n_on + 1) // 2) * (1 if n_on % 2 else -1) * 0.45
+            lim = max(0.0, hst["size_m"][0] / 2 - 0.15)
+            off = max(-lim, min(lim, step_))
+            f_ = hst["facing"]
+            c_ = (hst["c"][0] - f_[1] * off, hst["c"][1] + f_[0] * off)
+            # the top it stands on: a record's height includes what is modelled on the piece (a desk's own books and
+            # pen: 0.90 m against a 0.76 m top, things floated above it), so never above the kind's own height
+            kz = (ctx.rule(hst["id"]).get("size_m") or [0, 0, hst["size_m"][2]])[2]
+            return [make(ctx, pid, c_, hst["facing"], {"on": hst["name"], "on_z_m": min(hst["size_m"][2], kz)})]
         return []
     step = ctx.data["grid_m"] if mode == "wall" else ctx.data["free_grid_m"]
     if mode == "wall":

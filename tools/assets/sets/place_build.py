@@ -108,7 +108,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     ss = L.to_set_spec(spec, lay)
     kit = json.loads((HERE / "period_kits.json").read_text()).get(spec.get("period")) or \
         json.loads((HERE / "period_kits.json").read_text())["victorian"]
-    out = dict(id=set_id, description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
+    out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
+               description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
