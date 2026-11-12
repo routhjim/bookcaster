@@ -1158,6 +1158,7 @@ def main():
     tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "wide": 0, "n": 0} for c in spec["cameras"]}
     tried_marks, pending, master = {}, None, None
     reach_done = not any(v.get("reach") for v in spec["characters"].values())
+    least_bad = []                           # shots whose least-bad try is not the last render: rendered again
     start_pos = {k: list(v["position"]) for k, v in spec["characters"].items()}
     tries_dir = odir / "tries"
 
@@ -1233,22 +1234,31 @@ def main():
                 return k, list(mk)
         return None
 
+    def badness(h):
+        """A rendered try's misses, worst first: the speaker's face, then named people (missing, unreadable, a face
+        cut), then how many misses in all."""
+        why = h.get("why") or []
+        face = [w for w in why if w not in (h.get("framing") or [])]
+        named = [w for w in why if "(named for the shot)" in w or w.startswith("PARTIAL FACE")]
+        return (len(face), len(named), len(why))
+
     def give_up(c):
-        """A shot that still fails: rejected (the speaker's face, a cut face) or a framing miss, with its stills."""
+        """A shot whose tries ran out: every shot ends with a key (a dropped shot leaves a hole in the video), so
+        the least-bad rendered try becomes it, labelled with its misses and counted as not shippable."""
         n_ = c["name"]
+        hist = report["shots"].get(n_, {}).get("history") or []
+        best = min(hist, key=badness) if hist else None
         chk = shots[n_]["speaker_check"]
-        face = [w for w in chk["why"] if w not in chk.get("framing", [])]
-        partial = [w for w in chk.get("framing", []) if w.startswith("PARTIAL FACE")]
-        dropped = [w for w in chk["why"] if "(named for the shot)" in w]
-        if face and c.get("speaker"):
-            shots[n_]["reject"] = "speaker's face not shown: " + "; ".join(face)
-        elif dropped and len(c.get("show") or []) >= 2:
-            shots[n_]["reject"] = "a person the director names is not in frame or not readable: " + "; ".join(dropped)
-        elif partial and c.get("speaker"):
-            shots[n_]["reject"] = "; ".join(partial)
-        else:                                # a shot without a speaker always ends with a key: the miss reported
-            shots[n_]["framing_miss"] = chk["why"]
+        why = (best or chk)["why"]
+        shots[n_]["framing_miss"] = why
+        shots[n_]["least_bad"] = {"round": (best or {}).get("round"), "misses": why}
         shots[n_]["tried_stills"] = sorted(str(p_) for p_ in tries_dir.glob(f"{n_}_r*.png"))
+        if best and math.dist(best["camera"]["position"], shots[n_]["camera"]["position"]) > 1e-3:
+            c.update(position=best["camera"]["position"], target=best["camera"]["target"],
+                     focal_mm=best["camera"]["focal_mm"])
+            for kk in ("az", "el", "screen_x"):
+                c.pop(kk, None)
+            least_bad.append(n_)
     for rnd in range(a.rounds + 1):
         sp = odir / f"spec_round{rnd}.json"
         sp.write_text(json.dumps(spec, indent=1))
@@ -1468,6 +1478,17 @@ def main():
             todo = [c_["name"] for c_ in spec["cameras"]]
         if not todo:
             break
+    if least_bad:                            # the least-bad tries rendered again as the keys' engine stills
+        sp = odir / "spec_final.json"
+        sp.write_text(json.dumps(spec, indent=1))
+        run_scene(sp, least_bad)
+        new = {s_["name"]: s_ for s_ in json.loads((odir / "result.json").read_text())["shots"]}
+        for i_, s_ in enumerate(master["shots"]):
+            if s_["name"] in new:
+                keep = {kk: s_.get(kk) for kk in ("framing_miss", "least_bad", "tried_stills", "speaker",
+                                                   "speaker_check")}
+                master["shots"][i_] = dict(new[s_["name"]], **keep)
+        log(f"least-bad tries as keys: {least_bad}")
     report["staged_facts"] = staged_facts(spec, master["subjects"])
     for sh in master["shots"]:
         sh["staged_facts"] = {k: v for k, v in report["staged_facts"].items() if v}

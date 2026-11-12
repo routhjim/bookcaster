@@ -213,6 +213,22 @@ def look_words(f: dict, pos: str) -> tuple:
     return "; ".join(w), miss
 
 
+LORA_HEAD = (0.20, 0.36)     # head height in frame: at or under the first, the one-person weight; at or over the
+                             # second, the run's weight for the number of people; a straight ramp between
+
+
+def lora_by_head(lw: float, run: dict, hh: float | None, n: int) -> float:
+    """A person's character-model weight in their own region, rising as their head gets smaller in frame: in
+    two-person keys at 0.63 his outfit and face held with the head at 0.36-0.41 of the frame and were lost at
+    0.16-0.31 (11-12)."""
+    if n <= 1 or hh is None:
+        return lw
+    one = float((run.get("lora_w") or {}).get("1", 0.8))
+    lo, hi = LORA_HEAD
+    t = min(1.0, max(0.0, (hi - hh) / (hi - lo)))
+    return round(lw + (one - lw) * t, 3)
+
+
 def kind_of(cam: str, shot: dict) -> str:
     for k in ("close", "medium", "wide"):
         if cam.startswith(k):
@@ -535,7 +551,6 @@ def main():
     seed = int(run.get("seed", 7))
     only = set(run.get("only") or [])
     jobs = []
-    colour_said = set()                  # people whose hair colour words were said (their first key)
     crops = anchor_crops(run, out)
     for sd in map(Path, run["scenes"]):
         truth = json.loads((sd / "truth.json").read_text())
@@ -576,13 +591,9 @@ def main():
                         c2 = dict(cast[k])
                         # hair, facial hair, missing layers: the built figure's own facts (library entry), never
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
-                        ef = dict(entry_facts(wv.get("id")))
-                        if k in colour_said:     # the colour said once, in the person's first key (the anchor):
-                            ef.pop("hair_colour", None)   # strong colour words swung her hair grey in one key
-                        elif any(pp[0] == k for pp in ppl) and ef.get("hair_colour"):
-                            colour_said.add(k)
-                        lw_, miss = look_words(ef, "her" if c2.get("noun") == "woman" else "his")
-                        miss = [x for x in miss if not (x == "hair_colour" and k in colour_said)]
+                        # one fixed wording from the entry's facts in every key (the text is the fact; the hair check
+                        # holds the keys together against the person's median and re-draws outliers)
+                        lw_, miss = look_words(entry_facts(wv.get("id")), "her" if c2.get("noun") == "woman" else "his")
                         if lw_:
                             c2["wear"] = c2.get("wear", "") + "; " + lw_
                         if miss:
@@ -606,7 +617,9 @@ def main():
                             else:
                                 area = [max(0.0, b[0] - pad), max(0.0, b[1] - pad), min(1.0, b[2] + pad),
                                         min(1.0, b[3] + pad)]
-                            loras.append([w["lora"], float(w.get("lora_w", lw)), area])
+                            j2 = (sh["people"].get(k) or {}).get("joints2d") or {}
+                            hh = (j2["chin"][1] - j2["head_top"][1]) if "chin" in j2 and "head_top" in j2 else None
+                            loras.append([w["lora"], float(w.get("lora_w", lora_by_head(lw, run, hh, len(ppl)))), area])
                         if w.get("sheet") and w["sheet"] not in sheets:
                             sheets.append(w["sheet"])
                 else:
