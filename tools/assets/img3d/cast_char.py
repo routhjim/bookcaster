@@ -824,7 +824,9 @@ def main():
                 "characters": {"a": {"path": cj4["blueprint"], "garments": cj4["garments"], "hide_body": True}},
                 "shots": shots}, 1200)
             p = subprocess.run([sys.executable, str(ASSETS / "characters" / "skin_probe.py"),
-                                str(W / "ue" / "skin_flat" / "result.json"), "--out", str(skin_p)],
+                                str(W / "ue" / "skin_flat" / "result.json"), "--out", str(skin_p)]
+                               + (["--neckline", (ch.get("garment") or {})["neckline"]]
+                                  if (ch.get("garment") or {}).get("neckline") else []),
                                capture_output=True, text=True)
             CH["skin_probe"] = json.loads(skin_p.read_text())
             if p.returncode:

@@ -23,7 +23,7 @@ NECK_HALF = 0.2          # of the shoulder span: half the neck column left out
 MAX_FRAC = 0.002
 
 
-def probe_shot(sh, max_frac=MAX_FRAC):
+def probe_shot(sh, max_frac=MAX_FRAC, neck_half=None):
     im = np.asarray(Image.open(sh["path"]).convert("RGB")).astype(np.float32) / 255
     nf = np.asarray(Image.open(sh["noface_path"]).convert("RGB")).astype(np.float32) / 255
     J = sh.get("joints_px") or {}
@@ -44,7 +44,8 @@ def probe_shot(sh, max_frac=MAX_FRAC):
     # the shoulders, not the neck: a column the neck's width round its axis is left out (the neck seen in an open
     # collar or a V of the coat is skin by design; a lifted collar standing off the neck showed it, 11-11)
     nx = J["neck_01"][0]
-    reg[:, int(max(nx - NECK_HALF * span, 0)):int(min(nx + NECK_HALF * span, W))] = False
+    nh = NECK_HALF if neck_half is None else neck_half
+    reg[:, int(max(nx - nh * span, 0)):int(min(nx + nh * span, W))] = False
     # the face's own chroma: head-mesh pixels above the neck that are not dark (hair) - cheeks, forehead, chin
     face = seen.copy()
     face[int(max(J["neck_01"][1] - 0.2 * span, 0)):] = False
@@ -70,10 +71,16 @@ def main():
     ap.add_argument("--max-frac", type=float, default=MAX_FRAC)
     ap.add_argument("--out")
     ap.add_argument("--prefix", default="", help="only shots whose name starts with this")
+    ap.add_argument("--neckline", default=None, choices=["chin", "base", "open"],
+                    help="the garment's neckline fact: at the base of the neck or lower, the left-out column is the "
+                         "neckline's width (the collarbones in it are skin by design)")
     a = ap.parse_args()
     r = json.loads(Path(a.result).read_text())
     shots = [s for s in r["shots"] if s.get("noface_path") and s["name"].startswith(a.prefix)]
-    rows = [probe_shot(s, a.max_frac) for s in shots]
+    # a neckline at the base of the neck or lower leaves the collarbones bare by design: the left-out column is that
+    # neckline's width; the shoulders beyond it are still measured
+    nh = {"base": 0.32, "open": 0.42}.get(a.neckline, NECK_HALF)
+    rows = [probe_shot(s, a.max_frac, nh) for s in shots]
     res = {"ok": bool(rows) and all(x.get("ok") is not False for x in rows), "max_frac": a.max_frac, "shots": rows}
     if a.out:
         Path(a.out).write_text(json.dumps(res, indent=1))
