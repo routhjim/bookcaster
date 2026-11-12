@@ -175,6 +175,8 @@ def main():
     asks["neckline"] = ("Where is the top of this person's garment at the neck: chin (a collar, neckband or cravat "
                         "that comes up the neck to the chin), base (a neckline at the base of the neck) or open (a "
                         "lower, open neckline)? Answer with one word: chin, base or open.")
+    asks["outer_layer"] = ("Does this person wear an outer layer that hangs from the shoulders over the other "
+                           "clothes, such as a cloak, cape, mantle or shawl? Answer yes or no.")
     asks["sleeves"] = ("How loose are this person's sleeves at the upper arm: close (fitted to the arm), medium, or "
                        "loose (full, hanging away from the arm)? Answer with one word: close, medium or loose.")
     import subprocess
@@ -204,8 +206,8 @@ def main():
                 ans[k], src[k] = v, "text"
     rest = {k: v for k, v in asks.items() if k not in ans}
     if rest:
-        FIG_KEYS = ("build", "long_garment", "sleeves")     # asked of the whole figure, not the head
-        BUST_KEYS = ("neckline",)                         # asked of the upper body
+        FIG_KEYS = ("build", "long_garment")               # asked of the whole figure, not the head
+        BUST_KEYS = ("neckline", "sleeves", "outer_layer")  # asked of the upper body (small in the whole figure)
         figq = {k: v for k, v in rest.items() if k in FIG_KEYS}
         bustq = {k: v for k, v in rest.items() if k in BUST_KEYS}
         pans = ask_vl([{"id": "head", "image": str(head_p), "max_new_tokens": 4,
@@ -293,11 +295,22 @@ def main():
     sc["preset_pool"] = pool
     sc["compare_keep"] = a.compare
     base = pool[0] if pool else base
+    # the outer layer's own words in the look line (text only: the drawing leaves it out by these words)
+    outer_words = []
+    if (ans.get("outer_layer") or "").startswith("y") and a.look.strip():
+        ow = ask_vl([{"id": "outer", "image": str(head_p), "max_new_tokens": 12, "ask": {"words": (
+            f"Here is a written description of a person: \"{a.look.strip()}\"\nUse only this description. Which "
+            f"garment in it is an outer layer hanging from the shoulders over the other clothes? Reply with that "
+            f"garment's own words from the description only, or none.")}}]).get("words", "")
+        outer_words = [w for w in re.findall(r"[a-z]+", ow.lower()) if len(w) > 2 and w not in ("none", "and", "the")]
     lg = ans.get("long_garment", "")
     garment = {"long": True if lg.startswith("y") else False if lg.startswith("n") else None,
+               "outer_layer": True if (ans.get("outer_layer") or "").startswith("y") else
+               False if (ans.get("outer_layer") or "").startswith("n") else None,
+               "outer_words": outer_words,
                "neckline": next((w for w in ("chin", "base", "open") if (ans.get("neckline") or "").startswith(w)), None),
                "sleeves": next((w for w in ("close", "medium", "loose") if (ans.get("sleeves") or "").startswith(w)), None),
-               "source": {k: src.get(k) for k in ("long_garment", "sleeves", "neckline")}}
+               "source": {k: src.get(k) for k in ("long_garment", "sleeves", "neckline", "outer_layer")}}
     out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params, "garment": garment,
            "body": {k: round(float(v), 1) for k, v in body.items()}, "scores": sc}
     Path(a.out).write_text(json.dumps(out, indent=1))

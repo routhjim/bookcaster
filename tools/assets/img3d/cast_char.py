@@ -388,7 +388,8 @@ def main():
             deg0 = a.pose_deg or {"close": 46, "medium": 58, "loose": 70}.get(
                 sl_, 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
             CH["draw_start_deg"] = {"deg": deg0, "sleeves": sl_ or None}
-            look = spread_look(a.look)
+            gf_ = ch.get("garment") or {}
+            look = spread_look(a.look, gf_.get("outer_words") if gf_.get("outer_layer") else None)
             CH["draw_look"] = look
             tried, meshes, chosen = [], [], None
             # each run draws into its own folder with its own seeds (an earlier run's entries still on the line
@@ -406,7 +407,9 @@ def main():
                 CH.setdefault("pose_deg", []).append(deg)
                 seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
                 jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [896, 1344],
-                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}", "refs": [a.sheet],
+                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + (
+                             " No outer layer over the shoulders: the arms, the sides of the body and the clothes "
+                             "under it all in view." if gf_.get("outer_layer") else ""), "refs": [a.sheet],
                          "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
                          "control": {"image": str(pose_map), "type": "pose", "scale": 0.8 + 0.1 * min(rnd, 2)}}
                         for s_ in seeds]
@@ -641,6 +644,9 @@ def main():
                 "character_asset": f"/Game/Char/{mh_name}", "hide_body": True, "id": a.id,
                 "garments": [f"{dest}/Outfit/outfit", f"@face_material={sk['instance']}"], "body_swap": None,
                 "garment_material": None, "skin_mask": {"material": sk["instance"], "mask": sk["mask"]},
+                "missing_layers": ([" ".join(ch["garment"]["outer_words"])]
+                                   if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
+                                   else []),
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
                 indent=1))
@@ -835,7 +841,7 @@ def main():
     log(f"done: {a.id} in {TT.get('total')} s of steps; {json.dumps(TT)}")
 
 
-def spread_look(look):
+def spread_look(look, outer_words=None):
     """The look line for the spread drawing: what the hands carry or hold and any headwear go (the hands must be open
     and empty for the gate and the fit; the MetaHuman keeps its own head and hair)."""
     import re
@@ -850,6 +856,10 @@ def spread_look(look):
         if held.search(q):
             stop = True                     # "..., carrying a crop": the rest of the list is what is carried
         if stop or head.search(q):
+            continue
+        if outer_words and any(w in q.lower() for w in outer_words):
+            # an outer layer hanging from the shoulders (a fact): left out of the spread drawing and the fitted
+            # garment (it fills the space under the arms); the entry records it as a missing layer
             continue
         keep.append(q)
     out = ", ".join(desc)
