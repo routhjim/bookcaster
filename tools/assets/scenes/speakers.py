@@ -316,6 +316,15 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                 why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
             elif ma is not None and ma > 0.02 and not facts[k]["head_in"]:
                 why.append(f"{k}, turned away, is a body without its head in the frame")
+    for q3 in opts.get("points") or []:      # a move's start, path and end place: all inside the one frame
+        q = framing.project(cam, q3, res)
+        if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
+            why.append(f"the move's place at {[round(v, 2) for v in q3]} is out of the frame")
+    mv = opts.get("mover")
+    if mv and mv in subjects:                # the mover's face readable at the move's start
+        mm = subjects[mv]["measured"]
+        if plan_angle(mm["head_fwd_xy"], mm["eye_xy"], cam["position"]) > 80 or not facts[mv]["head_in"]:
+            why.append(f"{mv}'s face (the one who moves) is not readable")
     for k, jn in opts.get("joints") or []:
         j = ((subjects.get(k) or {}).get("measured") or {}).get("joints") or {}
         q = framing.project(cam, j[jn], res) if jn in j else None
@@ -411,12 +420,31 @@ def look_at(spec, speaker):
     return spec
 
 
+def move_points(spec, c):
+    """A move shot ("mover": key, "move_to": set item name): the mover's start (head and feet), the end place and
+    the path between, as set-frame points the key's one frame must hold (the camera then need not move: framed on
+    the start alone, a video model had to swing the camera and invent the rest of the room, 11-11)."""
+    if not (c.get("mover") and c.get("move_to")):
+        return []
+    sys.path.insert(0, str(HERE.parent / "redraw"))
+    import setfacts
+    t = next((x for x in setfacts.things(Path(C.LIBRARY) / "set" / spec["set"]) if x["name"] == c["move_to"]), None)
+    m = spec["characters"].get(c["mover"])
+    if not t or not m:
+        return []
+    a = m["position"][:2]
+    b = t["center"][:2]
+    return [[a[0], a[1], 1.65], [a[0], a[1], 0.05], [b[0], b[1], t["center"][2] + t["half"][2]],
+            [b[0], b[1], 0.05], [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0.8]]
+
+
 def cam_opts(spec, c):
     """The framing rules' per-camera facts: who sits (no shots over a seated listener's chair back), the camera's
-    subject, and the action's joints that must be seen ("show_joints": [[key, joint], ...])."""
+    subject, the action's joints that must be seen ("show_joints": [[key, joint], ...]) and a move's places."""
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
-    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or []}
+    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [],
+            "points": c.get("_points") or [], "mover": c.get("mover")}
 
 
 def listener_of(c, spec_line, speaker):
@@ -450,6 +478,9 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
     if spk and seated_lis:                   # a clean single of the speaker (never over a high chair's back)
         sm = ms[0]
         aims["single"] = [sm["eye_xy"][0], sm["eye_xy"][1], sm["eye_z"] - 0.15]
+    if opts.get("points"):                   # a move: aimed at the middle of its places
+        pts = opts["points"]
+        aims["move"] = [sum(p_[i] for p_ in pts) / len(pts) for i in range(2)] + [1.0]
     if opts.get("joints"):                   # the action's joints in the middle of the aim
         pts = [subjects[k]["measured"]["joints"][j] for k, j in opts["joints"]
                if j in (subjects[k]["measured"].get("joints") or {})]
@@ -476,7 +507,7 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
                     if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
                         continue
-                    for f in (28, 35, 40, 50):
+                    for f in ((20, 24, 28) if opts.get("points") else (28, 35, 40, 50)):
                         q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
                         why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
                                              opts=opts)
@@ -658,6 +689,8 @@ def main():
     if len(groups) == 1:
         look_at(spec, list(groups)[0])
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
+    for c in spec["cameras"]:
+        c["_points"] = move_points(spec, c)
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
