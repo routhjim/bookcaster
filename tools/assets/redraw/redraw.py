@@ -206,7 +206,7 @@ def look_words(f: dict, pos: str) -> tuple:
         w.append(worn)
     if f.get("facial_hair") and f["facial_hair"] != "none":
         w.append(f["facial_hair"])
-    elif f.get("facial_hair") == "none":
+    elif f.get("facial_hair") == "none" and pos == "his":
         w.append("clean-shaven")
     for m in f.get("missing_layers") or []:
         w.append(m)
