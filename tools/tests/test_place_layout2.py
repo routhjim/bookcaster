@@ -349,6 +349,37 @@ def test_an_over_constrained_room_ends_unresolved_with_the_failure_named_for_a_r
     assert all(not x["ok"] for x in lay["ladder"])               # and no rung is passed off as a room
 
 
+# ------------------------------------------------------------------ the drapes hung at a window after the layout
+def test_nothing_stands_in_a_windows_drapes_and_no_tall_piece_before_the_window():
+    s = spec(pieces=[pc_("p1", "armchair", ["the chair by the window"]), pc_("p2", "desk", ["the desk"], "opening:o2"),
+                     pc_("p3", "bookcase"), pc_("p4", "stool")],
+             relations=[rel("p1", "by", "o2")], named={"the chair by the window": "p1", "the desk": "p2"})
+    lay = pl.solve(s)
+    assert lay["ok"], lay["unmet"]
+    dr = R["hard"]["window_dressing"]
+    for o in [o for o in lay["openings"] if o["kind"] == "window"]:
+        side = (dr["width_m"] - o["width_m"]) / 2
+        cols = [pl.span_rect(o["wall"], o["at_m"] + g * (o["width_m"] / 2 + side / 2), side / 2, dr["depth_m"],
+                             *lay["size_m"][:2]) for g in (1, -1)]
+        front = pl.span_rect(o["wall"], o["at_m"], o["width_m"] / 2, dr["depth_m"], *lay["size_m"][:2])
+        for p in lay["pieces"]:
+            if p.get("flat") or p.get("on"):
+                continue
+            assert not any(pl.overlap(p["rect"], z) for z in cols), p["name"]
+            if p["size_m"][2] > o["sill_m"] + R["hard"]["window_tall_over_sill_m"]:
+                assert not pl.overlap(p["rect"], front), p["name"]
+
+
+def test_the_drape_rule_can_be_turned_off_and_a_window_keeps_room_for_its_drapes_on_the_wall():
+    off = copy.deepcopy(R)
+    off["hard"]["window_dressing"]["width_m"] = 0.0
+    assert pl.solve(spec(pieces=[pc_("p1", "desk", against="opening:o2")]), rules=off)["ok"]
+    lay = pl.solve(spec(size="small", openings=[op("o1", "window", "west")]))
+    o = lay["openings"][0]
+    L = lay["size_m"][1]
+    assert abs(o["at_m"]) + R["hard"]["window_dressing"]["width_m"] / 2 <= L / 2 - 0.1 + 1e-6
+
+
 # ------------------------------------------------------------------ fronts of library records
 def test_a_seat_whose_open_side_is_not_minus_y_is_reported():
     rule = DATA["piece_kinds"]["armchair"]

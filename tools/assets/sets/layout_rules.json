@@ -16,7 +16,13 @@
   "window_keepout_m": 0.35,
   "window_tall_over_sill_m": 0.15,
   "around_free_m": 0.1,
-  "stand_snap_m": 1.0
+  "stand_snap_m": 1.0,
+  "window_dressing": {
+   "width_m": 2.0,
+   "depth_m": 0.25,
+   "about": "drapes hung at every window after the layout (the period kit's): their full width and depth stand on the floor; nothing stands in the side columns beyond the window, and no tall piece before the window itself. width 0 turns it off."
+  },
+  "low_under_window_m": 1.0
  },
  "weights": {
   "face_focal": 4.0,
