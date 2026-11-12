@@ -1219,6 +1219,28 @@ if not STATUE and HEAD is not None:
         if m_.any():
             rmin_[k_] = float(np.quantile(rr_[m_], 0.03))
     inner_w = np.clip((rmin_[sec_] + 0.035 - rr_) / 0.02, 0, 1) * (rr_ < 0.15)
+    # the neckline measured on the garment itself (a beard hides a neckline from a picture, not from the mesh): the
+    # innermost cloth round the neck, its front top between the shoulder line and the chin, and its front opening's
+    # radius against the neck's: up the neck to the chin / at the base of the neck / lower and open
+    try:
+        _hn = hv_[np.abs(hv_[:, 2] - float(J("neck_01").z)) < 0.012]
+        _neck_r = float(np.median(np.linalg.norm(_hn[:, :2] - nc_[:2], axis=1))) if len(_hn) > 20 else 0.06
+        _fr = (ang_ > -math.pi * 0.75) & (ang_ < -math.pi * 0.25)          # in front of the neck (-y)
+        _front_inner = band_ & _fr & (inner_w > 0.5)
+        _top_f = float(P_[_front_inner, 2].max()) if _front_inner.any() else None
+        _r_f = float(np.median(rmin_[[k for k in range(16) if -0.75 * math.pi < (k + 0.5) / 16 * 2 * math.pi - math.pi
+                                      < -0.25 * math.pi]]))
+        _frac = (_top_f - z_sh) / max(chin_ - z_sh, 1e-3) if _top_f is not None else 0.0
+        if _frac >= 0.55 and _r_f < _neck_r * 1.6:
+            _cls = "chin"
+        elif _top_f is not None and _top_f >= z_sh - 0.02 and _r_f < _neck_r * 2.0:
+            _cls = "base"
+        else:
+            _cls = "open"
+        REP["neckline_measured"] = {"class": _cls, "front_top_frac": round(_frac, 3),
+                                    "front_radius_cm": round(_r_f * 100, 1), "neck_radius_cm": round(_neck_r * 100, 1)}
+    except Exception as _e:          # a measure, never a failure of the fit
+        REP["neckline_measured"] = {"error": str(_e)}
     REP["collar_height"]["inner_layer_verts"] = int((inner_w > 0.5).sum())
     BARE_MAX = float(JOB.get("bare_neck_max_m", 0.02))
     REP["bare_neck_measured_cm"] = round((chin_ - top0) * 100, 1) if top0 is not None else None
