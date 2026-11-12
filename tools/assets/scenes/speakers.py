@@ -378,18 +378,17 @@ LOOK_MAX_DEG = 75.0           # a listener's head turns this far toward the spea
 
 
 def look_at(spec, speaker):
-    """People who listen face the speaker, head and eyes (a character with "look": false keeps its own): each
-    listener's head and neck turned from the body's facing toward the speaker's head, up or down to it, as pose
-    steps (about z: toward the character's right is positive; about x: up). Before this, a listener in a talk shot
-    looked wherever the body pointed, often at the camera (11-11)."""
+    """People who listen face the speaker, head and eyes (a character with "look": false keeps its own; one with
+    "look_at": key looks at that person instead): each looker's head and neck turned from the body's facing toward
+    the target's head, up or down to it, as pose steps (about z: toward the character's right is positive; about x:
+    up). Before this, a listener in a talk shot looked wherever the body pointed, often at the camera (11-11)."""
     ch = spec["characters"]
-    if speaker not in ch:
-        return spec
-    sp = ch[speaker]
     eye_z = lambda c: 1.15 if any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED) else 1.6
-    for k, c in ch.items():
-        if k == speaker or c.get("asset") or c.get("look") is False:
+    for k, c in list(ch.items()):
+        tgt_k = c.get("look_at") if c.get("look_at") in ch and c.get("look_at") != k else speaker
+        if tgt_k is None or k == tgt_k or tgt_k not in ch or c.get("asset") or c.get("look") is False:
             continue
+        sp = ch[tgt_k]
         f = unit2(c.get("facing", [0, -1]))
         d = [sp["position"][0] - c["position"][0], sp["position"][1] - c["position"][1]]
         dist = math.hypot(*d) or 1.0
@@ -408,7 +407,7 @@ def look_at(spec, speaker):
                   ["rot", "neck_01", [1, 0, 0], round(pitch * 0.4, 2)], ["rot", "head", [1, 0, 0], round(pitch * 0.6, 2)]]
         pr["steps"] = list(pr.get("steps") or []) + steps
         bp["params"] = pr
-        ch[k] = dict(c, body_pose=bp, _look={"at": speaker, "yaw": round(yaw + chest, 1), "pitch": round(pitch, 1)})
+        ch[k] = dict(c, body_pose=bp, _look={"at": tgt_k, "yaw": round(yaw + chest, 1), "pitch": round(pitch, 1)})
     return spec
 
 
@@ -656,7 +655,7 @@ def main():
             log(f"group {sub['id']}: {[c['name'] for c in cams]}")
             rc |= subprocess.run([sys.executable, __file__, str(sp_path), "--rounds", str(a.rounds), "--no-split"]).returncode
         return rc
-    if len(groups) == 1 and list(groups)[0]:
+    if len(groups) == 1:
         look_at(spec, list(groups)[0])
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     keys = spec.get("line") or list(spec["characters"])[:2]

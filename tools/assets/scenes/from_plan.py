@@ -1,6 +1,8 @@
 """Director's plan -> scene specs that speakers.py stages (stdlib). Mechanics only; judgment is read from answers.
 
     python tools/assets/scenes/from_plan.py PLAN.json SHOTS.txt CAST.json OUT_DIR [--answers ANSWERS.json]
+           [--pass PASS.json]   (staging_pass.py's answers: the set, who is in the room, places, moves and where
+                                 they end, worn state, poses, what the key must show, looks, the talk camera kind)
 
 PLAN.json   the director's plan for a chapter: {shot id: [shot record, ...], ...} (the first record is the shot)
 SHOTS.txt   the shot ids of one scene, in story order, one per line
@@ -175,6 +177,40 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
     return [round(best[1][0], 3), round(best[1][1], 3)] if best else [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
 
 
+DIST = {"touching": 0.45, "near": 0.8, "a few steps": 1.5}
+NOTS = (None, "", "not stated")
+
+
+def place_from(ans: dict, things: list, seats: dict, room: list, others: list, taken: set) -> dict | None:
+    """A place from the staging pass's words (a named thing, sitting or not, side, distance) -> position / seat;
+    None when it is not stated or names nothing the set has."""
+    if not isinstance(ans, dict) or ans.get("thing") in NOTS:
+        return None
+    t = next((x for x in things if x["name"] == ans["thing"]), None)
+    if t is None:
+        return None
+    sitting = bool(ans.get("sitting")) or ans.get("posture") == "sitting"
+    if sitting:
+        cands = [s_ for n_, s_ in seats.items() if n_ not in taken]
+        seat = seats.get(t["name"]) if t["name"] in seats and t["name"] not in taken else (
+            min(cands, key=lambda s_: math.dist(s_["pos"], t["center"][:2])) if cands else None)
+        if seat:
+            return {"pose": "sitting", "seat": seat["name"], "position": list(seat["pos"])}
+    c = t["center"][:2]
+    mid = [-c[0], -c[1]]                       # toward the room's middle = the thing's front, as seen from there
+    n = math.hypot(*mid) or 1.0
+    fr = [mid[0] / n, mid[1] / n]
+    rt = [fr[1], -fr[0]]
+    d = DIST.get(ans.get("distance"), 0.8) + max(t["half"][0], t["half"][1]) * 0.5
+    side = ans.get("side") or "front"
+    v = {"front": fr, "behind": [-fr[0], -fr[1]], "left": [-rt[0], -rt[1]], "right": rt}.get(side, fr)
+    tgt = [c[0] + v[0] * d, c[1] + v[1] * d]
+    return {"pose": "standing", "seat": None, "position": free_mark(tgt, others, things, room, (0.0, 0.8))}
+
+
+VARIANT = {"usual": None}
+
+
 def main():
     a = sys.argv[1:]
     plan = json.loads(Path(a[0]).read_text())
@@ -183,12 +219,13 @@ def main():
     out = Path(a[3])
     out.mkdir(parents=True, exist_ok=True)
     answers = json.loads(Path(a[a.index("--answers") + 1]).read_text()) if "--answers" in a else {}
+    sp = json.loads(Path(a[a.index("--pass") + 1]).read_text()) if "--pass" in a else None    # staging_pass.py
     library = Path(C.LIBRARY)
     first = plan[ids[0]][0]
     questions, facts = [], {}
     set_id, sets = pick_set(first, library)
     questions.append(q_set(first, sets))
-    set_id = answers.get("set", set_id)
+    set_id = (sp or {}).get("set") or answers.get("set", set_id)
     set_dir = library / "set" / set_id
     things = setfacts.things(set_dir)
     room = json.loads((set_dir / "spec.json").read_text())["size_m"]
@@ -199,8 +236,40 @@ def main():
     named = [t for t in things if t["kind"] in ("fixture", "window", "door")]
     state: dict = {}            # key -> {"at", "pose", "position", "facing", "seat", "facing_words"}
     groups, cur, cur_sig = [], [], None
+    worn: dict = {}
+
+    def apply_place(k, pa, why):
+        others = [v["position"] for kk, v in state.items() if kk != k]
+        taken = {v.get("seat") for kk, v in state.items() if kk != k}
+        pl = place_from(pa, things, seats, room, others, taken)
+        if pl:
+            state[k] = dict(state.get(k) or {"facing_words": None}, at=f"{pa.get('side')} {pa['thing']}", **pl)
+            return why
+        return None
+
+    if sp:
+        for nm, v in ((sp.get("scene") or {}).get("people") or {}).items():
+            k = names.get(nm)
+            if k and isinstance(v, dict) and v.get("in_room") is not False:
+                apply_place(k, v, "pass")
+                if v.get("worn") not in NOTS:
+                    worn[k] = v["worn"]
     for n, sid in enumerate(ids, 1):
         sh = plan[sid][0]
+        pa = (sp or {}).get("shots", {}).get(sid) or {}
+        used = []
+        if isinstance(pa.get("in_room"), list):          # who is in the room: those not named leave
+            inroom = {names[x] for x in pa["in_room"] if x in names}
+            for k in list(state):
+                if k not in inroom:
+                    state.pop(k)
+                    used.append(f"{k} left the room")
+        for nm, mv in (pa.get("moved") or {}).items():
+            if nm in names and apply_place(names[nm], mv, "pass"):
+                used.append(f"{names[nm]} moved to {mv.get('thing')}")
+        for nm, w in (pa.get("worn") or {}).items():
+            if nm in names and w not in NOTS:
+                worn[names[nm]] = w
         f = {"id": sid, "kind": sh.get("kind"), "framing": sh.get("framing"), "speaker": sh.get("speaker"),
              "listener": sh.get("listener"), "people_listed": [p["name"] for p in sh.get("people") or []],
              "tight": sh.get("tight"), "defaults": [], "missing": []}
@@ -214,10 +283,15 @@ def main():
             f["missing"].append("pose for the action's start; what the key must show")
         questions.append(q_worn(f"worn:{sid}", sh, [p["name"] for p in sh.get("people") or []]))
         placed_now = []
+        moved_now = {names[nm] for nm in (pa.get("moved") or {}) if nm in names}
         for p in sh.get("people") or []:
             k = names.get(p["name"])
             if not k:
                 f["missing"].append(f"library figure for a person ({p['name'][:1]}.)")
+                continue
+            if sp and (k in moved_now or (k in state and state[k].get("at", "").split(" ")[-1] in
+                                          {t["name"] for t in things})):
+                state[k]["facing_words"] = p.get("facing")        # the pass placed this person: keep it
                 continue
             prev = state.get(k)
             if prev and prev["at"] == p.get("at") and prev["pose"] == p.get("pose"):
@@ -270,34 +344,71 @@ def main():
         kind = FRAMING.get(sh.get("framing") or "medium", "medium")
         if sh.get("tight") and kind != "close":
             kind = "close"
+        ck = pa.get("camera")
+        if spk and ck not in NOTS:
+            kind = {"close": "close", "wide": "full"}.get(ck, "medium" if kind == "close" and ck != "close" else kind)
+        must = [names[x[0]] for x in (pa.get("must_show") or []) if isinstance(x, list) and x and x[0] in names]
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
-               "speaker": spk, "focal_mm": FOCAL[kind], "show": listed or None}
+               "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None}
         if lis:
             cam["listener"] = lis
+        if spk and ck == "over_the_shoulder" and lis:
+            cam["ots"] = lis
+        if spk and ck == "single":
+            cam["single"] = True
+            cam.pop("listener", None)
+        looks = {names[a_]: (names.get(b_) or b_) for a_, b_ in (pa.get("looks_at") or {}).items()
+                 if a_ in names and b_ not in NOTS}
+        poses = {names[a_]: b_ for a_, b_ in (pa.get("pose") or {}).items() if a_ in names and b_ not in NOTS}
+        f["pass"] = {"used": used, "camera": ck, "looks": looks, "pose": poses, "must_show": pa.get("must_show"),
+                     "worn": dict(worn)}
+        cam["_looks"] = looks
+        cam["_poses"] = poses
+        cam["_worn"] = dict(worn)
         f.update(camera=dict(cam), staged={k: {kk: v[kk] for kk in ("pose", "at", "seat", "position", "facing")}
                                            for k, v in state.items()})
         facts[sid] = f
-        sig = json.dumps({k: (v["position"], v["pose"], v.get("seat")) for k, v in state.items()}, sort_keys=True)
+        sig = json.dumps({k: (v["position"], v["pose"], v.get("seat")) for k, v in state.items()}, sort_keys=True) \
+            + json.dumps([cam.get("_poses"), cam.get("_worn")], sort_keys=True)
         if sig != cur_sig and cur:
             groups.append(cur)
             cur = []
         cur_sig = sig
         cur.append((cam, json.loads(json.dumps(state))))
+        for nm, mv in (pa.get("move_ends") or {}).items():       # where a move during this shot ends
+            if nm in names:
+                apply_place(names[nm], mv, "pass")
     if cur:
         groups.append(cur)
     specs = []
     for gi, g in enumerate(groups, 1):
         st = g[0][1]
         chars = {}
+        cam0 = g[0][0]
         for k, v in st.items():
             cv = next(c for c in cast.values() if c["key"] == k)
+            w = (cam0.get("_worn") or {}).get(k)
+            var = None if w in (None, "usual") else w.replace(" ", "_")
             if v["pose"] == "sitting":
                 c = {"seated_from": cv.get("base") or cv["id"], "seat": v.get("seat") or True,
                      "position": v["position"], "facing": v["facing"], "body_pose": json.loads(json.dumps(SEAT_POSE))}
+                if var:
+                    c["variant"] = var
             else:
-                c = {"id": cv.get("id") or cv["base"], "position": v["position"], "facing": v["facing"],
+                base = cv.get("id") or cv["base"]
+                vid = f"{base}_{var}" if var and (library / "character" / f"{base}_{var}").exists() else base
+                c = {"id": vid, "position": v["position"], "facing": v["facing"],
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
+            lk = (cam0.get("_looks") or {}).get(k)
+            if lk in st:
+                c["look_at"] = lk
+            pz = (cam0.get("_poses") or {}).get(k)
+            if pz:
+                c["_pose_choice"] = pz                       # recorded; the pose list's extras need a solve
             chars[k] = c
+        for c_, _ in g:
+            for kk in ("_looks", "_poses", "_worn"):
+                c_.pop(kk, None)
         line = [k for k in ("a", "b") if k in chars] or list(chars)[:2]
         spec = {"id": f"pl_g{gi:02d}", "set": set_id, "guides": True, "characters": chars, "line": line,
                 "exposure_ev100": 5.4, "cameras": [c for c, _ in g]}
