@@ -243,7 +243,8 @@ def main():
         def _():
             p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_choose", "--", "bash", CARD, "05",
                       HY_PY, "-I", str(ASSETS / "characters" / "choose_mh.py"), a.sheet, "--thumbs", THUMBS,
-                      "--out", str(W / "choice.json"), "--look", a.look], W / "choose.log")
+                      "--out", str(W / "choice.json"), "--look", a.look,
+                      "--hair-map", str(Path(C.LIBRARY) / "presets" / "hair_colour.json")], W / "choose.log")
             if p.returncode:
                 raise RuntimeError(f"choose failed: {p.stdout[-800:]}")
     # ---------------------------------------------------------------- face: the preset by comparison
@@ -357,6 +358,16 @@ def main():
     save()
     mh_name = a.mh or f"MHC_AUTO_{tag}"
     fbx = Path(a.mh_fbx) if a.mh_fbx else W / "fbx"
+    def groom_colour():
+        """The chosen hair colour on the built character's own groom materials (char_groom_colour.py): set on the
+        Character asset it never reached the assembled character (every build so far kept the default dark brown)."""
+        hp = (ch.get("params") or {}).get("Bindings/Hair/") or {}
+        if not hp:
+            return
+        r_ = ue_job(W, "groom_colour", str(ASSETS / "characters" / "char_groom_colour.py"), {
+            "folder": f"/Game/MetaHumans/{mh_name}", "melanin": hp.get("Melanin", 0.6),
+            "redness": hp.get("Redness", 0.3), "whiteness": hp.get("Whiteness", 0.0)}, 600)
+        CH["groom_colour"] = {"values": hp, "materials": len(r_.get("set") or {})}
     # ---------------------------------------------------------------- mh
     if not done("mh", fbx / f"{mh_name}_Head.fbx"):
         @timed("mh")
@@ -372,6 +383,7 @@ def main():
                 "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
                 "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
             CH["mh_build"] = {"blueprint": (r.get("cloud") or {}).get("blueprint"), "make": r.get("make")}
+            groom_colour()
     # ---------------------------------------------------------------- draw, gate, shape, mesh gate
     draw = W / "draw"
     draw.mkdir(exist_ok=True)

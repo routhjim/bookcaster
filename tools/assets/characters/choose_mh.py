@@ -76,6 +76,7 @@ def main():
     ap.add_argument("--thumbs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--look", default="")
+    ap.add_argument("--hair-map", default=None, help="measured whiteness per colour word (hair_calibrate.py)")
     ap.add_argument("--compare", type=int, default=7, help="candidate presets for the comparison (face_pick.py)")
     ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()),
                     help="a Python with the vision model's packages (tools/vl_judge.py)")
@@ -274,6 +275,12 @@ def main():
     col = list(COLOURS)[num(ans.get("colour"), len(COLOURS))]
     sc["hair_colour"] = col
     mel, red, wht = COLOURS[col]
+    if a.hair_map and Path(a.hair_map).exists():
+        # a measured whiteness for this word (hair_calibrate.py: the value whose render the vision model names so)
+        mw = (json.loads(Path(a.hair_map).read_text()).get(col) or {}).get("whiteness")
+        if mw is not None:
+            wht = float(mw)
+            sc["hair_whiteness_measured"] = wht
     params = {f"Bindings/{d}/": {"Melanin": mel, "Redness": red, "Whiteness": wht}
               for d in ("Hair", "Eyebrows", "Beards", "Mustaches")}
     build = list(BUILDS)[num(ans.get("build"), len(BUILDS))]
