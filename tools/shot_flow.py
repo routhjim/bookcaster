@@ -242,6 +242,7 @@ CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(
 # and each large piece with its look and place, one fact a line. "" = none (every flow run): the prompts as before.
 SCENE_FACTS = ""
 HOLD_CAMERA = False     # the camera sentence alone, without facts (supplied_keys(hold=True))
+KEY_PEOPLE: dict = {}    # shot id -> how many people its supplied key shows (supplied_keys(key_people=True))
 SHOT_FACTS: dict = {}    # shot id -> what that shot's own facts file states, its people named by their looks
 QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys(quiet_seeds=)); () = QUIET_SEED alone
 
@@ -255,6 +256,10 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
     own = SHOT_FACTS.get(str(s.get("id") or ""), "")
     if own:
         prompt = f"{prompt.rstrip()} {own}"
+    n = KEY_PEOPLE.get(str(s.get("id") or ""))
+    if n and "already in the picture" not in prompt:    # (quiet shots have it from _offscreen already)
+        prompt = prompt.rstrip() + ONLY_HERE.format(n="one person" if n == 1 else f"{n} people",
+                                                    be="is" if n == 1 else "are")
     if not (SCENE_FACTS or HOLD_CAMERA):
         return prompt
     hold = "" if CAMERA.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
@@ -5460,9 +5465,22 @@ def shot_facts_words(book: Path, stem: str, s: dict, text: str) -> str:
     return out[0].upper() + out[1:] if out else out
 
 
+def key_people(book: Path, s: dict, facts: dict) -> list:
+    """The people a supplied key shows (its scene tool's <id>.shot_facts.json "visible", left to right), as the
+    shot's cast names; a name the book does not know stops the run."""
+    R_ = RG.Book(book)
+    out = []
+    for v in facts.get("visible") or []:
+        w = R_.person(v.get("name")) or next((x for x in s.get("who") or [] if R_.same(x, v.get("name"))), None)
+        if not w:
+            raise RuntimeError(f"{s.get('id')}: its key shows {v.get('name')!r}, not a person of the book")
+        out.append(w)
+    return list(dict.fromkeys(out))
+
+
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
                   review: str = "agent", facts: Path | None = None, hold: bool = False,
-                  quiet_seeds: tuple = (), shot_facts: bool = False) -> list:
+                  quiet_seeds: tuple = (), shot_facts: bool = False, key_people_: bool = False) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
     as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
@@ -5472,7 +5490,7 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     keys were staged in, one fact a line: every clip's words carry it (with_facts). hold: the camera sentence alone
     (with_facts without facts). quiet_seeds: a quiet shot's takes, one per seed (judge_takes keeps the best, the
     others stay as <id>_t<k>.mp4), to tell a prompt's effect from seed noise. -> the shots' clips."""
-    global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, SHOT_FACTS
+    global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, SHOT_FACTS, KEY_PEOPLE
     from PIL import Image
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
@@ -5503,6 +5521,21 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
             continue
         shutil.copyfile(src, d / "key.png")             # (a fresh mtime: newer than every clip of the shot)
         log(f"{s['id']}: key from {src}")
+    KEY_PEOPLE = {}
+    for s in shots if key_people_ else []:          # 11-12 user: who is in the picture is the key's staging, not the
+        mid = s["id"].rsplit("_s", 1)[0]            # plan's shot list (a single let a second person walk in and pass;
+        f = next((x for x in (Path(keys) / f"{s['id']}.shot_facts.json", Path(keys) / f"{mid}.shot_facts.json")
+                  if x.exists()), None)             # a wide key with all three was retaken against a list of two)
+        if not f:
+            continue
+        vis = key_people(book, s, json.loads(f.read_text()))
+        if vis:
+            log(f"{s['id']}: the key shows {vis} (the plan listed {s.get('who')})")
+            s["who"], s["others"] = vis, []
+            for k in ("pose_held", "pose_after", "pose_end"):
+                if isinstance(s.get(k), dict):
+                    s[k] = {w: c for w, c in s[k].items() if w in vis}
+            KEY_PEOPLE[s["id"]] = len(vis)
     SHOT_FACTS = {}
     for s in shots if shot_facts else []:          # shot_facts: <keys>/<moment id or shot id>.shot_facts.txt
         mid = s["id"].rsplit("_s", 1)[0]
@@ -5528,8 +5561,11 @@ if __name__ == "__main__":
     ap.add_argument("--hold", action="store_true", help="the camera-hold sentence without facts (with_facts)")
     ap.add_argument("--quiet-seeds", default="", help="a quiet shot's take seeds, comma-separated")
     ap.add_argument("--shot-facts", action="store_true", help="each shot's own <id>.shot_facts.txt beside its key")
+    ap.add_argument("--key-people", action="store_true",
+                    help="the people each key shows (<id>.shot_facts.json \"visible\") are the shot's people")
     a = ap.parse_args()
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
                            facts=a.facts, hold=a.hold,
-                           quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x), shot_facts=a.shot_facts):
+                           quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x), shot_facts=a.shot_facts,
+                           key_people_=a.key_people):
         print("clip:", c, "" if c.exists() else "(not made)")
