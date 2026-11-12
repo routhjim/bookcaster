@@ -150,6 +150,23 @@ def gdino_hands(det, path: str, box) -> list:
     return out
 
 
+def gdino_person(det, path: str, box) -> float:
+    """The largest "person" box Grounding DINO finds in a person's own engine box (enlarged), as a share of that
+    box: a person present in the engine still and missing from the redraw finds none (11-12: a seated woman hidden
+    in the redraw, an empty chair where she sat)."""
+    dp, dm = det
+    import detect as D
+    im = Image.open(path).convert("RGB").resize((1152, 640))
+    x0, y0 = max(0.0, box[0] - 0.02), max(0.0, box[1] - 0.02)
+    x1, y1 = min(1.0, box[2] + 0.02), min(1.0, box[3] + 0.02)
+    c = im.crop((int(x0 * 1152), int(y0 * 640), int(x1 * 1152), int(y1 * 640)))
+    if c.width < 16 or c.height < 16:
+        return 0.0
+    W, H = c.size
+    return max([((b[2] - b[0]) * (b[3] - b[1])) / max(1.0, W * H) for b in D.detect(dp, dm, c, ["person"]).get("person", [])],
+               default=0.0)
+
+
 def arm_hand(m: dict, j2: dict, box) -> dict:
     """Which arms and hands the engine shows (joints in frame and seen) and whether the pose model found each."""
     tol = ARM_TOL * max(0.05, box[3] - box[1])
@@ -288,6 +305,9 @@ def main():
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
             q["named"], q["action"] = bool(p.get("named")), p.get("action")
+            if det is not None and (b[2] - b[0]) * (b[3] - b[1]) >= 0.01:   # the person found in the picture at all
+                q["person_found"] = {kk: round(gdino_person(det, it[kk], b), 3) for kk in ("engine", "redraw")
+                                     if kk in it}
             r["people"][p["key"]] = q
         for p in it["people"]:            # each person's clothes below the chin, redraw and engine (accept.py judges)
             mk = p.get("mask")
@@ -335,7 +355,9 @@ def main():
                 a_ = judge.ask_images(crops, q, 4, 512).strip()
                 num = int("".join(ch for ch in a_ if ch.isdigit()) or 0)
                 want = 1 + [o["name"] for o in opts].index(t["name"])
-                r.setdefault("look", {})[t["name"]] = {"answer": a_, "want": want, "ok": num == want}
+                fill = float(mk.sum()) / max(1, (bx[2] - bx[0]) * (bx[3] - bx[1]))
+                r.setdefault("look", {})[t["name"]] = {"answer": a_, "want": want, "got": num, "fill": round(fill, 3),
+                                                       "ok": num == want}
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
             r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"] if t.get("mask")}
             if "engine" in imgs:

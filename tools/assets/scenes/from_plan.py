@@ -418,6 +418,7 @@ def main():
             if not fw.strip() and not rel and focus and focus != k and focus in state:
                 rel = focus
             v["facing_to"] = rel if rel in state and rel != k else None
+            v["facing_thing"] = thing["name"] if (thing and not v["facing_to"] and fw.strip()) else None
             tgt = (state.get(rel) or {}).get("position") if rel else (thing or {}).get("center")
             if tgt is None and len(state) > 1:                # "the camera", a group: toward the others' middle
                 o = [vv["position"] for kk, vv in state.items() if kk != k]
@@ -442,8 +443,11 @@ def main():
         at = {k_: min([i for i in (line.find(nm.lower()), line.find((look_phrase(look_txt.get(nm, "")) or "\0").lower()))
                        if i >= 0] or [10 ** 6]) for nm, k_ in names.items() if k_ in state}
         line_subj = min(at, key=at.get) if at and min(at.values()) < 10 ** 6 else None
+        # an action shot's subject turning toward a named thing: that thing is in the frame (04:58: he turned to
+        # the desk with the desk behind the camera and a round table in view; the video walked him to the table)
+        ft = (state.get(line_subj) or {}).get("facing_thing") if sh.get("kind") == "action" and line_subj else None
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
-               "line_subject": line_subj,
+               "line_subject": line_subj, "face_thing": ft,
                "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None}
         if lis:
             cam["listener"] = lis

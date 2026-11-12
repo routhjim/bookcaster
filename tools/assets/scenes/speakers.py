@@ -373,6 +373,12 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
             why.append(f"the move's place at {[round(v, 2) for v in q3]} is out of the frame")
     lm = opts.get("landmark")
+    if lm and not opts.get("points"):        # a thing the subject turns toward: in the frame (not only its front)
+        for q3 in ([lm["center"][0], lm["center"][1], lm["top"]], list(lm["center"])):
+            q = framing.project(cam, q3, res)
+            if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
+                why.append(f"the {lm['name']} (what the shot turns toward) is out of the frame")
+                break
     if lm:                                   # the end place's landmark seen from its front, not from behind it
         d = [cam["position"][0] - lm["center"][0], cam["position"][1] - lm["center"][1]]
         if d[0] * lm["front"][0] + d[1] * lm["front"][1] < 0.3 * math.hypot(*d):
@@ -448,6 +454,11 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                     why.append(f"the speaker's face is at the frame's side ({se[0]:.2f})")
             elif not ots and not in_picture(f):
                 why.append("the listener is not in view")
+    for k, sp_ in (opts.get("seat_xy") or {}).items():   # a seat in view with its sitter hidden reads as empty
+        if k in facts and k in subjects and not in_picture(facts[k]):
+            q = framing.project(cam, [sp_[0], sp_[1], 0.6], res)
+            if q and 0.05 < q[0] < 0.95 and 0.05 < q[1] < 0.95:
+                why.append(f"{k}'s seat is in view with {k} hidden (it reads as empty)")
     for k in show or []:                     # a person the director names: in the picture (any of them), no more
         hs = head_share(cam, subjects[k]["measured"], res) if k in subjects else None
         if k in facts and (not in_picture(facts[k]) or (hs is not None and hs < SLIVER)):
@@ -917,6 +928,8 @@ def cam_opts(spec, c):
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
     return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [], "covered": covered,
             "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
+            "seat_xy": {k: v["position"] for k, v in spec["characters"].items()
+                        if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)},
             "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
 
 
@@ -1220,7 +1233,8 @@ def main():
         look_at(spec, relook)
     for c in spec["cameras"]:
         c["_points"] = move_points(spec, c)
-        c["_landmark"] = landmark(spec, c)
+        c["_landmark"] = landmark(spec, c) or (landmark(spec, {"move_landmark": c["face_thing"]})
+                                               if c.get("face_thing") else None)
         t = end_thing(spec, c) if c.get("mover") else None
         c["_end_place"] = ({"center": t["center"], "top": t["center"][2] + t["half"][2],
                             "similar": [x["center"] for x in similar_seats(spec, t)]} if t else None)

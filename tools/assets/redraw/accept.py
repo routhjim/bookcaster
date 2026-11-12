@@ -66,6 +66,9 @@ def failures(v: dict) -> list:
         f.append("outfit")
     if v.get("face_ok") is False:
         f.append("face")
+    pf = v.get("person_found") or {}
+    if pf.get("engine", 0) >= PERSON_FOUND and pf.get("redraw", 1.0) < PERSON_FOUND:
+        f.append("missing")              # in the engine still, not in the redraw
     if v.get("action_ok") is False:
         f.append("action")
     return f
@@ -80,7 +83,7 @@ def item_fails(rec: dict) -> dict:
         if ok is False:
             f.setdefault("set", []).append(f"lit {n}")
     for n, got in (rec.get("look") or {}).items():
-        if got.get("ok") is False:
+        if got.get("verdict", got.get("ok")) is False:
             f.setdefault("set", []).append(f"look {n}")
     for k, ok in (rec.get("wear_ok") or {}).items():
         if ok is False:
@@ -120,6 +123,30 @@ def lit_eval(*results: dict) -> None:
             rec["lit_ok"] = ok
 
 
+LOOK_FILL = 0.45         # a piece judged for its look when its own pixels fill this much of its crop (a bureau
+                         # half behind the leather armchair was "named" as the armchair)
+
+
+def look_eval(run: dict, *results: dict) -> None:
+    """The look answers judged: an answer naming a piece with the same words (two identical bookcases) is right;
+    a piece whose crop is mostly something else in front of it is not judged."""
+    opts = run.get("_look_opts") or []
+    if not opts and run.get("set"):
+        import setfacts
+        opts = [{"name": t["name"], "words": t["words"]} for t in setfacts.things(run["set"])
+                if t.get("large") and t["kind"] != "window" and t["name"] != "rug"]
+    for res in results:
+        for rec in res.values():
+            for n, v in (rec.get("look") or {}).items():
+                if v.get("fill") is not None and v["fill"] < LOOK_FILL:
+                    v["verdict"] = None
+                    continue
+                g = v.get("got") or int("".join(ch for ch in str(v.get("answer", "")) if ch.isdigit()) or 0)
+                same = 0 < g <= len(opts) and opts[g - 1]["words"] == opts[v["want"] - 1]["words"]
+                v["verdict"] = g == v["want"] or same
+
+
+PERSON_FOUND = 0.15      # a "person" box at least this share of the person's own engine box
 FACE_MIN = 0.45          # a face the pose model finds: nose and an eye above this score, the contour's median too
 YAW_TURN = 0.45          # the nose this far (in eye spacings) off the eyes' middle: the head clearly turned
 
@@ -359,6 +386,7 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     face_eval(checked)
     action_eval(checked)
     hair_eval(checked)
+    look_eval(run, checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -405,6 +433,9 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
                     act = (rec.get("people", {}).get(k) or {}).get("action")
                     if act in ACTION_WORDS:
                         add.append(ACTION_WORDS[act].format(Who=Who, pos=pos))
+                elif x == "missing":             # present in the engine still: drawn where it shows them
+                    add.append(f"{Who} is in the picture where the engine frame shows "
+                               f"{'himself' if pos == 'his' else 'herself'}, clearly drawn, not left out.")
                 elif x == "hair":
                     add.append(f"{Who}'s hair is exactly as on the character sheet, the same in every shot.")
                 else:
@@ -457,6 +488,7 @@ def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     face_eval(checked, retry)
     action_eval(checked, retry)
     hair_eval(checked, retry)
+    look_eval(run, checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)
