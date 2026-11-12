@@ -256,7 +256,8 @@ def main():
             jobs = [{"id": "bald_front", "seed": 7, "path": str(bald), "size": [768, 768],
                      "images": [str(W / "sheet_head.png")],
                      "prompt": "Draw the person from Picture 1 as a photorealistic studio photograph of their bare "
-                               "head and neck only: the same face, the same proportions and features, completely "
+                               "head and neck only: the same face at the same age, the same proportions and features, the "
+                               "same lines and creases of the skin, completely "
                                "bald with a smooth scalp and no hair, no beard or moustache, a neutral relaxed "
                                "expression, mouth closed, eyes open. No clothes, the neck ends at its base. Plain "
                                "light grey seamless background, soft even diffuse light, sharp focus, the whole head "
@@ -507,6 +508,21 @@ def main():
                     raise RuntimeError("refit after the neck change failed")
                 rep2 = json.loads((combo / "report.json").read_text())
                 nf["after"] = {k: rep2.get(k) for k in ("bare_neck_measured_cm", "collar_inner_girth_cm", "neck_girth_cm")}
+                # the change must show in the rebuilt body: a constraint change with no measured effect stops the
+                # build (11-11: Neck Length 7.2 -> 4.5 left the bare neck at 7.8 -> 7.9 cm and the skeleton as it was)
+                eng = r.get("after") or {}
+                bef = r.get("before") or {}
+                d_len = abs((eng.get("Neck Length") or [0, 0])[1] - (bef.get("Neck Length") or [0, 0])[1])
+                d_bare = abs((nf["after"].get("bare_neck_measured_cm") or 0) - (bare or 0))
+                d_girth = abs((nf["after"].get("neck_girth_cm") or 0) - (gn or 0))
+                d_neck = abs((eng.get("Neck") or [0, 0])[1] - (bef.get("Neck") or [0, 0])[1])
+                nf["effect"] = {"neck_length_set_cm": round(d_len, 2), "bare_changed_cm": round(d_bare, 2),
+                                "neck_set_cm": round(d_neck, 2), "girth_changed_cm": round(d_girth, 2)}
+                if (d_len >= 1.0 and d_bare < 0.3) or (d_neck >= 2.0 and d_girth < 0.5):
+                    neck_p.write_text(json.dumps(nf, indent=1))
+                    raise RuntimeError(f"NECK FIT HAD NO EFFECT: the MetaHuman's constraints changed "
+                                       f"({json.dumps(nf['engine'])}) but the rebuilt body did not "
+                                       f"({json.dumps(nf['effect'])}); the build stops here")
         neck_p.write_text(json.dumps(nf, indent=1))
         CH["neck_fit"] = nf
         save()
