@@ -359,10 +359,27 @@ POSES = {"stand": pose_stand, "stand_relaxed": pose_stand_relaxed, "stand_hand_o
          "gesture_point": pose_gesture_point, "seated": pose_seated, "sit_armchair_relaxed": pose_sit_armchair_relaxed}
 
 
+def act_veil_lift(s, p):
+    """Starting to lift a veil: both hands up at the veil's hem under the chin, fingers curled on it, elbows down
+    and out (the hand-authored start pose's targets, here from the body's own head: 11-12)."""
+    h = s.pos["head"]
+    for side in ("l", "r"):
+        sx = 1.0 if side == "l" else -1.0
+        tgt = [h[0] + sx * 4.0, h[1] + p.get("veil_hand_fwd_cm", 13.0), h[2] - p.get("veil_hand_down_cm", 9.0)]
+        _ik(s, f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", tgt, add(tgt, [sx * 27.0, 6.0, -36.0]))
+        s.aim(f"hand_{side}", f"middle_01_{side}", [-sx * 0.55, 0.35, 0.75])
+        _curl(s, side, 45, 20)
+
+
+ACTIONS = {"veil_lift": act_veil_lift}      # what a person begins to do as the shot starts, over any posture
+
+
 def build(actor, body, pose, params, path):
     """Pose name + parameters -> AnimSequence at `path` (replaced). Returns (anim, info)."""
     s = Skel(actor, body)
     POSES[pose](s, params or {})
+    if (params or {}).get("action") in ACTIONS:
+        ACTIONS[params["action"]](s, params)
     for step in (params or {}).get("steps", []):
         if step[0] == "aim":
             s.aim(step[1], step[2], step[3])

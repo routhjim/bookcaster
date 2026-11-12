@@ -228,6 +228,26 @@ def mask_facts(shot, key, nx=72, ny=40):
             "right": edge([(0.998, v) for v in rows]), "top": edge([(u, 0.002) for u in cols])}
 
 
+def face_seen(shot, key, m, res, covered=False):
+    """The share of a person's face points where the still's depth shows them (None: no depth passes)."""
+    g = shot.get("guides") or {}
+    if not (g.get("depth") and g.get(f"depth_{key}")):
+        return None
+    sc, sp = Exr(g["depth"]), Exr(g[f"depth_{key}"])
+    vis = n = 0
+    for p in face_points(m):
+        n += 1
+        pr = framing.project(shot["camera"], p, res)
+        if not pr:
+            continue
+        ds, dp = sc.at(pr[0], pr[1]), sp.at(pr[0], pr[1])
+        if ds is None or dp is None or dp > 5e4:
+            continue
+        if abs(dp - ds) <= max(3.0, 0.015 * ds) or (covered and 0 <= dp - ds <= COVER_CM):
+            vis += 1
+    return round(vis / n, 2) if n else 0.0
+
+
 def joint_seen(shot, key, q):
     """Is the person's own surface what the camera sees at a projected joint (within 4 px)."""
     g = shot.get("guides") or {}
@@ -248,6 +268,7 @@ HEAD_HAIR_M = 0.04           # hair and its volume above the measured head top
 HEAD_HALF_M = 0.11           # half the head's width, ears and hair
 
 
+READ_DEG = 80.0              # a named person's head turned at most this far from the camera: their face reads
 FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
 SEATED = ("sit", "seat")
 
@@ -402,6 +423,20 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     for k in show or []:
         if k in facts and not facts[k]["head_in"]:
             why.append(f"{k} (named for the shot) is not in view")
+        elif k in subjects and not (ots and k == listener):      # named people are readable: their faces seen
+            m = subjects[k]["measured"]
+            if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > READ_DEG:
+                why.append(f"{k} (named for the shot) faces away from the camera")
+            elif shot is not None:
+                fv = face_seen(dict(shot, camera=cam), k, m, res, k in (opts.get("covered") or ()))
+                if fv is not None and fv < MIN_FACE_VISIBLE:
+                    why.append(f"{k} (named for the shot): face {fv:.0%} visible")
+            elif blocked(cam["position"], [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]],
+                         [v["measured"] for kk, v in subjects.items() if kk != k]):
+                why.append(f"{k} (named for the shot) is hidden behind someone")
+    sk = opts.get("subject")                 # the plan's shot class: a close is a close
+    if kind == "close" and sk in subjects and head_h(cam, subjects[sk]["measured"], res) < MIN_FACE_H["close"]:
+        why.append(f"{sk}'s face {head_h(cam, subjects[sk]['measured'], res):.3f} of the frame: not a close")
     if opts.get("_single"):                  # a clean single: everyone else clearly in or clearly out
         for k, v in subjects.items():
             if k == speaker:
@@ -460,6 +495,38 @@ def look_at(spec, speaker):
     return spec
 
 
+ACTION_HANDS_M = {"veil_lift": 0.22}     # an action's start: both hands this near the chin (measured)
+
+
+def staged_facts(spec, subjects):
+    """What the plan asks of each person that the engine still must hold: the worn state's figure (the variant
+    resolved, its words carried for the redraw) and the action's start pose (measured hands). {key: [failures]}."""
+    out = {}
+    for k, c in spec["characters"].items():
+        bad = []
+        w = c.get("worn") or c.get("variant")
+        if w and w != "usual":
+            if not (c.get("id") or "").endswith("_" + w):
+                bad.append(f"worn '{w}': the staged figure is {c.get('id')}")
+            if not c.get("wear_add"):
+                bad.append(f"worn '{w}': no words for it reach the redraw")
+        act = ((c.get("body_pose") or {}).get("params") or {}).get("action")
+        if act:
+            m = (subjects.get(k) or {}).get("measured") or {}
+            j = m.get("joints") or {}
+            if act not in ACTION_HANDS_M:
+                bad.append(f"action '{act}': no start pose for it")
+            elif not all(h in j for h in ("hand_l", "hand_r")):
+                bad.append(f"action '{act}': hands not measured")
+            else:
+                chin = [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]]
+                d = max(math.dist(j[h][:3], chin) for h in ("hand_l", "hand_r"))
+                if d > ACTION_HANDS_M[act]:
+                    bad.append(f"action '{act}': hands {d:.2f} m from the chin")
+        out[k] = bad
+    return out
+
+
 def unlook(c):
     """A character without the head turns look_at added (they are the last pose steps)."""
     lk = c.get("_look")
@@ -478,8 +545,8 @@ def unlook(c):
 # ------------------------------------------------------------------ marks
 MARK_CLEAR_M = 0.55          # a mark this far from anyone else's place
 TRY_SAME, TRY_SINGLE, TRY_MARK = 2, 2, 2      # a failing talk shot's tries, in this order, each one rendered
-MAX_TRIES = 6
-CAM_KEYS = ("position", "target", "focal_mm", "az", "el", "screen_x", "ots", "listener", "single")
+MAX_TRIES = 7
+CAM_KEYS = ("position", "target", "focal_mm", "az", "el", "screen_x", "ots", "listener", "single", "show", "tight")
 
 
 def turn2(v, deg):
@@ -578,7 +645,8 @@ def cam_opts(spec, c):
     subject, the action's joints that must be seen ("show_joints": [[key, joint], ...]) and a move's places."""
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
-    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [],
+    covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
+    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [], "covered": covered,
             "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
 
 
@@ -642,7 +710,7 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
                     if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
                         continue
-                    lens = (20, 24, 28) if opts.get("points") else \
+                    lens = (20, 24, 28) if opts.get("points") else (50, 65, 85, 100) if kind == "close" else \
                         (35, 50, 65, 85) if mode == "single" or opts.get("_single") else (28, 35, 40, 50)
                     for f in lens:
                         q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
@@ -898,6 +966,10 @@ def main():
                                  cam_opts(spec, c))
         if tc:
             return tc[0]
+        if not spk:                          # no speaker: a tighter frame on the shot's subject
+            tc = two_shot_candidates(dict(c, show=[c.get("subject")]), shots[c["name"]], None, None, subj2, res,
+                                     room, line, est_side, [], cam_opts(spec, c)) if c.get("subject") else []
+            return (tc[0][0], "tight") if tc else None
         tc = two_shot_candidates(dict(c, show=None), shots[c["name"]], spk, None, subj2, res, room, line, est_side,
                                  [], dict(cam_opts(spec, c), _single=True))
         return (tc[0][0], "single") if tc else None
@@ -945,12 +1017,12 @@ def main():
         chk = shots[n_]["speaker_check"]
         face = [w for w in chk["why"] if w not in chk.get("framing", [])]
         partial = [w for w in chk.get("framing", []) if w.startswith("PARTIAL FACE")]
-        if face:
+        if face and c.get("speaker"):
             shots[n_]["reject"] = "speaker's face not shown: " + "; ".join(face)
-        elif partial:
+        elif partial and c.get("speaker"):
             shots[n_]["reject"] = "; ".join(partial)
-        else:
-            shots[n_]["framing_miss"] = chk["framing"]
+        else:                                # a shot without a speaker always ends with a key: the miss reported
+            shots[n_]["framing_miss"] = chk["why"]
         shots[n_]["tried_stills"] = sorted(str(p_) for p_ in tries_dir.glob(f"{n_}_r*.png"))
     for rnd in range(a.rounds + 1):
         sp = odir / f"spec_round{rnd}.json"
@@ -1043,7 +1115,7 @@ def main():
                 give_up(c)
                 continue
             cands, stage = [], None
-            if t["same"] < (TRY_SAME if spk else MAX_TRIES):   # 1: another camera of the same kind (no speaker: all)
+            if t["same"] < (TRY_SAME if spk else TRY_SAME + 1):   # 1: another camera of the same kind
                 if (face_fail or c.get("ots")) and spk:
                     cc = candidates(c, shots[n_], spk, subjects, res, room, line, est_side, tried[n_])
                     good = [q for q in cc if not framing_why(q, c["kind"], spk, lis, bool(c.get("ots")),
@@ -1059,8 +1131,14 @@ def main():
                 tc = two_shot_candidates(dict(c, show=None), shots[n_], spk, None, subjects, res, room, line, est_side,
                                          tried[n_], dict(cam_opts(spec, c), _single=True))
                 cands = [(q, "single") for q, _ in tc[:1]]
-            if not cands and spk and t["mark"] < TRY_MARK and mark_req is None:   # 3: a vague-place person moves
-                pick = next_mark(c, spk)
+            subj_k = spk or c.get("subject")
+            if not cands and not spk and subj_k in subjects and t["single"] < TRY_SINGLE:
+                # 2 (no speaker): a tighter frame on the shot's subject, the others clearly in or out
+                tc = two_shot_candidates(dict(c, show=[subj_k]), shots[n_], None, None, subjects, res, room, line,
+                                         est_side, tried[n_], cam_opts(spec, c))
+                cands = [(q, "tight") for q, _ in tc[:1]]
+            if not cands and subj_k and t["mark"] < TRY_MARK and mark_req is None:   # 3: a vague-place person moves
+                pick = next_mark(c, subj_k)
                 if pick:
                     mark_req = (c, pick)
                     continue
@@ -1072,6 +1150,10 @@ def main():
                 c["listener"] = None
                 c["single"] = True
                 c.pop("ots", None)
+                t["single"] += 1
+            elif md == "tight":          # the shot's subject alone named: the others need not be in it
+                c["show"] = [c.get("subject")]
+                c["tight"] = True
                 t["single"] += 1
             else:
                 if md == "ots":
@@ -1104,6 +1186,8 @@ def main():
                 if md == "single":
                     c["listener"], c["single"] = None, True
                     c.pop("ots", None)
+                elif md == "tight":
+                    c["show"], c["tight"] = [c.get("subject")], True
                 elif md == "ots":
                     c["ots"] = listener_of(c, keys, c.get("speaker"))
                 elif md in ("two", "action", "move"):
@@ -1112,6 +1196,10 @@ def main():
             todo = [c_["name"] for c_ in spec["cameras"]]
         if not todo:
             break
+    report["staged_facts"] = staged_facts(spec, master["subjects"])
+    for sh in master["shots"]:
+        sh["staged_facts"] = {k: v for k, v in report["staged_facts"].items() if v}
+    log(f"staged facts: {report['staged_facts']}")
     (odir / "result.json").write_text(json.dumps(master, indent=1))
     (odir / "staged.json").write_text(json.dumps({"positions": {k: v["position"] for k, v in
                                                                 spec["characters"].items()}}, indent=1))

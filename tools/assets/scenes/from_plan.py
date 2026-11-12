@@ -237,6 +237,19 @@ def place_from(ans: dict, things: list, seats: dict, room: list, others: list, t
 VARIANT = {"usual": None}
 
 
+STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
+
+
+def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None):
+    """A move during the shot: its camera holds the mover's start, path and end place in one frame (speakers.py
+    move_points); without it a plan move shot was framed on the start alone (11-12)."""
+    to = thing or st.get("seat")
+    if not to:
+        return
+    cam["mover"], cam["move_to"] = k, to
+    f["camera"].update(mover=k, move_to=to)
+
+
 def main():
     a = sys.argv[1:]
     plan = json.loads(Path(a[0]).read_text())
@@ -415,6 +428,7 @@ def main():
                                     state[k].update(seat=seat["name"], position=list(seat["pos"]))
                             state[k]["pose"] = nxt.get("pose")
                             state[k]["at"] = nxt.get("at")
+                            mark_move(cam, f, k, state[k])
                             f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends where the plan next "
                                                                                     f"lists them: {nxt.get('at')}")
         for nm, th in ((sp.get("move_end") or {}).get(sid) or {}).items():     # where a move during this shot ends
@@ -426,6 +440,7 @@ def main():
                     state[k]["pose"] = "sitting" if sitting else "standing"
                     if state[k].get("seat") != was:
                         f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends at {th}")
+                        mark_move(cam, f, k, state[k], th)
         for nm, w in ((sp.get("worn_end") or {}).get(sid) or {}).items():      # worn state when the shot ends
             if nm in names and w not in NOTS:
                 worn[names[nm]] = w
@@ -459,8 +474,18 @@ def main():
             if lk in st:
                 c["look_at"] = lk
             pz = (cam0.get("_poses") or {}).get(k)
-            if pz:
-                c["_pose_choice"] = pz                       # recorded; the pose list's extras need a solve
+            if pz:                                           # what they begin to do as the shot starts
+                c["_pose_choice"] = pz
+                if pz in STAND_ACTIONS and v["pose"] != "sitting":
+                    c["body_pose"]["pose"] = pz
+                else:
+                    c["body_pose"].setdefault("params", {})["action"] = pz
+            if var:
+                c["worn"] = var                          # checked on the staged figure (speakers.staged_facts)
+            wd = ((cv.get("worn") or {}).get(w) or {}) if w else {}
+            for kk in ("wear_add", "face_covered"):      # the worn state's own words (the cast file's)
+                if kk in wd:
+                    c[kk] = wd[kk]
             chars[k] = c
         for c_, _ in g:
             for kk in ("_looks", "_poses", "_worn"):

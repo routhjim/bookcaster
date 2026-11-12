@@ -39,8 +39,9 @@ import config as C  # noqa: E402
 import seating  # noqa: E402
 import setfacts  # noqa: E402
 
-POSES = ["stand", "stand_relaxed", "stand_hand_on_mantel", "gesture_point", "seated", "sit_armchair_relaxed",
-         "veil_lift", "look_at_sleeve", "reach_to_forearm", "look"]
+# what a person is doing as the shot starts (the posture, sitting or standing, is the plan's own): asked with
+# postures in the same list, the model answered "seated" for a shot whose action starts lifting a veil (11-12)
+POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm", "look"]
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
 SEED = 7
@@ -239,8 +240,9 @@ def main():
                                         var[nm]), var[nm])
                 if w != NOT:
                     claims.setdefault(nm, []).append((sid, w))
-                ps = ask.choose(q_choose(psg, st, q + f"Which pose from this list fits {nm} at the START of this "
-                                                      "shot?", POSES + ["none"]), POSES + ["none"])
+                ps = ask.choose(q_choose(psg, st, q + f"{nm} is {p.get('pose') or 'in the shot'}. Which of these "
+                                                      f"does {nm} begin to do as this shot starts? Answer none if "
+                                                      "nothing on the list.", POSES + ["none"]), POSES + ["none"])
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
     # a change is taken once: of the shots in a row that claim the same new state, the first action shot (the one
