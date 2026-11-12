@@ -242,6 +242,7 @@ CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(
 # and each large piece with its look and place, one fact a line. "" = none (every flow run): the prompts as before.
 SCENE_FACTS = ""
 HOLD_CAMERA = False     # the camera sentence alone, without facts (supplied_keys(hold=True))
+QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys(quiet_seeds=)); () = QUIET_SEED alone
 
 
 def with_facts(prompt: str, s: dict, words: str = "") -> str:
@@ -3746,7 +3747,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"qh_{s['id']}_{MF._h(hp)}", "prompt": hp}
                 enc_dev.append({"name": hd["emb"], "prompt": hp})
-            for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
+            for t, seed in enumerate((QUIET_SEEDS or (QUIET_SEED,)) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
@@ -5439,7 +5440,8 @@ def _clips(book, stem, es, shots, log, op: Path | None = None) -> None:
 
 
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
-                  review: str = "agent", facts: Path | None = None, hold: bool = False) -> list:
+                  review: str = "agent", facts: Path | None = None, hold: bool = False,
+                  quiet_seeds: tuple = ()) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
     as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
@@ -5447,13 +5449,15 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     from an older key is made again, a chain starts again from its line 1. Then the render as run() does it (same
     jobs, prompts, voice cuts, flags, judges and review cards); no assembly. facts: the fixed state of the scene the
     keys were staged in, one fact a line: every clip's words carry it (with_facts). hold: the camera sentence alone
-    (with_facts without facts). -> the shots' clips."""
-    global REVIEW, SCENE_FACTS, HOLD_CAMERA
+    (with_facts without facts). quiet_seeds: a quiet shot's takes, one per seed (judge_takes keeps the best, the
+    others stay as <id>_t<k>.mp4), to tell a prompt's effect from seed noise. -> the shots' clips."""
+    global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS
     from PIL import Image
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
     REVIEW = review
     HOLD_CAMERA = bool(hold)
+    QUIET_SEEDS = tuple(int(x) for x in quiet_seeds)
     if facts:
         fl = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in Path(facts).read_text().splitlines()]
         SCENE_FACTS = " ".join(dict.fromkeys(x if x.endswith(".") else x + "." for x in fl if x))
@@ -5490,7 +5494,9 @@ if __name__ == "__main__":
     ap.add_argument("--review", choices=["off", "agent", "user"], default="agent")
     ap.add_argument("--facts", type=Path, default=None, help="the keys' scene facts, one a line (with_facts)")
     ap.add_argument("--hold", action="store_true", help="the camera-hold sentence without facts (with_facts)")
+    ap.add_argument("--quiet-seeds", default="", help="a quiet shot's take seeds, comma-separated")
     a = ap.parse_args()
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
-                           facts=a.facts, hold=a.hold):
+                           facts=a.facts, hold=a.hold,
+                           quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x)):
         print("clip:", c, "" if c.exists() else "(not made)")
