@@ -717,7 +717,7 @@ def main():
                 if all((sh.get(s_) or {}).get("separated", 0) >= 8 for s_ in ("l", "r")):
                     pick = ab
                     break
-            CH["arms"] = {"measured": res, "abduct_deg": pick}
+            CH["arms"] = {"measured": res, "abduct_deg": pick, "picked_deg": pick}
             cj2 = json.loads((lib / "character.json").read_text())
             cj2["relaxed_arm_steps"] = arm_steps(pick)
             (lib / "character.json").write_text(json.dumps(cj2, indent=1))
@@ -799,6 +799,15 @@ def main():
             # the check scene itself measures the arms (the scene tool's guides, arm_gap.py at its wide camera): a
             # forearm not separated in >= 8 of 10 rows on a side raises the abduction 2 deg (the smallest that passes:
             # more reads as arms held out) and the scene is run again
+            # from the arms step's own pick (a re-run of the check starts there again, not where the last one ended)
+            hist = [h.get("abduct_deg") for h in CH.get("check_arms", []) if h.get("abduct_deg")]
+            ab0 = (CH.get("arms") or {}).get("picked_deg") or (min(hist) if hist else None)
+            if ab0:
+                CH.setdefault("arms", {})["abduct_deg"] = ab0
+                cj0_ = json.loads((lib / "character.json").read_text())
+                cj0_["relaxed_arm_steps"] = arm_steps(ab0)
+                (lib / "character.json").write_text(json.dumps(cj0_, indent=1))
+            CH["check_arms"] = []
             for _round in range(8):
                 cj3 = json.loads((lib / "character.json").read_text())
                 spec = {"id": f"check_{tag}", "set": a.set, "guides": True, "characters": {"a": {
@@ -824,8 +833,18 @@ def main():
                 res = json.loads(g.stdout) if g.stdout.strip() else {}
                 sh = (res.get("wide") or {}).get("a") or {}
                 sep = {s_: (sh.get(s_) or {}).get("separated", 0) for s_ in ("l", "r")}
-                CH.setdefault("check_arms", []).append({"abduct_deg": (CH.get("arms") or {}).get("abduct_deg"), "wide": sep})
-                if all(v >= 8 for v in sep.values()):
+                low = {s_: (sh.get(s_) or {}).get("lower_separated", 0) for s_ in ("l", "r")}
+                loose = (ch.get("garment") or {}).get("sleeves") == "loose"
+                CH.setdefault("check_arms", []).append({"abduct_deg": (CH.get("arms") or {}).get("abduct_deg"),
+                                                        "wide": sep, "lower": low})
+                # loose sleeves are joined to the body down to about the elbow by their cut: for them the lower
+                # forearm and the hand must be clear (4 of the lower 5 rows); every other class 8 of 10 rows
+                passed = all(v >= 4 for v in low.values()) if loose else all(v >= 8 for v in sep.values())
+                if passed:
+                    cj3["arm_rule"] = ({"rule": "loose_sleeve_lower_forearm", "expect": "a draped sleeve joined to the "
+                                        "body down to about the elbow; the lower forearm and the hand clear"}
+                                       if loose else {"rule": "forearm_8_of_10", "expect": "the forearm clear of the body"})
+                    (lib / "character.json").write_text(json.dumps(cj3, indent=1))
                     break
                 ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 2
                 # loose sleeves hang against the body until the arm is further out: their limit is higher (a fact)

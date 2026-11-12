@@ -75,8 +75,8 @@ def measure(d, key):
                 el, wr = np.array(J[f"lowerarm_{side}"]), np.array(J[f"hand_{side}"])
             else:
                 el, wr = np.array(J[f"upperarm_{side}"]), np.array(J[f"lowerarm_{side}"])
-            n_mask = n_sep = n = 0
-            for t in np.linspace(0.3, 1.0, 10):
+            n_mask = n_sep = n = n_low = n_low_rows = 0
+            for k_t, t in enumerate(np.linspace(0.3, 1.0, 10)):
                 a3 = el + t * (wr - el)
                 # the body's centre line at that height
                 u = np.clip((a3[2] - mid[2]) / (neck[2] - mid[2]), 0, 1)
@@ -97,6 +97,9 @@ def measure(d, key):
                 jump = (np.abs(np.diff(dd[vis])) > max(4.0, 0.015 * float(np.median(dd[vis])))).any() if vis.sum() > 2 else False
                 n_mask += bool(gap)
                 n_sep += bool(gap or jump)
+                if k_t >= 5:                    # the lower half of the forearm, toward the wrist
+                    n_low_rows += 1
+                    n_low += bool(gap or jump)
             # hand: the palm 8 cm past the wrist, seen when the person's visible surface there is within 6 cm of it
             pal = wr + 0.08 * (wr - el) / np.linalg.norm(wr - el)
             p2, z = px(pal)
@@ -107,7 +110,8 @@ def measure(d, key):
                 seen = m[win] & (np.abs(dep[win] - scene_dep[win]) < 2.0)
                 hv = bool((seen & (np.abs(dep[win] - z * 100) < 6.0)).any())
             key_ = side if seg == "fore" else f"{side}_upper"
-            out[key_] = {"rows": n, "mask_gap": n_mask, "separated": n_sep, "hand_visible": hv if seg == "fore" else None}
+            out[key_] = {"rows": n, "mask_gap": n_mask, "separated": n_sep, "lower_rows": n_low_rows,
+                         "lower_separated": n_low, "hand_visible": hv if seg == "fore" else None}
         res[s["name"]] = out
     return res
 
