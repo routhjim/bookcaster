@@ -437,6 +437,34 @@ def _remap(x: float, src: list, dst: list) -> float:
     return float(np.interp(np.interp(x, s_t, s_raw), d_raw, d_t))
 
 
+def _line_map(work: Path, stem: str) -> list | None:
+    """[[line number, its start in the track's seconds], ..., [the line count, the track's length]] of a chapter's
+    recording as it is now; None without one. Two recordings of a chapter are mapped through it (_line_maps)."""
+    r, tl = work / f"{stem}.mp3", work / f"{stem}.timeline.json"
+    if not r.exists() or not tl.exists():
+        return None
+    ts = [float(x["t"]) for x in json.loads(tl.read_text())]
+    try:
+        end = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                    str(r)], capture_output=True, text=True).stdout.strip())
+    except ValueError:
+        end = 0.0
+    return [[i, t] for i, t in enumerate(ts)] + [[len(ts), max([end] + ts)]]
+
+
+def _line_maps(was: list, now: list) -> tuple:
+    """(old map, new map) for _remap, from a chapter's recording before to the one it has now: line to line when both
+    have the same lines (a moment keeps its place among them), else end to end."""
+    if len(was) != len(now):
+        return [[0, 0.0], [1, was[-1][1]]], [[0, 0.0], [1, now[-1][1]]]
+    old, new = [was[0]], [now[0]]
+    for a, b in zip(was[1:], now[1:]):      # (two lines at one instant: one point)
+        if a[1] > old[-1][1] and b[1] > new[-1][1]:
+            old.append(a)
+            new.append(b)
+    return old, new
+
+
 def _stretch_by_voice(raw: Path, timeline: list, spec: tuple, out: Path) -> list:
     """The voice track with each run of lines at its own pace (ffmpeg atempo per run, the PCM pieces joined
     sample-exact); returns the [raw second, new second] map at the runs' edges."""
@@ -587,10 +615,11 @@ def voices_key(f: Path, args) -> str:
     return h.hexdigest()
 
 
-def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
+def apply_pace(book: Path, f: Path, log, fresh: bool = False, was: list | None = None) -> bool:
     """Bring a chapter's voice track and timeline to the book's pace, from the
     unstretched copies (kept as .raw.*). *fresh*: the voices were just
-    recorded (at 1.0). True if anything changed."""
+    recorded (at 1.0); *was*: the recording they replace (_line_map, taken
+    before it was overwritten), None for a first one. True if anything changed."""
     work = book / "work"
     r, tl = work / f"{f.stem}.mp3", work / f"{f.stem}.timeline.json"
     raw, raw_tl, mark = work / f"{f.stem}.raw.mp3", work / f"{f.stem}.raw.timeline.json", work / f"{f.stem}.pace"
@@ -600,11 +629,26 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
     if not r.exists() or not tl.exists():
         return False
     spec = pace_spec(book)
-    target = spec[0]
     now = mark.read_text().strip() if mark.exists() else "1"
     now = json.loads(now)["spec"] if now.startswith("{") else f"{float(now):g}"
-    if now == _pace_mark(spec):
+    paced = now != _pace_mark(spec)
+    if not paced and not (fresh and was):
         return False
+    if paced:
+        old_map, new_map = _stretch(r, tl, raw, raw_tl, mark, spec)
+    if fresh:
+        # 11-09: a new recording is not the old one at another pace. Its lines fall where the new voices put them,
+        # so what was planned against the old one moves line to line, old start to new start. (The moments went
+        # through the pace maps instead, as if the old track were unstretched: a book at 1.25x had its moment list
+        # shrunk by 1.25 a second time, every moment 20% early and the list - so the film - 88 s short of a 411 s
+        # chapter.) Without an old recording nothing was timed against one.
+        old_map, new_map = _line_maps(was, _line_map(work, f.stem)) if was else (None, None)
+    return _retime(book, f, log, fresh, old_map, new_map, spec if paced else None)
+
+
+def _stretch(r: Path, tl: Path, raw: Path, raw_tl: Path, mark: Path, spec: tuple) -> tuple:
+    """apply_pace's track and timeline at the pace -> (old map, new map) of [raw second, track second]."""
+    target = spec[0]
     if not raw.exists():
         shutil.copyfile(r, raw)
         shutil.copyfile(tl, raw_tl)
@@ -638,6 +682,14 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
         mark.write_text(f"{target:g}")
         new_map = [[0.0, 0.0], [raw_len, raw_len / target]]
     tl.write_text(json.dumps(timeline, ensure_ascii=False))
+    return old_map, new_map
+
+
+def _retime(book: Path, f: Path, log, fresh: bool, old_map: list | None, new_map: list | None,
+            spec: tuple | None) -> bool:
+    """apply_pace's other half: what was timed against the track as it was, moved (the moment lists, through the
+    maps) or dropped (the rest). spec: the pace just applied, None when the track kept its pace."""
+    work = book / "work"
     # Everything timed in seconds against the old track is stale now - except, for a fresh recording,
     # the music composed ahead from estimated lengths: the score run re-times those cues to the real
     # voices. Deleting them raced the composer still writing into the folder ("composing ahead failed:
@@ -648,24 +700,30 @@ def apply_pace(book: Path, f: Path, log, fresh: bool = False) -> bool:
     vw = _video_work(book, f)
     # the moment list (anim/manifest.json) is kept, re-timed: deleting it forced a full replan (10-27); the clips and
     # the CPU moment routing (flow3d/plan.json: frame counts and speech lengths in seconds) are redone
-    man = vw / "anim" / "manifest.json"
-    moments = json.loads(man.read_text()) if man.exists() else None
+    # 11-09: the moments added since (stage/extra_moments.json: the stretches the planner left without one) move
+    # with them - they were left at their old times, and the moment list was built from both
+    lists = {p: json.loads(p.read_text()) for p in (vw / "anim" / "manifest.json", vw / "stage" / "extra_moments.json")
+             if p.exists()}
     shutil.rmtree(vw / "anim", ignore_errors=True)
-    if moments is not None:
-        for m in moments:               # through the old and new maps (a per-voice pace stretches unevenly)
+    for p, moments in lists.items():
+        for m in moments if old_map else []:    # through the old and new maps (a per-voice pace stretches unevenly)
             if isinstance(m.get("t"), (int, float)):
                 t0 = float(m["t"])
                 m["t"] = round(_remap(t0, old_map, new_map), 3)
                 if isinstance(m.get("dur"), (int, float)):
                     m["dur"] = round(_remap(t0 + float(m["dur"]), old_map, new_map) - m["t"], 3)
-        man.parent.mkdir(parents=True, exist_ok=True)
-        man.write_text(json.dumps(moments, indent=1))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(moments, indent=1))
     (vw / "flow3d" / "plan.json").unlink(missing_ok=True)
     # a saved shots plan is timed to the old track: a resume after a pace change rendered its shots on the old
     # timings (10-27; tools/shot_flow.py's _plan_sig doesn't see the pace)
     for fz in (vw / "shots").glob("plan_*.json"):
         fz.unlink()
-    log(f"  {f.stem}: voices at {_pace_mark(spec).replace(';', ', ')}x (music, effects and animated shots will be redone)")
+    if spec:
+        log(f"  {f.stem}: voices at {_pace_mark(spec).replace(';', ', ')}x (music, effects and animated shots will be redone)")
+    if fresh and old_map and lists:
+        log(f"  {f.stem}: the planned moments moved to the new recording's lines"
+            + ("" if len(old_map) > 2 else " (end to end: its lines are not the old one's)"))
     return True
 
 
@@ -1672,10 +1730,11 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
             _logger(book)(f"  {f.stem}: voices already recorded with this cast, kept")
         else:
             key_f.unlink(missing_ok=True)
+            was = _line_map(book / "work", f.stem)      # where the recording being replaced has each line
             if tts("convert", f, *common, "-o", r, log=log).returncode or not r.exists():
                 _set_status(book, state="failed", step=f"recording {f.stem} (see work/job.log)")
                 return 1
-            apply_pace(book, f, _logger(book), fresh=True)
+            apply_pace(book, f, _logger(book), fresh=True, was=was)
             key_f.write_text(key)
         if not music:
             final = final_path(book, f)
@@ -1878,8 +1937,8 @@ def whole_timeline(book: Path, stem: str, log=print) -> int:
     with it. Rewritten in place (atomically); -> the number of lines restored."""
     from .textprep import prepare_for_speech
     tp, cp = book / "work" / f"{stem}.timeline.json", book / "chapters" / f"{stem}.txt"
-    if not tp.exists() or not cp.exists():
-        return 0
+    if not tp.exists() or not cp.exists() or (book / "song.json").exists():   # (a song's lines are whole: song.py;
+        return 0                        # 11-08: its next [section] label was appended to each section's last line)
     tl = json.loads(tp.read_text())
     prep = re.sub(r"\s+", " ", prepare_for_speech(cp.read_text(encoding="utf-8")))
     norm = lambda z: re.sub(r"\s+", " ", re.sub(r"^<[^>]+>\s*", "", str(z or ""))).strip()
@@ -2134,6 +2193,8 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
     # BOOKCASTER_JOB tags every process of the job, the renderers in scopes of their own too (`stop` ends just those)
     cmd = ["systemd-run", "--user", f"--unit={unit}", "-p", f"MemoryMax={'100G' if flow3d else '8G'}",
            "-p", "MemorySwapMax=0", f"--working-directory={book}", f"--setenv=BOOKCASTER_JOB={unit}",
+           # the job runs the code it was started from (11-08: a branch's CLI started main's installed package)
+           f"--setenv=PYTHONPATH={Path(__file__).resolve().parents[1]}",
            sys.executable, "-m", "tts_reader.bookcaster", "_job", str(book)]
     cmd += ["--level", level]
     if storyboard:
@@ -2330,7 +2391,8 @@ def main(argv: list[str] | None = None) -> int:
                    "assemble only this window, e.g. 1:06-2:06 (10-27 user: a minute per learning cycle)")
     s.add_argument("--review", choices=["off", "agent", "user"], default=None,
                    help="shots: each action chain line's 3 takes wait on a review card (shots/review/<chain>/<line>/"
-                        "card.json -> choice.json: pick, accept or override; 600 s, then the vision judge's pick)")
+                        "card.json -> choice.json: pick, accept or override; 600 s, then the vision judge's pick). "
+                        "Default: agent; off leaves every pick to the judge")
     s.add_argument("--chapter", help="3d: the chapter number (default: every recorded chapter)")
     s.add_argument("--auto-approve", action="store_true", help="3d: the automated QA gates instead of the review")
     s.add_argument("--jellyfin", action="store_true", help="3d: send the finished video to Jellyfin")
@@ -2340,6 +2402,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="mannequin: how a landing action's staging steers its clip - depth (the staged depth video, "
                         "light), full (the depth video at full strength), pins (start/hit/end keys drawn on the staging)")
     # the full-3D stages (tools/flow3d.py): each resumable, cached under work/video/
+    s = sub.add_parser("song", help="make a song (audio + lyrics) into a one-chapter book for the shot flow's music video "
+                       "(vocals separated, lyric lines timed); then `bookcaster video <dir> --level animated`")
+    s.add_argument("dir", help="the song's book folder (made if missing)")
+    s.add_argument("--audio", required=True, help="the song's recording (lossless preferred: the cut is muxed on it)")
+    s.add_argument("--lyrics", required=True, help="the lyrics, sections marked [Verse 1], [Chorus], ...")
+    s.add_argument("--title", default="")
+    s.add_argument("--tags", default="", help="the recording's style notes (e.g. Suno's tags)")
+    s.add_argument("--suno", default=None, help="a Suno clip.json: its title and metadata.tags")
+    s.add_argument("--singer", default="", help="who sings lead on screen (default: the language model picks)")
+    s.add_argument("--direction", default=None, help="the author's own direction for the video, verbatim (looks, "
+                   "outfits, places, scenes and shots follow it; a change plans them again); default: the one stored")
+    s.add_argument("--keep-looks", action="store_true", help="a changed --direction re-plans the scenes and shots only "
+                   "(the style, looks, places and LoRAs stay)")
     s = sub.add_parser("plan", help="3d stage 0: plan a chapter from the text (pictures, looks, moments, ref sheets)")
     s.add_argument("book")
     s.add_argument("--chapter", required=True)
@@ -2557,6 +2632,18 @@ def main(argv: list[str] | None = None) -> int:
                   keys_only=a.keys_only)
         print(f"making the 3D video of {d.name} in the background — `bookcaster status {d.name}`"
               + ("" if a.auto_approve else f"; it stops for review when assets wait (`bookcaster review {d.name}`)"))
+    elif a.cmd == "song":
+        from . import song
+        title, tags = a.title, a.tags
+        if a.suno:
+            cj = json.loads(Path(a.suno).expanduser().read_text())
+            title, tags = title or cj.get("title") or "", tags or (cj.get("metadata") or {}).get("tags") or ""
+        d = Path(a.dir).expanduser()
+        if HOME in d.resolve().parents:
+            print(f"(a song book in {HOME} shows up in the library like any book)")
+        song.make(d, Path(a.audio), Path(a.lyrics), title=title, tags=tags, singer=a.singer, direction=a.direction,
+                  keep_looks=a.keep_looks)
+        print(f"made {d}: now `bookcaster video {d} --level animated --flow shots`")
     elif a.cmd == "plan":
         d = book_dir(a.book)
         start_job(d, flow3d="plan", chapter=a.chapter)

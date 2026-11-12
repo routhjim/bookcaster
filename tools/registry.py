@@ -53,8 +53,11 @@ def place_key(name) -> str:
 
 def side_of(name, desc: str = "") -> str:
     """'inside' / 'outside' as the place's own name ("X (inside)") or description ("Inside: ...") says, else ''."""
-    m = SIDE_WORD.search(str(name or "")) or re.match(r"\s*(inside|outside)\s*:", str(desc or ""), re.I)
-    return m.group(1).lower() if m else ""
+    m = SIDE_WORD.search(str(name or ""))
+    if m:
+        return m.group(1).lower()
+    m = SIDE_PREFIX.match(str(desc or ""))      # stacked side words: the last one, as place_look reads it (10-29)
+    return re.findall(r"(inside|outside)", m.group(0), re.I)[-1].lower() if m else ""
 
 
 def _words(name: str) -> list:
@@ -302,13 +305,25 @@ class Book:
 
     def _entry(self, name):
         """(key, description) of the place's one description: the first stored; for a name that says its side ("X
-        (outside)") the first stored FOR that side, else the first with no side (10-27: a mill described inside AND
-        outside must not draw its outside view from the inside's words)."""
+        (outside)") the first stored FOR that side, else none (10-27: a mill described inside AND outside must not
+        draw its outside view from the inside's words). 11-09 (E34): a description that says no side is not taken
+        for a side either - a house's "(inside)" took the house's unmarked outside words (its stone front, its
+        lawn), so its picture was the facade and every shot inside the house was drawn on the lawn. A side with no
+        description of its own is described for that side (describe_places)."""
         es = self._entries.get(place_key(name)) or []
         sd = side_of(name)
-        fit = sorted((e for e in es if not sd or e[2] in ("", sd)), key=lambda e: bool(sd) and e[2] != sd)   # its side first
-        e = (fit or es or [None])[0]
+        # 11-08: never the OTHER side's words ("Ship Deck (inside)", the cabin, took the open deck's "Outside: ..."
+        # description and was drawn on the deck); 11-09 (E34): nor the unmarked ones. With none of its own a side is
+        # undescribed, and describe_places writes it (as place_slot stores it: a place of its own)
+        e = next((e for e in es if e[2] == sd), None) if sd else (es or [None])[0]
         return (e[0], e[1]) if e else (None, "")
+
+    def place_id(self, name) -> str:
+        """The place AND its side, as one name: "The Mill (inside)" - what one picture and one layout are
+        of (its inside and outside are two pictures; the hero file is named from this)."""
+        s = str(name or "").strip()
+        sd = side_of(s)
+        return (self.place(s) or s) + (f" ({sd})" if sd else "")
 
     def place_look(self, name) -> str:
         # one side word at the front (10-29: "Outside: Outside: Outside: Inside: A dark oak writing desk ..." - each run
@@ -359,6 +374,19 @@ class Book:
                 return f.read_text().strip()
         return DEFAULT_STYLE
 
+    def direction(self) -> str:
+        """The author's own direction for the film, verbatim, and the recording's style notes (a song made by
+        tts_reader/song.py: song.json "direction" and "tags"), as one block for the planning prompts; "" for a book.
+        11-08: the user's "more festive and merry ..." reached no prompt, and the song's own tags none either."""
+        try:
+            s = json.loads((self.book / "song.json").read_text())
+        except (OSError, ValueError):
+            return ""
+        d, t = str(s.get("direction") or "").strip(), str(s.get("tags") or "").strip()
+        return ((f"THE AUTHOR'S DIRECTION for this film, in their own words (follow it; how is yours to decide): "
+                 f"\"{d}\"\n" if d else "") +
+                (f"The song recording's own style notes: {t}\n" if t else ""))
+
     def picture_style(self) -> str:
         """The PICTURE style of the shots flow's keys and place pictures: `bookcaster art` (art_style.txt), else none -
         the image model's own photographic look (the Speckled Band 10-26 keys the user chose 10-27)."""
@@ -371,14 +399,15 @@ SIDE_PREFIX = re.compile(r"^\s*(?:(?:inside|outside)\s*:\s*)+", re.I)
 
 def place_slot(places: dict, name, desc: str = ""):
     """Where a place goes in a {name: description} store -> (key, already described?). The same place (place_key)
-    already described for this side, or with no side, is that entry; a place described only for the OTHER side
-    ("The Mill (inside)" stored, "The Mill (outside)" asked) is a place of its own under its own name; a new place
-    is stored under its one name, without "(inside)"/"(outside)" (10-27: places were stored under every new spelling -
-    two Baker Street bedrooms)."""
+    already described for this side is that entry (or one with no side, unless the NAME says its side: 11-09, E34,
+    as Book._entry); a place described only for the other side ("The Mill (inside)" stored, "The Mill (outside)"
+    asked) is a place of its own under its own name; a new place is stored under its one name, without
+    "(inside)"/"(outside)" (10-27: places were stored under every new spelling - two Baker Street bedrooms)."""
     pk, sd = place_key(name), side_of(name, desc)
     same = [(k, side_of(k, v)) for k, v in (places or {}).items()
             if place_key(k) == pk and isinstance(v, str) and v.strip()]
-    k = next((k for k, s in sorted(same, key=lambda x: bool(sd) and x[1] != sd) if not sd or s in ("", sd)), None)
+    ok = (sd,) if side_of(name) else ("", sd)
+    k = next((k for k, s in sorted(same, key=lambda x: bool(sd) and x[1] != sd) if not sd or s in ok), None)
     if k is not None:
         return k, True
     if same or any(place_key(k) == pk for k in places or {}):
