@@ -51,6 +51,39 @@ def span(timeline: list, t0: float, t1: float) -> str:
                      if t0 - 0.5 <= s.get("t", 0) <= t1 + 0.5)
 
 
+def audio_times(timeline: list, es: dict, ids: list) -> dict:
+    """Each shot's time in the chapter's audio (the plan's times are the video's, with pauses between): a talk shot by
+    its own spoken line found in the timeline; the others between their neighbours by the video's time."""
+    lt = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    anchors = []
+    for sid in ids:
+        e = es.get(sid, {})
+        w = lt(e.get("words") or e.get("line"))[:30]
+        if not w:
+            continue
+        seg = next((x for x in timeline if lt(x.get("text"))[:30] and (lt(x["text"]).startswith(w[:20]) or
+                                                                      w.startswith(lt(x["text"])[:20]))), None)
+        if seg:
+            anchors.append((e.get("t", 0.0), seg["t"]))
+    anchors.sort()
+    out = {}
+    for sid in ids:
+        v = es.get(sid, {}).get("t", 0.0)
+        if not anchors:
+            out[sid] = v
+            continue
+        before = [x for x in anchors if x[0] <= v]
+        after = [x for x in anchors if x[0] > v]
+        if before and after:
+            (v0, a0), (v1, a1) = before[-1], after[0]
+            out[sid] = a0 + (a1 - a0) * (v - v0) / max(1e-6, v1 - v0)
+        elif before:
+            out[sid] = before[-1][1] + (v - before[-1][0])
+        else:
+            out[sid] = after[0][1] - (after[0][0] - v)
+    return out
+
+
 def variants(library: Path, base: str) -> list:
     """A figure's worn-state choices: "usual" and its library variants' suffixes (base_<suffix>, not stances)."""
     out = {"usual"}
@@ -150,12 +183,16 @@ def main():
     res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}}
     state = {}                                    # name -> place words, carried from the plan's own facts
     t0 = time.time()
-    prev_t = None
+    at = audio_times(timeline, es, ids)
     for n, sid in enumerate(ids):
         sh, e = plan[sid][0], es.get(sid, {})
-        t1 = e.get("t", 0.0) + e.get("dur", 0.0)
-        psg = span(timeline, prev_t if prev_t is not None else e.get("t", 0.0) - 20, t1)
-        prev_t = e.get("t", 0.0)
+        a0 = at[ids[n - 1]] if n else at[sid] - 20.0             # from the shot before to this shot's end
+        a1 = at[ids[n + 1]] if n + 1 < len(ids) else at[sid] + max(8.0, e.get("speech_s") or e.get("dur") or 0)
+        lo, hi = min(a0, at[sid]) - 4.0, max(a1, at[sid] + 4.0)
+        psg = span(timeline, lo, hi)
+        while len(psg) < 300 and hi - lo < 60:   # a span too short to say anything: widen it a little each side
+            lo, hi = lo - 3.0, hi + 3.0
+            psg = span(timeline, lo, hi)
         for p in sh.get("people") or []:
             state[p["name"]] = f"{p.get('pose')} {p.get('at')}"
         st = "; ".join(f"{k}: {v}" for k, v in state.items()) or NOT
