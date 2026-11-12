@@ -1,6 +1,6 @@
 """Hand-authored staging v plan-generated staging, shot by shot (stdlib).
 
-    python tools/assets/scenes/plan_diff.py MAP.json OUT.json [SHEET.json]
+    python tools/assets/scenes/plan_diff.py MAP.json OUT.json [SHEET.json [SET_DIR]]
 
 MAP: [{"shot": "<plan shot id>", "label": "...", "hand": ["/abs/scene_out", "<camera>"],
        "plan": ["/abs/scene_out", "<camera>"] | null}, ...]   (scene outputs of speakers.py: result.json, the still)
@@ -54,6 +54,18 @@ def load(sd: str, cam: str) -> dict | None:
             "reject": sh.get("reject"), "framing_miss": sh.get("framing_miss")}
 
 
+_THINGS = []
+
+
+def anchor(pos) -> str:
+    """The named set thing a floor mark is nearest (furniture, fireplace, window, door): "the same place" in the
+    room's own terms, where two hand-placed marks for "near the desk" differ by most of a metre."""
+    if not _THINGS:
+        return ""
+    t = min(_THINGS, key=lambda t: math.dist(t["center"][:2], pos))
+    return t["name"]
+
+
 def diff(h: dict, p: dict) -> list:
     out = []
     if set(h["people"]) != set(p["people"]):
@@ -66,7 +78,10 @@ def diff(h: dict, p: dict) -> list:
             if a["seat"] != b["seat"]:
                 out.append(f"{k}: seat {a['seat']} v {b['seat']}")
         elif math.dist(a["pos"], b["pos"]) > PLACE_TOL:
-            out.append(f"{k}: mark {a['pos']} v {b['pos']} ({math.dist(a['pos'], b['pos']):.1f} m)")
+            same = anchor(a["pos"]) == anchor(b["pos"])
+            out.append(f"{k}: mark {a['pos']} v {b['pos']} ({math.dist(a['pos'], b['pos']):.1f} m"
+                       + (f", both by the {anchor(a['pos'])})" if same else
+                          f", by the {anchor(a['pos'])} v by the {anchor(b['pos'])})"))
     if h["speaker"] != p["speaker"]:
         out.append(f"speaker {h['speaker']} v {p['speaker']}")
     if h["class"] != p["class"]:
@@ -77,26 +92,34 @@ def diff(h: dict, p: dict) -> list:
 def main():
     rows = json.loads(Path(sys.argv[1]).read_text())
     res, tiles = [], []
-    n_place = n_face = n_talk = n_face_hand = 0
+    n_place = n_named = n_face = n_talk = n_face_hand = 0
+    if len(sys.argv) > 4:                    # the set, for "the same named place"
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "redraw"))
+        import setfacts
+        _THINGS.extend(t for t in setfacts.things(sys.argv[4]) if t["kind"] in ("fixture", "window", "door"))
     for i, r in enumerate(rows, 1):
         h = load(*r["hand"])
         p = load(*r["plan"]) if r.get("plan") else None
         d = diff(h, p) if (h and p) else ["no plan staging"]
         place_ok = bool(p) and not [x for x in d if x.startswith(("people", )) or ": seat" in x or ": mark" in x
                                     or " v sitting" in x or " v standing" in x]
+        named_ok = bool(p) and not [x for x in d if x.startswith(("people", )) or ": seat" in x
+                                    or (": mark" in x and "both by" not in x) or " v sitting" in x or " v standing" in x]
         n_place += place_ok
+        n_named += named_ok
         if p and p["speaker"]:
             n_talk += 1
             n_face += bool(p["speaker_ok"])
         if h and h["speaker"]:
             n_face_hand += bool(h["speaker_ok"])
         res.append({"shot": r["shot"], "label": r.get("label"), "hand": h, "plan": p, "diff": d,
-                    "people_places_match": place_ok})
+                    "people_places_match": place_ok, "same_named_places": named_ok})
         tiles.append({"image": h["still"] if h else None, "label": f"{i} hand-authored | {r.get('label', '')}"})
         tiles.append({"image": p["still"] if p else None,
-                      "label": f"{i} from the plan | " + ("match" if place_ok else "; ".join(d)[:150])
+                      "label": f"{i} from the plan | " + ("match" if place_ok else "same named places" if named_ok
+                                                          else "; ".join(d)[:150])
                       + ("" if not p or p["speaker_ok"] is None else f" | speaker face {'ok' if p['speaker_ok'] else 'FAIL'}")})
-    summary = {"shots": len(rows), "people_places_match": n_place, "talk_shots": n_talk,
+    summary = {"shots": len(rows), "people_places_match": n_place, "same_named_places": n_named, "talk_shots": n_talk,
                "speaker_face_ok_plan": n_face, "speaker_face_ok_hand": n_face_hand}
     Path(sys.argv[2]).write_text(json.dumps({"summary": summary, "shots": res}, indent=1))
     if len(sys.argv) > 3:
