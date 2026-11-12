@@ -85,6 +85,7 @@ def item_fails(rec: dict) -> dict:
 # follow each shot's light (the same gold chair reads L 4, chroma 10 in the window's shade and L 20, chroma 21 by
 # the fire); the gold chair reads hue 65-71 in every shot that keeps it gold, drawn as red leather 45-55: 10 deg
 LAB_HUE, LAB_MIN_C = 10.0, 10.0
+LAB_C_LO, LAB_C_HI = 0.55, 1.8   # chroma ratio (redraw over engine) within these factors of the piece's median
 
 
 LIT_L, LIT_B = 0.55, 0.45    # a lit source in the redraw: at least this share of the engine's lightness and warmth
@@ -129,6 +130,7 @@ def wear_eval(*results: dict) -> dict:
 
 
 def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
+    import statistics
     """Each large piece's look over the run's keys: its colour (median Lab in its engine mask) against the run's
     reference for it (the anchor key's, else the median over the keys): lightness, hue and chroma within
     tolerance. Returns the references."""
@@ -143,6 +145,16 @@ def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
     for n, vs in vals.items():
         an = [v for iid, v in vs if ref_id and iid == ref_id]
         ref[n] = an[0] if an else {k: statistics.median(v[k] for _, v in vs) for k in ("L", "a", "b")}
+    # chroma: the redraw's over the engine still's in the same mask, against the piece's median ratio over the keys
+    # (the shot's light cancels): a gold chair drawn grey-brown has no hue left to compare (chroma 7 against 23)
+    ratios = {}
+    for res in results:
+        for rec in res.values():
+            for n, v in (rec.get("things") or {}).items():
+                e = (rec.get("things_engine") or {}).get(n)
+                if v and e and v["px"] > 400 and math.hypot(e["a"], e["b"]) > LAB_MIN_C:
+                    ratios.setdefault(n, []).append(math.hypot(v["a"], v["b"]) / math.hypot(e["a"], e["b"]))
+    med_r = {n: statistics.median(v) for n, v in ratios.items()}
     for res in results:
         for rec in res.values():
             ok = {}
@@ -153,7 +165,12 @@ def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
                 c1, c2 = math.hypot(v["a"], v["b"]), math.hypot(r["a"], r["b"])
                 h = math.degrees(math.atan2(v["b"], v["a"]) - math.atan2(r["b"], r["a"]))
                 dh = abs((h + 180) % 360 - 180) if min(c1, c2) > LAB_MIN_C else 0.0
-                ok[n] = dh <= LAB_HUE
+                good = dh <= LAB_HUE
+                e = (rec.get("things_engine") or {}).get(n)
+                if e and n in med_r and math.hypot(e["a"], e["b"]) > LAB_MIN_C:
+                    ratio = c1 / math.hypot(e["a"], e["b"])
+                    good = good and LAB_C_LO * med_r[n] <= ratio <= LAB_C_HI * med_r[n]
+                ok[n] = good
             rec["things_ok"] = ok
     return ref
 

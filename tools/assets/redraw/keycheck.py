@@ -271,6 +271,8 @@ def main():
             Path(tmp).unlink(missing_ok=True)
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
             r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"] if t.get("mask")}
+            if "engine" in imgs:
+                r["things_engine"] = {t["name"]: lab_of(imgs["engine"], t["mask"]) for t in it["things"] if t.get("mask")}
         if it.get("lit"):                 # each lit source's light, redraw and engine, inside its own mask
             r["lit"] = {t["name"]: {"redraw": lab_of(imgs["redraw"], t["lit_mask"]),
                                     "engine": lab_of(imgs["engine"], t["lit_mask"]) if "engine" in imgs else None}
