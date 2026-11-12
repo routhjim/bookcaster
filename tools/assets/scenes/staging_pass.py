@@ -123,8 +123,10 @@ class Asker:
         got = []
         for rep in range(self.repeats):
             a = self.one(prompt, rep).strip().strip('."\'`').lower()
-            pick = next((o for o in options if a == o.lower()), None) or next(
-                (o for o in sorted(options, key=len, reverse=True) if o.lower() in a), NOT)
+            head = lambda o: o.split(" (")[0].lower()          # an option's name, without its description
+            pick = next((o for o in options if a in (o.lower(), head(o))), None) or next(
+                (o for o in sorted(options, key=lambda o: len(head(o)), reverse=True)
+                 if re.search(r"\b" + re.escape(head(o)) + r"\b", a)), NOT)
             got.append(pick)
         if len(set(got)) > 1:
             self.split += 1
@@ -175,8 +177,8 @@ def main():
     library = Path(C.LIBRARY)
     es = {e["id"]: e for e in plan.get("_es", [])}
     things = [t for t in setfacts.things(set_dir) if t["kind"] in ("fixture", "window", "door")]
-    place_opts = [f"{t['name']} ({t['words'].split(' (')[0]}" + (f", {t['place']}" if t.get("place") else "") + ")"
-                  for t in things]
+    place_opts = [f"{t['name']} ({t['words'].replace('(', '').replace(')', '')}"
+                  + (f", {t['place']}" if t.get("place") else "") + ")" for t in things]
     names = list(cast)
     var = {nm: variants(library, c.get("base") or c.get("id")) for nm, c in cast.items()}
     ask = Asker(url, cache, reps)
@@ -208,13 +210,16 @@ def main():
                                                      "framing does the passage's moment call for?", CAMERAS), CAMERAS)
         if sh.get("kind") == "action":
             act = sh.get("action") or ""
+            named = json.dumps(sh.get("things") or {}, ensure_ascii=False)
             for p in sh.get("people") or []:
                 nm = p["name"]
-                q = f"The shot's action: {act}\n"
-                end = ask.choose(q_choose(psg, st, q + f"Where is {nm} when this shot ends? Choose a named place.",
-                                          place_opts), place_opts)
-                if end != NOT:
-                    res["move_end"].setdefault(sid, {})[nm] = end.split(" (")[0]
+                q = f"The shot's action: {act}\nThings the director names in it: {named}\n"
+                # a move only where the plan's own posture changes over the shot (sitting -> standing or back)
+                if (sh.get("pose_end") or {}).get(nm) not in (None, p.get("pose")):
+                    end = ask.choose(q_choose(psg, st, q + f"Where is {nm} when this shot ends? Choose a named "
+                                              "place.", place_opts), place_opts)
+                    if end != NOT:
+                        res["move_end"].setdefault(sid, {})[nm] = end.split(" (")[0]
                 w = ask.choose(q_choose(psg, st, q + f"What is {nm} wearing when this shot ends, among these "
                                                      "choices?", var[nm]), var[nm])
                 if w != NOT:
