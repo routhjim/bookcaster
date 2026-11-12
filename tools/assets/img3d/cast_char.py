@@ -401,7 +401,7 @@ def main():
                 # a round that fails raises the arms 6 degrees and holds the pose map harder; the canvas is wide
                 # enough for the hands at any of these angles
                 deg = deg0 + 6 * rnd
-                pose_map = rdir / f"pose{deg}.png"
+                pose_map = rdir / f"pose{deg}_r{rnd}.png"
                 # past 56 degrees the outstretched hands run off a 896-wide picture (the gate then finds no
                 # armpit, 11-12): a wider canvas and a slightly smaller figure
                 cw, cf = (1152, 920) if deg >= 56 else (896, 1000)
@@ -462,6 +462,23 @@ def main():
             import shutil
             shutil.copy(chosen[1], glb)
     drawing = json.loads(gate_p.read_text())["chosen"]
+
+
+    def drawing_deg(path):
+        """The arm angle the drawing was made at: its round's pose map in the same run folder (pose<deg>_r<round>.png
+        or, from older runs, pose<deg>.png in round order), the round from the seed (5 + 1000 run + 6 (3 round + k))."""
+        import re as _re
+        pth = Path(path)
+        m = _re.search(r"spread_s(\d+)", pth.name)
+        if not m:
+            return None
+        run_n = int(pth.parent.name[3:]) if pth.parent.name.startswith("run") else 0
+        rnd = ((int(m.group(1)) - 5 - 1000 * run_n) // 6) // 3
+        maps = list(pth.parent.glob(f"pose*_r{rnd}.png"))
+        if maps:
+            return float(_re.search(r"pose(\d+)_r", maps[0].name).group(1))
+        olds = sorted(pth.parent.glob("pose*.png"), key=lambda q: int(_re.search(r"pose(\d+)", q.name).group(1)))
+        return float(_re.search(r"pose(\d+)", olds[rnd].name).group(1)) if rnd < len(olds) else None
     # ---------------------------------------------------------------- combo
     combo = W / "combo"
 
@@ -501,6 +518,9 @@ def main():
                 coat_skirt = (m["thigh_run_w_frac"] or 0) > 0.17
                 job.update(sleeve_radius_m=0.15, skirt_pelvis=1.0 if coat_skirt else 0.6)
             job["neckline"] = (ch.get("garment") or {}).get("neckline")      # for the report and the neck check
+            # the drawing's arm angle: the fit finds the hands along it and poses the body's arms to them (binding in
+            # the drawing's own pose, whatever the angle)
+            job["draw_deg"] = drawing_deg(drawing)
             # the drawn figure's hair hangs below its neck (long, or worn down): the fit removes hair left standing
             # off the shoulders after the cut
             va_ = (ch.get("scores") or {}).get("vlm_answers") or {}
@@ -511,7 +531,7 @@ def main():
                 # coat skirt and no collar lift on a figure whose accepted fit had both); the skin rules stay
                 base_j = json.loads(Path(a.fit_base).read_text())
                 keep = {k: job[k] for k in ("body_fbx", "head_fbx", "figure_glb", "out", "head_push_r_m", "skin_mask",
-                                            "liner", "neckline", "hair_hangs")}
+                                            "liner", "neckline", "hair_hangs", "draw_deg")}
                 job.clear()
                 job.update(base_j)
                 job.update(keep)

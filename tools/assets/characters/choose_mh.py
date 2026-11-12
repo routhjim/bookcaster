@@ -46,9 +46,13 @@ GROOMS = {
 }
 LEN = {"S": "short", "M": "medium-length", "L": "long"}
 NOUN = {"Hair": "hair", "Beard": "beard", "Mustache": "moustache", "Eyebrows": "eyebrows"}
-COLOURS = {"jet black": (0.95, 0.15), "black": (0.85, 0.2), "dark brown": (0.65, 0.35), "brown": (0.5, 0.45),
-           "auburn": (0.45, 0.8), "red": (0.35, 0.95), "light brown": (0.35, 0.4), "blond": (0.15, 0.35),
-           "grey": (0.3, 0.05), "white": (0.05, 0.0), "black with grey streaks": (0.7, 0.1)}
+# melanin, redness, whiteness (the grooms' grey: a greying colour is its base colour with whiteness, not a lighter
+# melanin, which read as dark brown on a "grey-brown" man, 11-12)
+COLOURS = {"jet black": (0.95, 0.15, 0.0), "black": (0.85, 0.2, 0.0), "dark brown": (0.65, 0.35, 0.0),
+           "brown": (0.5, 0.45, 0.0), "auburn": (0.45, 0.8, 0.0), "red": (0.35, 0.95, 0.0),
+           "light brown": (0.35, 0.4, 0.0), "blond": (0.15, 0.35, 0.0), "grey": (0.3, 0.05, 0.75),
+           "white": (0.05, 0.0, 1.0), "black with grey streaks": (0.7, 0.1, 0.3), "grey-brown": (0.5, 0.35, 0.45),
+           "salt and pepper": (0.75, 0.1, 0.5)}
 BUILDS = {"slim": dict(Fat=-1.6, Muscularity=-1.2, d=-12), "average": dict(Fat=-0.4, Muscularity=0.0, d=0),
           "stocky": dict(Fat=0.6, Muscularity=0.6, d=10), "very heavily built": dict(Fat=1.6, Muscularity=1.4, d=22)}
 BANDS = [20, 30, 40, 50, 60, 70]
@@ -257,6 +261,8 @@ def main():
         bk = ans.get("beard_kind", "")
         bc = [o for o in GROOMS["Beard"] if ("Stubble" in o) == bk.startswith("stub")]
         bc = [o for o in bc if not bk.startswith("short") or o.startswith("S_")] or bc
+        # a full beard is a full one (CLIP picked a pencil-thin chin line for "full", 11-12)
+        bc = [o for o in bc if not bk.startswith("full") or ("Full" in o or "Messy" in o or o.startswith("L_"))] or bc
         grooms["Beard"] = f"WI_Beard_{best('Beard', bc or GROOMS['Beard'])}"
     if gender == "woman" or not yes("moustache"):
         clear.append("Mustache")
@@ -267,8 +273,9 @@ def main():
         grooms["Mustache"] = f"WI_Mustache_{best('Mustache', mc or GROOMS['Mustache'])}"
     col = list(COLOURS)[num(ans.get("colour"), len(COLOURS))]
     sc["hair_colour"] = col
-    mel, red = COLOURS[col]
-    params = {f"Bindings/{d}/": {"Melanin": mel, "Redness": red} for d in ("Hair", "Eyebrows", "Beards", "Mustaches")}
+    mel, red, wht = COLOURS[col]
+    params = {f"Bindings/{d}/": {"Melanin": mel, "Redness": red, "Whiteness": wht}
+              for d in ("Hair", "Eyebrows", "Beards", "Mustaches")}
     build = list(BUILDS)[num(ans.get("build"), len(BUILDS))]
     sc["build"] = build
     B = BUILDS[build]

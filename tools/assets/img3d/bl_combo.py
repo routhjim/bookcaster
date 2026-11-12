@@ -306,6 +306,18 @@ for side, sg in (("l", 1), ("r", -1)):
     cand_ = skin & side_pts
     far_ = np.quantile(dsh[cand_], 0.98) if cand_.sum() > 20 else 9.0
     hand = cand_ & (dsh > far_ - float(JOB.get("hand_len_m", 0.22)))
+    if JOB.get("draw_deg") is not None and not FIT_POSE:
+        # where the drawing put the hand: the pose map it was drawn from is this body's arm at the drawing's angle
+        # from vertical, so the hand lies along that line from the shoulder (tan or brown cloth passes the skin
+        # colour test: the far end of the "skin" was a wrist at the feet, 11-12); skin colour only narrows it
+        th_ = math.radians(float(JOB["draw_deg"]))
+        S_ = np.array(sh[side])
+        L_ = float(np.linalg.norm(np.array(J(f"hand_{side}")) - np.array(J(f"upperarm_{side}"))))
+        exp_ = S_ + np.array([sg * math.sin(th_), 0.0, -math.cos(th_)]) * L_
+        dxz = np.linalg.norm((co - exp_)[:, [0, 2]], axis=1)
+        nearh = dxz < float(JOB.get("hand_search_r_m", 0.12))
+        hand = (nearh & skin) if (nearh & skin).sum() >= 20 else nearh
+        REP.setdefault("hand_search", {})[side + "_expected"] = [round(float(v), 3) for v in exp_]
     if FIT_POSE:
         # a posed figure (hands in the lap): the hand is the skin round the posed body's hand, not the far end of
         # a spread arm
