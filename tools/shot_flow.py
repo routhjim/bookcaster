@@ -5550,6 +5550,24 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     return [sd / "ltx" / "out" / f"{s['id']}.mp4" for s in shots]
 
 
+def assemble_stretch(book: Path, stem: str, plan: Path, first: str, last: str, out: Path, log=print) -> Path:
+    """The flow's own cut (assemble: each moment's whole frames from the stretch's start, a talk clip's lead-in
+    dropped and its measured lip-sync shift applied, a missing clip's key held; on the video mix with the plan's
+    pauses) for the moments from the one holding shot `first` to the one holding `last`, from the clips there
+    (11-12 user, on a scratch joiner: "the audio and the video when it stitched together got out of synch")."""
+    by = json.loads(Path(plan).read_text())
+    es = by.pop("_es")
+    pauses = by.pop("_pauses", None) or []
+    for k in [k for k in by if k.startswith("_")]:
+        by.pop(k)
+    mids = [e["id"] for e in es]
+    a, b = mids.index(first.rsplit("_s", 1)[0]), mids.index(last.rsplit("_s", 1)[0])
+    es = es[a: b + 1]
+    mix = book / "work" / "final" / f"{stem}.mp3"
+    return assemble(book, stem, es, {e["id"]: by.get(e["id"], []) for e in es},
+                    video_mix(book, stem, mix, pauses, log), Path(out), log, pauses)
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="clips for chosen shots of a planned stretch from supplied keys")
@@ -5563,9 +5581,14 @@ if __name__ == "__main__":
     ap.add_argument("--hold", action="store_true", help="the camera-hold sentence without facts (with_facts)")
     ap.add_argument("--quiet-seeds", default="", help="a quiet shot's take seeds, comma-separated")
     ap.add_argument("--shot-facts", action="store_true", help="each shot's own <id>.shot_facts.txt beside its key")
+    ap.add_argument("--assemble", nargs=3, metavar=("FIRST_SHOT", "LAST_SHOT", "OUT"), default=None,
+                    help="no render: the flow's own cut of the stretch FIRST..LAST (shot ids) from its clips")
     ap.add_argument("--key-people", action="store_true",
                     help="the people each key shows (<id>.shot_facts.json \"visible\") are the shot's people")
     a = ap.parse_args()
+    if a.assemble:
+        print("cut:", assemble_stretch(a.book, a.stem, a.plan, a.assemble[0], a.assemble[1], Path(a.assemble[2])))
+        sys.exit(0)
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
                            facts=a.facts, hold=a.hold,
                            quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x), shot_facts=a.shot_facts,
