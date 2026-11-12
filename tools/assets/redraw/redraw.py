@@ -197,8 +197,13 @@ def look_words(f: dict, pos: str) -> tuple:
     """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names)."""
     miss = [k for k in LOOK_FACTS if not f.get(k)]
     w = []
-    if f.get("hair_colour"):
-        w.append(f"{f['hair_colour']} hair" + (f" {f['hair_worn']}" if f.get("hair_worn") else ""))
+    col, worn = f.get("hair_colour"), f.get("hair_worn") or ""
+    if col and "hair" in worn and " " not in col:
+        w.append(worn.replace("hair", f"{col} hair", 1))         # "short hair, slicked back" -> "short black hair, .."
+    elif col:
+        w.append((worn + f", the hair {col}") if worn else f"{col} hair")
+    elif worn:
+        w.append(worn)
     if f.get("facial_hair") and f["facial_hair"] != "none":
         w.append(f["facial_hair"])
     elif f.get("facial_hair") == "none":
