@@ -551,6 +551,114 @@ if JOB.get("collar_build") and not STATUE:
             COLLAR_RGB = COLLAR_RGB or {}
             COLLAR_RGB[k_] = list(JOB["collar_build"][f"{k_}_rgb"])
     REP["collar_rgb"] = {k: [round(float(x), 3) for x in v] for k, v in (COLLAR_RGB or {}).items()}
+# the garment ends where the cloth ends: the generated figure's own bare limbs below a short sleeve or a hem were kept
+# as garment and worn as cloth (flat skin-coloured forearms, 11-12; long sleeves had hidden the case). Along each limb
+# (shoulder to the body's wrist, hip to the ankle) the outer radius of the figure round the limb's axis is read
+# station by station; the cuff is the station where it steps down from a sleeve standing off the limb to a bare limb
+# that stays thin to the end, skin colour only a second vote (more skin below the step than above). Beyond the cuff
+# the limb goes, hands included; on the legs from the hem to just above the foot (footwear is the garment's).
+# the second vote's colours: a skin-coloured tunic passes any fixed skin test (11-12), so a vertex is skin-like when
+# it is nearer the figure's own skin (its hands: the far end of each arm, past the body's wrist) than its cloth (the
+# chest and back between the armpits, off the neck)
+SKL_SURE = None
+
+
+def _skin_like():
+    global SKL_SURE
+    hm_ = np.zeros(len(co), bool)
+    for s_ in ("l", "r"):
+        S_ = np.array(pose_head(f"upperarm_{s_}"))
+        E_ = np.array(pose_head(f"hand_{s_}"))
+        a_ = (E_ - S_) / np.linalg.norm(E_ - S_)
+        pp = (co - S_) @ a_
+        rr = np.linalg.norm((co - S_) - pp[:, None] * a_[None, :], axis=1)
+        hm_ |= (pp > np.linalg.norm(E_ - S_) + 0.02) & (rr < 0.1)
+    cm_ = ((co[:, 2] > J("spine_03").z) & (co[:, 2] < J("spine_05").z)
+           & (np.abs(co[:, 0] - J("spine_05").x) < 0.12) & (np.abs(co[:, 0] - J("spine_05").x) > 0.04))
+    if hm_.sum() < 30 or cm_.sum() < 30:
+        SKL_SURE = skin
+        return skin, None
+    sk_ref, cl_ref = np.median(col[hm_], 0), np.median(col[cm_], 0)
+    ds_, dc_ = np.linalg.norm(col - sk_ref, axis=1), np.linalg.norm(col - cl_ref, axis=1)
+    like = ds_ < dc_
+    SKL_SURE = ds_ < float(JOB.get("skin_sure_ratio", 0.5)) * dc_      # clearly the skin's colour, not between
+    return like, {"skin": [round(float(x), 3) for x in sk_ref], "cloth": [round(float(x), 3) for x in cl_ref],
+                  "apart": round(float(np.linalg.norm(sk_ref - cl_ref)), 3)}
+
+
+def _limb_edge(S0, E0, sg, tube, step_min, ratio, lo_frac, hi_frac):
+    ax_ = E0 - S0
+    L_ = float(np.linalg.norm(ax_))
+    ax_ = ax_ / L_
+    p_ = (co - S0) @ ax_
+    rad_ = np.linalg.norm((co - S0) - p_[:, None] * ax_[None, :], axis=1)
+    side_ = (sg * (co[:, 0] - J("pelvis").x) > 0)
+    st_ = np.arange(lo_frac * L_, hi_frac * L_, 0.01)
+    r_, sk_ = [], []
+    for c_ in st_:
+        m_ = side_ & (np.abs(p_ - c_) < 0.006) & (rad_ < tube)
+        r_.append(float(np.quantile(rad_[m_], 0.9)) if m_.sum() >= 8 else tube)    # nothing near the axis: cloth
+        sk_.append(float(SKL[m_].mean()) if m_.sum() >= 8 else 0.0)                # standing off it
+    r_, sk_ = np.array(r_), np.array(sk_)
+    best = None
+    for i in range(4, len(st_) - 3):
+        above, below = np.median(r_[max(0, i - 8):i]), np.median(r_[i:i + 8])
+        rest = r_[i:]
+        if (above - below >= step_min and above >= ratio * below and np.quantile(rest, 0.9) <= 1.3 * below
+                and sk_[i:].mean() >= 0.5):
+            if best is None or above - below > best[1]:
+                best = (i, above - below)
+    rep_ = {"radius_cm": [round(100 * x, 1) for x in r_[::2]], "skin": [round(x, 2) for x in sk_[::2]]}
+    if best is None:
+        return None, p_, rad_, side_, rep_
+    i = best[0]
+    rep_.update({"at_frac": round(float(st_[i] / L_), 3), "step_cm": round(100 * best[1], 1),
+                 "above_cm": round(100 * float(np.median(r_[max(0, i - 8):i])), 1),
+                 "below_cm": round(100 * float(np.median(r_[i:i + 8])), 1)})
+    return float(st_[i]), p_, rad_, side_, rep_
+
+
+if not STATUE and not FIT_POSE and JOB.get("cut_bare_limbs", True):
+    SKL, _refs = _skin_like()
+    REP["bare_limbs"] = {"colours": _refs}
+    for side, sg in (("l", 1), ("r", -1)):
+        S0 = np.array(pose_head(f"upperarm_{side}"))
+        E0 = np.array(pose_head(f"hand_{side}"))
+        c_, p_, rad_, side_, rep_ = _limb_edge(S0, E0, sg, 0.14, 0.012, 1.3, 0.3, 1.0)
+        if c_ is not None:
+            # a cuff is not square to the arm (its underside hangs lower): the bare limb inside the cuff's reach,
+            # as thin as the bare limb and skin-like, goes too
+            cut_ = side_ & (p_ > c_) & (rad_ < 0.16)
+            cut_ |= (side_ & (p_ > c_ - 0.10) & (p_ <= c_) & SKL & (rad_ < 1.3 * rep_["below_cm"] / 100))
+            rep_["cut_inside_cuff"] = int((cut_ & (p_ <= c_)).sum())
+            gone |= cut_
+            rep_["cut"] = int(cut_.sum())
+        REP["bare_limbs"][f"arm_{side}"] = rep_
+        S1 = np.array(pose_head(f"thigh_{side}"))
+        E1 = np.array(pose_head(f"foot_{side}"))
+        c_, p_, rad_, side_, rep_ = _limb_edge(S1, E1, sg, 0.14, 0.015, 1.3, 0.35, 0.92)
+        if c_ is not None:
+            cut_ = side_ & (p_ > c_) & (rad_ < 0.14) & (co[:, 2] > E1[2] + 0.04)
+            gone |= cut_
+            rep_["cut"] = int(cut_.sum())
+        REP["bare_limbs"][f"leg_{side}"] = rep_
+    # inside the neckline of an open or base neckline: the figure's own chest skin joined to the neck's (the skin
+    # already cut round the neck), within the shoulders and above the chest's middle
+    if (JOB.get("neckline") or (REP.get("neckline_figure") or {}).get("class")) in ("open", "base"):
+        _ev = np.empty(len(me.edges) * 2, np.int64)
+        me.edges.foreach_get("vertices", _ev)
+        _ev = _ev.reshape(-1, 2)
+        _shx = abs(float(J("upperarm_l").x - J("neck_01").x))
+        _box = SKL_SURE & (co[:, 2] > J("spine_04").z) & (np.abs(co[:, 0] - J("neck_01").x) < _shx) & (co[:, 1] < J("neck_01").y + 0.02)
+        _in = gone & SKL_SURE
+        _n0 = int(_in.sum())
+        for _ in range(200):
+            m_ = _box[_ev[:, 0]] & _box[_ev[:, 1]] & (_in[_ev[:, 0]] != _in[_ev[:, 1]])
+            if not m_.any():
+                break
+            _in[_ev[m_].ravel()] = True
+        REP["bare_limbs"]["neckline_skin"] = int(_in.sum()) - _n0
+        gone |= _in
 if STATUE:
     gone[:] = False
 if not JOB.get("keep_figure_hands"):
