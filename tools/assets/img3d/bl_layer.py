@@ -178,7 +178,7 @@ bv = np.array([v.co[:] for v in body.evaluated_get(bpy.context.evaluated_depsgra
 _sat = (col.max(1) - col.min(1)) / np.maximum(col.max(1), 1e-3)
 man0 = (_sat < 0.15) & (col.mean(1) > 0.45)
 REP["figure_light_verts"] = int(man0.sum())
-if man0.sum() > 200:
+if man0.sum() > 200 and JOB.get("align") != "whole":       # "whole": the earlier placement (a check's control)
     mz = co[man0]
     mtop = float(mz[:, 2].max())
     s2 = top_z / mtop                                  # the figure's head top on the body's
@@ -297,13 +297,57 @@ me.update()
 REP["pushed_out"] = moved
 
 Pq = np.array([v.co[:] for v in me.vertices])
-up_ = Pq[:, 2] > float(J("spine_03")[2])
-REP["checks"] = {"centre_offset_x_m": round(float(np.median(Pq[up_, 0]) - J("spine_05")[0]), 3) if up_.any() else None,
-                 "min_z_m": round(float(Pq[:, 2].min()), 3),
-                 "top_z_m": round(float(Pq[:, 2].max()), 3), "neck_z_m": round(float(J("neck_01")[2]), 3)}
-REP["checks"]["ok"] = bool(REP["checks"]["centre_offset_x_m"] is not None and abs(REP["checks"]["centre_offset_x_m"]) < 0.05
-                           and REP["checks"]["min_z_m"] > -0.01
-                           and abs(REP["checks"]["top_z_m"] - REP["checks"]["neck_z_m"]) < 0.2)
+# hangs from the body: its top at the neck, its lowest point above the floor, resting on at least one of the body's
+# shoulders (the layer's cloth within CONTACT of that shoulder's top surface over SHOULDER_COVER of it) and most of its
+# area (REACH_AREA) within REACH of the body's surface. No left-right centring: a layer worn over one shoulder hangs
+# to one side (11-12). The shoulder and reach rules keep catching a layer displaced off the body.
+# values from data (11-12): shoulder cover 0.615/0.796 and 0.95, 0.505 on the accepted cloak and the two one-shoulder
+# layers' resting shoulders, 0.334/0.30 on the displaced cloak: SHOULDER_COVER between them, 0.42. Area within 0.2 m of
+# the body 0.936, 1.0, 0.961 on those, 0.833 on the displaced cloak: REACH_AREA between them, 0.88.
+contact = float(JOB.get("contact_m", 0.06))
+reach = float(JOB.get("reach_m", 0.2))
+polys_ = [tuple(p.vertices) for p in me.polygons]
+lbvh = BVHTree.FromPolygons([Vector(p) for p in Pq], polys_)
+bvb_ = BVHTree.FromObject(body, bpy.context.evaluated_depsgraph_get())
+shoulders = {}
+for side in ("l", "r"):
+    ua = J(f"upperarm_{side}")
+    cl = J(f"clavicle_{side}")
+    # the shoulder's top: body surface within reach of the upper arm's head, from the clavicle's middle outwards,
+    # above the arm's head height
+    mid = 0.5 * (ua + cl)
+    patch = bv[(np.linalg.norm(bv[:, :2] - mid[:2], axis=1) < np.linalg.norm(ua[:2] - mid[:2]) + 0.06)
+               & (bv[:, 2] > ua[2] - 0.02) & (bv[:, 2] < ua[2] + 0.15)
+               & (np.sign(bv[:, 0] - J("spine_05")[0]) == np.sign(ua[0] - J("spine_05")[0]))]
+    near_ = 0
+    for p in patch:
+        loc, _, _, d = lbvh.find_nearest(Vector(p), contact)
+        near_ += loc is not None
+    shoulders[side] = {"verts": int(len(patch)), "covered": round(near_ / max(len(patch), 1), 3)}
+# each vertex's share of the layer's area, and how far it lies from the body
+fa = np.array([p.area for p in me.polygons])
+va = np.zeros(len(Pq))
+for p, a_ in zip(me.polygons, fa):
+    for vi in p.vertices:
+        va[vi] += a_ / len(p.vertices)
+dB = np.full(len(Pq), 9.0)
+for i in range(len(Pq)):
+    loc, _, _, d = bvb_.find_nearest(Vector(Pq[i]), 1.0)
+    if loc is not None:
+        dB[i] = d
+cover_min = float(JOB.get("shoulder_cover", 0.42))
+reach_min = float(JOB.get("reach_area", 0.88))
+REP["checks"] = {"min_z_m": round(float(Pq[:, 2].min()), 3),
+                 "top_z_m": round(float(Pq[:, 2].max()), 3), "neck_z_m": round(float(J("neck_01")[2]), 3),
+                 "shoulders": shoulders, "contact_m": contact,
+                 "rests_on": [s_ for s_, v_ in shoulders.items() if v_["covered"] >= cover_min],
+                 "area_within_reach": round(float(va[dB < reach].sum() / max(va.sum(), 1e-9)), 3), "reach_m": reach,
+                 "area_within": {f"{r_:.2f}": round(float(va[dB < r_].sum() / max(va.sum(), 1e-9)), 3)
+                                 for r_ in (0.05, 0.1, 0.15, 0.2, 0.3)}}
+REP["checks"]["ok"] = bool(REP["checks"]["min_z_m"] > -0.01
+                           and abs(REP["checks"]["top_z_m"] - REP["checks"]["neck_z_m"]) < 0.2
+                           and REP["checks"]["rests_on"]
+                           and REP["checks"]["area_within_reach"] >= reach_min)
 # ------------------------------------------------------------------ 4. weights: the body's nearest, held to the upper body
 for o in oc:
     bpy.data.objects.remove(o)

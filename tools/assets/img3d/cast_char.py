@@ -887,8 +887,10 @@ def main():
     # an outer layer left out of the spread drawing (the fact) is made as its own piece: drawn alone on a plain neutral
     # figure standing at the character's relaxed arm angle (it hangs from the shoulders; a spread pose ruins it), made
     # 3D, fitted by bl_layer.py (placed by the neutral figure, the figure cut away, bound to the upper body, the hem on
-    # the pelvis, no relaxation), attached to the entries and checked (centred over the body, above the floor, its
-    # top at the neck); a 3D texture that came out grey is reported (and rescaled to the drawing's colour)
+    # the pelvis, no relaxation), attached to the entries and checked (its top at the neck, above the floor, resting on
+    # at least one shoulder, most of it within reach of the body); when more than one drawing passes, the vision model
+    # picks the one worn as on the sheet; a 3D texture that came out grey is reported (and rescaled to the drawing's
+    # colour)
     layer_p = W / "layer.json"
     gfl = ch.get("garment") or {}
     if gfl.get("outer_layer") and gfl.get("outer_words") and not done("check", layer_p):
@@ -919,7 +921,7 @@ def main():
             jl.write_text("".join(json.dumps(j) + "\n" for j in jobs))
             p = line(["--line-cmd", "image", "refs", "--id", f"cast_{tag}_layer_draw", "--", "bash", "-c",
                       f"cd {REPO} && bash {CARD} 05 {QWEN_PY} -I tools/qwen_image.py --serve < {jl}"], W / "layer_draw.log")
-            rep_l, outd = None, None
+            rep_l, outd, passed = None, None, []
             for j in jobs:
                 png = Path(j["path"])
                 if not png.exists():
@@ -944,8 +946,14 @@ def main():
                     continue
                 rep_l = json.loads((outd / "report.json").read_text())
                 if (rep_l.get("checks") or {}).get("ok") and rep_l.get("layer_verts", 0) > 2000:
-                    break
-            if rep_l is None or not (rep_l.get("checks") or {}).get("ok"):
+                    passed.append((png, outd, rep_l))
+            pick_l = None
+            if len(passed) > 1:
+                pick_l = layer_pick(ld, a.sheet, [x[0] for x in passed], tag)
+                png_, outd, rep_l = passed[pick_l["pick"]]
+            elif passed:
+                png_, outd, rep_l = passed[0]
+            if not passed:
                 layer_p.write_text(json.dumps({"ok": False, "report": rep_l}, indent=1))
                 raise RuntimeError(f"OUTER LAYER: no drawing gave a layer that hangs from the shoulders "
                                    f"({json.dumps((rep_l or {}).get('checks'))}); the entry keeps it as a missing layer")
@@ -971,7 +979,8 @@ def main():
                     e["facts"]["missing_layers"] = []
                 ep.write_text(json.dumps(e, indent=1))
             col_ = rep_l.get("colour_from_drawing") or {}
-            CH["layer"] = {"phrase": phrase, "checks": rep_l.get("checks"), "colour": col_,
+            CH["layer"] = {"phrase": phrase, "drawing": png_.name, "passed": [x[0].name for x in passed],
+                           "pick": pick_l, "checks": rep_l.get("checks"), "colour": col_,
                            "note": ("the 3D texture came out grey; rescaled to the drawing's colour"
                                     if col_.get("mesh_came_out_grey") else
                                     "colour rescaled to the drawing's" if col_.get("rescaled") else "colour as made")}
@@ -1037,6 +1046,63 @@ def groom_words(hair, beard=None, moustache=None):
         ln, st = parse(beard)
         fh.append(" ".join(x for x in ({"L": "long", "M": "", "S": "short"}.get(ln, ""), _re.sub(r"(?<!^)([A-Z])", r" \1", st or "").lower(), "beard") if x))
     return worn, (" and ".join(fh) if fh else "none")
+
+
+LAYER_QUESTION = ("In the middle is a character sheet of a person. On the left (A) and on the right (B) are two "
+                  "drawings of the outer garment alone, shown on a display figure. Which drawing, A or B, shows that "
+                  "outer garment worn the way the person in the middle wears it: over the same shoulder or shoulders, "
+                  "falling across the body the same way, to the same length? Answer A or B.")
+
+
+def layer_pick(ld, sheet, pngs, tag):
+    """The outer layer's drawing worn as on the sheet: every pair of passing drawings beside the sheet, both orders
+    (the model leans to one side when it cannot tell), asked of the vision model; the most wins, ties to the
+    earlier drawing."""
+    from PIL import Image as _Im
+    sh = _Im.open(sheet).convert("RGB")
+    h = 768
+    sh = sh.resize((max(1, sh.width * h // sh.height), h))
+    tiles = [_Im.open(p).convert("RGB") for p in pngs]
+    tiles = [t.resize((max(1, t.width * h // t.height), h)) for t in tiles]
+    qs = []
+    for i in range(len(pngs)):
+        for k in range(len(pngs)):
+            if i == k:
+                continue
+            A, B = tiles[i], tiles[k]
+            im = _Im.new("RGB", (A.width + sh.width + B.width + 40, h + 40), "white")
+            im.paste(A, (0, 40))
+            im.paste(sh, (A.width + 20, 40))
+            im.paste(B, (A.width + sh.width + 40, 40))
+            from PIL import ImageDraw as _D
+            dr = _D.Draw(im)
+            dr.text((A.width // 2, 10), "A", fill="black")
+            dr.text((A.width + 20 + sh.width // 2 - 20, 10), "sheet", fill="black")
+            dr.text((A.width + sh.width + 40 + B.width // 2, 10), "B", fill="black")
+            pp = ld / f"pick_{i}_{k}.png"
+            im.save(pp)
+            qs.append({"id": f"{i}|{k}", "images": [str(pp)], "max_new_tokens": 3, "max_side": 1280,
+                       "ask": {"pick": LAYER_QUESTION}})
+    jq = ld / "pick.jsonl"
+    jq.write_text("".join(json.dumps(q) + "\n" for q in qs))
+    p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_layer_pick", "--", "bash", "-c",
+              f"cd {REPO} && bash {CARD} 05 {QWEN_PY} -I tools/vl_judge.py < {jq}"], ld / "pick.log")
+    wins, answers = [0] * len(pngs), {}
+    for ln in (ld / "pick.log").read_text().splitlines():
+        if not ln.startswith("{") or '"answers"' not in ln:
+            continue
+        r = json.loads(ln)
+        i, k = (int(x) for x in r["id"].split("|"))
+        v = (r["answers"].get("pick") or "").strip().upper()
+        answers[r["id"]] = v
+        if v.startswith("A"):
+            wins[i] += 1
+        elif v.startswith("B"):
+            wins[k] += 1
+    if not answers:
+        raise RuntimeError(f"OUTER LAYER: the vision model gave no answers for the drawing pick (rc {p.returncode})")
+    best = max(range(len(pngs)), key=lambda n: (wins[n], -n))
+    return {"pick": best, "drawings": [Path(x).name for x in pngs], "wins": wins, "answers": answers}
 
 
 def entry_facts(ch, missing=None):
