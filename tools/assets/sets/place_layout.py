@@ -112,7 +112,13 @@ def place_openings(spec: dict, records: dict, data: dict, W: float, D: float, ru
     outer = list(spec.get("outer_walls") or rk.get("outer_walls") or [])
     defaults = [dict(o) for o in rk.get("openings", [])]
     done, unmet, counts = [], [], {}
-    order = sorted(spec.get("openings", []), key=lambda o: ("fireplace", "window", "door").index(o["kind"]))
+    # a room the text gives no door or window still has its kind's own (a sealed, unlit box otherwise): the kind's
+    # default openings of a kind the spec states none of are added, on the kind's wall
+    have = {o["kind"] for o in spec.get("openings", [])}
+    kind_own = [{"id": f"kind_{d['kind']}", "kind": d["kind"], "wall": "not stated", "words": "", "from_kind": True}
+                for d in defaults if d["kind"] in ("door", "window") and d["kind"] not in have]
+    order = sorted(list(spec.get("openings", [])) + kind_own,
+                   key=lambda o: ("fireplace", "window", "door").index(o["kind"]))
 
     rules = rules or pc.load_rules()
     dress = float((rules["hard"].get("window_dressing") or {}).get("width_m", 0.0))

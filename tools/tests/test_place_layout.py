@@ -126,7 +126,16 @@ def test_fireside_armchair_faces_the_fire_from_one_side():
 def test_set_item_names_are_the_kind_numbered_on_repeats():
     lay = pl.solve(spec(openings=[op("o1", "door")],
                         pieces=[pc("p1", "wingback_armchair"), pc("p2", "armchair"), pc("p3", "writing_desk")]))
-    assert lay["names"] == {"o1": "door", "p1": "armchair", "p2": "armchair_2", "p3": "desk"}
+    stated = {k: v for k, v in lay["names"].items() if not k.startswith("kind_")}
+    assert stated == {"o1": "door", "p1": "armchair", "p2": "armchair_2", "p3": "desk"}
+
+
+def test_a_room_with_no_stated_door_or_window_gets_its_kinds_own():
+    lay = pl.solve(spec(kind="study", openings=[], pieces=[pc("p1", "writing_desk")]))
+    kinds = sorted(o["kind"] for o in lay["openings"])
+    assert kinds == ["door", "window"] and lay["ok"]
+    lay = pl.solve(spec(kind="study", openings=[op("o1", "door")], pieces=[pc("p1", "writing_desk")]))
+    assert sorted(o["kind"] for o in lay["openings"]) == ["door", "window"]
 
 
 def test_library_record_size_wins_over_the_kinds_default():
