@@ -378,6 +378,27 @@ def main():
         neck_p.write_text(json.dumps(nf, indent=1))
         CH["neck_fit"] = nf
         save()
+    # still a bare neck over 2 cm once the neck is as short as allowed: the fit's collar lift (the collar region raised
+    # by one smooth displacement to meet the jaw), measured, only then
+    if (combo / "report.json").exists():
+        rep = json.loads((combo / "report.json").read_text())
+        jp = W / "combo_job.json"
+        job = json.loads(jp.read_text())
+        bare = rep.get("bare_neck_measured_cm")
+        if bare is not None and bare > 2.0 and not job.get("collar_lift"):
+            @timed("collar_lift")
+            def _():
+                job["collar_lift"] = True
+                jp.write_text(json.dumps(job, indent=1))
+                p = line(["--line-cmd", "igpu", "combo", "--id", f"cast_{tag}_combo_lift", "--", "flock",
+                          "/tmp/gpu-igpu.lock", BLENDER, "-b", "--factory-startup", "-t", "0", "--python",
+                          str(HERE / "bl_combo.py"), "--", str(jp)], W / "combo_lift.log")
+                if p.returncode:
+                    raise RuntimeError("refit with the collar lift failed")
+                rep2 = json.loads((combo / "report.json").read_text())
+                CH["collar_lift"] = {"bare_before_cm": bare, "bare_after_cm": rep2.get("bare_neck_cm"),
+                                     "lift": rep2.get("collar_height")}
+            save()
     # ---------------------------------------------------------------- import + library entry
     lib = Path(C.LIBRARY) / "character" / a.id
     if not done("import", lib / "character.json"):
