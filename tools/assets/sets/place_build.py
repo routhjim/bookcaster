@@ -110,6 +110,10 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         json.loads((HERE / "period_kits.json").read_text())["victorian"]
     out = dict(id=set_id, description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
+    # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
+    alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
+             if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}
+    ss["named_places"] = {ph: alias.get(v, v) for ph, v in ss["named_places"].items()}
     report = {"pieces": res["summary"], "left_out": [p for p in res["pieces"] if p["status"] != "library"],
               "layout_ok": lay["ok"], "unmet": lay["unmet"], "status": lay.get("status"),
               "ladder": lay.get("ladder"), "dropped": lay.get("dropped"), "reask": lay.get("reask"), "checks": L.check_layout(lay, spec),
