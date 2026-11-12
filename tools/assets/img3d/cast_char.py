@@ -224,14 +224,17 @@ def main():
             pdir = W / "ue" / "faces"
             pdir.mkdir(parents=True, exist_ok=True)
             names = {n: f"MHC_CAND_{tag}_{i}" for i, n in enumerate(pool)}
-            ue_job(W, "faces", str(ASSETS / "characters" / "char_render.py"), {
-                "map": "/Engine/Maps/Templates/Template_Default", "out": str(pdir), "warm_frames": 120,
-                "settle_frames": 30, "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5,
-                "make": [{"name": m, "folder": "/Game/Char/Cand", "base": n, "grooms": ch["grooms"],
-                          "clear_slots": ch["clear_slots"], "params": ch["params"], "body": ch["body"]}
-                         for n, m in names.items()],
-                "characters": {n: {"path": f"/Game/Char/Cand/{m}"} for n, m in names.items()},
-                "shots": [{"name": n, "char": n, "frame": "close", "az": 0} for n in pool]}, 2400)
+            todo = [n for n in pool if not (pdir / f"{n}.png").exists()]
+            for k0 in range(0, len(todo), 6):          # six characters per editor job (memory)
+                part = todo[k0:k0 + 6]
+                ue_job(W, f"faces_{k0 // 6}", str(ASSETS / "characters" / "char_render.py"), {
+                    "map": "/Engine/Maps/Templates/Template_Default", "out": str(pdir), "warm_frames": 120,
+                    "settle_frames": 30, "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5,
+                    "make": [{"name": names[n], "folder": "/Game/Char/Cand", "base": n, "grooms": ch["grooms"],
+                              "clear_slots": ch["clear_slots"], "params": ch["params"], "body": ch["body"]}
+                             for n in part],
+                    "characters": {n: {"path": f"/Game/Char/Cand/{names[n]}"} for n in part},
+                    "shots": [{"name": n, "char": n, "frame": "close", "az": 0} for n in part]}, 2400)
             p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_face", "--", "bash", CARD, "05", HY_PY, "-I",
                       str(ASSETS / "characters" / "face_pick.py"), str(W / "choice.json"), "--portraits", str(pdir),
                       "--vl-python", QWEN_PY], W / "face.log")

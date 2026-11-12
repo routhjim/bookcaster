@@ -266,10 +266,12 @@ def main():
     m_age = re.search(r"\b(?:about|around|aged?)\s+(\d{2})\b", a.look or "")
     age_t = float(m_age.group(1)) if m_age else age
     sc["age_used"] = age_t
-    pool = sorted((n for n in names if pg[n] == gender),
-                  key=lambda n: sims[n] - 0.004 * abs(pa[n] - age_t), reverse=True)
-    pool = [n for n in pool if abs(pa[n] - age_t) <= 15][:a.compare] or pool[:a.compare]
+    # every preset of the gender goes on (29 presets ship, 16 of them men): the thumbnails' age guess is not trusted
+    # (tinted busts; a +-15 year window on it dropped the two older men's presets for a man "of about 40"); the
+    # face step renders them all and the vision model's age of each render narrows them to the stated age
+    pool = sorted((n for n in names if pg[n] == gender), key=lambda n: sims[n], reverse=True)
     sc["preset_pool"] = pool
+    sc["compare_keep"] = a.compare
     base = pool[0] if pool else base
     out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params,
            "body": {k: round(float(v), 1) for k, v in body.items()}, "scores": sc}

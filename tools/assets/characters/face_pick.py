@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import re
 import json
 import subprocess
 from pathlib import Path
@@ -58,6 +59,29 @@ def main():
     except OSError:
         font = ImageFont.load_default()
     faces = {n: head_crop(Image.open(Path(a.portraits) / f"{n}.png").convert("RGB")) for n in pool}
+    keep_n = int(ch["scores"].get("compare_keep", 5))
+    age_t = ch["scores"].get("age_used")
+    if not a.versus and age_t and len(pool) > keep_n:
+        # the stated age narrows the candidates first: the vision model's age of each rendered face, the keep_n
+        # nearest to it go on to the comparison (ties to the shape ranking's order)
+        aq = []
+        for n in pool:
+            fp_ = pd / f"age_{n}.png"
+            faces[n].save(fp_)
+            aq.append({"id": n, "image": str(fp_), "max_new_tokens": 4,
+                       "ask": {"age": "About how old is the person in this photo? Answer with a number only."}})
+        va = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
+                            input="".join(json.dumps(q) + "\n" for q in aq), capture_output=True, text=True)
+        ages = {}
+        for ln in va.stdout.splitlines():
+            if ln.startswith("{"):
+                r = json.loads(ln)
+                m = re.search(r"\d+", r["answers"].get("age") or "")
+                if m:
+                    ages[r["id"]] = int(m.group())
+        order0 = {n: i for i, n in enumerate(pool)}
+        pool = sorted(pool, key=lambda n: (abs(ages.get(n, 999) - float(age_t)), order0[n]))[:keep_n]
+        ch["scores"]["render_ages"] = ages
     qs = []
     for x, y in itertools.permutations(pool, 2):
         A, D, B = tile(faces[x]), tile(drawing), tile(faces[y])
