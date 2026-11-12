@@ -502,7 +502,7 @@ def look_at(spec, speaker):
     return spec
 
 
-ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.45, any)}   # an action's start: the hands this
+ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # an action's start: the hands this
                                                                              # near the chin (both / either), measured
 
 
