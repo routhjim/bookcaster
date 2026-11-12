@@ -335,7 +335,7 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
         spec = json.loads(rounds[-1].read_text()) if rounds else {}
         cam = next((c for c in spec.get("cameras") or [] if c["name"] == m["cam"]), {})
         # the face check is for the speaker only: people who are not speaking may be partly hidden, in profile or
-        # seen from behind (11-12, the user: "Sherlock is just behind Watson", the clip was fine)
+        # seen from behind (a person partly behind another is fine)
         named = ({cam["speaker"]} if cam.get("speaker") else
                  {cam["line_subject"]} if cam.get("line_subject") else set())   # the speaker, else whom it is about
         acts = {k: ((v.get("body_pose") or {}).get("params") or {}).get("action") for k, v in
