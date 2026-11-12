@@ -475,6 +475,21 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     return why, facts
 
 
+def placement_why(cam, subjects, room) -> list:
+    """A camera stands inside the room and outside everyone's body: framed on a face turned to the window, the
+    camera landed behind the glass and every check passed through it; another sat inside a man and drew black
+    (11-12)."""
+    p = cam["position"]
+    why = []
+    if not in_room(p, room):
+        why.append("the camera is outside the room")
+    for k, v in subjects.items():
+        m = v["measured"]
+        if math.dist(p[:2], m["pelvis_xy"]) < PERSON_R_M + 0.08 and p[2] < m["head_top_z"] + 0.05:
+            why.append(f"the camera is inside {k}")
+    return why
+
+
 def in_picture(f: dict) -> bool:
     """The person is in the picture: their head inside the frame's bounds (it may be behind someone: that is how a
     room looks), and on the still some of their own pixels; a head off the frame's edge with a sliver of body in
@@ -1379,6 +1394,11 @@ def main():
                              c.get("show"),
                              bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")),
                              cam_opts(spec, c))
+            pw = placement_why(sh["camera"], subjects, room)
+            if pw:                           # a camera outside the room or inside a person: never a key
+                chk["why"] = pw + chk["why"]
+                chk["framing"] = pw + chk.get("framing", [])
+                chk["ok"] = False
             sh["speaker_check"] = chk
             report["shots"].setdefault(c["name"], {"history": []})
             report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"]))
