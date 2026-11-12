@@ -241,6 +241,7 @@ CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(
 # 11-11: the fixed state of the room the supplied keys were staged in (supplied_keys(facts=)): its light, what is lit
 # and each large piece with its look and place, one fact a line. "" = none (every flow run): the prompts as before.
 SCENE_FACTS = ""
+HOLD_CAMERA = False     # the camera sentence alone, without facts (supplied_keys(hold=True))
 
 
 def with_facts(prompt: str, s: dict, words: str = "") -> str:
@@ -249,10 +250,12 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
     whose key did not show where it ends moved the camera and made up room), and the camera held on the opening
     picture's framing unless the director's own words for the shot (its action, or `words`: a chain line) ask for a
     camera move. Unchanged without facts."""
-    if not SCENE_FACTS:
+    if not (SCENE_FACTS or HOLD_CAMERA):
         return prompt
     hold = "" if CAMERA.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
         else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
+    if not SCENE_FACTS:
+        return f"{prompt.rstrip()}{hold}" if hold else prompt
     return (f"{prompt.rstrip()} The room keeps its fixed state through the whole clip, as in the opening picture: "
             f"{SCENE_FACTS}{hold}")
 
@@ -5436,19 +5439,21 @@ def _clips(book, stem, es, shots, log, op: Path | None = None) -> None:
 
 
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
-                  review: str = "agent", facts: Path | None = None) -> list:
+                  review: str = "agent", facts: Path | None = None, hold: bool = False) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
     as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
     size. Each key becomes its shot's key.png, newer than any clip of it, so the flow's own redo takes it: a clip
     from an older key is made again, a chain starts again from its line 1. Then the render as run() does it (same
     jobs, prompts, voice cuts, flags, judges and review cards); no assembly. facts: the fixed state of the scene the
-    keys were staged in, one fact a line: every clip's words carry it (with_facts). -> the shots' clips."""
-    global REVIEW, SCENE_FACTS
+    keys were staged in, one fact a line: every clip's words carry it (with_facts). hold: the camera sentence alone
+    (with_facts without facts). -> the shots' clips."""
+    global REVIEW, SCENE_FACTS, HOLD_CAMERA
     from PIL import Image
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
     REVIEW = review
+    HOLD_CAMERA = bool(hold)
     if facts:
         fl = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in Path(facts).read_text().splitlines()]
         SCENE_FACTS = " ".join(dict.fromkeys(x if x.endswith(".") else x + "." for x in fl if x))
@@ -5484,7 +5489,8 @@ if __name__ == "__main__":
     ap.add_argument("--shots", required=True, help="shot ids, comma-separated")
     ap.add_argument("--review", choices=["off", "agent", "user"], default="agent")
     ap.add_argument("--facts", type=Path, default=None, help="the keys' scene facts, one a line (with_facts)")
+    ap.add_argument("--hold", action="store_true", help="the camera-hold sentence without facts (with_facts)")
     a = ap.parse_args()
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
-                           facts=a.facts):
+                           facts=a.facts, hold=a.hold):
         print("clip:", c, "" if c.exists() else "(not made)")
