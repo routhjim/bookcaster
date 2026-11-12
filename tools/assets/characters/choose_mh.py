@@ -288,10 +288,15 @@ def main():
     mel, red, wht = COLOURS[col]
     if a.hair_map and Path(a.hair_map).exists():
         # a measured whiteness for this word (hair_calibrate.py: the value whose render the vision model names so)
-        mw = (json.loads(Path(a.hair_map).read_text()).get(col) or {}).get("whiteness")
-        if mw is not None:
-            wht = float(mw)
-            sc["hair_whiteness_measured"] = wht
+        hm_ = json.loads(Path(a.hair_map).read_text()).get(col) or {}
+        if hm_.get("whiteness") is not None:
+            wht = float(hm_["whiteness"])
+        if hm_.get("melanin") is not None:
+            mel = float(hm_["melanin"])
+        if hm_.get("redness") is not None:
+            red = float(hm_["redness"])
+        if hm_:
+            sc["hair_measured"] = {"melanin": mel, "redness": red, "whiteness": wht}
     params = {f"Bindings/{d}/": {"Melanin": mel, "Redness": red, "Whiteness": wht}
               for d in ("Hair", "Eyebrows", "Beards", "Mustaches")}
     build = list(BUILDS)[num(ans.get("build"), len(BUILDS))]

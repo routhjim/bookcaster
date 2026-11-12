@@ -24,7 +24,8 @@ def main():
     ap.add_argument("cmd", choices=["portraits"])
     ap.add_argument("dir")
     ap.add_argument("--word", required=True)
-    ap.add_argument("--values", nargs="+", type=float, required=True)
+    ap.add_argument("--values", nargs="+", type=float, default=[])
+    ap.add_argument("--grid", nargs="+", default=None, help="melanin,redness,whiteness entries (searched together)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--sheet", default=None, help="a sheet head whose hair the text calls WORD (the target answer)")
     ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()))
@@ -39,7 +40,15 @@ def main():
         qs0 = [{"id": "__sheet__", "image": a.sheet, "max_new_tokens": 4, "ask": {"colour": question}}]
     else:
         qs0 = []
-    qs = qs0 + [{"id": str(v), "image": str(Path(a.dir) / f"{a.word}_{v:g}.png" if (Path(a.dir) / f"{a.word}_{v:g}.png").exists() else Path(a.dir) / f"{a.word}_{v}.png"), "max_new_tokens": 4,
+    if a.grid:
+        # several parameters at once: each entry "melanin,redness,whiteness", its portrait <word>_<entry>.png
+        grid = [g for g in a.grid]
+        qs = qs0 + [{"id": g, "image": str(Path(a.dir) / f"{a.word}_{g}.png"), "max_new_tokens": 4,
+                     "ask": {"colour": question}} for g in grid]
+        a.values = grid
+    else:
+        qs = None
+    qs = qs or qs0 + [{"id": str(v), "image": str(Path(a.dir) / f"{a.word}_{v:g}.png" if (Path(a.dir) / f"{a.word}_{v:g}.png").exists() else Path(a.dir) / f"{a.word}_{v}.png"), "max_new_tokens": 4,
            "ask": {"colour": question}} for v in a.values]
     vl = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
                         input="".join(json.dumps(q) + "\n" for q in qs), capture_output=True, text=True)
@@ -52,9 +61,19 @@ def main():
             ans[r["id"]] = words[min(int(digits), len(words) - 1)] if digits else raw
     target = ans.pop("__sheet__", None) or a.word
     hits = [v for v in a.values if ans.get(str(v)) == target]
-    pick = min(hits) if hits else None
+    if a.grid and hits:
+        # the middle of the region the vision model names with the target word (not its first corner)
+        P = [[float(x) for x in h.split(",")] for h in hits]
+        c = [sum(col) / len(P) for col in zip(*P)]
+        pick = min(hits, key=lambda h: sum((float(x) - y) ** 2 for x, y in zip(h.split(","), c)))
+    else:
+        pick = min(hits) if hits else None
     mp = json.loads(Path(a.out).read_text()) if Path(a.out).exists() else {}
-    mp[a.word] = {"whiteness": pick, "target_answer": target, "answers": ans}
+    if a.grid and pick:
+        m_, r_, w_ = (float(x) for x in pick.split(","))
+        mp[a.word] = {"melanin": m_, "redness": r_, "whiteness": w_, "target_answer": target, "answers": ans}
+    else:
+        mp[a.word] = {"whiteness": pick, "target_answer": target, "answers": ans}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(mp, indent=1))
     print(json.dumps(mp[a.word]))
