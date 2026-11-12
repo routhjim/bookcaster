@@ -290,7 +290,11 @@ def quiet_take_seeds(retake: bool) -> tuple:
 
 
 def _chain_words(st: dict, text: str) -> str:
-    """A chain line as its clips are made of it (with_facts on the chain's line)."""
+    """A chain line as its clips are made of it (with_facts on the chain's line; with DROP_ABSENT, without the clauses
+    naming anyone its key does not show)."""
+    if DROP_ABSENT and st.get("id") in AUDIT:
+        cx, s = AUDIT[st["id"]]
+        text = drop_absent(text, absent_words(cx, s)) or text
     return with_facts(text, {"id": st.get("id")}, text)
 
 
@@ -460,6 +464,51 @@ ONLY_HERE = " Only the {n} already in the picture {be} ever in it: nobody else c
 GROUP_OFF = re.compile(r"\b(?:the|two|both)\s+(?:other\s+)?(?:men|women|people|others|visitors|gentlemen|ladies)\b", re.I)
 
 
+# 11-12 (research note, one user's counts on LTX-2.5: naming a person "out of frame" brought them in 6 of 10 clips;
+# a "nobody else enters" sentence did not stop it): with supplied keys, words for anyone the key does not show are
+# left out, not reworded. supplied_keys(drop_absent=True) sets it; off, the words are as before.
+DROP_ABSENT = False
+AUDIT: dict = {}            # shot id -> (cx, shot) for the chain lines' words (supplied_keys, with DROP_ABSENT)
+
+
+def absent_words(cx, s: dict) -> list:
+    """The descriptions (describe(), in the shot's and in their usual clothes) of the book's people not in the shot,
+    longest first, leaving out any that a person in the shot also answers to."""
+    who = s.get("who") or []
+    R_ = RG.Book(cx.book)
+    gone = [w for w in R_.people() if w not in who]
+    mid = str(s.get("id") or "").rsplit("_s", 1)[0]
+    try:
+        dress = MF._dress(cx.book, cx.stem, mid, gone)
+    except Exception:                                   # noqa: BLE001 - no wardrobe: the looks' own clothes
+        dress = {}
+    mine = {describe(R_, w, _shot_dress(cx, s)) for w in who} | {describe(R_, w) for w in who}
+    return sorted({x for w in gone for x in (describe(R_, w, dress), describe(R_, w))
+                   if x != "the figure" and x not in mine}, key=len, reverse=True)
+
+
+def drop_absent(text: str, absent: list) -> str:
+    """`text` without the clauses that name anyone in `absent` (or a group: "the two men", "the others"): a sentence
+    whose first clause names one goes whole; a later clause (after a comma, "and", "as", "while") goes alone."""
+    def names(x):
+        return any(re.search(re.escape(d), x, re.I) for d in absent) or bool(GROUP_OFF.search(x))
+    out = []
+    for sent in re.split(r"(?<=[.;!?])\s+", str(text or "").strip()):
+        parts = re.split(r"(,\s*|\s+(?:and|as|while|whereas)\s+)", sent)
+        if not parts or names(parts[0]):
+            continue
+        keep, i = parts[0], 1
+        while i < len(parts) - 1:
+            if not names(parts[i + 1]):
+                keep += parts[i] + parts[i + 1]
+            i += 2
+        keep = keep.rstrip(" ,")
+        if keep and keep[-1] not in ".;!?":
+            keep += "."
+        out.append(keep)
+    return " ".join(x for x in out if x.strip(" ."))
+
+
 def _offscreen(cx, s: dict, text: str, only: bool = True) -> str:
     """10-30: a quiet shot of one person whose action named another ("watches the man in the white nightshirt", "as
     the men approach") made LTX walk that one in - a second Holmes, Watson or Helen; and "leans forward" over "stays
@@ -477,10 +526,13 @@ def _offscreen(cx, s: dict, text: str, only: bool = True) -> str:
     except Exception:                                   # noqa: BLE001 - no wardrobe: the looks' own clothes
         dress = {}
     mine = {describe(R_, w, _shot_dress(cx, s)) for w in who} | {describe(R_, w) for w in who}
-    for d in sorted({x for w in gone for x in (describe(R_, w, dress), describe(R_, w))
-                     if x != "the figure" and x not in mine}, key=len, reverse=True):   # (one who looks the same stays)
-        text = re.sub(re.escape(d), "someone out of the picture", text, flags=re.I)
-    text = GROUP_OFF.sub("people out of the picture", text)
+    if DROP_ABSENT:                     # (11-12: left out, not reworded)
+        text = drop_absent(text, absent_words(cx, s))
+    else:
+        for d in sorted({x for w in gone for x in (describe(R_, w, dress), describe(R_, w))
+                         if x != "the figure" and x not in mine}, key=len, reverse=True):   # (one who looks the same stays)
+            text = re.sub(re.escape(d), "someone out of the picture", text, flags=re.I)
+        text = GROUP_OFF.sub("people out of the picture", text)
     n = len(who)
     if not only:
         return text
@@ -5682,7 +5734,7 @@ def work_book(book: Path, stem: str, root: Path, ids: list, log=print) -> Path:
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
                   review: str = "agent", facts: Path | None = None, hold: bool = False,
                   quiet_seeds: tuple = (), key_people_: bool = False, work_root: Path | None = None,
-                  in_place: bool = False) -> list:
+                  in_place: bool = False, drop_absent_: bool = False) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model): `plan` is a saved plan (plan_*.json, as run() writes it), used as it is - nothing planned,
     drawn or judged before the render; `keys` a folder of <shot id>.png at the clip size. Everything is checked
@@ -5701,11 +5753,13 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     count, judge, lip-sync zone, side words), and a talk shot whose speaker is not among them is not rendered
     (STOPPED). -> the shots' clips."""
     global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED, NO_STATUS
+    global DROP_ABSENT, AUDIT
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
     # (11-12 review: an option of an earlier call in the same process stayed on when the next call left it out)
     SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED = "", False, (), {}, {}, {}, {}
     NO_STATUS = False
+    DROP_ABSENT, AUDIT = bool(drop_absent_), {}
     by = json.loads(Path(plan).read_text())
     es = by.pop("_es")
     for k in [k for k in by if k.startswith("_")]:
@@ -5783,6 +5837,9 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
         (d / "key.png").unlink(missing_ok=True)         # (never through a link)
         shutil.copyfile(src, d / "key.png")             # (a fresh mtime: newer than every clip of the shot)
         log(f"{s['id']}: key from {src}")
+    if DROP_ABSENT:                     # (the chain lines' words: their shot, with the key's people)
+        cx_ = _ctx(book, stem)[1]
+        AUDIT = {s["id"]: (cx_, s) for s in shots}
     _clips(book, stem, es, shots, log)
     return [sd / "ltx" / "out" / f"{i}.mp4" for i in ids]
 
@@ -5835,6 +5892,8 @@ if __name__ == "__main__":
     ap.add_argument("--work-root", type=Path, default=None,
                     help="render under DIR/<book name>: keys, clips, records, review folders and cuts are written "
                          "there and the book is only read (with --assemble: cut the stretch from the clips there)")
+    ap.add_argument("--drop-absent", action="store_true",
+                    help="leave out of the words every clause naming someone the key does not show (not reworded)")
     ap.add_argument("--in-place", action="store_true",
                     help="replace the book's own keys and clips for these shots (refused otherwise when it has clips "
                          "from other keys and no --work-root is given)")
@@ -5847,5 +5906,6 @@ if __name__ == "__main__":
         ap.error("--keys and --shots are needed to render (only --assemble runs without them)")
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
                            facts=a.facts, hold=a.hold, quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x),
-                           key_people_=a.key_people, work_root=a.work_root, in_place=a.in_place):
+                           key_people_=a.key_people, work_root=a.work_root, in_place=a.in_place,
+                           drop_absent_=a.drop_absent):
         print("clip:", c, "" if c.exists() else f"(not made{': ' + STOPPED[c.stem] if c.stem in STOPPED else ''})")
