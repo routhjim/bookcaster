@@ -42,23 +42,31 @@ RULES = (
 
 
 def passage(chapter: str, plan: dict, ids: list) -> str:
-    """The chapter's text from a little before the scene's first spoken line to the end of its last one."""
+    """The chapter's text from a little before the scene's first spoken line to just after its last one: the first
+    words of the first line and the last words of the last line, found in the chapter by their letters alone (the
+    spoken lines leave out the narration between their parts)."""
     es = {e["id"]: e for e in plan.get("_es", [])}
-    norm = lambda s: re.sub(r"[^a-z0-9]+", " ", s.lower())
-    text_n = norm(chapter)
+    pos, letters = [], []
+    for i, ch in enumerate(chapter):         # letters-and-digits only, with each one's place in the chapter
+        if ch.isalnum():
+            letters.append(ch.lower())
+            pos.append(i)
+    flat = "".join(letters)
+    key = lambda s, n, last=False: "".join(c.lower() for c in " ".join(
+        (re.findall(r"\w+", s)[-n:] if last else re.findall(r"\w+", s)[:n])) if c.isalnum())
     talk = [es[i].get("words") for i in ids if es.get(i, {}).get("words")]
     if not talk:
-        return chapter[:6000]
-    a = text_n.find(norm(talk[0])[:40])
-    last = norm(talk[-1])
-    b = text_n.find(last[:40])
+        raise SystemExit("no spoken line in the scene's shots: the passage cannot be found")
+    a = b = -1
+    for n in (6, 4, 3):
+        a = flat.find(key(talk[0], n)) if a < 0 else a
+        k_end = key(talk[-1], n, last=True)
+        b = flat.find(k_end, max(a, 0)) + len(k_end) if b < 0 and flat.find(k_end, max(a, 0)) >= 0 else b
     if a < 0 or b < 0:
-        return chapter[:6000]
-    # map normalized offsets back roughly by ratio
-    r = len(chapter) / max(1, len(text_n))
-    start = max(0, int(a * r) - 1500)
-    end = min(len(chapter), int((b + len(last)) * r) + 200)
-    return chapter[start:end]
+        raise SystemExit("the scene's spoken lines were not found in the chapter")
+    start = chapter.rfind("\n\n", 0, max(0, pos[a] - 1200)) + 2
+    end = chapter.find("\n\n", pos[min(b, len(pos) - 1)])
+    return chapter[max(0, start):end if end > 0 else len(chapter)]
 
 
 def set_words(set_dir: Path, library: Path) -> tuple:
@@ -66,7 +74,7 @@ def set_words(set_dir: Path, library: Path) -> tuple:
     seats = seating.seats(library, set_dir)
     lines = []
     for t in things:
-        w = t["words"].split(" (")[0]
+        w = t["words"]
         lines.append(f"{t['name']}: {w}" + (f", {t['place']}" if t.get("place") else "")
                      + (" (a seat)" if t["name"] in seats else ""))
     return things, seats, lines
@@ -106,7 +114,8 @@ def shot_prompt(psg: str, set_lines: list, people: list, shot: dict, state: dict
         + "\nThe people (name: worn-state choices):\n" + "\n".join(people)
         + "\nThe pose list: " + ", ".join(POSES) + "\nThe camera kinds: " + ", ".join(CAMERAS)
         + f"\nShot {n} of the scene, as the director wrote it: "
-        + json.dumps({k: shot.get(k) for k in ("kind", "framing", "speaker", "listener", "action", "people", "line")
+        + json.dumps({k: shot.get(k) for k in ("kind", "framing", "speaker", "listener", "action", "people", "line",
+                                                "things")
                       if shot.get(k)}, ensure_ascii=False)
         + "\nWhere everyone was just before this shot: " + json.dumps(state, ensure_ascii=False)
         + "\nFor the FIRST picture of this shot (the moment before its action happens) give: who is in the room; who "

@@ -189,7 +189,7 @@ def place_from(ans: dict, things: list, seats: dict, room: list, others: list, t
     t = next((x for x in things if x["name"] == ans["thing"]), None)
     if t is None:
         return None
-    sitting = bool(ans.get("sitting")) or ans.get("posture") == "sitting"
+    sitting = bool(ans.get("sitting")) is True or ans.get("posture") in ("sitting", "seated")
     if sitting:
         cands = [s_ for n_, s_ in seats.items() if n_ not in taken]
         seat = seats.get(t["name"]) if t["name"] in seats and t["name"] not in taken else (
