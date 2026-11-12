@@ -921,7 +921,10 @@ def groom_words(hair, beard=None, moustache=None):
     if hair:
         ln, st = parse(hair)
         ws = [w for k, w in STY if k in (st or "")]
-        worn = ", ".join(x for x in ([f"{LEN.get(ln, '')} hair".strip()] + ws) if x)
+        # an up-do's groom length is the length left loose, not the hair's: no length word for it
+        lw = [] if any(k in (st or "") for k in ("Updo", "Buns", "SweptUp", "Ponytail")) else [f"{LEN.get(ln, '')} hair".strip()]
+        worn = ", ".join(x for x in (lw + ws) if x)
+        worn = ("hair " + worn) if not lw else worn
     fh = []
     if moustache:
         ln, st = parse(moustache)
