@@ -359,6 +359,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     role = "speaker" if speaker else "person the shot is about"
     sh_spk = head_h(cam, subjects[lead]["measured"], res) if lead else 0.0
     keep = {lead, opts.get("subject")}
+    if lead and not speaker and (not facts[lead]["head_in"] or facts[lead].get("cut")):
+        why.append(f"{lead} (the shot is about {lead}) is cut by the frame's edge")
     for k, v in subjects.items():
         if k == lead or not facts[k]["any_in"]:
             continue

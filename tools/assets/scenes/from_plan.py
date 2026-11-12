@@ -558,10 +558,28 @@ def main():
     if cur:
         groups.append(cur)
     specs = []
+    reached = {}                     # key -> (where the plan had them, where a reach put them, facing there)
     for gi, g in enumerate(groups, 1):
         st = g[0][1]
         chars = {}
         cam0 = g[0][0]
+        for k in list(reached):      # still where the plan had them before the reach, standing: they did not move
+            if k in st and st[k]["position"] == reached[k][0] and st[k]["pose"] != "sitting" and \
+                    (st[k].get("at"), st[k].get("facing_thing")) == reached[k][3]:    # (new place words or a turn
+                # toward a thing are the plan moving them)
+                for _, s_ in g:
+                    if k in s_ and s_[k]["position"] == reached[k][0]:
+                        s_[k]["position"] = list(reached[k][1])
+                        s_[k].pop("marks", None)     # (the plan's marks are round the place they left)
+                        to = s_.get(s_[k].get("facing_to") or "")
+                        if to:                   # whom he faces, from where he now stands
+                            d_ = [to["position"][0] - reached[k][1][0], to["position"][1] - reached[k][1][1]]
+                            n__ = math.hypot(*d_) or 1.0
+                            s_[k]["facing"] = [round(d_[0] / n__, 4), round(d_[1] / n__, 4)]
+                        else:
+                            s_[k]["facing"] = list(reached[k][2])
+            else:
+                del reached[k]
         for k, v in st.items():
             cv = next(c for c in cast.values() if c["key"] == k)
             w = (cam0.get("_worn") or {}).get(k)
@@ -607,6 +625,9 @@ def main():
                         n_ = math.hypot(*d) or 1.0
                         c.update(position=pos, facing=[round(d[0] / n_, 4), round(d[1] / n_, 4)],
                                  reach={"to": who[0], "her_side": side})
+                        # he is there now: the next stagings find him beside her until the plan moves him (11-12:
+                        # back at the desk in the next shot, and no camera could then hold her and him together)
+                        reached[k] = (list(v["position"]), list(pos), list(c["facing"]), (v.get("at"), v.get("facing_thing")))
                         c.pop("marks", None)
                         cam0["show_joints"] = [[k, "hand_r"], [who[0], f"lowerarm_{side}"]]
             if var:
