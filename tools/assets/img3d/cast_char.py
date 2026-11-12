@@ -682,6 +682,9 @@ def main():
                 "missing_layers": ([" ".join(ch["garment"]["outer_words"])]
                                    if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
                                    else []),
+                "facts": entry_facts(ch, [" ".join(ch["garment"]["outer_words"])]
+                                     if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
+                                     else []),
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
                 indent=1))
@@ -897,6 +900,48 @@ def main():
                 raise RuntimeError(f"skin shows through the cloth: {json.dumps(CH['skin_probe']['shots'])}")
     save()
     log(f"done: {a.id} in {TT.get('total')} s of steps; {json.dumps(TT)}")
+
+
+def groom_words(hair, beard=None, moustache=None):
+    """Words for the grooms a character was built with (names like Hair_S_UpdoBuns, Mustache_L_Full)."""
+    import re as _re
+    LEN = {"S": "short", "M": "medium-length", "L": "long"}
+    STY = [("Updo", "pinned up"), ("Buns", "in a bun"), ("SweptUp", "swept up and back"), ("SlickBack", "slicked back"),
+           ("PulledBack", "pulled back"), ("Ponytail", "in a ponytail"), ("Braids", "braided"), ("Bald", "balding"),
+           ("HairLoss", "thinning"), ("Recede", "receding"), ("Messy", "untidy"), ("Curly", "curly"), ("Afro", "curly"),
+           ("Coil", "coiled"), ("Clean", "neatly cut"), ("Casual", "loosely cut"), ("BuzzCut", "cropped close"),
+           ("BrushCut", "cropped"), ("Fade", "cropped at the sides"), ("Fringe", "with a fringe"),
+           ("Bangs", "with a fringe"), ("Bob", "cut to the jaw"), ("Layered", "layered"), ("Straight", "straight"),
+           ("Pixie", "cropped short")]
+
+    def parse(name):
+        m = _re.search(r"_(S|M|L)_([A-Za-z]+)", name or "")
+        return (m.group(1), m.group(2)) if m else (None, None)
+    worn = None
+    if hair:
+        ln, st = parse(hair)
+        ws = [w for k, w in STY if k in (st or "")]
+        worn = ", ".join(x for x in ([f"{LEN.get(ln, '')} hair".strip()] + ws) if x)
+    fh = []
+    if moustache:
+        ln, st = parse(moustache)
+        fh.append(" ".join(x for x in ({"L": "large", "M": "", "S": ""}.get(ln, ""), _re.sub(r"(?<!^)([A-Z])", r" \1", st or "").lower(), "moustache") if x))
+    if beard:
+        ln, st = parse(beard)
+        fh.append(" ".join(x for x in ({"L": "long", "M": "", "S": "short"}.get(ln, ""), _re.sub(r"(?<!^)([A-Z])", r" \1", st or "").lower(), "beard") if x))
+    return worn, (" and ".join(fh) if fh else "none")
+
+
+def entry_facts(ch, missing=None):
+    """The entry's "facts" block, only from the build's own facts: the grooms it was built with and the colour word
+    it was built in (the chooser's), the layers left out. What the redraw says about this person's hair, facial
+    hair and missing layers."""
+    g = ch.get("grooms") or {}
+    clear = set(ch.get("clear_slots") or [])
+    worn, fh = groom_words(g.get("Hair"), None if "Beard" in clear else g.get("Beard"),
+                           None if "Mustache" in clear else g.get("Mustache"))
+    return {"hair_colour": (ch.get("scores") or {}).get("hair_colour"), "hair_worn": worn, "facial_hair": fh,
+            "missing_layers": list(missing or []), "grooms": {k: v for k, v in g.items() if k != "Eyebrows"}}
 
 
 def spread_look(look, outer_words=None):
