@@ -1156,7 +1156,11 @@ def main():
                                  cam_opts(spec, c))
         if tc:
             return tc[0]
-        if not spk:                          # no speaker: a tighter frame on the shot's subject
+        if not spk and len(c.get("show") or []) >= 2:   # everyone the shot names stays in it
+            tc = two_shot_candidates(c, shots[c["name"]], None, None, subj2, res, room, line, est_side, list(tried_c),
+                                     cam_opts(spec, c))
+            return (tc[0][0], "two") if tc else None
+        if not spk:                          # no speaker, one person named: a tighter frame on the shot's subject
             tc = two_shot_candidates(dict(c, show=[c.get("subject")]), shots[c["name"]], None, None, subj2, res,
                                      room, line, est_side, list(tried_c), cam_opts(spec, c)) if c.get("subject") else []
             return (tc[0][0], "tight") if tc else None
