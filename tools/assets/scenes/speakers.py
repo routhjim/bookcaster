@@ -345,6 +345,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             # head (a medium's waist at the bottom edge is the shot, not a cut)
             f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))
             f["cut_edges"] = [e for e in ("left", "right", "top") if mf[e]]
+            f["head_proj"] = f["head_any"]   # the head inside the frame's bounds (behind someone or not)
             if mf["area"] < LISTENER_AREA["two"] * 0.3:
                 f["head_in"] = f["head_any"] = f["shoulder_in"] = False      # hidden (behind a chair, a person)
     seated_lis = bool(listener) and listener in (opts.get("seated") or ())
@@ -385,10 +386,20 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         oth = [head_h(cam, v["measured"], res) * 7.5 * 0.55 for k, v in subjects.items() if k != mv and facts[k]["any_in"]]
         if oth and eh < min(oth) * 0.8:
             why.append(f"the end place is small in the frame ({eh:.2f} of its height)")
-    if mv and mv in subjects:                # the mover's face readable at the move's start
+    if mv and mv in subjects:                # the mover is the shot: clearly in view, the face readable at the start
         mm = subjects[mv]["measured"]
+        mma = (facts[mv].get("mask") or {}).get("area")
         if plan_angle(mm["head_fwd_xy"], mm["eye_xy"], cam["position"]) > 80 or not facts[mv]["head_in"]:
             why.append(f"{mv}'s face (the one who moves) is not readable")
+        elif shot is not None and mma is not None and mma < MOVER_AREA:
+            why.append(f"{mv} (the one who moves) is hidden: {mma:.1%} of the frame")
+        elif shot is not None:
+            fv = face_seen(dict(shot, camera=cam), mv, mm, res, mv in (opts.get("covered") or ()))
+            if fv is not None and fv < 0.5:
+                why.append(f"{mv}'s face (the one who moves) {fv:.0%} visible")
+        elif blocked(cam["position"], [mm["eye_xy"][0], mm["eye_xy"][1], mm["eye_z"]],
+                     [v["measured"] for k, v in subjects.items() if k != mv]):
+            why.append(f"{mv} (the one who moves) is behind someone")
     for k, jn in opts.get("joints") or []:
         j = ((subjects.get(k) or {}).get("measured") or {}).get("joints") or {}
         q = framing.project(cam, j[jn], res) if jn in j else None
@@ -464,11 +475,15 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
 
 
 def in_picture(f: dict) -> bool:
-    """Any of the person is in the picture: on the still, their own visible pixels; before it, any body point."""
+    """The person is in the picture: their head inside the frame's bounds (it may be behind someone: that is how a
+    room looks), and on the still some of their own pixels; a head off the frame's edge with a sliver of body in
+    view is not (the redraw dropped her altogether, 11-12)."""
     ma = (f.get("mask") or {}).get("area")
-    return (ma >= 0.002) if ma is not None else bool(f.get("any_in"))
+    head = f.get("head_proj", f.get("head_any"))
+    return bool(head) and ((ma >= 0.002) if ma is not None else bool(f.get("any_in")))
 
 
+MOVER_AREA = 0.01            # the mover's own visible share of the frame at least
 SLIVER = 0.35                # a face with less than this share of its width inside the frame (and some of it in)
 
 
