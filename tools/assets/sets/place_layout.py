@@ -106,7 +106,7 @@ def span_rect(side: str, u: float, hw: float, depth: float, W: float, D: float) 
     return rect_at(c, h)
 
 
-def place_openings(spec: dict, records: dict, data: dict, W: float, D: float, rules: dict | None = None) -> tuple:
+def place_openings(spec: dict, records: dict, data: dict, W: float, D: float) -> tuple:
     rk = data["room_kinds"][spec["kind"]]
     margin = data["opening_margin_m"]
     outer = list(spec.get("outer_walls") or rk.get("outer_walls") or [])
@@ -114,13 +114,9 @@ def place_openings(spec: dict, records: dict, data: dict, W: float, D: float, ru
     done, unmet, counts = [], [], {}
     order = sorted(spec.get("openings", []), key=lambda o: ("fireplace", "window", "door").index(o["kind"]))
 
-    rules = rules or pc.load_rules()
-    dress = float((rules["hard"].get("window_dressing") or {}).get("width_m", 0.0))
-
     def clear(kind, side, u, w, od):
         L = wall_len(side, W, D)
-        reach_w = max(w, dress) if kind == "window" else w
-        if abs(u) + reach_w / 2 > L / 2 - 0.1:
+        if abs(u) + w / 2 > L / 2 - 0.1:
             return False
         for q in done:
             qw = q["width_m"] / 2 + (data["openings"]["fireplace"]["breast_side_m"] if q["kind"] == "fireplace" else 0)
@@ -207,7 +203,7 @@ class Ctx:
         self.rng = random.Random(seed)
         self.rel = data["relations"]
         self.gap = data["piece_gap_m"]
-        self.openings, self.unmet = place_openings(spec, records, data, self.W, self.D, self.R)
+        self.openings, self.unmet = place_openings(spec, records, data, self.W, self.D)
         self.by_id = {o["id"]: o for o in self.openings}
         self.pieces = {p["id"]: p for p in spec.get("pieces", [])}
         allrel = [r for r in spec.get("relations", [])]
@@ -349,22 +345,6 @@ def exempt(ctx: Ctx, owner: str, other: str) -> bool:
     return False
 
 
-def drape_zones(ctx: Ctx, o: dict) -> list:
-    """The floor a window's drapes take (``hard.window_dressing``): ``(rect, is_a_side_column)`` for the part
-    before the window and the columns beyond each side of it."""
-    dr = ctx.R["hard"].get("window_dressing") or {}
-    dw, dd = float(dr.get("width_m", 0.0)), float(dr.get("depth_m", 0.0))
-    if dw <= 0 or dd <= 0:
-        return []
-    out = [(span_rect(o["wall"], o["at_m"], o["width_m"] / 2, dd, ctx.W, ctx.D), False)]
-    side = (dw - o["width_m"]) / 2
-    if side > 1e-6:
-        for sgn in (1.0, -1.0):
-            u = o["at_m"] + sgn * (o["width_m"] / 2 + side / 2)
-            out.append((span_rect(o["wall"], u, side / 2, dd, ctx.W, ctx.D), True))
-    return out
-
-
 def fits(ctx: Ctx, cand: dict, placed: dict, fixed_zones: list) -> bool:
     r = cand["rect"]
     if r[0] < -ctx.W / 2 - 1e-6 or r[2] > ctx.W / 2 + 1e-6 or r[1] < -ctx.D / 2 - 1e-6 or r[3] > ctx.D / 2 + 1e-6:
@@ -378,15 +358,11 @@ def fits(ctx: Ctx, cand: dict, placed: dict, fixed_zones: list) -> bool:
         if overlap(r, z):
             return False
     hd = ctx.R["hard"]
-    for o in ctx.openings:
-        if o["kind"] != "window":
-            continue
-        tall = cand["size_m"][2] > o.get("sill_m", 0.0) + hd["window_tall_over_sill_m"]
-        if tall and not cand.get("wall") and overlap(r, span_rect(o["wall"], o["at_m"], o["width_m"] / 2,
-                                                                  hd["window_keepout_m"], ctx.W, ctx.D)):
-            return False                            # a tall piece does not stand in front of a window
-        for z, side in drape_zones(ctx, o):         # nor in the drapes; nothing stands in their side columns
-            if overlap(r, z) and (side or tall):
+    if not cand.get("wall"):                        # a tall piece does not stand in front of a window
+        for o in ctx.openings:
+            if o["kind"] == "window" and cand["size_m"][2] > o.get("sill_m", 0.0) + hd["window_tall_over_sill_m"] \
+                    and overlap(r, span_rect(o["wall"], o["at_m"], o["width_m"] / 2, hd["window_keepout_m"],
+                                             ctx.W, ctx.D)):
                 return False
     for q in placed.values():
         if q["flat"] or q.get("on"):
@@ -604,15 +580,7 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             for k in range(k0, k1 + 1):
                 u = round(k * step, 3)
                 p = wall_pt(side, u, W, D)
-                off = wg
-                if size[2] <= ctx.R["hard"].get("low_under_window_m", 1.0):
-                    # a low piece at a window stands out from the wall by the drapes' depth, so they hang behind it
-                    for o in ctx.openings:
-                        if o["kind"] == "window" and o["wall"] == side and drape_zones(ctx, o):
-                            dz = ctx.R["hard"]["window_dressing"]
-                            if abs(o["at_m"] - u) < max(o["width_m"], dz["width_m"]) / 2 + hw - 1e-6:
-                                off = max(off, dz["depth_m"] + wg)
-                c = (p[0] + n[0] * (size[1] / 2 + off), p[1] + n[1] * (size[1] / 2 + off))
+                c = (p[0] + n[0] * (size[1] / 2 + wg), p[1] + n[1] * (size[1] / 2 + wg))
                 cand = make(ctx, pid, c, n, {"wall": side, "u": u})
                 blocked = False
                 for o in ctx.openings:
