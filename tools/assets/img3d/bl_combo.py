@@ -1660,6 +1660,14 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
                 me_l.attributes.remove(a_)
         me_l.materials.clear()
         REP["liner"] = {"covered": int(cov.sum()), "verts": len(me_l.vertices), "s": round(time.time() - t_l, 2)}
+if JOB.get("skin_mask") is not None and not STATUE and HEAD is not None:
+    # the head mesh's skin under the cloth, as an opacity mask in its UVs (the engine hides it: char_skinmask.py)
+    t = time.time()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import bl_skinmask  # noqa: E402
+    os.makedirs(os.path.join(OUT, "textures"), exist_ok=True)
+    bl_skinmask.build(HEAD, fig, J, JOB, REP, os.path.join(OUT, "textures", "T_head_mask.png"))
+    mark("skin_mask", t)
 bpy.data.objects.remove(body)
 if HEAD is not None:
     bpy.data.objects.remove(HEAD)

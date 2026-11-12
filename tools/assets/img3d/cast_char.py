@@ -18,11 +18,13 @@ Steps (each skipped when its output exists, so a re-run resumes; --from STEP red
            a dress collar with a white edge and cuffs); otherwise the coat route (skirt from the pelvis when the
            cloth below the hips stands off the legs at mid-thigh, a constructed collar: a tie when the look says
            "tie", else a cravat/bow when it says "cravat" or "collar")
-  import   engine: the outfit, a library entry (character.json) on the assembled Blueprint
+  import   engine: the outfit, the character's own masked face skin (char_skinmask.py, the fit's mask), a library
+           entry (character.json) on the assembled Blueprint wearing both
   arms     engine + image station: one relaxed scene with three copies at 4 / 8 / 12 degrees of arm abduction,
            the scene tool's guides, arm_gap.py: the smallest abduction whose forearms separate from the body in
            >= 8 of 10 rows on both sides at the wide shot goes into character.json "relaxed_arm_steps"
-  check    engine: wide / medium / close stills in the set (check.png)
+  check    engine: wide / medium / close stills in the set (check.png); flat-lit studio stills with and without
+           the face mesh, skin_probe.py: no skin-coloured head mesh at the shoulders (fails the build)
 Writes WORK/times.json (seconds per step) and WORK/choices.json (every automatic choice and its measurement).
 """
 from __future__ import annotations
@@ -311,7 +313,11 @@ def main():
             lk = a.look.lower()
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
                    "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
-                   "collar_lift": False, "liner": False}   # head push everywhere until the skin under cloth is hidden by a mask
+                   "collar_lift": False, "liner": False,
+                   # cloth pushed out of the head mesh only near the neck (a push over the shoulders flattened puffed
+                   # sleeves); the head mesh's skin under the cloth is hidden instead: the fit bakes an opacity mask in
+                   # the head's UVs (bl_skinmask.py) that the character's own masked skin material wears
+                   "head_push_r_m": 0.08, "skin_mask": {}}
             if m["long_skirt"]:
                 job.update(sleeve_radius_m=0.20, skirt_pelvis=1.0, turn_legs=False, shoe_top_m=0.0, skirt_min_z_m=-1.0,
                            long_skirt=True)
@@ -376,12 +382,18 @@ def main():
                 "import_outfit": {"outfit_fbx": str(combo / "outfit.fbx"), "textures": str(combo / "textures"),
                                   "dest": dest, "cloth_slots": False}}, 900)
             bp = (CH.get("mh_build") or {}).get("blueprint") or f"/Game/MetaHumans/{mh_name}/BP_{mh_name}"
+            # the character's own masked copy of its face skin, wearing the fit's mask (the shared material untouched)
+            sk = ue_job(W, "skin_mask", str(ASSETS / "characters" / "char_skinmask.py"), {
+                "face_folder": bp.rsplit("/", 1)[0], "mask_png": str(combo / "textures" / "T_head_mask.png"),
+                "dest": f"{dest}/Skin"}, 1200)
+            CH["skin_mask"] = {"fit": json.loads((combo / "report.json").read_text()).get("skin_mask"), "engine": sk}
             lib.mkdir(parents=True, exist_ok=True)
             (lib / "character.json").write_text(json.dumps({
                 "class": "character", "kind": "metahuman", "project": "CharLab", "blueprint": bp,
                 "rebuild_from": f"/Game/Char/{mh_name}", "bp_deps": ["/MetaHumanCharacter/Animation/ABP_MH_LiveLink"],
                 "character_asset": f"/Game/Char/{mh_name}", "hide_body": True, "id": a.id,
-                "garments": [f"{dest}/Outfit/outfit"], "body_swap": None, "garment_material": None,
+                "garments": [f"{dest}/Outfit/outfit", f"@face_material={sk['instance']}"], "body_swap": None,
+                "garment_material": None, "skin_mask": {"material": sk["instance"], "mask": sk["mask"]},
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
                 indent=1))
@@ -492,7 +504,8 @@ def main():
                 lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
                 st = {"base": a.id, "pose": "seated", "seat_asset": seat["asset"], "seat_z_m": b["seat_z_m"],
                       "params": c["body_pose"]}
-                ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"], stance=st, seat_asset=seat["asset"],
+                ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"] + [g for g in cj0["garments"] if g.startswith("@")],
+                           stance=st, seat_asset=seat["asset"],
                            seat_z_m=b["seat_z_m"], note=f"Seated only, in the set's {name} ({seat['asset']}, seat "
                            f"{b['seat_z_m']} m): {a.id} with its loose cloth laid over the thighs and seat (bl_settle, no relaxation).")
                 ent.pop("relaxed_arm_steps", None)
@@ -520,6 +533,30 @@ def main():
                                env=env, capture_output=True, text=True)
             if p.returncode:
                 raise RuntimeError(f"check scene failed: {p.stdout[-1500:]}")
+    # ---------------------------------------------------------------- skin through the cloth, measured
+    # flat-lit studio stills (no firelight to give dark cloth the face's warmth), each with a twin without the face
+    # mesh: the head mesh's skin-coloured pixels at the shoulders must be under 0.2 % of the shoulder region
+    skin_p = W / "skin_probe.json"
+    if not done("check", skin_p):
+        @timed("skin_probe")
+        def _():
+            cj4 = json.loads((lib / "character.json").read_text())
+            out = W / "ue" / "skin_flat"
+            out.mkdir(parents=True, exist_ok=True)
+            shots = [{"name": n, "char": "a", "frame": fr, "az": az, "probe_face": True}
+                     for n, fr, az in (("front", "medium", 0), ("q34", "medium", 35), ("side", "medium", 80),
+                                       ("back", "medium", 180), ("close", "close", 15))]
+            ue_job(W, "skin_flat", str(ASSETS / "characters" / "char_render.py"), {
+                "map": "/Engine/Maps/Templates/Template_Default", "warm_frames": 150, "settle_frames": 30,
+                "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5, "out": str(out),
+                "characters": {"a": {"path": cj4["blueprint"], "garments": cj4["garments"], "hide_body": True}},
+                "shots": shots}, 1200)
+            p = subprocess.run([sys.executable, str(ASSETS / "characters" / "skin_probe.py"),
+                                str(W / "ue" / "skin_flat" / "result.json"), "--out", str(skin_p)],
+                               capture_output=True, text=True)
+            CH["skin_probe"] = json.loads(skin_p.read_text())
+            if p.returncode:
+                raise RuntimeError(f"skin shows through the cloth: {json.dumps(CH['skin_probe']['shots'])}")
     save()
     log(f"done: {a.id} in {TT.get('total')} s of steps; {json.dumps(TT)}")
 

@@ -162,6 +162,40 @@ def add_follower(a, body, mesh_path, label, materials_from=None):
     return comp
 
 
+def face_material(key, face):
+    """Garment token "@face_material=<path>": the character's own masked copy of its face skin (char_skinmask.py),
+    so the skin under its clothes is hidden; every face skin slot wears it (the face is held at LOD 0). Applied on
+    every refresh: a Blueprint rebuilds its components (and their dynamic skin instances) after spawning."""
+    spec = JOB["characters"][key]
+    fm = [g[len("@face_material="):] for g in spec.get("garments", []) if g.startswith("@face_material=")]
+    if not fm or face is None:
+        return
+    # the character's own masked copy of its face skin (char_skinmask.py): the skin under its clothes is hidden;
+    # every face skin slot wears it (the face is held at LOD 0), the asset and the shared material stay as they are
+    fmat = EAL.load_asset(fm[0])
+    if fmat is None:
+        raise RuntimeError(f"no face material {fm[0]}")
+    k, seen = 0, []
+    try:
+        slots = [str(n) for n in face.get_material_slot_names()]
+    except Exception:
+        slots = []
+    for j in range(face.get_num_materials()):
+        m = face.get_material(j)
+        chain = []
+        while m is not None and len(chain) < 4:      # a Blueprint may wear dynamic instances of the skin
+            chain.append(m.get_name())
+            m = m.get_editor_property("parent") if isinstance(m, unreal.MaterialInstance) else None
+        slot = slots[j] if j < len(slots) else ""
+        if any(c.startswith("MI_Face_Skin") for c in chain) or slot.startswith("head_"):
+            if chain[:1] != [fmat.get_name()]:
+                face.set_material(j, fmat)
+                seen.append(slot)
+            k += 1
+    if seen:
+        note(f"{key}: face skin slots now wearing {fm[0]}: {seen} ({k} skin slots)")
+
+
 def character_actor(key):
     if key in S["actors"]:
         return S["actors"][key]
@@ -205,8 +239,9 @@ def character_actor(key):
                 note(f"set_update_animation_in_editor: {e}")
     followers = []
     hide_face = bool(spec.get("hide_face")) or "@hide_face" in spec.get("garments", [])
-    for i, g in enumerate(g_ for g_ in spec.get("garments", []) if g_ != "@hide_face"):
+    for i, g in enumerate(g_ for g_ in spec.get("garments", []) if not g_.startswith("@")):
         followers.append(add_follower(a, body, g, f"garment_{i}"))
+    face_material(key, face)
     if hide_face:
         # a pure generated figure (its own head, hair and hands): the MetaHuman's face and grooms are not drawn
         # (they keep animating, so the face skeleton still measures eyes and head)
@@ -592,6 +627,29 @@ def camera(name, target, az, el, dist, focal):
     return cam
 
 
+def project_joints(cam, body, focal=None):
+    """Body joints in the still's pixels (pinhole: the camera's 36 mm wide filmback across the image width)."""
+    cc = cam.get_cine_camera_component()
+    f = float(cc.get_editor_property("current_focal_length"))
+    loc = cam.get_actor_location()
+    fw, rt, up = cam.get_actor_forward_vector(), cam.get_actor_right_vector(), cam.get_actor_up_vector()
+    out = {}
+    for b in ("head", "neck_01", "neck_02", "clavicle_l", "clavicle_r", "upperarm_l", "upperarm_r", "spine_05",
+              "spine_04", "spine_03"):
+        try:
+            q = body.get_socket_location(b)
+        except Exception:
+            continue
+        d = q - loc
+        dot = unreal.MathLibrary.dot_vector_vector
+        z = dot(d, fw)
+        if z <= 1:
+            continue
+        out[b] = [round(RES[0] / 2 + f * dot(d, rt) / z / 36.0 * RES[0], 1),
+                  round(RES[1] / 2 - f * dot(d, up) / z / 36.0 * RES[0], 1), round(z, 1)]
+    return out
+
+
 def show_only(key):
     for k, (a, body, face) in S["actors"].items():
         for x in [a] + S.get("followers", {}).get(id(a), []):
@@ -635,6 +693,7 @@ def refresh(key):
                 comp.set_forced_lod(1)
             except Exception:
                 pass
+    face_material(key, face)
     S["actors"][key] = (a, body, face)
     return a, body, face
 
@@ -894,6 +953,25 @@ def _run():
                 raise RuntimeError(f"screenshot not written: {path}")
             yield
         info["path"], info["t_s"] = path, round(time.time() - S["t0"], 1)
+        if sh.get("probe_face"):
+            # the same still with the face mesh left out of the main pass (its shadows kept): the pixels that differ
+            # are where the head mesh is seen; the body joints projected to the still say where the shoulders are
+            a, body, face = S["actors"][sh["char"]]
+            info["joints_px"] = project_joints(cam, body, sh.get("focal_mm"))
+            if face is not None:
+                face.set_render_in_main_pass(False)
+                yield from frames(JOB.get("settle_frames", 40))
+                p2 = os.path.join(JOB["out"], f"{sh['name']}_noface.png")
+                if os.path.exists(p2):
+                    os.remove(p2)
+                unreal.AutomationLibrary.take_high_res_screenshot(RES[0], RES[1], p2, camera=cam, force_game_view=True)
+                t1 = time.time()
+                while not (os.path.exists(p2) and os.path.getsize(p2) > 0):
+                    if time.time() - t1 > 90:
+                        raise RuntimeError(f"screenshot not written: {p2}")
+                    yield
+                face.set_render_in_main_pass(True)
+                info["noface_path"] = p2
         S["r"]["shots"].append(info)
         log(f"shot {json.dumps(info)}")
         les.eject_pilot_level_actor()
