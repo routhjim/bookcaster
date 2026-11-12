@@ -269,6 +269,8 @@ HEAD_HALF_M = 0.11           # half the head's width, ears and hair
 
 
 READ_DEG = 80.0              # a named person's head turned at most this far from the camera: their face reads
+READ_FACE = 0.5              # and this share of their face points seen on the still (a three-quarter face reads;
+                             # the speaker's own bar is MIN_FACE_VISIBLE)
 FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
 SEATED = ("sit", "seat")
 
@@ -434,7 +436,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                 why.append(f"{k} (named for the shot) faces away from the camera")
             elif shot is not None:
                 fv = face_seen(dict(shot, camera=cam), k, m, res, k in (opts.get("covered") or ()))
-                if fv is not None and fv < MIN_FACE_VISIBLE:
+                if fv is not None and fv < READ_FACE:
                     why.append(f"{k} (named for the shot): face {fv:.0%} visible")
             elif blocked(cam["position"], [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]],
                          [v["measured"] for kk, v in subjects.items() if kk != k]):
@@ -593,8 +595,8 @@ def unlook(c):
 
 # ------------------------------------------------------------------ marks
 MARK_CLEAR_M = 0.55          # a mark this far from anyone else's place
-TRY_SAME, TRY_SINGLE, TRY_MARK = 2, 2, 2      # a failing talk shot's tries, in this order, each one rendered
-MAX_TRIES = 9
+TRY_SAME, TRY_SINGLE, TRY_MARK = 2, 2, 3      # a failing talk shot's tries, in this order, each one rendered
+MAX_TRIES = 10
 CAM_KEYS = ("position", "target", "focal_mm", "az", "el", "screen_x", "ots", "listener", "single", "show", "tight")
 
 
@@ -1259,7 +1261,8 @@ def main():
                 tc = two_shot_candidates(dict(c, kind="full"), shots[n_], None, None, subjects, res, room, line,
                                          est_side, tried[n_], cam_opts(spec, c))
                 cands = [(q, "wide") for q, _ in tc[:1]]
-            if not cands and many and t["mark"] >= TRY_MARK and t["single"] < TRY_SINGLE:
+            no_mark = t["mark"] >= TRY_MARK or (mark_req is not None or next_mark(c, subj_k) is None)
+            if not cands and many and no_mark and t["single"] < TRY_SINGLE:
                 # 4: last, a tighter frame that still holds everyone named
                 tc = two_shot_candidates(c, shots[n_], None, None, subjects, res, room, line, est_side, tried[n_],
                                          dict(cam_opts(spec, c), _lens=(50, 65, 85)))
