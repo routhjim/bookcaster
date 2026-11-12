@@ -680,13 +680,21 @@ def _limb_girths(kind, side, sg, S_, E_, c_):
     for st in np.arange(c_ + 0.01, L_ + 0.06, 0.01):
         prof.append((round(st / L_, 3), _girth_at(co, S_, ax_, st, sg), _girth_at(BVp, S_, ax_, st, sg)))
     out["_profile"] = prof
+    # the limb never wider than the hole it comes out of: its girth is capped a little under the sleeve's or hem's
+    # opening, measured on the figure just above the cuff (a thicker limb poked through the cloth otherwise)
+    opening = _girth_at(co, S_, ax_, c_ - 0.01, sg, r_max=0.16)
+    cap = None if opening is None else round(float(JOB.get("limb_opening_frac", 0.9)) * opening, 1)
+    out["_opening_cm"] = opening
+    out["_cap_cm"] = cap
     for name, sts in named:
         rows = [(gf, gb) for gf, gb in ((_girth_at(co, S_, ax_, st, sg), _girth_at(BVp, S_, ax_, st, sg)) for st in sts)
                 if gf is not None and gb is not None]
         if rows:
             r_ = np.array(rows)
+            want = r_[:, 0] if cap is None else np.minimum(r_[:, 0], cap)
             out[name] = {"figure_cm": round(float(np.median(r_[:, 0])), 1), "body_cm": round(float(np.median(r_[:, 1])), 1),
-                         "delta_cm": round(float(np.median(r_[:, 0] - r_[:, 1])), 1), "stations": len(rows)}
+                         "opening_cm": opening, "capped_cm": round(float(np.median(want)), 1),
+                         "delta_cm": round(float(np.median(want - r_[:, 1])), 1), "stations": len(rows)}
     LIMB_GIRTH[f"{kind}_{side}"] = out
     return out
 
@@ -1781,20 +1789,35 @@ for v in hands.data.vertices:
     best = max(v.groups, key=lambda g: g.weight, default=None)
     if best is not None and gi[best.group].startswith(HANDB) and "toe" not in gi[best.group]:
         keep[v.index] = True
-# beyond a short sleeve's cuff the body's own forearm shows (the body is hidden under the outfit): kept with the hands
-# from a little inside the cuff
-_hv = np.array([v.co[:] for v in hands.data.vertices])
-_hgw = {g.index: g.name for g in hands.vertex_groups}
-REP["forearm_verts"] = {}
-for side, (S0_, ax_, c_) in CUFF.items():
-    p_ = (_hv - S0_) @ ax_
-    r_ = np.linalg.norm((_hv - S0_) - p_[:, None] * ax_[None, :], axis=1)
-    arm_ = np.array([bool(v.groups) and _hgw[max(v.groups, key=lambda g: g.weight).group].endswith("_" + side)
-                     and _hgw[max(v.groups, key=lambda g: g.weight).group].startswith(("lowerarm", "upperarm", "hand"))
-                     for v in hands.data.vertices])
-    fa_ = arm_ & (p_ > c_ - float(JOB.get("forearm_under_cuff_m", 0.04))) & (r_ < 0.12)
-    keep |= fa_
-    REP["forearm_verts"][side] = int(fa_.sum())
+# the body's skin is hidden only where cloth covers it (the body itself is hidden under the outfit, so a bare
+# forearm below a short sleeve, a shin below a hem or a leg the seated drape leaves open showed as nothing, 11-12):
+# every body vertex off the head mesh that has no cloth within BODY_NEAR of it and none along its outward normal
+# within BODY_REACH is kept with the hands in the skin slot (the head mesh keeps the neck)
+if not STATUE and JOB.get("body_skin_shows", True):
+    _dg = bpy.context.evaluated_depsgraph_get()
+    _gb = BVHTree.FromObject(fig, _dg)
+    _near = float(JOB.get("body_near_m", 0.03))
+    _reach = float(JOB.get("body_reach_m", 0.15))
+    # the head mesh keeps the neck: body vertices on or inside it (within HEAD_NEAR of its surface) stay hidden
+    _hbv = BVHTree.FromObject(HEAD, _dg) if HEAD is not None else None
+    _hnear = float(JOB.get("body_head_near_m", 0.015))
+    hands.data.update()
+    _shown = np.zeros(len(hands.data.vertices), bool)
+    for v in hands.data.vertices:
+        if keep[v.index]:
+            continue
+        if _hbv is not None and _hbv.find_nearest(v.co, _hnear)[0] is not None:
+            continue
+        if v.co.z > float(J("head").z):
+            continue
+        loc_, _, _, d_ = _gb.find_nearest(v.co, _near)
+        if loc_ is not None:
+            continue
+        if _gb.ray_cast(v.co + v.normal * 0.002, v.normal, _reach)[0] is not None:
+            continue
+        _shown[v.index] = True
+    keep |= _shown
+    REP["body_skin_shown_verts"] = int(_shown.sum())
 bm = bmesh.new()
 bm.from_mesh(hands.data)
 bm.verts.ensure_lookup_table()

@@ -656,8 +656,7 @@ def main():
             ds = [v[name]["delta_cm"] for v in lg.values() if name in v]
             if ds and abs(float(_mean(ds))) >= 0.5:
                 addl[name] = round(float(_mean(ds)), 1)
-        lf = {"measured": {k: {n: {x: y for x, y in v.items()} for n, v in g.items() if n != "_profile"}
-                           for k, g in lg.items()}, "add": addl}
+        lf = {"measured": {k: {n: v for n, v in g.items() if n != "_profile"} for k, g in lg.items()}, "add": addl}
         if addl:
             @timed("limb_fit")
             def _():
