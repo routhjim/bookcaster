@@ -121,9 +121,14 @@ FACE_MIN = 0.45          # a face the pose model finds: nose and an eye above th
 YAW_TURN = 0.45          # the nose this far (in eye spacings) off the eyes' middle: the head clearly turned
 
 
+YAW_PROFILE = 1.1        # the nose past this many eye spacings off the eyes' middle: a profile or the head's back
+                         # (the pose model scores face points high even on the back of a head: only the turn tells)
+
+
 def face_seen(q: dict) -> bool:
     fs = q.get("face_scores") or [0, 0, 0]
-    return fs[0] >= FACE_MIN and max(fs[1], fs[2]) >= FACE_MIN and (q.get("face_contour") or 0) >= FACE_MIN
+    return (fs[0] >= FACE_MIN and max(fs[1], fs[2]) >= FACE_MIN and (q.get("face_contour") or 0) >= FACE_MIN
+            and abs(q.get("yaw") or 0.0) <= YAW_PROFILE)
 
 
 def face_eval(*results: dict) -> None:
@@ -146,6 +151,7 @@ def face_eval(*results: dict) -> None:
 
 
 ACTION_SEEN = ("veil_lift", "look_at_sleeve", "reach_to_forearm")
+HEAD_BOW = 0.19          # nose below the eyes over the face height: a head bowed to look down
 
 
 def action_there(act: str, q: dict) -> bool | None:
@@ -161,9 +167,11 @@ def action_there(act: str, q: dict) -> bool | None:
     d = [((h[0] - t["chin"][0]) ** 2 + (h[1] - t["chin"][1]) ** 2) ** 0.5 / fh if h else None for h in hands]
     if act == "veil_lift":
         return None if None in d else max(d) <= 1.6
-    if act == "look_at_sleeve":
-        up = any(t.get(f"{s}_wr") and t.get(f"{s}_el") and t[f"{s}_wr"][1] < t[f"{s}_el"][1] for s in "lr")
-        return up or any(x is not None and x <= 2.2 for x in d)
+    if act == "look_at_sleeve":              # the head bowed onto the sleeve: the nose low between eyes and chin
+        if not t.get("nose"):                # (the solver lifts the forearm only a little; the bow is what reads:
+            return None                      # level heads read 0.15-0.17, the engine's bowed one 0.22, 11-12)
+        ey = sum(x[1] for x in eye) / len(eye)
+        return (t["nose"][1] - ey) / fh >= HEAD_BOW
     if act == "reach_to_forearm":
         return any(t.get(f"{s}_wr") and t.get(f"{s}_el") and t.get(f"{s}_sh") and
                    abs(t[f"{s}_wr"][0] - t[f"{s}_sh"][0]) > abs(t[f"{s}_el"][0] - t[f"{s}_sh"][0]) for s in "lr")
@@ -323,7 +331,7 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
 
 ACTION_WORDS = {
     "veil_lift": "{Who} raises both hands to the hem of {pos} veil under {pos} chin, about to lift it.",
-    "look_at_sleeve": "{Who} holds {pos} left forearm up in front of {pos} body and looks down at the sleeve.",
+    "look_at_sleeve": "{Who} bows {pos} head and looks down at the sleeve of {pos} raised left forearm.",
     "reach_to_forearm": "{Who} bends forward and lays {pos} hand on the other person's forearm."}
 
 FIX = {"clothes colour": "{Who}'s clothes keep exactly the colours of the character sheet.",

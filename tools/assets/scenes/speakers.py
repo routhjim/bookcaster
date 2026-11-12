@@ -268,7 +268,8 @@ HEAD_HAIR_M = 0.04           # hair and its volume above the measured head top
 HEAD_HALF_M = 0.11           # half the head's width, ears and hair
 
 
-READ_DEG = 80.0              # a named person's head turned at most this far from the camera: their face reads
+READ_DEG = 65.0              # a named person's head turned at most this far from the camera: their face reads (at
+                             # 80 a profile turned to the fire passed, and the redraw drew the back of her head)
 READ_FACE = 0.5              # and this share of their face points seen on the still (a three-quarter face reads;
                              # the speaker's own bar is MIN_FACE_VISIBLE)
 FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
