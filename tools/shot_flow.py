@@ -3812,7 +3812,10 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"xh_{s['id']}_{MF._h(hp + MF.FIGHT_NEG)}", "prompt": hp}
                 enc_dev += [{"name": hd["emb"], "prompt": hp}, {"name": hd["emb"] + "__neg", "prompt": neg + MF.FIGHT_NEG}]
-            for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
+            # (11-12: the given take seeds, as for quiet shots, to tell a prompt change from seed noise)
+            ts_ = QUIET_SEEDS or TAKES
+            for t, seed in enumerate(ts_ + ((next(x for x in (RETAKE + 101 * i for i in range(len(ts_) + 1))
+                                                 if x not in ts_),) if s["id"] in (retake or ()) else ())):
                 two.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": act,
                             "width": W, "height": H, "fps": FPS, "seed": seed + 7 * bool(s["id"] in (redo or ())) + shot_seed(s["id"]),
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
@@ -5881,7 +5884,7 @@ if __name__ == "__main__":
     ap.add_argument("--facts", type=Path, default=None,
                     help="the keys' scene facts, one a line: carried in QUIET shots' words only (with_facts)")
     ap.add_argument("--hold", action="store_true", help="the camera-hold sentence (with_facts)")
-    ap.add_argument("--quiet-seeds", default="", help="a quiet shot's take seeds, comma-separated")
+    ap.add_argument("--quiet-seeds", default="", help="the take seeds of each quiet and single action shot, comma-separated")
     ap.add_argument("--assemble", nargs=3, metavar=("FIRST_SHOT", "LAST_SHOT", "OUT"), default=None,
                     help="no render: the flow's own cut of the stretch FIRST..LAST (shot ids) from its clips")
     ap.add_argument("--key-people", action="store_true",
