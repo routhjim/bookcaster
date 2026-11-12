@@ -4604,13 +4604,15 @@ SYNC_MEASURE = 2                # the measure a sync record was made by (records
 SYNC_LOCK_EDGE = 1              # a best offset at the search edge (|offset| >= SYNC_VSHIFT - this: 14, 15) is no lock -
 #                                 the same edge the assembly's shift has always refused; 13 is shifted (clamped to 12)
 SYNC_MIN_VOICED = 10            # fewer voiced windows than this: the whole clip is scored, as before
-SYNC_ROWS_SURE = int(os.environ.get("BOOKCASTER_SYNC_ROWS_SURE", "37"))
+SYNC_ROWS_SURE = int(os.environ.get("BOOKCASTER_SYNC_ROWS_SURE", "44"))
 #                                 a voiced span shorter than this many windows is too few independent samples to trust
 #                                 alone (windows overlap 4 frames in 5): its reading counts only when its offset agrees
-#                                 with the whole clip's. 37 = the smallest floor at which no noise-level reading among
-#                                 the 395 measured clips (11-12) stands: the longest such span was 36 windows (3.5 at
-#                                 -7 where the whole clip read 2.5 at 0). The wrong-voice test (sync_null_check.py)
-#                                 is what confirms or moves it
+#                                 with the whole clip's and the whole clip itself reads SYNC_MIN_CONF or more.
+#                                 44 = from the wrong-voice check (sync_null_check.py, 11-12, 20 strong clips each
+#                                 given the next one's sound): the voiced reading alone still read over the bar
+#                                 at 30 windows (2 of 20; 5.7 the highest) and never at 44 (4.8 the highest) or 60.
+#                                 The 395 measured clips agree: the longest noise-level span that held a lock among
+#                                 them was 36 windows
 SYNC_AGREE = 2                  # ...within this many frames
 SYNC_BAND = tuple(int(x) for x in os.environ.get("BOOKCASTER_SYNC_BAND", "-8,4").split(","))
 #                                 the offsets a voiced-frames reading is believed at. Every clip that passes the bar
@@ -4673,7 +4675,8 @@ def sync_score(dists, rows_voiced=None, vshift: int = SYNC_VSHIFT) -> dict:
     read 2.7 over the clip, 5.3 over its voice).
     The voiced reading is believed when it is not at the search edge, lies in SYNC_BAND, and - over a span shorter
     than SYNC_ROWS_SURE windows - agrees with the whole clip's offset within SYNC_AGREE frames (a few windows of an
-    unsynced face read 5+ by chance: 16% of 10-window stretches, none of 30+). Otherwise the whole-clip reading
+    unsynced face read 5+ by chance: 16% of 10-window stretches, none of 30+) with a whole-clip confidence of
+    SYNC_MIN_CONF or more (a noise-level whole clip confirms nothing). Otherwise the whole-clip reading
     stands, as before the voiced measure ("basis": voiced | whole, "why" says which rule sent it back). A best
     offset at the edge of the search is no lock: the bar then sees 0. Nothing to score: conf None."""
     import numpy as np
@@ -4705,7 +4708,11 @@ def sync_score(dists, rows_voiced=None, vshift: int = SYNC_VSHIFT) -> dict:
             why = "the voiced reading is at the search edge"
         elif not SYNC_BAND[0] <= v_off <= SYNC_BAND[1]:
             why = "the voiced reading is outside the believed offsets"
-        elif nv < SYNC_ROWS_SURE and abs(v_off - w_off) > SYNC_AGREE:
+        elif nv < SYNC_ROWS_SURE and (abs(v_off - w_off) > SYNC_AGREE or w_raw < SYNC_MIN_CONF):
+            # (11-12 wrong-voice check, 20 pairs: a noise-level whole-clip curve sits within 2 frames of a short
+            # span's chance peak often enough - 4 of 20 pairs passed at 10-15 windows, 1 of 20 at 20-30 - so the
+            # whole clip must itself read a lock worth the name; every such pair's whole clip read under 2.0, the
+            # real short lines' 3.1+)
             why = "a short voiced span whose offset the whole clip does not confirm"
     off, raw = (w_off, w_raw) if why else (v_off, v_raw)
     lock = abs(off) < edge

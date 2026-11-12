@@ -31,6 +31,7 @@ import shot_flow as S          # noqa: E402
 SHIFTS = (5, 10, 20)                    # frames at 25 fps
 SPANS = (10, 15, 20, 30, 44, 60)        # voiced windows kept for the wrong-voice pairs
 BUCKETS = ((0, 30), (30, 60), (60, 10 ** 6))
+LATER_MADE = 2                          # how the shifted clips are made (1: a timestamp offset, lost in the wav)
 
 
 def _env() -> dict:
@@ -47,10 +48,12 @@ def _frames25(clip: Path) -> int:
 
 
 def later(clip: Path, frames: int, out: Path) -> Path:
-    """The clip with its own sound `frames` (25 fps) later; the picture is copied."""
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(clip), "-itsoffset", f"{frames / 25:.3f}", "-i",
-                    str(clip), "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", str(out)],
-                   capture_output=True)
+    """The clip with its own sound `frames` (25 fps) later; the picture is copied. The sound is really delayed
+    (silence put before it): a timestamp offset alone is dropped when the sound is taken out as a wav file, so the
+    shift would not reach the measure."""
+    ms = int(round(frames * 1000 / 25))
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(clip), "-map", "0:v", "-map", "0:a", "-c:v", "copy",
+                    "-af", f"adelay={ms}:all=1", "-c:a", "aac", "-shortest", str(out)], capture_output=True)
     return out
 
 
@@ -116,7 +119,23 @@ def main() -> int:
 
     for i, c in enumerate(clips):
         key = str(c)
-        if R.get(key, {}).get("done"):
+        if R.get(key, {}).get("done") and R[key].get("later_made") == LATER_MADE:
+            continue
+        if R.get(key, {}).get("done"):                 # the shifted clips were made another way: only those again
+            L, name = c.parent.parent, c.stem
+            bx, n = S._job_speaker_box(L, name), _frames25(c)
+            at = S._job_speaker_at(L, name, bx)
+            voiced, _ = S._clip_voiced(L, name, c, n) if n else ([], "none")
+            work = a.out / "work" / f"{i:03d}"
+            shutil.rmtree(work, ignore_errors=True)
+            work.mkdir(parents=True)
+            for k in SHIFTS:
+                v = later(c, k, work / f"later{k}.mp4")
+                R[key]["later"][str(k)] = read(v, bx, shifted(voiced, k), work, f"later{k}", env, at)
+            R[key]["later_made"] = LATER_MADE
+            keep()
+            shutil.rmtree(work, ignore_errors=True)
+            print(f"{name}: later again", flush=True)
             continue
         L, name = c.parent.parent, c.stem
         bx, n = S._job_speaker_box(L, name), _frames25(c)
@@ -137,6 +156,7 @@ def main() -> int:
         rec["null"]["all"] = read(w, bx, ov, work, "null", env, at)
         rec["null"]["spans"] = {str(k): reread(bx, first_span(ov, k), work, "null", at) for k in SPANS}
         rec["done"] = True
+        rec["later_made"] = LATER_MADE
         R[key] = rec
         keep()
         shutil.rmtree(work, ignore_errors=True)

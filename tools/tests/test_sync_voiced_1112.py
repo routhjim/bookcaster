@@ -54,7 +54,7 @@ ev = S.energy_frames(quiet, sr, 100)
 check("energy fallback: the loud second is voiced, the hiss is not", all(ev[26:49]) and not any(ev[:24] + ev[51:]),
       ev)
 
-rows = [False] * 13 + [True] * 43 + [False] * 40                       # 45% voiced, as the 11-12 line
+rows = [False] * 13 + [True] * (S.SYNC_ROWS_SURE + 6) + [False] * 46      # under half voiced, as the 11-12 line
 d = dists(rows, voiced_off=-3, silent_off=None)
 d[np.array(rows) == False] += rng.normal(0, 2.0, (rows.count(False), 2 * V + 1))   # silence: a mouth moving at random
 r_all, r_v = S.sync_score(d), S.sync_score(d, rows)
@@ -106,14 +106,24 @@ check("a short voiced span the whole clip does not confirm: the whole-clip readi
       r["basis"] == "whole" and r["offset"] == 0 and "why" in r, r)
 check("...the voiced reading is kept beside it", r["voiced"]["offset"] == -7 and r["whole"]["offset"] == 0, r)
 d, rows = clip(F - 5, voiced_off=-3, whole_off=-2)
+d[np.array(rows) == False, V + 2] -= 3.0                                # the rest of the clip dips firmly at -2 too
 r = S.sync_score(d, rows)
-check("a short span the whole clip confirms (within SYNC_AGREE): the voiced reading counts",
-      r["basis"] == "voiced" and r["offset"] == -3 and "why" not in r, r)
+check("a short span the whole clip confirms (within SYNC_AGREE, itself a lock): the voiced reading counts",
+      r["basis"] == "voiced" and r["offset"] == -3 and "why" not in r and r["whole"]["conf"] >= S.SYNC_MIN_CONF, r)
+rows = [True] * (F - 5) + [False] * 70                                  # the wrong-voice case (11-12 check): a chance
+d = dists(rows, voiced_off=0, silent_off=None)                          # peak on a short span, the rest of the clip
+d[np.array(rows) == False] += rng.normal(0, 1.5, (70, 2 * V + 1))       # noise that happens to sit near it
+d[np.array(rows) == False, V - 1] -= 0.6
+r = S.sync_score(d, rows)
+check("a short span beside a whole clip that reads no lock of its own: the whole-clip reading stands",
+      r["basis"] == "whole" and r["whole"]["conf"] < S.SYNC_MIN_CONF and "why" in r, r)
+check("the floor is the wrong-voice check's (no chance pass at 44 windows, two of twenty at 30)", F == 44, F)
 d, rows = clip(F + 5, voiced_off=-3, whole_off=6)
 r = S.sync_score(d, rows)
 check("a long enough span needs no confirmation", r["basis"] == "voiced" and r["offset"] == -3, r)
 lo, hi = S.SYNC_BAND
-d, rows = clip(F + 30, voiced_off=lo - 1, whole_off=lo - 1, n_silent=20)
+rows = [True] * (F + 30) + [False] * 30
+d = dists(rows, voiced_off=lo - 1, silent_off=None)
 d[np.array(rows) == False] += rng.normal(0, 3.0, (rows.count(False), 2 * V + 1))
 r = S.sync_score(d, rows)
 check("a voiced reading outside the believed offsets: the whole-clip reading decides",
