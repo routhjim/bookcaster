@@ -311,7 +311,7 @@ def main():
             lk = a.look.lower()
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
                    "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
-                   "head_push_r_m": 0.08, "collar_lift": False, "liner": False}
+                   "collar_lift": False, "liner": False}   # head push everywhere until the skin under cloth is hidden by a mask
             if m["long_skirt"]:
                 job.update(sleeve_radius_m=0.20, skirt_pelvis=1.0, turn_legs=False, shoe_top_m=0.0, skirt_min_z_m=-1.0,
                            long_skirt=True)

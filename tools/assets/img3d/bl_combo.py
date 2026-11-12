@@ -1569,6 +1569,9 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
     low_ = ((Hco[:, 2] - cut_z) * math.cos(tilt) - (Hco[:, 1] - J("neck_01").y) * math.sin(tilt)
             < -float(JOB.get("liner_below_collar_m", 0.02)))
     hr = np.linalg.norm(Hco[:, :2] - np.array(J("neck_01"))[:2], axis=1)
+    # liner_min_r_m: only the head mesh's skin this far from the neck's axis (its shoulder flaps) is lined; near the
+    # neck the liner showed as dark spikes above the collar
+    low_ &= hr > float(JOB.get("liner_min_r_m", 0.0))
     HOLE_R = float(JOB.get("liner_hole_min_r_m", 0.08))
     cov = np.zeros(nH, bool)
     hitf = np.full(nH, -1)
