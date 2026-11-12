@@ -494,6 +494,14 @@ def main():
     # ---------------------------------------------------------------- combo
     combo = W / "combo"
 
+    def neckline_now():
+        """The neckline the build uses: the fit report's (text fact or measured on the figure), else the picture's."""
+        try:
+            r_ = json.loads((combo / "report.json").read_text()).get("neckline")
+        except (OSError, ValueError):
+            r_ = None
+        return r_ or (ch.get("garment") or {}).get("neckline")
+
     def head_check():
         rep_ = json.loads((combo / "report.json").read_text())
         hv = (rep_.get("head_volume_verts") or 0) + (rep_.get("head_round_verts") or 0)
@@ -529,7 +537,10 @@ def main():
             else:
                 coat_skirt = (m["thigh_run_w_frac"] or 0) > 0.17
                 job.update(sleeve_radius_m=0.15, skirt_pelvis=1.0 if coat_skirt else 0.6)
-            job["neckline"] = (ch.get("garment") or {}).get("neckline")      # for the report and the neck check
+            # the neckline: the text's fact only when the text states it; otherwise the fit measures it on the
+            # generated figure (bl_combo neckline_figure); the picture's answer is the last fallback (below)
+            gf0 = ch.get("garment") or {}
+            job["neckline"] = gf0.get("neckline") if (gf0.get("source") or {}).get("neckline") == "text" else None
             # the drawing's arm angle: the fit finds the hands along it and poses the body's arms to them (binding in
             # the drawing's own pose, whatever the angle)
             job["draw_deg"] = drawing_deg(drawing)
@@ -636,8 +647,8 @@ def main():
         jp = W / "combo_job.json"
         job = json.loads(jp.read_text())
         bare = rep.get("bare_neck_measured_cm")
-        nl = (ch.get("garment") or {}).get("neckline")
-        CH["neckline"] = nl
+        nl = rep.get("neckline") or (ch.get("garment") or {}).get("neckline")
+        CH["neckline"] = {"class": nl, "source": rep.get("neckline_source") or "picture"}
         if bare is not None and bare > 2.0 and not job.get("collar_lift") and nl in (None, "chin"):
             # only a collar that comes up the neck is lifted to the chin (a round or open neckline is bare by design:
             # a lifted nightgown neckline became a boxy collar at the jaw, 11-11); the fact is asked text first
@@ -892,8 +903,7 @@ def main():
                 "shots": shots}, 1200)
             p = subprocess.run([sys.executable, str(ASSETS / "characters" / "skin_probe.py"),
                                 str(W / "ue" / "skin_flat" / "result.json"), "--out", str(skin_p)]
-                               + (["--neckline", (ch.get("garment") or {})["neckline"]]
-                                  if (ch.get("garment") or {}).get("neckline") else []),
+                               + (["--neckline", neckline_now()] if neckline_now() else []),
                                capture_output=True, text=True)
             CH["skin_probe"] = json.loads(skin_p.read_text())
             if p.returncode:

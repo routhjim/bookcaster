@@ -398,6 +398,39 @@ fig.data.vertices.foreach_set("co", co.ravel())
 fig.data.update()
 mark("fit", t)
 stage_save("s1_scaled_placed")
+# the neckline, measured on the generated figure before any cut or push (a beard hides a neckline from a picture,
+# not from the mesh; after the fit the cloth hugs every neck): a collar is cloth all round the neck (a beard is only
+# in front of it, long hair only behind and beside it), so at mid-neck height the ring just outside the neck's radius
+# is read sector by sector: cloth in most sectors = up the neck to the chin; otherwise, just under the shoulder line,
+# the figure's own skin in front = a low open neckline, cloth there = a neckline at the base of the neck
+if not STATUE and HEAD is not None:
+    try:
+        _nk0 = np.array(J("neck_01"))
+        _hv0 = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+        _ring0 = np.abs(_hv0[:, 2] - _nk0[2]) < 0.012
+        _nr0 = float(np.median(np.linalg.norm(_hv0[_ring0, :2] - _nk0[:2], axis=1))) if _ring0.sum() > 20 else 0.06
+        _zsh0 = float(J("clavicle_l").z)
+        _chin0 = float(J("head").z) - 0.04
+        _zmid = _zsh0 + 0.5 * (_chin0 - _zsh0)
+        _rr0 = np.linalg.norm(co[:, :2] - _nk0[:2], axis=1)
+        _an0 = np.arctan2(co[:, 1] - _nk0[1], co[:, 0] - _nk0[0])
+        _sec0 = ((_an0 + math.pi) / (2 * math.pi) * 16).astype(int) % 16
+        _band0 = (np.abs(co[:, 2] - _zmid) < 0.012) & (_rr0 > _nr0 - 0.01) & (_rr0 < _nr0 + 0.05)
+        _cloth_secs = sorted({int(k) for k in _sec0[_band0 & ~skin]})
+        _low = (np.abs(co[:, 2] - (_zsh0 - 0.03)) < 0.012) & (co[:, 1] < _nk0[1]) & (np.abs(co[:, 0] - _nk0[0]) < _nr0 + 0.02)
+        _skin_front = float((skin[_low]).mean()) if _low.sum() > 10 else 0.0
+        # skin on the chest below the shoulder line rules out a collar up to the chin (a beard and long hair also
+        # make a ring round the neck: the open-necked tunic read 15 of 16 sectors)
+        if _skin_front > 0.4:
+            _cls0 = "open"
+        elif len(_cloth_secs) >= 10:
+            _cls0 = "chin"
+        else:
+            _cls0 = "base"
+        REP["neckline_figure"] = {"class": _cls0, "cloth_sectors_at_mid_neck": len(_cloth_secs),
+                                  "skin_share_in_front_below_shoulders": round(_skin_front, 3)}
+    except Exception as _e:
+        REP["neckline_figure"] = {"error": str(_e)}
 
 # ------------------------------------------------------------------ 4. cut head and hands
 t = time.time()
@@ -1191,7 +1224,10 @@ if DSM > 0 and not STATUE:
 # (nothing) to the collar (full), sleeves following their shoulder end, so its top sits COLLAR_UNDER_CHIN under the
 # chin and the collar keeps its generated shape and texture. REP["bare_neck_cm"] is what remains.
 COLLAR_LIFT = bool(JOB.get("collar_lift", False))
-REP["neckline"] = JOB.get("neckline")       # the garment's neckline fact (chin / base / open): the neck check's limit
+# the garment's neckline (chin / base / open), the neck check's limit: the text's fact when it states one, else the
+# class measured on the generated figure above
+REP["neckline"] = JOB.get("neckline") or (REP.get("neckline_figure") or {}).get("class")
+REP["neckline_source"] = "text" if JOB.get("neckline") else ("figure" if REP["neckline"] else None)
 if not STATUE and HEAD is not None:
     P_ = fco + disp
     nc_ = np.array(J("neck_01"))
