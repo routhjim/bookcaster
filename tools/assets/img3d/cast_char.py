@@ -528,7 +528,7 @@ def main():
                          W / f"settle_{name}.log")
                 if p.returncode:
                     raise RuntimeError(f"settle {name} failed")
-                dest = f"/Game/Char/Outfit{tag}S{''.join(ch for ch in name.upper() if ch.isalnum())[:6]}"
+                dest = f"/Game/Char/Outfit{tag}S{''.join(ch for ch in name.upper() if ch.isalnum())}"   # whole name: armchair and armchair_2 collided
                 ue_job(W, f"import_seat_{name}", str(ASSETS / "characters" / "char_render.py"), {
                     "out": str(W / "ue" / f"import_seat_{name}"),
                     "import_outfit": {"outfit_fbx": str(W / f"seated_{name}" / "outfit.fbx"),
