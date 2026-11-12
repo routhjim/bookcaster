@@ -162,3 +162,6 @@ def test_a_role_kind_is_met_by_its_parents_records(tmp_path):
     h = P.lookup({"kind": "desk_chair", "look": "plain wooden"}, recs)
     assert [x["asset_id"] for x in h] == ["chair_plain"] and h[0]["why"]["parts"]["kind"] == 0.85
     assert P.lookup({"kind": "armchair", "look": "plain wooden"}, recs, threshold=0.0) == []
+    rec(tmp_path, "club", ["armchair"], "Plain wooden armchair")
+    both = P.lookup({"kind": "desk_chair", "look": "plain wooden"}, P.load_records(tmp_path), threshold=0.0)
+    assert [x["asset_id"] for x in both] == ["chair_plain", "club"] and both[1]["why"]["parts"]["kind"] == 0.6

@@ -141,7 +141,8 @@ def satisfies(record_kind, wanted, K):
         return 1.0
     if K.get(wanted, {}).get("role") and K[wanted].get("parent"):
         # a kind that is a use, not a build (a desk chair is any chair at a desk): its parent's records fit it
-        return 0.85 if satisfies(record_kind, K[wanted]["parent"], K) else 0.0
+        # the plain parent kind fits best; a narrower build of it (an armchair for a desk chair) only weakly
+        return {1.0: 0.85, 0.85: 0.6}.get(satisfies(record_kind, K[wanted]["parent"], K), 0.0)
     k = record_kind
     while K.get(k, {}).get("parent"):
         k = K[k]["parent"]
