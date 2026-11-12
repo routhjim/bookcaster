@@ -100,6 +100,19 @@ def line(args, log_file=None):
         time.sleep(10)
 
 
+def mem_wait(gb=25, max_s=5400):
+    """Until the machine has GB of memory available (MemAvailable), at most MAX_S seconds."""
+    t0 = time.time()
+    while time.time() - t0 < max_s:
+        try:
+            kb = int(next(ln for ln in open("/proc/meminfo") if ln.startswith("MemAvailable")).split()[1])
+        except (OSError, StopIteration, ValueError):
+            return
+        if kb / 1048576 >= gb:
+            return
+        time.sleep(30)
+
+
 def ue_job(work, name, script, job, timeout=1800):
     d = Path(work) / "ue" / name
     (d / "sched").mkdir(parents=True, exist_ok=True)
@@ -108,7 +121,14 @@ def ue_job(work, name, script, job, timeout=1800):
           "id": f"cast_{Path(work).name}_{name}", "log_dir": str(d / "sched")}
     jp = d / "job.json"
     jp.write_text(json.dumps(sj, indent=1))
-    p = line(["--ue-job", str(jp)])
+    for attempt in range(3):
+        # the editor dies when the machine runs short of memory (another tenant's language model on the iGPU,
+        # 11-11): wait for 25 GB available and run the job again, twice at most; any other failure stops at once
+        mem_wait()
+        p = line(["--ue-job", str(jp)])
+        if not p.returncode or "the editor died" not in (p.stdout + p.stderr):
+            break
+        log(f"engine job {name}: the editor died (attempt {attempt + 1}); waiting for memory")
     if p.returncode:
         raise RuntimeError(f"engine job {name} failed: {p.stdout[-1500:]} {p.stderr[-800:]}")
     return json.loads(Path(job["result"]).read_text())
