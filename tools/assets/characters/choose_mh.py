@@ -175,8 +175,9 @@ def main():
     asks["neckline"] = ("Where is the top of this person's garment at the neck: chin (a collar, neckband or cravat "
                         "that comes up the neck to the chin), base (a neckline at the base of the neck) or open (a "
                         "lower, open neckline)? Answer with one word: chin, base or open.")
-    asks["outer_layer"] = ("Does this person wear an outer layer that hangs from the shoulders over the other "
-                           "clothes, such as a cloak, cape, mantle or shawl? Answer yes or no.")
+    asks["outer_layer"] = ("Does this person wear an outer layer without sleeves that hangs loose from the shoulders "
+                           "over the other clothes, such as a cloak, cape, mantle or shawl (not a coat or jacket with "
+                           "sleeves)? Answer yes or no.")
     asks["sleeves"] = ("How loose are this person's sleeves at the upper arm: close (fitted to the arm), medium, or "
                        "loose (full, hanging away from the arm)? Answer with one word: close, medium or loose.")
     import subprocess

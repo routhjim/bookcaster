@@ -857,7 +857,7 @@ def spread_look(look, outer_words=None):
             stop = True                     # "..., carrying a crop": the rest of the list is what is carried
         if stop or head.search(q):
             continue
-        if outer_words and any(w in q.lower() for w in outer_words):
+        if outer_words and all(w in q.lower() for w in outer_words):     # the whole phrase, never one word of it
             # an outer layer hanging from the shoulders (a fact): left out of the spread drawing and the fitted
             # garment (it fills the space under the arms); the entry records it as a missing layer
             continue
