@@ -619,6 +619,78 @@ def _limb_edge(S0, E0, sg, tube, step_min, ratio, lo_frac, hi_frac):
     return float(st_[i]), p_, rad_, side_, rep_
 
 
+def _hull_perimeter(Q):
+    """the convex hull's perimeter of 2-D points (a slice's girth, offset from the axis does not matter)"""
+    Q = np.unique(np.round(Q, 5), axis=0)
+    if len(Q) < 3:
+        return None
+    Q = Q[np.lexsort((Q[:, 1], Q[:, 0]))]
+
+    def half(P_):
+        h = []
+        for q in P_:
+            while len(h) >= 2 and np.cross(h[-1] - h[-2], q - h[-2]) <= 0:
+                h.pop()
+            h.append(q)
+        return h
+    H_ = half(Q)[:-1] + half(Q[::-1])[:-1]
+    H_ = np.array(H_)
+    return float(np.linalg.norm(np.roll(H_, -1, axis=0) - H_, axis=1).sum())
+
+
+def _girth_at(P_, S_, ax_, st, sg, r_max=0.11):
+    """girth (cm) of points P_ round the limb axis at station st (m along it from S_), that side only"""
+    p_ = (P_ - S_) @ ax_
+    rr = (P_ - S_) - p_[:, None] * ax_[None, :]
+    m_ = (np.abs(p_ - st) < 0.008) & (np.linalg.norm(rr, axis=1) < r_max) & (sg * (P_[:, 0] - J("pelvis").x) > 0)
+    if m_.sum() < 12:
+        return None
+    u_ = np.cross(ax_, [0.0, 1.0, 0.0])
+    u_ = u_ / np.linalg.norm(u_) if np.linalg.norm(u_) > 1e-6 else np.array([1.0, 0.0, 0.0])
+    v_ = np.cross(ax_, u_)
+    g_ = _hull_perimeter(np.c_[rr[m_] @ u_, rr[m_] @ v_])
+    return None if g_ is None else round(100 * g_, 1)
+
+
+# where a limb is bare its thickness comes from the generated figure (the MetaHuman's own forearms were thin against
+# the drawn ones and the sleeves, 11-12): the girth of the figure's bare limb and of the posed body's at the same
+# stations below the cuff or hem, read against the MetaHuman's body constraints by name (relative changes, set by
+# cast_char.py as for the neck)
+LIMB_GIRTH = {}
+
+
+def _limb_girths(kind, side, sg, S_, E_, c_):
+    BVp = np.array([v.co[:] for v in body.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices])
+    ax_ = (E_ - S_) / np.linalg.norm(E_ - S_)
+    L_ = float(np.linalg.norm(E_ - S_))
+    out = {}
+    if kind == "arm":
+        el = float(np.linalg.norm(np.array(pose_head(f"lowerarm_{side}")) - S_))
+        named = [("Forearm", list(np.arange(max(c_ + 0.02, el + 0.03), min(max(c_ + 0.02, el + 0.03) + 0.07, L_ - 0.05),
+                                            0.01))),
+                 ("Wrist", [L_ - 0.04])]
+        if el > c_ + 0.02:
+            named.append(("Elbow", [el]))
+    else:
+        kn = float(np.linalg.norm(np.array(pose_head(f"calf_{side}")) - S_))
+        named = [("Calf", list(np.arange(max(c_ + 0.02, kn + 0.06), max(c_ + 0.02, kn + 0.06) + 0.12, 0.01)))]
+        if kn > c_ + 0.02:
+            named.append(("Knee", [kn]))
+    prof = []
+    for st in np.arange(c_ + 0.01, L_ + 0.06, 0.01):
+        prof.append((round(st / L_, 3), _girth_at(co, S_, ax_, st, sg), _girth_at(BVp, S_, ax_, st, sg)))
+    out["_profile"] = prof
+    for name, sts in named:
+        rows = [(gf, gb) for gf, gb in ((_girth_at(co, S_, ax_, st, sg), _girth_at(BVp, S_, ax_, st, sg)) for st in sts)
+                if gf is not None and gb is not None]
+        if rows:
+            r_ = np.array(rows)
+            out[name] = {"figure_cm": round(float(np.median(r_[:, 0])), 1), "body_cm": round(float(np.median(r_[:, 1])), 1),
+                         "delta_cm": round(float(np.median(r_[:, 0] - r_[:, 1])), 1), "stations": len(rows)}
+    LIMB_GIRTH[f"{kind}_{side}"] = out
+    return out
+
+
 if not STATUE and not FIT_POSE and JOB.get("cut_bare_limbs", True):
     SKL, _refs = _skin_like()
     CUFF = {}
@@ -636,6 +708,7 @@ if not STATUE and not FIT_POSE and JOB.get("cut_bare_limbs", True):
             rep_["cut_inside_cuff"] = int((cut_ & (p_ <= c_)).sum())
             gone |= cut_
             rep_["cut"] = int(cut_.sum())
+            rep_["girths"] = _limb_girths("arm", side, sg, S0, E0, c_)
         REP["bare_limbs"][f"arm_{side}"] = rep_
         S1 = np.array(pose_head(f"thigh_{side}"))
         E1 = np.array(pose_head(f"foot_{side}"))
@@ -644,7 +717,9 @@ if not STATUE and not FIT_POSE and JOB.get("cut_bare_limbs", True):
             cut_ = side_ & (p_ > c_) & (rad_ < 0.14) & (co[:, 2] > E1[2] + 0.04)
             gone |= cut_
             rep_["cut"] = int(cut_.sum())
+            rep_["girths"] = _limb_girths("leg", side, sg, S1, E1, c_)
         REP["bare_limbs"][f"leg_{side}"] = rep_
+    REP["limb_girths"] = LIMB_GIRTH
     # inside the neckline of an open or base neckline: the figure's own chest skin joined to the neck's (the skin
     # already cut round the neck), within the shoulders and above the chest's middle
     if (JOB.get("neckline") or (REP.get("neckline_figure") or {}).get("class")) in ("open", "base"):
