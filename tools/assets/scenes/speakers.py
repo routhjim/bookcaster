@@ -957,21 +957,21 @@ def main():
             line = [spec["characters"][kk]["position"][:2] for kk in keys]
         return subj2
 
-    def reframe_at(c, subj2):
+    def reframe_at(c, subj2, tried_c=()):
         """A camera for the shot with the people at their new marks (the old one looked past the moved person at
         the same blocker): its own kind first, else a clean single; None keeps the camera."""
         spk = c.get("speaker")
         lis = listener_of(c, keys, spk)
-        tc = two_shot_candidates(c, shots[c["name"]], spk, lis, subj2, res, room, line, est_side, [],
+        tc = two_shot_candidates(c, shots[c["name"]], spk, lis, subj2, res, room, line, est_side, list(tried_c),
                                  cam_opts(spec, c))
         if tc:
             return tc[0]
         if not spk:                          # no speaker: a tighter frame on the shot's subject
             tc = two_shot_candidates(dict(c, show=[c.get("subject")]), shots[c["name"]], None, None, subj2, res,
-                                     room, line, est_side, [], cam_opts(spec, c)) if c.get("subject") else []
+                                     room, line, est_side, list(tried_c), cam_opts(spec, c)) if c.get("subject") else []
             return (tc[0][0], "tight") if tc else None
         tc = two_shot_candidates(dict(c, show=None), shots[c["name"]], spk, None, subj2, res, room, line, est_side,
-                                 [], dict(cam_opts(spec, c), _single=True))
+                                 list(tried_c), dict(cam_opts(spec, c), _single=True))
         return (tc[0][0], "single") if tc else None
 
     def in_way(c, spk):
@@ -1089,6 +1089,28 @@ def main():
             report["marks"].setdefault("tries", []).append(rec)
             log(f"mark {pending['k']} -> {pending['to']} for {pending['shot']}: passing {pending['passing']} -> "
                 f"{len(passing)}, {'kept' if better else 'back'}")
+            tc_ = None
+            if not better and rnd < a.rounds and pending.get("cam_tries", 0) < 1:
+                # the scene is now measured at the new mark: one more camera for the shot there before undoing it
+                c_t = next(c_ for c_ in spec["cameras"] if c_["name"] == pending["shot"])
+                tried[c_t["name"]].append(shots[c_t["name"]]["camera"]["position"])
+                tc_ = reframe_at(c_t, subjects, tried[c_t["name"]])
+            if tc_:
+                q, md = tc_
+                c_t.update(position=q["position"], target=q["target"], focal_mm=q["focal_mm"])
+                for kk in ("az", "el", "screen_x"):
+                    c_t.pop(kk, None)
+                if md == "single":
+                    c_t["listener"], c_t["single"] = None, True
+                    c_t.pop("ots", None)
+                elif md == "tight":
+                    c_t["show"], c_t["tight"] = [c_t.get("subject")], True
+                elif md == "ots":
+                    c_t["ots"] = listener_of(c_t, keys, c_t.get("speaker"))
+                pending["cam_tries"] = pending.get("cam_tries", 0) + 1
+                report["marks"]["tries"][-1]["kept"] = "camera tried again"
+                todo = [c_t["name"]]
+                continue
             if not better and rnd < a.rounds:
                 move_to_mark(pending["k"], pending["from"])
                 cam_back = next(c_ for c_ in spec["cameras"] if c_["name"] == pending["shot"])
