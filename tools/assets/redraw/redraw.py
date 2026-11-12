@@ -360,6 +360,12 @@ def set_words(shot: dict) -> str:
     if shot.get("daylight") and not any(t["kind"] == "window" for t in th):
         out += f" Soft {shot['daylight']} comes from a window out of frame."
     lit = [t for t in th if (t.get("fire") or t.get("lit")) and t.get("flame_in_view") is not False]
+    # a fire whose grate is just out of view but whose fireplace shows: lit all the same (a lit source is a fact of
+    # the whole scene); with no words the redraw drew the visible fireplace cold in one key, burning in the next
+    edge = [t for t in th if t.get("fire") and t.get("flame_in_view") is False]
+    for t in edge:
+        out += (f" The fire in {t['words'].split(' with ')[0]} at the frame's edge is burning: its warm firelight "
+                "glows on the fireplace, the hearth and the floor in front of it.")
     if lit:
         out += " " + " ".join(
             (f"The fire in {t['words'].split(' with ')[0]} burns brightly with real flames, as in Picture 1."
