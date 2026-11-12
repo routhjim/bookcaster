@@ -31,6 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import mannequin_flow as MF
+import take_checks as TC      # noqa: E402 - drift, seams and people over a take (mechanics; no model)
 import registry as RG          # noqa: E402 - the shared pieces: paths, looks, LoRAs, heroes, judge, mux
 
 W, H = MF.W, MF.H
@@ -4064,6 +4065,23 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             th.join(60)
 
 
+TAKE_CHECKS = os.environ.get("BOOKCASTER_TAKE_CHECKS", "off") == "on"     # off until measured on shipped clips
+
+
+def _take_faults(mp4: Path, people: int | None = None, kind: str | None = None) -> list:
+    """A take's faults: the vision judge's (bodies, the head count) and, with BOOKCASTER_TAKE_CHECKS=on, the
+    mechanical ones the judge does not see (the camera leaving the opening picture's framing, the room changing in
+    a shot where nobody moves about, a framing change at a seam). Each is a sentence; a faulted take is taken again
+    the same way whichever check found it (_next_take)."""
+    fa = MF.fight_clip_ok(mp4, people)
+    if TAKE_CHECKS:
+        try:
+            fa = fa + TC.clip_faults(mp4, kind or TC.kind_of(Path(mp4).name))["faults"]
+        except Exception as e:              # noqa: BLE001  (a check that cannot read the clip never fails the take)
+            print(f"!!! take checks on {Path(mp4).name}: {e!r}", flush=True)
+    return fa
+
+
 def _crowded(faults: list) -> bool:
     """A take whose fault is a head count (more people than the shot has)."""
     return any(re.search(r"\d+ people, not \d+", f) for f in faults)
@@ -4226,7 +4244,7 @@ def _judge_as_they_land(out_: Path, jobs: list, more: Path, done: Path, stop, lo
                 j, n, k = left.pop(t)
                 if k == 1 and ((out_ / f"{n}.judged").exists() or f"{n}_t2" in names):
                     continue
-                fa = MF.fight_clip_ok(out_ / f"{t}.mp4", j.get("people"))
+                fa = _take_faults(out_ / f"{t}.mp4", j.get("people"))
                 if not fa:
                     if k == 1:
                         (out_ / f"{n}.judged").write_text(json.dumps({"take1": fa}))
@@ -4403,8 +4421,18 @@ def _judge_chain_line(st: dict, k: int, takes: list, J: Path, log) -> dict:
     pick = best if best is not None else nx if nx is not None else 0
     log(f"{st['id']} line {k}: judge picks take {'ABC'[pick]} (best {a.get('best')!r}, next {a.get('next')!r}, "
         f"shown {''.join('ABC'[i] for i in order)}) in {time.time() - t0:.0f} s")
+    checks = None
+    if TAKE_CHECKS:                         # the mechanical checks per take: a take they fault is not picked while
+        try:                                # another is clean (the judge ranks pictures; it does not see the camera move)
+            checks = [TC.clip_faults(t, "action")["faults"] for t in takes]
+            if checks[pick] and not all(checks):
+                clean = [i for i in ([nx] if nx is not None else []) + list(range(len(takes))) if not checks[i]]
+                log(f"{st['id']} line {k}: take {'ABC'[pick]} {checks[pick]}: take {'ABC'[clean[0]]} instead")
+                pick = clean[0]
+        except Exception as e:              # noqa: BLE001
+            log(f"!!! take checks on {st['id']} line {k}: {e!r}")
     return {"pick": pick, "best": best, "next": nx, "order": order, "answers": a, "ask": ask,
-            "sheets": [str(x) for x in sheets], "fallback": best is None}
+            "sheets": [str(x) for x in sheets], "fallback": best is None, "checks": checks}
 
 
 def _join_chain(L: Path, st: dict, log) -> Path:
@@ -4484,8 +4512,9 @@ def _chains_as_they_land(sd: Path, chains: list, more: Path | None, queued: set,
                             "director_line": st["director_lines"][k - 1],
                             "takes": {"ABC"[i]: str(L / "out" / f"{n}.mp4") for i, n in enumerate(names)},
                             "sheet": str(sbs), "judge_pick": "ABC"[jd["pick"]], "review": review,
-                            "answer_with": str(ch), "answers": ['{"pick": "A|B|C"}', '{"accept": true}',
-                                                                '{"override": "<new line>"}'],
+                            "answer_with": str(ch), "answers": ['{"pick": "A|B|C", "why": "<a few words>"}',
+                                                                '{"accept": true}', '{"override": "<new line>"}'],
+                            "take_checks": jd.get("checks"),
                             "timeout_s": REVIEW_TIMEOUT, "at": time.time()}, indent=1))
                         log(f"REVIEW card ready: {card} (judge picks {'ABC'[jd['pick']]}; answer in {ch} within "
                             f"{REVIEW_TIMEOUT:.0f} s)")
@@ -4500,9 +4529,15 @@ def _chains_as_they_land(sd: Path, chains: list, more: Path | None, queued: set,
                     if c_ is None:
                         live -= more is None and not wait_cards     # (no hold: the card waits for the hold)
                         continue
+                    picked_ = str(c_.get("pick", "")).upper()
                     rec = {"t": time.strftime("%F %T"), "chain": sid, "line_no": k, "ver": v,
                            "director_line": st["director_lines"][k - 1], "line": st["lines"][k - 1],
-                           "judge_pick": "ABC"[jd["pick"]], "choice": c_, "review": review}
+                           "judge_pick": "ABC"[jd["pick"]], "choice": c_, "review": review,
+                           # the reviewer against the judge (take_checks.review_agreement counts these)
+                           "agree": (picked_ == "ABC"[jd["pick"]]) if picked_ in ("A", "B", "C") else
+                                    (True if c_.get("accept") else None),
+                           "why": c_.get("why") or "", "judge_answers": jd.get("answers"),
+                           "take_checks": jd.get("checks")}
                     with open(R / "log.jsonl", "a") as fh:
                         fh.write(json.dumps(rec) + "\n")
                     if isinstance(c_.get("override"), str) and c_["override"].strip():
@@ -4548,7 +4583,7 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         n_ = None if s.get("crowd") else len(s.get("who") or [])
         takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, len(QUIET_SEEDS))))
                        if x.exists()]
-        fs = [MF.fight_clip_ok(x, n_) for x in takes]
+        fs = [_take_faults(x, n_, s["kind"]) for x in takes]
         if len(takes) == 1:
             if fs[0]:
                 log(f"{s['id']}: {fs[0]}: taken once more")
@@ -4892,7 +4927,7 @@ def _sync_as_they_land(book: Path, R, L: Path, talk: list, stop, log=print, chec
                 c = L / "out" / f"{n}.mp4"
                 if not check or not c.exists():
                     continue
-                fa = MF.fight_clip_ok(c, shots[n][0].get("people"))
+                fa = _take_faults(c, shots[n][0].get("people"))
                 (L / "out" / f"{n}.judged").write_text(json.dumps({"take1": fa}))
                 if fa:                  # lean (10-28 user): counted as a defect to fix upstream, not re-rendered
                     _problem(book, log, f"{n}: talk clip defect {fa}")
