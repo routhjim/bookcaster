@@ -110,11 +110,27 @@ def lie_box(P: np.ndarray) -> dict:
     inside_y = (yc > by[0] - 0.3) & (yc < by[1] + 0.3)
     board_free = top < surf + 0.30                       # not the headboard
     pil &= near_head[None, :] & inside_y[None, :] & board_free
+    # the pillow is the connected run of those cells round the highest one (a turned-down sheet edge also stands
+    # above the surface, apart from it)
+    if pil.any():
+        t_ = np.where(pil, top, -np.inf)
+        i0, k0 = np.unravel_index(int(np.argmax(t_)), t_.shape)
+        comp = np.zeros_like(pil)
+        st_ = [(i0, k0)]
+        while st_:
+            i, k = st_.pop()
+            if i < 0 or k < 0 or i >= nx or k >= ny or comp[i, k] or not pil[i, k]:
+                continue
+            comp[i, k] = True
+            st_ += [(i + 1, k), (i - 1, k), (i, k + 1), (i, k - 1)]
+        pil = comp
     pz = float(np.nanmax(np.where(pil, top, np.nan))) if pil.any() else None
     py = None
     if pil.any():
         kk = np.nonzero(pil.any(0))[0]
         py = [round(float(y0 + kk.min() * CELL), 3), round(float(y0 + (kk.max() + 1) * CELL), 3)]
+        # the whole lying surface, the head end under the pillow included
+        by = [min(by[0], py[0]), max(by[1], py[1])]
     return {"posture": "lying", "name": "mattress",
             "box": {"top_z_m": round(surf, 3), "x_m": [round(bx[0], 3), round(bx[1], 3)],
                     "y_m": [round(by[0], 3), round(by[1], 3)]},
