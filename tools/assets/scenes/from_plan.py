@@ -238,6 +238,7 @@ VARIANT = {"usual": None}
 
 
 STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
+ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm", "look")
 
 
 def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None):
@@ -474,7 +475,7 @@ def main():
             if lk in st:
                 c["look_at"] = lk
             pz = (cam0.get("_poses") or {}).get(k)
-            if pz:                                           # what they begin to do as the shot starts
+            if pz in ACTION_NAMES:                           # what they begin to do as the shot starts
                 c["_pose_choice"] = pz
                 if pz in STAND_ACTIONS and v["pose"] != "sitting":
                     c["body_pose"]["pose"] = pz
