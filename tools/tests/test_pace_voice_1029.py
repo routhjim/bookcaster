@@ -32,7 +32,7 @@ man.parent.mkdir(parents=True)
 man.write_text(json.dumps([{"t": 3.0, "dur": 1.0}]))
 f = b / "chapters" / "01_x.txt"
 BC.set_pace(b, 1.25)
-BC.apply_pace(b, f, lambda m: None, fresh=True)
+BC.apply_pace(b, f, lambda m: None)
 dur = lambda p: float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
                                       str(p)], capture_output=True, text=True).stdout)
 check("the book at 1.25: 7 s -> 5.6 s", abs(dur(b / "work" / "01_x.mp3") - 5.6) < 0.08, dur(b / "work" / "01_x.mp3"))

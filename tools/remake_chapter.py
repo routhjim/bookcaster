@@ -517,15 +517,15 @@ def plan(cx: Ctx, only: set | None = None) -> dict:
         f0 = cx.frames.get(m["id"], {})
         spans = speaking(cx, m["t"], m["t"] + m["dur"], f0.get("who") or []) if F3 and m["kind"] != "talk" else []
         if F3 and spans:         # someone in frame speaks: lip-sync (A2Vid) on the staged frame, their lines only
-            main = max(spans, key=lambda d: min(m["t"] + m["dur"], d["t1"]) - max(m["t"], d["t0"]))
-            wav = moment_wav(cx, m, [d for d in spans if d["speaker"] == main["speaker"]])
+            lead = max(spans, key=lambda d: min(m["t"] + m["dur"], d["t1"]) - max(m["t"], d["t0"]))      # (not named like main(): the reload test walks names)
+            wav = moment_wav(cx, m, [d for d in spans if d["speaker"] == lead["speaker"]])
             total = frames_for(m["dur"], 0.0)
             env = audio_env(wav, total + TALK_MAX)
-            e.update(route="talk", speaker=main["speaker"], line=" ".join(d["text"] for d in spans if d["speaker"] == main["speaker"]),
-                     emotion=main.get("emotion"), creature=is_creature(cx.chars.get(main["speaker"], "")),
+            e.update(route="talk", speaker=lead["speaker"], line=" ".join(d["text"] for d in spans if d["speaker"] == lead["speaker"]),
+                     emotion=lead.get("emotion"), creature=is_creature(cx.chars.get(lead["speaker"], "")),
                      speech_s=round(m["dur"], 2), frames=total, chunks=talk_chunks(total, env), wav=str(wav),
                      first=str(first_frame(cx, m, f0)), who=f0.get("who", []), from_action=True,
-                     listener=next((w for w in f0.get("who", []) if canon_name(w) != canon_name(main["speaker"])
+                     listener=next((w for w in f0.get("who", []) if canon_name(w) != canon_name(lead["speaker"])
                                     and not is_creature(cx.chars.get(w, ""))), None))
             entries.append(e)
             continue

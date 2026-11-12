@@ -78,7 +78,12 @@ def conv2(url, model, messages, max_tokens=5000, effort=""):
     return converse(url, model, messages, max_tokens, effort)
 S._converse = conv2
 LY = "The bed against the left wall, the fireplace in the centre of the back wall, the window on the right."
-S.direct(b, stem, es, log=lambda m: None, layouts={"Baker Street Sitting Room": LY})
+S.direct(b, stem, es, log=lambda m: None, layouts={"Baker Street Sitting Room (outside)": "OTHER SIDE LAYOUT."})
+check("E34: a layout of the place's other side is never its layout (the house's outside for its inside)",
+      asks and not any("OTHER SIDE" in a for a in asks), [a[:200] for a in asks][:1])
+asks.clear()
+# (the layout under the scene's own spelling, as room_layouts keys it: place AND side, E34)
+S.direct(b, stem, es, log=lambda m: None, layouts={"Baker Street Sitting Room (inside)": LY})
 check("the director gets the room as its picture is drawn", any("As every picture of it is drawn: " + LY[:-1] in a
       for a in asks), [a[:200] for a in asks if "fixed" in a][:1])
 check("the rule: the room's things stay where drawn; a desk is sat BEHIND; a waking man sits up in his bed",

@@ -93,7 +93,7 @@ hero = TMP / "kestrel_cockpit.png"
 hero.write_bytes(b"png bytes")
 S.scene_list = lambda book, stem, log=print: [{"place": "Kestrel Cockpit"}]
 S.shot_dir = lambda book, stem: TMP / "shots"
-S.RG.Book = lambda book: types.SimpleNamespace(place_look=lambda w: "a cockpit")
+S.RG.Book = lambda book: types.SimpleNamespace(place_look=lambda w: "a cockpit", place_id=lambda w: w)
 MF._hero_state = lambda book, w, log=print, must=(): hero
 drawn = []
 MF.heroes_for = lambda book, places, log=print: drawn.append(dict(places)) or {w: hero for w in places}

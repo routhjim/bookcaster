@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tts-reader"
 version = "0.1.0"
-description = "Convert text files into spoken-word MP3s using a local neural TTS engine (Piper)."
+description = "Bookcaster: turn a book into a full-cast audiobook with music, sound effects and video, on local models. Includes the tts-reader voice engine layer."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
