@@ -64,8 +64,22 @@ Every location comes from an environment variable; the defaults below are the do
     ASSETS_LINE_INHIBIT  1 (default): hold the sleep inhibitor while the list has work; 0 for dry-run lines
 
   Memory budget, stuck report and retries (line.py MemBudget, assetd.py; all sizes in GiB of system memory):
-    ASSETS_MEM_BUDGET   1 (default): a job starts only when MemAvailable, less what jobs still loading have
-                        declared, less the reserve, covers what its kind declares; 0 = off
+    ASSETS_MEM_BUDGET   1: a job starts only when MemAvailable, less what jobs still loading have declared, less
+                        the reserve, covers what its kind declares; default 0 = off (measure the figures first)
+    ASSETS_MEM_GATE_KINDS  kinds whose figure is their tool's own start gate (it already includes headroom): the
+                        reserve is not added on top; default "llm"
+    ASSETS_MEM_BIG_GB   a job needing at least this is "big": while one runs, no engine work starts (the editor
+                        grows beside it) and ASSETS_MEM_BIG_KEEP_GB more is kept free; default 48
+    ASSETS_MEM_BIG_KEEP_GB  default 12
+    ASSETS_MEM_EDITOR_CEIL_GB  a live editor is counted at this size (what it grows to), not at what it holds
+                        now; starting one needs this much; default 30 (seen after an hour of work, 11-12)
+    ASSETS_WINDOW_MEM_WAIT_S  a video window whose clips have waited this long for memory after the cards were
+                        released gives the cards back (it opens again when the clips can load); default 300
+    ASSETS_LINE_RETRY_MAX_RUN_S  only a command that ended within this long of its start is retried (a job that
+                        ran longer has done work: running it again from the top is not safe); default 600
+    ASSETS_LINE_RETRY_KINDS  "kind,kind": only these kinds are retried; default "" = every kind
+    ASSETS_FILL_MAX_S   a fill job known to take longer than this (--est-s, or its kind's measured mean) never
+                        starts; default 900
     ASSETS_MEM_KIND_GB  "kind=GiB,kind=GiB": what a job kind needs, over the defaults in MEM_KIND_GB below (a
                         --line-cmd may also say --mem-gb N for one job)
     ASSETS_MEM_DEFAULT_GB  a kind with no entry; default 4
@@ -200,7 +214,9 @@ def _kind_gb(text, base):
     return out
 
 
-MEM_BUDGET = os.environ.get("ASSETS_MEM_BUDGET", "1") == "1"
+# OFF by default: the per-kind figures below are mostly estimates. The line logs available memory at every job's
+# start and end (line/power.jsonl: mem_avail_gb); measure for a day, set the figures, then switch it on.
+MEM_BUDGET = os.environ.get("ASSETS_MEM_BUDGET", "0") == "1"
 # System memory a job kind needs (GiB). llm is the language model tool's own start gate (its log: "it needs 96");
 # video is what a clip window took in --status (mem free 117 -> 93 with the editor unloaded) and its loader's own
 # 15 GiB gate with headroom. The rest are estimates, not measurements: the line does not record memory per job yet.
@@ -234,3 +250,12 @@ WINDOW_BUSY_PCT = float(os.environ.get("ASSETS_WINDOW_BUSY_PCT", "10"))
 WINDOW_JOB_MAX_S = float(os.environ.get("ASSETS_WINDOW_JOB_MAX_S", "120"))
 WINDOW_VRAM_KEEP_GB = float(os.environ.get("ASSETS_WINDOW_VRAM_KEEP_GB", "2"))
 VRAM_KIND_GB = _kind_gb(os.environ.get("ASSETS_VRAM_KIND_GB"), {})
+
+MEM_GATE_KINDS = tuple(k.strip() for k in os.environ.get("ASSETS_MEM_GATE_KINDS", "llm").split(",") if k.strip())
+MEM_BIG_GB = float(os.environ.get("ASSETS_MEM_BIG_GB", "48"))
+MEM_BIG_KEEP_GB = float(os.environ.get("ASSETS_MEM_BIG_KEEP_GB", "12"))
+MEM_EDITOR_CEIL_GB = float(os.environ.get("ASSETS_MEM_EDITOR_CEIL_GB", "30"))
+WINDOW_MEM_WAIT_S = float(os.environ.get("ASSETS_WINDOW_MEM_WAIT_S", "300"))
+RETRY_MAX_RUN_S = float(os.environ.get("ASSETS_LINE_RETRY_MAX_RUN_S", "600"))
+RETRY_KINDS = tuple(k.strip() for k in os.environ.get("ASSETS_LINE_RETRY_KINDS", "").split(",") if k.strip())
+FILL_MAX_S = float(os.environ.get("ASSETS_FILL_MAX_S", "900"))

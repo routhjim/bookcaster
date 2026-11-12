@@ -238,7 +238,13 @@ given the stage level, ray-tracing settings or mannequin.
 
 All settings are in `config.py` (`ASSETS_MEM_*`, `ASSETS_LINE_BUSY_*`, `ASSETS_FILL_*`, `ASSETS_WINDOW_*`).
 
-**Memory budget.** Each job kind declares the system memory it needs (`ASSETS_MEM_KIND_GB`, or `--mem-gb N` on one
+**Memory budget (`ASSETS_MEM_BUDGET`, off by default).** The line logs available memory at every job's start
+and end, and the least seen while it ran, in `line/power.jsonl` (`mem_avail_start_gb`, `mem_avail_end_gb`,
+`mem_avail_min_gb`, `beside`): set the per-kind figures from a day of that before switching the budget on.
+With it on: a live editor is counted at `ASSETS_MEM_EDITOR_CEIL_GB` (what it grows to), no engine work starts
+while a job of at least `ASSETS_MEM_BIG_GB` runs, the clips of a wanted or open video window have their memory
+promised, and a window whose clips have waited `ASSETS_WINDOW_MEM_WAIT_S` for memory gives the cards back.
+Each job kind declares the system memory it needs (`ASSETS_MEM_KIND_GB`, or `--mem-gb N` on one
 `--line-cmd`). A job starts only when MemAvailable, less what jobs still loading have declared (for
 `ASSETS_MEM_RAMP_S` after their start), less the reserve, covers it; `--status` says so when it holds one. Two jobs
 that cannot both fit never overlap, whichever starts first. A video window is not opened (the cards keep their
@@ -251,10 +257,13 @@ records memory per job.
 
 **Retries.** A command that ends with one of `ASSETS_LINE_BUSY_RCS` (75), or fails with a last log line matching
 `ASSETS_LINE_BUSY_LOG_RE` (it waited for memory or a lock and gave up), did not fail: it goes back on the line and
-becomes ready again after `ASSETS_LINE_RETRY_S` (doubled each time), `ASSETS_LINE_RETRIES` times at most. An
+becomes ready again after `ASSETS_LINE_RETRY_S` (doubled each time), `ASSETS_LINE_RETRIES` times at most. Only a
+command that ended within `ASSETS_LINE_RETRY_MAX_RUN_S` of its start (it has done no work yet), and only the
+last four log lines count; `ASSETS_LINE_RETRY_KINDS` limits it to named kinds. An
 engine job whose editor the line stopped for memory is treated the same. New tools should exit 75.
 
-**Stuck report.** When no station runs anything, no editor loads or unloads, and work has waited
+**Stuck report.** A station idle that long with a ready entry nothing can release is named too, while other
+stations work. When no station runs anything, no editor loads or unloads, and work has waited
 `ASSETS_LINE_STUCK_REPORT_S`, the line logs one line (and `--status` shows it): the oldest waiting entry, the
 condition it waits for, followed through whatever it waits behind, and `NOTHING IN THE LINE WILL CHANGE THIS` when
 no timer, outside holder or next step of the line can release it.

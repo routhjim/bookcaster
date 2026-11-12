@@ -484,7 +484,8 @@ class Sched:
         self.mem_turn_editor = False      # ... and whether it needs the editor's memory
         self.editor_block = None          # why no editor is being started although engine work waits
         self.all_idle_since = None        # since when nothing runs although work waits (check_stuck)
-        self.stuck, self.stuck_said = None, (0.0, None)
+        self.stuck, self.stuck_at, self.stuck_said_at = None, {}, {}
+        self.window_promise, self.t_memlog = None, 0.0
         self.lock_free_since = {}         # card bus -> since when nobody (we or an outside job) holds its lock
         self.t_fill, self.fill_left = 0.0, 0
 
@@ -870,6 +871,16 @@ class Sched:
             r["release_s"] = round(t - r["t"], 1)
             r["vram_used_gb"] = {b: round(vram(b)[0] or 0, 1) for b in self.cards}
             print(f"[sched] both cards released in {r['release_s']}s; VRAM used {r['vram_used_gb']}", flush=True)
+        vheld = [st for j in self.jobs if not j.cancelled for st in j.stages
+                 if self.station(st) == "video" and st.state == "ready" and st.info.get("mem_held_since")]
+        running_video = any(self.station(st) == "video" and st.state == "run" for j in self.jobs for st in j.stages)
+        if (r["done_t"] is not None and not r["manual"] and vheld and not running_video
+                and min(t - st.info["mem_held_since"] for st in vheld) >= C.WINDOW_MEM_WAIT_S
+                and self.card_work_queued()):
+            # both cards idle with all card work held, for clips that cannot load: the cards go back to their
+            # work; the window opens again when the clips fit (dispatch opens it only then)
+            self.reclaim(f"the clips have waited {C.WINDOW_MEM_WAIT_S:.0f}s for memory with the cards released")
+            return
         normal = self.card_work_queued()
         # fill work takes the cards back after a window too, but never after a release asked by hand
         if r["done_t"] is None or self.video_left() or not (
@@ -897,6 +908,13 @@ class Sched:
         self.check_code(t)
         self.dispatch()
         self.mem_relief(t)
+        if t - self.t_memlog >= 2.0:                        # the least memory seen while each job ran (power.jsonl)
+            self.t_memlog = t
+            run = [st for j in self.jobs for st in j.stages if st.state == "run" and "mem_min" in st.info]
+            if run:
+                m = round(self.mem_read(), 1)
+                for st in run:
+                    st.info["mem_min"] = m if st.info["mem_min"] is None else min(st.info["mem_min"], m)
         self.draw_fill(t)
         self.report_stalls(t)
         self.check_stuck(t)
@@ -971,6 +989,13 @@ class Sched:
         def hold(st, text, kind, detail=None):
             why[self.line_of(st)].append(text)
             st.held = (kind, text, detail)
+            if kind == "memory":
+                st.info.setdefault("mem_held_since", t)
+            else:
+                st.info.pop("mem_held_since", None)
+
+        def back():                                         # what an unloading editor gives back
+            return self.editors_mem() + self.editors_growth()
 
         v, head = self.verdict, self.heading()
         ue_st = f"card{self.ue_bus}"
@@ -979,17 +1004,23 @@ class Sched:
         # the memory turn granted at the last dispatch stands while its stage still waits
         turn = self.mem_turn if (self.mem_turn in ready and not self.mem_turn.job.cancelled) else None
         mem_held, pre_held = [], set()
+        # the clips of a window that is wanted or open: their memory is promised (mem_running)
+        self.window_promise = None
+        big = self.big_running()
         if video_wanted and not self.released:
             # the window opens (the cards drain, the editor unloads) only when the clips could then load: while
             # another job holds the memory they need, the cards keep their work (unless the clips have the turn)
             vst = min((st for st in ready if self.station(st) == "video"), key=lambda x: x.job.seq or 0, default=None)
             if vst is not None and vst is not turn:
-                ok, text = self.mem_ok(vst, t, reclaim=self.editors_mem())
+                ok, text = self.mem_ok(vst, t, reclaim=back())
                 if not ok:
                     video_wanted = False
                     hold(vst, text + "; the cards keep their work until the clips can load", "memory")
                     mem_held.append(vst)
                     pre_held.add(vst)
+        if video_wanted:                                    # (not when the clips cannot load: nothing is promised)
+            self.window_promise = min((st for st in ready if self.station(st) == "video"),
+                                      key=lambda x: x.job.seq or 0, default=None)
         # the window itself is opened at the end of this pass, after this pass's starts (they may take the memory)
         open_window = video_wanted and not self.released and not (busy & set(cards)) and not self.reload
         self.engine_turn_update(ready, t)
@@ -1030,7 +1061,7 @@ class Sched:
             if b == ue_st:
                 if st.kind == "cmd":
                     # the editor unloads for a borrow: its memory comes back before the command loads
-                    ok, text = self.mem_ok(st, t, reclaim=self.editors_mem())
+                    ok, text = self.mem_ok(st, t, reclaim=back())
                     if not ok:
                         hold(st, text, "memory")
                         mem_held.append(st)
@@ -1042,6 +1073,11 @@ class Sched:
                 elif st.kind == "ue" and self.engine_turn == "borrow":
                     hold(st, "a borrow command's turn on the engine card (the editor unloads for it)", "ue_turn")
                     continue
+            if st.kind == "ue" and big is not None:
+                # the editor grows while it works: no engine work beside a job that needs most of the memory
+                hold(st, f"memory: #{big.job.seq} {big.job.id} needs {self.mem_need(big):.0f} GiB and runs; engine "
+                         f"work waits until it ends", "running")
+                continue
             nb = self.next_station(st)
             if nb:
                 lim = L.LINE_MAX if self.line_moving(nb, t, running_lines) else 2 * L.LINE_MAX
@@ -1096,7 +1132,7 @@ class Sched:
         if open_window:
             vst = min((st for st in ready if self.station(st) == "video" and st.state == "ready"),
                       key=lambda x: x.job.seq or 0, default=None)
-            ok, text = (True, None) if (vst is None or vst is turn) else self.mem_ok(vst, t, reclaim=self.editors_mem())
+            ok, text = (True, None) if (vst is None or vst is turn) else self.mem_ok(vst, t, reclaim=back())
             if ok:
                 n = sum(1 for j in self.jobs if j.mode == "cmd" and j.entry["station"] == "video" and not j.cancelled)
                 self.window = {"t": now(), "n": n}
@@ -1104,6 +1140,7 @@ class Sched:
             else:
                 hold(vst, text + "; the cards keep their work until the clips can load", "memory")
                 mem_held.append(vst)
+                self.window_promise = None
         self.why = dict(why)
         self.mem_held = mem_held
         self.grant_mem_turn(t)
@@ -1116,13 +1153,30 @@ class Sched:
         declared = (st.job.entry or {}).get("mem_gb") if st.kind == "cmd" else None
         return self.mem.need(self.skind(st), declared)
 
-    def mem_running(self):
-        """[(GiB declared, start time)] of everything of ours that may still be loading: running stages, and the
-        editors (an editor's start is a load too)."""
+    def mem_reserve(self, st):
+        """GiB kept free beside this stage: none for a kind whose figure is its tool's own gate; more while a big
+        job runs (after its load the reading shows what it took, and a small job must not creep in beside it)."""
+        keep = 0.0 if self.skind(st) in C.MEM_GATE_KINDS else self.mem.reserve_gb
+        if self.big_running(exclude=st) is not None:
+            keep += C.MEM_BIG_KEEP_GB
+        return keep
+
+    def big_running(self, exclude=None):
+        """A running stage that needs at least MEM_BIG_GB (None: none)."""
+        if not C.MEM_BUDGET:
+            return None
+        return next((x for j in self.jobs for x in j.stages if x.state == "run" and x is not exclude
+                     and self.station(x) and self.mem_need(x) >= C.MEM_BIG_GB), None)
+
+    def mem_running(self, exclude=None):
+        """[(GiB declared, start time)] of what may still be loading: running stages, and the clips of a video
+        window that is wanted or open (their memory is promised from the moment the cards are being cleared for
+        them, so nothing else takes it meanwhile)."""
         out = [(self.mem_need(st), st.t_start) for j in self.jobs for st in j.stages
                if st.state == "run" and self.station(st)]
-        out += [(C.MEM_EDITOR_GB, getattr(e, "t_start", None)) for e in self.editors
-                if e.state in ("starting", "ready", "busy")]
+        if getattr(self, "window_promise", None) is not None and self.window_promise is not exclude \
+                and self.window_promise.state == "ready":
+            out.append((self.mem_need(self.window_promise), now()))
         return out
 
     def editors_mem(self):
@@ -1134,47 +1188,68 @@ class Sched:
             c = self._edmem = (key, t, sum(self.editor_mem(e) for e in self.editors if e.state != "dead"))
         return c[2]
 
+    def editors_growth(self):
+        """GiB a live editor is still expected to take: it is counted at MEM_EDITOR_CEIL_GB (what it grows to over
+        an hour of work), not at what it holds now, so nothing that needs that memory starts beside it."""
+        if not C.MEM_BUDGET:
+            return 0.0
+        n = sum(1 for e in self.editors if e.state != "dead")
+        return max(0.0, n * C.MEM_EDITOR_CEIL_GB - self.editors_mem()) if n else 0.0
+
     def mem_ok(self, st, t, reclaim=0.0):
-        """(ok, text): may this stage start now by memory."""
+        """(ok, text): may this stage start now by memory. reclaim > 0: the editor unloads first (its memory and
+        its counted growth both come back)."""
         need = self.mem_need(st)
         if need <= 0:
             return True, None
-        return self.mem.fits(need, self.mem_read(), self.mem_running(), t, reclaim)
+        growth = 0.0 if reclaim else self.editors_growth()
+        return self.mem.fits(need, self.mem_read(), self.mem_running(exclude=st), t, reclaim,
+                             reserve=self.mem_reserve(st), held=growth)
+
+    def mem_room(self, st, t):
+        return (self.mem_read() - self.mem.pending(self.mem_running(exclude=st), t) - self.editors_growth()
+                - self.mem_reserve(st))
 
     def grant_mem_turn(self, t):
         """The memory turn. A job held only for memory for MEM_TURN_S goes first: no other job needing more than
         MEM_SMALL_GB starts, and no engine work when the job needs the editor's memory (the editor then idles and
-        is recycled), so a stream of other work cannot starve it. Only when the line itself could cover it: memory
-        held outside the line is not freed by idling our stations, and a job that can never fit gets no turn."""
+        mem_relief quits it, whatever its size), so a stream of other work cannot starve it. Only when the line
+        itself could cover it: memory held outside the line is not freed by idling our stations, and a job that
+        can never fit gets no turn."""
         self.mem_turn, self.mem_turn_editor = None, False
         if not self.mem_held:
             return
-        room = self.mem.room(self.mem_read(), self.mem_running(), t)
-        ed = self.editors_mem()
+        ed = self.editors_mem() + self.editors_growth()
         others = sum(self.mem_need(x) for j in self.jobs for x in j.stages if x.state == "run" and self.station(x))
         for st in sorted(self.mem_held, key=lambda x: (x.t_ready or t, x.job.seq or 0)):
             need = self.mem_need(st)
-            if self.is_fill(st) or self.mem.never(need) or t - (st.t_ready or t) < C.MEM_TURN_S or room + ed + others < need:
+            room = self.mem_room(st, t)
+            if (self.is_fill(st) or self.mem.never(need, self.mem_reserve(st)) or t - (st.t_ready or t) < C.MEM_TURN_S
+                    or room + ed + others < need):
                 continue
             self.mem_turn, self.mem_turn_editor = st, room + others < need
             return
 
     def mem_relief(self, t):
-        """An idle editor is quit when a job held only for memory would fit with the editor's memory back (it
-        loads again for the next engine job; nothing else can give that memory back). Once per waiting job, so an
-        estimate that turns out wrong cannot unload the editor over and over."""
+        """An idle editor is quit when a job held only for memory would fit with the editor gone (its memory and
+        the growth counted for it): it loads again for the next engine job, and nothing else can give that memory
+        back. For the job with the memory turn, or a big job, whatever the editor's size (engine work is held for
+        it meanwhile, so nothing else would ever unload the editor); for others only an editor of at least
+        UE_RECYCLE_GB, and once per waiting job."""
         for st in self.mem_held:
-            if st.info.get("editor_recycled") or st.state != "ready" or self.is_fill(st):
+            turn = st is self.mem_turn and self.mem_turn_editor
+            if st.state != "ready" or self.is_fill(st) or (st.info.get("editor_recycled") and not turn):
                 continue
             need = self.mem_need(st)
-            room = self.mem.room(self.mem_read(), self.mem_running(), t)
+            room = self.mem_room(st, t)
             if room >= need:
                 continue
+            back = self.editors_mem() + self.editors_growth()
             for e in self.editors:
                 if e.state != "ready":
                     continue
                 m = self.editor_mem(e)
-                if m >= C.UE_RECYCLE_GB and room + m >= need:
+                if (turn or need >= C.MEM_BIG_GB or m >= C.UE_RECYCLE_GB) and room + back >= need:
                     print(f"[line] {time.strftime('%H:%M:%S')} editor on {e.card.bus} is idle and holds {m:.0f} GiB: "
                           f"unloading it so #{st.job.seq} {st.job.id} ({self.skind(st)}, needs {need:.0f} GiB, room "
                           f"{room:.0f}) can start; it loads again for the next engine job", flush=True)
@@ -1188,6 +1263,10 @@ class Sched:
         """Why a fill stage may not start at station b now (None: it may). Fill runs only where no normal job runs
         or waits, so it yields between its own jobs the moment normal work or a video window arrives (a window
         holds every card stage); it borrows the engine card only when the editor is unloaded or long idle."""
+        est = self.est_s(st)
+        if est is not None and est > C.FILL_MAX_S:
+            return (f"fill: it is expected to take {est:.0f}s, more than fill work may ({C.FILL_MAX_S:.0f}s); "
+                    f"submit it as normal work")
         in_window = bool(self.released) and b in self.card_stations()
         for j in self.jobs:
             if j.cancelled or (j.entry or {}).get("fill"):
@@ -1358,7 +1437,18 @@ class Sched:
         if kind in ("guard", "blender", "reload", "unload", "running"):
             return text, True                               # the outside world, or a step already under way
         if kind == "memory":
-            return text, not self.mem.never(self.mem_need(st))
+            if self.mem.never(self.mem_need(st), self.mem_reserve(st)):
+                return text, False
+            # the memory it needs is the editor's, engine work is held for it, and nothing will unload the editor
+            if st is self.mem_turn and self.mem_turn_editor and not any(
+                    e.state in ("ready", "quitting", "busy", "starting") for e in self.editors) and \
+                    self.mem_room(st, t) < self.mem_need(st):
+                return text + "; it has the memory turn but no editor is left to unload", True
+            if (st is self.mem_turn and self.mem_turn_editor and any(e.state == "ready" for e in self.editors)
+                    and self.mem_room(st, t) + self.editors_mem() + self.editors_growth() < self.mem_need(st)):
+                return (text + "; it has the memory turn and engine work is held for it, but unloading the idle "
+                        "editor would not cover it"), False
+            return text, True
         if kind == "turn":
             return behind(self.mem_turn, text)
         if kind == "video":
@@ -1388,32 +1478,55 @@ class Sched:
         return text, False
 
     def check_stuck(self, t):
-        """Every station idle, no editor loading or unloading, and work waiting for STUCK_REPORT_S: one line naming
-        the oldest waiting entry and the condition it waits for (followed through whatever it waits behind), and
-        whether anything can still change it. On 11-12 this would have named the reclaim stall in a minute."""
+        """Work that waits where nothing moves, named in one line: the oldest waiting entry, the condition it waits
+        for (followed through whatever it waits behind), and whether anything can still change it.
+        Whole line: every station idle, no editor loading or unloading, for STUCK_REPORT_S (self.stuck).
+        One station: it has been idle STUCK_REPORT_S with a ready entry that nothing can release, while other
+        stations work (self.stuck_at): a partial stall the whole-line test does not see.
+        On 11-12 this would have named the reclaim stall in a minute."""
         waiting = [st for j in self.jobs if not j.cancelled for st in j.stages
                    if self.station(st) and st.state in ("wait", "ready")]
-        moving = (any(st.state == "run" for j in self.jobs for st in j.stages)
-                  or any(e.state in ("starting", "quitting", "busy") for e in self.editors))
-        if not waiting or moving:
-            self.all_idle_since, self.stuck = None, None
+        running = [st for j in self.jobs for st in j.stages if st.state == "run"]
+        moving = bool(running) or any(e.state in ("starting", "quitting", "busy") for e in self.editors)
+        if not waiting:
+            self.all_idle_since, self.stuck, self.stuck_at = None, None, {}
             return
-        self.all_idle_since = self.all_idle_since or t
-        dt = t - self.all_idle_since
-        if dt < C.STUCK_REPORT_S or 0 <= t - getattr(self, "t_stuck", 0.0) < 5.0:
+        if moving:
+            self.all_idle_since, self.stuck = None, None
+        else:
+            self.all_idle_since = self.all_idle_since or t
+        if 0 <= t - getattr(self, "t_stuck", 0.0) < 5.0:
             return
         self.t_stuck = t
-        st = min(waiting, key=lambda x: (x.job.seq or 0))
-        cond, ok = self.unmet(st, t)
-        text = f"#{st.job.seq} {st.job.id} {st.name} at {self.line_of(st)} waits for: {cond}"
-        if not ok:
-            text += " | NOTHING IN THE LINE WILL CHANGE THIS (it needs a fix, --cancel or --reclaim-cards)"
-        self.stuck = {"since": self.all_idle_since, "text": text, "dead": not ok}
-        said_t, said = self.stuck_said
-        if said != text or t - said_t >= 600:
-            self.stuck_said = (t, text)
-            print(f"[line] {time.strftime('%H:%M:%S')} nothing has run at any station for {dt:.0f}s: {text}",
-                  flush=True)
+
+        def say(key, dt, text):
+            said_t, said = self.stuck_said_at.get(key, (0.0, None))
+            if said != text or t - said_t >= 600:
+                self.stuck_said_at[key] = (t, text)
+                print(f"[line] {time.strftime('%H:%M:%S')} {key} for {dt:.0f}s: {text}", flush=True)
+
+        dead_tail = " | NOTHING IN THE LINE WILL CHANGE THIS (it needs a fix, --cancel or --reclaim-cards)"
+        if not moving and t - self.all_idle_since >= C.STUCK_REPORT_S:
+            st = min(waiting, key=lambda x: (x.job.seq or 0))
+            cond, ok = self.unmet(st, t)
+            text = f"#{st.job.seq} {st.job.id} {st.name} at {self.line_of(st)} waits for: {cond}" + (
+                "" if ok else dead_tail)
+            self.stuck = {"since": self.all_idle_since, "text": text, "dead": not ok}
+            say("nothing has run at any station", t - self.all_idle_since, text)
+        busy = {self.station(st) for st in running}
+        at = {}
+        for line in {self.line_of(st) for st in waiting if st.state == "ready"}:
+            b = line.split(":")[0]
+            since = self.idle_since.get(b)
+            if b in busy or since is None or t - since < C.STUCK_REPORT_S:
+                continue
+            st = min((x for x in waiting if x.state == "ready" and self.line_of(x) == line),
+                     key=lambda x: (x.job.seq or 0))
+            cond, ok = self.unmet(st, t)
+            if not ok:
+                at[line] = f"#{st.job.seq} {st.job.id} {st.name} waits for: {cond}" + dead_tail
+                say(f"{line} has started nothing", t - since, at[line])
+        self.stuck_at = at
 
     def engine_turn_update(self, ready, t):
         """Whose turn the engine card is: the editor's own work (imports, stills, scripts: seconds each) or a borrow
@@ -1424,7 +1537,7 @@ class Sched:
         would wait behind a command that cannot start)."""
         ue_st = f"card{self.ue_bus}"
         borrows = [st for st in ready if st.kind == "cmd" and self.station(st) == ue_st
-                   and self.mem_ok(st, t, reclaim=self.editors_mem())[0]
+                   and self.mem_ok(st, t, reclaim=self.editors_mem() + self.editors_growth())[0]
                    and not (self.is_fill(st) and self.fill_blocked(st, ue_st, t))]
         if not borrows:
             self.engine_turn, self.editor_runs = "editor", 0
@@ -1581,7 +1694,8 @@ class Sched:
     def power_note(self):
         g = self.guard.update()
         return {"t": round(now(), 1), "capacity": g.get("capacity"), "status": g.get("status"),
-                "energy_wh": g.get("energy_wh"), "load1": round(os.getloadavg()[0], 2)}
+                "energy_wh": g.get("energy_wh"), "load1": round(os.getloadavg()[0], 2),
+                "mem_avail_gb": round(self.mem_read(), 1)}
 
     def check_guard(self, t):
         if t - self.t_guard < 5:
@@ -1715,7 +1829,9 @@ class Sched:
             log = st.info.get("log")
             busy = None
             if rc != 0 and not job.cancelled:
-                busy = L.busy_exit(rc, L.log_tail(log) if log else "", C.BUSY_RCS, C.BUSY_LOG_RE)
+                busy = L.busy_exit(rc, L.log_tail(log) if log else "", C.BUSY_RCS, C.BUSY_LOG_RE,
+                                   run_s=now() - (st.t_start or now()), max_run_s=C.RETRY_MAX_RUN_S,
+                                   kind=self.skind(st), kinds=C.RETRY_KINDS)
             with self.lock:                                 # the end is on disk first, then the rest
                 if busy and self.requeue(st, f"rc {rc}, {busy}"):
                     job.log(f"cmd rc={rc} ({busy}): not a failure, back on the line; log {log}")
@@ -1787,6 +1903,10 @@ class Sched:
         if b:
             st.info["power_start"] = self.power_note()
             ps = st.info["power_start"]
+            st.info["mem_min"] = ps.get("mem_avail_gb")
+            st.info["beside"] = sorted({self.skind(x) for j in self.jobs for x in j.stages
+                                        if x.state == "run" and x is not st and self.station(x)}
+                                       | ({"editor"} if any(e.state != "dead" for e in self.editors) else set()))
             print(f"[line] {time.strftime('%H:%M:%S')} start {b} {self.skind(st)} #{st.job.seq} {st.job.id} | "
                   f"bat {ps['capacity']}% {ps['status']} {ps['energy_wh']}Wh load {ps['load1']}", flush=True)
             st.job.log(f"start {st.name} at {b} | battery {ps['capacity']}% {ps['status']} {ps['energy_wh']} Wh")
@@ -1826,6 +1946,10 @@ class Sched:
         self.kind_cost[k].append((round(dt, 1), d))
         rec = {"seq": st.job.seq, "id": st.job.id, "station": self.station(st), "kind": k, "stage": st.name,
                "state": st.state, "s": round(dt, 1), "start": a, "end": z, "energy_delta_wh": d,
+               # available memory at the job's start and end, and the least seen while it ran (2 Hz), with what
+               # else ran at its start: the figures the memory budget's per-kind table should be set from
+               "mem_avail_start_gb": a.get("mem_avail_gb"), "mem_avail_end_gb": z.get("mem_avail_gb"),
+               "mem_avail_min_gb": st.info.pop("mem_min", None), "beside": st.info.pop("beside", None),
                "w_avg": round(d * 3600 / dt, 1) if d is not None and dt > 0 else None}
         try:
             with open(self.wl.root / "power.jsonl", "a") as f:
@@ -2169,7 +2293,13 @@ class Sched:
                                      f"needs the editor's memory")
                 return
             if C.MEM_BUDGET:
-                ok, text = self.mem.fits(C.MEM_EDITOR_GB, self.mem_read(), self.mem_running(), t)
+                big = self.big_running()
+                if big is not None:
+                    self.editor_block = (f"memory: #{big.job.seq} {big.job.id} needs {self.mem_need(big):.0f} GiB "
+                                         f"and runs")
+                    return
+                ok, text = self.mem.fits(max(C.MEM_EDITOR_GB, C.MEM_EDITOR_CEIL_GB), self.mem_read(),
+                                         self.mem_running(), t)
                 if not ok:
                     self.editor_block = text.replace("it needs", "the editor needs", 1)
                     return
@@ -2641,7 +2771,7 @@ class Sched:
                         "held": [f"#{x.job.seq} {x.job.id} ({self.skind(x)}, {self.mem_need(x):.0f} GiB)"
                                  for x in self.mem_held],
                         "turn": f"#{self.mem_turn.job.seq} {self.mem_turn.job.id}" if self.mem_turn else None},
-                "stuck": self.stuck,
+                "stuck": self.stuck, "stuck_at": self.stuck_at,
                 "fill": {"list": self.fill_left, "list_path": str(C.FILL_LIST),
                          "jobs": [f"#{j.seq} {j.id} at {self.station(x)} {x.state}"
                                   + (f" (retry {x.info['retries']})" if x.info.get("retries") else "")
@@ -3346,6 +3476,8 @@ def print_status():
         print("waiting for memory: " + ", ".join(m["held"]) + (f"; {m['turn']} has the turn" if m.get("turn") else ""))
     if ln.get("stuck"):
         print(("STUCK: " if ln["stuck"].get("dead") else "nothing runs: ") + ln["stuck"]["text"])
+    for b, text in (ln.get("stuck_at") or {}).items():
+        print(f"STUCK at {b}: {text}")
     fl = ln.get("fill") or {}
     if fl.get("jobs") or fl.get("list"):
         print(f"fill: {len(fl.get('jobs') or [])} on the line" + (f" ({'; '.join(fl['jobs'])})" if fl.get("jobs") else "")

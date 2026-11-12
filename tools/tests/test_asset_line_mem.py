@@ -49,6 +49,21 @@ class MemBudgetTest(unittest.TestCase):
         self.assertIsNotNone(L.busy_exit(1, "the card lock is busy", (75,), C.BUSY_LOG_RE))
         self.assertIsNone(L.busy_exit(1, "the card lock is busy", (75,), ""))
         self.assertEqual([L.retry_delay(n, 60) for n in (1, 2, 3)], [60, 120, 240])
+        # review: a job that ran for a while has done work (a script passing on the client's own 75; a job that
+        # waited, ran, then failed for a real reason): never from the top again
+        self.assertIsNotNone(L.busy_exit(75, "", (75,), "", run_s=30, max_run_s=600))
+        self.assertIsNone(L.busy_exit(75, "", (75,), "", run_s=700, max_run_s=600))
+        self.assertIsNone(L.busy_exit(1, "waiting for memory before starting", (75,), C.BUSY_LOG_RE, run_s=700,
+                                      max_run_s=600))
+        self.assertIsNone(L.busy_exit(75, "", (75,), "", run_s=1, max_run_s=600, kind="shape", kinds=("llm",)))
+        self.assertIsNotNone(L.busy_exit(75, "", (75,), "", run_s=1, max_run_s=600, kind="llm", kinds=("llm",)))
+
+    def test_only_the_last_log_lines_count(self):
+        d = Path(tempfile.mkdtemp(dir=TMP)) / "x.log"
+        d.write_text("waiting for memory before starting the model\n" + "work line\n" * 6 + "Traceback: real\n")
+        self.assertIsNone(L.busy_exit(1, L.log_tail(d), (75,), C.BUSY_LOG_RE))
+        d.write_text("work\n" * 6 + "waiting for memory before starting the model\nSTART FAILED\n")
+        self.assertIsNotNone(L.busy_exit(1, L.log_tail(d), (75,), C.BUSY_LOG_RE))
 
 
 class TimedBase(LineBase):
@@ -59,6 +74,8 @@ class TimedBase(LineBase):
         self._now = D.now
         D.now = lambda: self.t
         self._cfg = {k: getattr(C, k) for k in ("MEM_BUDGET", "MEM_EDITOR_GB", "MEM_TURN_S", "MEM_SMALL_GB",
+                                                "MEM_BIG_GB", "MEM_BIG_KEEP_GB", "MEM_EDITOR_CEIL_GB", "MEM_GATE_KINDS",
+                                                "WINDOW_MEM_WAIT_S", "RETRY_MAX_RUN_S", "RETRY_KINDS", "FILL_MAX_S",
                                                 "UE_RECYCLE_GB", "STUCK_REPORT_S", "RETRIES", "RETRY_S",
                                                 "WINDOW_FILL", "WINDOW_IDLE_S", "WINDOW_JOB_MAX_S",
                                                 "WINDOW_VRAM_KEEP_GB", "VRAM_KIND_GB", "FILL_LIST",
@@ -118,31 +135,168 @@ class MemoryTest(TimedBase):
         self.cmd(S, "llm0", "igpu", "llm")
         self.cmd(S, "clips0", "video", "video")
         self.step(S)
-        self.assertEqual(self.running(S), ["llm0"])
-        self.assertIsNone(S.released, "the window must not open while the clips could not load")
-        self.assertTrue(any("memory" in x for x in S.why.get("video", [])))
-        self.avail = 14                                     # the model is loaded; the ramp is over
-        self.step(S, 300)
-        self.assertEqual(self.running(S), ["llm0"])
-        self.assertIsNone(S.released)
-        self.end(S, "llm0")
-        self.avail = 110
-        self.step(S)
+        self.assertEqual(self.running(S), [])               # the window opens; its clips' memory is promised
         self.assertTrue(S.released and "video window" in S.released["reason"])
+        self.assertIn("promised", " ".join(S.why["igpu"]))
         S.released["done_t"] = self.t
         self.step(S)
         self.assertEqual(self.running(S), ["clips0"])
-        self.cmd(S, "llm1", "igpu", "llm")                  # the other order: clips first
-        self.step(S, 10)
-        self.assertEqual(self.running(S), ["clips0"])       # 110 - 24 promised - 8 kept < 96
-        self.assertIn("promised", " ".join(S.why["igpu"]))
-        self.avail = 86
+        self.avail = 86                                     # the clips hold their memory now; the ramp is over
         self.step(S, 400)
-        self.assertEqual(self.running(S), ["clips0"])       # the clips hold their memory now
+        self.assertEqual(self.running(S), ["clips0"])
         self.end(S, "clips0")
         self.avail = 110
         self.step(S)
-        self.assertEqual(self.running(S), ["llm1"])
+        self.assertEqual(self.running(S), ["llm0"])
+        self.cmd(S, "clips1", "video", "video")             # the other order: the model first
+        self.step(S, 10)
+        self.assertEqual(self.running(S), ["llm0"])
+        self.assertTrue(any("memory" in x for x in S.why.get("video", [])))
+        self.avail = 14
+        self.step(S, 400)
+        self.assertEqual(self.running(S), ["llm0"])
+        self.end(S, "llm0")
+        self.avail = 110
+        self.step(S)
+        self.assertEqual(self.running(S), ["clips1"])
+
+    def test_no_window_is_opened_for_clips_that_cannot_load(self):
+        S = self.msched(avail=110)
+        self.cmd(S, "llm0", "igpu", "llm")
+        self.step(S)
+        self.assertEqual(self.running(S), ["llm0"])
+        self.cmd(S, "clips0", "video", "video")
+        self.cmd(S, "draw0", "blender", "small")
+        self.avail = 40                                     # the model is loaded (the ramp is over below)
+        self.step(S, 400)
+        self.assertIsNone(S.released, "the cards must keep their work while the clips could not load")
+        self.assertIn("draw0", self.running(S))
+
+    def test_gate_kind_needs_no_reserve_on_top(self):
+        S = self.msched(avail=96)                           # exactly the language model tool's own gate
+        self.cmd(S, "llm0", "igpu", "llm")
+        self.step(S)
+        self.assertEqual(self.running(S), ["llm0"])
+
+    def test_budget_is_off_by_default_and_memory_is_logged(self):
+        self.assertFalse(self._cfg["MEM_BUDGET"])           # a deploy reloads with the budget off
+        S = self.msched(avail=77.3)
+        self.assertEqual(S.power_note()["mem_avail_gb"], 77.3)
+
+    def test_model_does_not_start_beside_a_live_editor_and_nothing_creeps_in_beside_it(self):
+        # review: the editor is 6 GiB at the start and grows to 20-30; 180 s later a small job could start
+        S = self.msched(avail=117)
+        ed = FakeEditor(S.cards[C.UE_CARD])
+        ed.t_start, ed.idle_since = self.t - 4000, self.t - 500
+        S.editors = [ed]
+        S.editor_mem = lambda e: 6.0 if e.state != "dead" else 0.0
+        llm = self.cmd(S, "llm0", "igpu", "llm")
+        self.step(S)
+        self.assertEqual(self.running(S), [])               # 117 - 24 (the editor's growth) < 96
+        self.assertIn("editor's growth", " ".join(S.why["igpu"]))
+        S.mem_relief(self.t)
+        self.assertEqual(ed.state, "quitting")              # a small idle editor too: nothing else would unload it
+        ed.state = "dead"
+        S.editors = []
+        self.avail = 123
+        self.step(S, 5)
+        self.assertEqual(self.running(S), ["llm0"])
+        ue = self.ue_job(S, "set0")
+        small = self.cmd(S, "s0", "blender", "small")
+        self.avail = 15
+        self.step(S, 400)                                   # long after the ramp
+        self.assertEqual(self.running(S), ["llm0"])
+        self.assertEqual(ue.stages[0].held[0], "running")   # no engine work beside a big job
+        self.assertIn("llm0", ue.stages[0].held[1])
+        self.assertEqual(small.stages[0].held[0], "memory")
+        made = []
+        orig = D.Editor
+        D.Editor = lambda *a, **k: made.append(a) or (_ for _ in ()).throw(AssertionError("an editor was started"))
+        try:
+            with S.lock:
+                S.manage_editors()
+            self.assertIn("llm0", S.editor_block)
+        finally:
+            D.Editor = orig
+        self.assertIsNotNone(llm)
+
+    def test_turn_unloads_a_small_idle_editor(self):
+        # review: 101 GiB available, the editor idle at 6 GiB: the turn held engine work, nothing unloaded the editor
+        S = self.msched(avail=45)
+        ed = FakeEditor(S.cards[C.UE_CARD])
+        ed.t_start, ed.idle_since = self.t - 4000, self.t - 4000
+        S.editors = [ed]
+        S.editor_mem = lambda e: 6.0
+        S.place_ue = lambda st: None
+        job = self.cmd(S, "mid0", "igpu", "big", mem_gb=30)   # not a big job: 45 - 24 growth - 8 = 13 < 30
+        self.step(S)
+        S.mem_relief(self.t)
+        self.assertEqual(ed.state, "ready")                 # under UE_RECYCLE_GB and no turn yet
+        ue = self.ue_job(S, "set0")
+        self.step(S, C.MEM_TURN_S + 1)
+        self.assertIs(S.mem_turn, job.stages[0])
+        self.assertTrue(S.mem_turn_editor)
+        S.dispatch()
+        self.assertEqual(ue.stages[0].held[0], "turn")
+        S.mem_relief(self.t)
+        self.assertEqual(ed.state, "quitting")              # the turn's own rule unloads it, whatever its size
+        ed.state = "ready"                                  # and again, should it ever be back while the turn stands
+        S.mem_relief(self.t)
+        self.assertEqual(ed.state, "quitting")
+
+    def test_a_turn_the_editor_cannot_honour_is_named_as_dead(self):
+        S = self.msched(avail=20)
+        ed = FakeEditor(S.cards[C.UE_CARD])
+        ed.t_start = self.t - 4000
+        S.editors = [ed]
+        S.editor_mem = lambda e: 30.0
+        job = self.cmd(S, "llm0", "igpu", "llm")
+        self.step(S)
+        st = job.stages[0]
+        S.mem_turn, S.mem_turn_editor = st, True            # (put on purpose: the grant rule itself refuses this)
+        text, ok = S.unmet(st, self.t)
+        self.assertFalse(ok)
+        self.assertIn("would not cover", text)
+        self.step(S, C.MEM_TURN_S + 1)
+        self.assertIsNone(S.mem_turn)                       # 20 + 30 < 96: no turn is granted
+
+    def test_clips_wanted_promise_their_memory(self):
+        S = self.msched(avail=110)
+        self.cmd(S, "draw0", "blender", "small")
+        self.step(S)                                        # a card job runs: the window cannot open yet
+        self.cmd(S, "clips0", "video", "video")
+        self.cmd(S, "llm0", "igpu", "llm")
+        self.step(S, 1)
+        self.assertEqual(self.running(S), ["draw0"])        # the model must not take what the clips will need
+        self.assertIn("promised", " ".join(S.why["igpu"]))
+
+    def test_window_whose_clips_cannot_load_gives_the_cards_back(self):
+        S = self.msched(avail=110)
+        self.cmd(S, "clips0", "video", "video")
+        self.step(S)
+        S.released["done_t"] = self.t
+        self.avail = 20                                     # something outside the line took the memory
+        draw = self.cmd(S, "draw0", "blender", "small")
+        self.step(S, 1)
+        self.assertEqual(self.running(S), [])
+        self.assertEqual(draw.stages[0].held[0], "video")
+        S.t_probe = 0.0
+        with S.lock:
+            S.update_mode(self.t)
+        self.assertIsNotNone(S.released)
+        self.t += C.WINDOW_MEM_WAIT_S + 1
+        S.dispatch()
+        S.t_probe = 0.0
+        with S.lock:
+            S.update_mode(self.t)
+        self.assertIsNone(S.released)                       # both cards idle for clips that cannot load: no more
+        self.step(S)
+        self.assertEqual(self.running(S), ["draw0"])
+        self.assertIsNone(S.released)                       # and the window is not opened again until they fit
+        self.end(S, "draw0")
+        self.avail = 110
+        self.step(S)
+        self.assertTrue(S.released)
 
     def test_two_stations_in_one_pass_do_not_overcommit(self):
         S = self.msched(avail=100)
@@ -188,12 +342,12 @@ class MemoryTest(TimedBase):
         self.assertEqual(self.running(S), ["llm0"])
 
     def test_small_editor_is_not_recycled(self):
-        S = self.msched(avail=95)
+        S = self.msched(avail=40)
         ed = FakeEditor(S.cards[C.UE_CARD])
         ed.t_start = self.t - 4000
         S.editors = [ed]
         S.editor_mem = lambda e: 5.0                        # under UE_RECYCLE_GB: unloading it is not worth a reload
-        self.cmd(S, "llm0", "igpu", "llm")
+        self.cmd(S, "refs0", "igpu", "refs")                # neither big nor with the turn
         self.step(S)
         S.mem_relief(self.t)
         self.assertEqual(ed.state, "ready")
@@ -388,6 +542,23 @@ class StuckTest(TimedBase):
         S.check_stuck(self.t)
         self.assertIsNone(S.stuck)
 
+    def test_one_stuck_station_is_named_while_others_work(self):
+        # review: the whole-line test misses a partial stall
+        S = self.msched(avail=110)
+        C.STUCK_REPORT_S = 60
+        job = self.cmd(S, "huge", "blender", "big", mem_gb=500)
+        self.cmd(S, "combo0", "igpu", "small")
+        self.step(S)
+        self.assertEqual(self.running(S), ["combo0"])
+        self.t += 61
+        S.dispatch()
+        S.check_stuck(self.t)
+        self.assertIsNone(S.stuck)                          # something runs: not a whole-line stall
+        line = "card" + C.BLENDER_CARD
+        self.assertIn(f"#{job.seq} huge", S.stuck_at[line])
+        self.assertIn("NOTHING IN THE LINE", S.stuck_at[line])
+        self.assertEqual(S.line_status(self.t)["stuck_at"], S.stuck_at)
+
     def test_a_stage_with_no_recorded_hold_is_dead(self):
         S = self.msched()
         job = self.cmd(S, "x", "igpu", "small")
@@ -519,6 +690,15 @@ class FillTest(TimedBase):
         f.stages[0].state, f.stages[0].t_ready = "ready", self.t
         S.dispatch()
         self.assertEqual(self.running(S), [])
+
+    def test_a_long_fill_job_never_starts(self):
+        S = self.msched()
+        f = self.cmd(S, "fill0", "blender", "shape", fill=True, est_s=C.FILL_MAX_S + 100)
+        ok = self.cmd(S, "fill1", "igpu", "shape", fill=True, est_s=60)
+        self.step(S)
+        self.assertEqual(self.running(S), ["fill1"])
+        self.assertIn("expected to take", f.stages[0].held[1])
+        self.assertIsNotNone(ok)
 
     def test_fill_never_counts_for_line_full(self):
         S = self.msched()

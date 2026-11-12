@@ -193,30 +193,42 @@ class MemBudget:
         """GiB a new job may take now."""
         return avail - self.pending(running, t) - self.reserve_gb
 
-    def fits(self, need, avail, running, t, reclaim=0.0):
-        """(ok, text). reclaim: GiB that will come back before the job loads (an editor that unloads for it)."""
+    def fits(self, need, avail, running, t, reclaim=0.0, reserve=None, held=0.0):
+        """(ok, text). reclaim: GiB that will come back before the job loads (an editor that unloads for it);
+        reserve: kept free for this job (None: the budget's; 0 for a kind whose figure is its tool's own gate);
+        held: GiB counted as taken although not yet in use (an editor's growth to its ceiling)."""
         if need <= 0:
             return True, None
-        if self.total_gb is not None and need + self.reserve_gb > self.total_gb:
-            return False, (f"memory: it needs {need:.0f} GiB and {self.reserve_gb:.0f} kept free, more than the "
+        keep = self.reserve_gb if reserve is None else reserve
+        if self.total_gb is not None and need + keep > self.total_gb:
+            return False, (f"memory: it needs {need:.0f} GiB and {keep:.0f} kept free, more than the "
                            f"box has ({self.total_gb:.0f}); it can never start (declare less, or cancel it)")
         pend = self.pending(running, t)
-        room = avail + reclaim - pend - self.reserve_gb
+        room = avail + reclaim - pend - held - keep
         if room >= need:
             return True, None
         return False, (f"memory: it needs {need:.0f} GiB; {avail:.0f} available"
                        + (f", {pend:.0f} promised to jobs still loading" if pend else "")
-                       + f", {self.reserve_gb:.0f} kept free")
+                       + (f", {held:.0f} counted for the editor's growth" if held else "")
+                       + (f", {keep:.0f} kept free" if keep else ""))
 
-    def never(self, need):
-        return self.total_gb is not None and need + self.reserve_gb > self.total_gb
+    def never(self, need, reserve=None):
+        keep = self.reserve_gb if reserve is None else reserve
+        return self.total_gb is not None and need + keep > self.total_gb
 
 
 # ---------------------------------------------------------------- retries: a resource was busy, not a failure
-def busy_exit(rc, log_tail, rcs, log_re):
+def busy_exit(rc, log_tail, rcs, log_re, run_s=None, max_run_s=None, kind=None, kinds=()):
     """Why a failed command only found a resource busy (text), or None for a real failure: its exit code is one
-    of rcs, or its last log lines match log_re (tools that exit 1 after waiting for memory or a lock)."""
+    of rcs, or its last log lines match log_re (tools that exit 1 after waiting for memory or a lock). Never for a
+    command that ran longer than max_run_s (it has done work; from the top again is not safe: an orchestration
+    script passing on the line client's own 75, or a job that waited, ran, then failed for a real reason), and
+    only for the kinds named when kinds is not empty."""
     if rc is None or rc == 0:
+        return None
+    if max_run_s is not None and run_s is not None and run_s > max_run_s:
+        return None
+    if kinds and kind not in kinds:
         return None
     if rc in rcs:
         return f"exit code {rc} (resource busy)"
@@ -233,7 +245,7 @@ def retry_delay(n, base_s):
     return base_s * (2 ** max(0, n - 1))
 
 
-def log_tail(path, lines=12, max_bytes=8192):
+def log_tail(path, lines=4, max_bytes=4096):
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
