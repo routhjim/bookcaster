@@ -740,7 +740,13 @@ class Sched:
     def card_work_queued(self):
         for j in self.jobs:
             for s in j.stages:
-                if s.state in ("wait", "ready") and (s.kind == "ue" or (s.kind == "blender" and j.mode == "final")):
+                if s.state not in ("wait", "ready"):
+                    continue
+                if s.kind == "ue" or (s.kind == "blender" and j.mode == "final"):
+                    return True
+                # a command waiting on a card station is card work too: without this, a release for a video
+                # window is never taken back while only such commands wait, and they wait for the reclaim
+                if s.kind == "cmd" and str(j.entry.get("station", "")).startswith("card"):
                     return True
         return False
 
