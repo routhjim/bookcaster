@@ -190,3 +190,15 @@ sleeve was the sleeve's own underside: past the sleeve tube radius (`sleeve_radi
 and stayed down. A 20 cm tube made it follow the arm cleanly (picture in the lab notes); the armhole weight blend
 was not the cause (the wing share of the bodice side stayed 4.4-4.5 % from no blend to the default, and smaller
 blends tore more edges). cast_char uses 20 cm for a dress.
+
+**Skin under the clothes is hidden, not pushed (11-11).** The cloth is pushed out of the MetaHuman head mesh only
+within 8 cm of the neck (a push over the shoulders flattened puffed sleeves). The fit bakes an opacity mask in the
+head mesh's UVs (`bl_skinmask.py`: below the collar line and under cloth, in a gap of it, or out over the
+shoulders); `characters/char_skinmask.py` gives the character its own masked copy of the face skin material and its
+own Blueprint copy wearing it (the shared material and the MetaHuman's assets stay as they are);
+`characters/skin_probe.py` measures skin through the cloth on flat-lit stills against a twin without the face mesh
+and fails the build. A shipped hide mask or parameter does not exist on the face material (checked first).
+
+**Seated garments are not generated from a seated drawing (11-11).** Tried once: a front view gives the 3D model no
+depth for seated legs, so the skirt below the knees came out in shreds; the standing garment bent onto the seat by
+`bl_settle.py` reads far better.
