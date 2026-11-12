@@ -14,6 +14,9 @@ and assembly are char_build.py).
                "fit": {...} | null,                                 (conform the head to a target mesh, see
                                                                       char_fit.py; replaces face_blend)
                "skin": {"u": .., "v": .., "roughness": .., "face_texture_index": ..} | null,
+                                                                    (face_texture_index: one of the shipped face
+                                                                     textures, see face_skin.py; set before the
+                                                                     face state is committed and read back)
                "iris": {"primary_color_u": .., "global_saturation": .., ...} | null,  (both eyes)
                "grooms": {"Hair": "WI_Hair_S_SlickBack", ...}, "clear_slots": ["Beard", "Mustache"],
                "outfit": false,                                     (true: the shipped default garment)
@@ -114,11 +117,11 @@ def make(spec, folder=None):
     mix = None
     if blend:
         mix = None
-        for pname, w in blend.items():
-            co = preset_coeffs(pname)
-            mix = [w * x for x in co] if mix is None else [m + w * x for m, x in zip(mix, co)]
-        k = float(spec.get("coeff_scale", 1.0))
-        mix = [k * x for x in mix]
+        import face_blend
+        importlib.reload(face_blend)
+        # one length for every preset and weights that sum to 1, or the blend stops here (face_blend.mix)
+        mix = face_blend.mix({pname: preset_coeffs(pname) for pname in blend}, {k_: float(w) for k_, w in blend.items()},
+                             float(spec.get("coeff_scale", 1.0)))
     col = c.get_editor_property("internal_collection")
     inst = col.get_editor_property("default_instance")
     for slot in spec.get("clear_slots", []):
@@ -176,19 +179,47 @@ def make(spec, folder=None):
         if body_after_fit:
             apply_body()
         if mix is not None and not fit:
+            own = list(mhs.get_face_model_coefficients(c))
             mhs.set_face_model_coefficients(c, mix)
             r["coeff_set"] = len(mix)
+            got = list(mhs.get_face_model_coefficients(c))
+            # measured, not assumed: the face's coefficients after the set against before it and against the
+            # blend asked for (a set that changes nothing, or lands elsewhere, stops the make)
+            r["coeff_moved"] = round(face_blend.max_delta(own, got), 6) if len(own) == len(got) else None
+            r["coeff_off_target"] = round(face_blend.max_delta(mix, got), 6) if len(mix) == len(got) else None
+            if r["coeff_moved"] is None or r["coeff_off_target"] is None:
+                raise RuntimeError(f"FACE BLEND: coefficient counts differ (own {len(own)}, blend {len(mix)}, "
+                                   f"after {len(got)})")
+            if r["coeff_moved"] < 1e-6 and face_blend.max_delta(own, mix) > 1e-6:
+                raise RuntimeError("FACE BLEND HAD NO EFFECT: the face's coefficients are unchanged after the set")
         if spec.get("landmarks"):
             idx = [int(i) for i, _ in spec["landmarks"]]
             deltas = [unreal.Vector(*d) for _, d in spec["landmarks"]]
             mhs.translate_face_landmarks(c, idx, deltas)
             r["landmarks_moved"] = len(idx)
+        def apply_skin():
+            skin = c.get_editor_property("skin_settings")
+            for k, v in (spec.get("skin") or {}).items():
+                skin.skin.set_editor_property(k, v)
+            c.set_editor_property("preview_material_type", unreal.MetaHumanCharacterSkinPreviewMaterial.EDITABLE)
+            mhs.commit_skin_settings(c, skin)
+            want = (spec.get("skin") or {}).get("face_texture_index")
+            if want is not None:
+                # the index asked for must be the index on the asset (a clamped or dropped value stops the make)
+                got_i = int(c.get_editor_property("skin_settings").skin.get_editor_property("face_texture_index"))
+                r["face_texture_index"] = got_i
+                if got_i != int(want):
+                    raise RuntimeError(f"SKIN INDEX NOT SET: asked for face texture {want}, the asset has {got_i}")
+
+        # the face texture index also selects the face state's high-frequency variant (the skin commit applies it
+        # to the face state), so when a spec sets it the skin goes in before the face state is committed; any other
+        # skin change keeps the earlier order (face state first)
+        skin_first = (spec.get("skin") or {}).get("face_texture_index") is not None
+        if skin_first:
+            apply_skin()
         mhs.commit_face_state(c)
-        skin = c.get_editor_property("skin_settings")
-        for k, v in (spec.get("skin") or {}).items():
-            skin.skin.set_editor_property(k, v)
-        c.set_editor_property("preview_material_type", unreal.MetaHumanCharacterSkinPreviewMaterial.EDITABLE)
-        mhs.commit_skin_settings(c, skin)
+        if not skin_first:
+            apply_skin()
         if spec.get("iris"):
             eyes = c.get_editor_property("eyes_settings")
             for eye in (eyes.eye_left, eyes.eye_right):

@@ -187,6 +187,12 @@ def main():
     ap.add_argument("--until", default=None, choices=["face"], help="stop after this step (face: after the conform)")
     ap.add_argument("--conform", action="store_true",
                     help="conform the picked face to the drawing (about 9 min; kept only if it wins the comparison)")
+    ap.add_argument("--face-blend", action="store_true",
+                    help="blend the comparison's best presets by their wins in the face model's coefficients (kept "
+                         "only if the blended face wins the comparison against the plain pick in both orders)")
+    ap.add_argument("--skin-age", action="store_true",
+                    help="the face texture index nearest the drawn face's age, from the measured table "
+                         "(<library>/presets/face_texture_age.json, skin_age_calibrate.py); set before the rig")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
@@ -279,6 +285,55 @@ def main():
             (W / "face_pick.json").write_text(json.dumps(json.loads((W / "choice.json").read_text())["scores"]
                                                          .get("preset_compare"), indent=1))
         ch = json.loads((W / "choice.json").read_text())
+    # ---------------------------------------------------------------- blend: a face between the best presets
+    # the comparison's best candidates mixed by their wins in the face model's coefficients (char_make.py
+    # "face_blend"), so the face is not limited to a shipped preset; the blended face meets the plain pick in the
+    # same composite comparison, both orders, and is kept only if it wins both (face_blend.py)
+    blend_p = W / "blend.json"
+    if not a.mh and a.face_blend and not done("choose", blend_p):
+        @timed("blend")
+        def _():
+            sys.path.insert(0, str(ASSETS / "characters"))
+            import face_blend as FB
+            ch_ = json.loads((W / "choice.json").read_text())
+            cmp_ = (ch_.get("scores") or {}).get("preset_compare") or {}
+            wts = FB.weights_from_wins(cmp_.get("wins") or {}, ch_["base"])
+            if not wts:
+                blend_p.write_text(json.dumps({"weights": {}, "keep": False,
+                                               "why": "fewer than two candidates with a win: nothing to blend"}))
+                CH["blend"] = {"keep": False, "weights": {}}
+                return
+            pdir = W / "ue" / "faces"
+            pdir.mkdir(parents=True, exist_ok=True)
+            common = {"folder": "/Game/Char/Cand", "base": ch_["base"], "grooms": ch_["grooms"],
+                      "clear_slots": ch_["clear_slots"], "params": ch_["params"], "body": ch_["body"]}
+            spec_b = dict(common, name=f"MHC_BLEND_{tag}", face_blend=wts)
+            plain = dict(common, name=f"MHC_PLAIN_{tag}")
+            r_ = ue_job(W, "blend", str(ASSETS / "characters" / "char_render.py"), {
+                "map": "/Engine/Maps/Templates/Template_Default", "out": str(pdir), "warm_frames": 120,
+                "settle_frames": 30, "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5,
+                # each preset's coefficients are read once (opening a preset for edit costs about 10 s of CPU)
+                "coeff_cache": str(Path(C.LIBRARY) / "presets" / "face_coeffs.json"),
+                "make": [spec_b, plain],
+                "characters": {"blended": {"path": f"/Game/Char/Cand/MHC_BLEND_{tag}"},
+                               "unblended": {"path": f"/Game/Char/Cand/MHC_PLAIN_{tag}"}},
+                "shots": [{"name": "blended", "char": "blended", "frame": "close", "az": 0},
+                          {"name": "unblended", "char": "unblended", "frame": "close", "az": 0}]}, 2400)
+            mk = ((r_.get("make") or {}).get(spec_b["name"]) or {})
+            if not mk.get("coeff_set"):
+                raise RuntimeError(f"FACE BLEND: the make did not set the blend: {json.dumps(mk)[:400]}")
+            res = W / "blend_versus.json"
+            p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_blend_check", "--", "bash", CARD, "05",
+                      HY_PY, "-I", str(ASSETS / "characters" / "face_pick.py"), str(W / "choice.json"), "--portraits",
+                      str(pdir), "--versus", "blended", "unblended", "--result", str(res), "--vl-python", QWEN_PY],
+                     W / "blend_check.log")
+            if p.returncode or not res.exists():
+                raise RuntimeError(f"blend check failed: {p.stdout[-600:]}")
+            wins = json.loads(res.read_text())["wins"]
+            keep = FB.keep(wins, "blended")
+            blend_p.write_text(json.dumps({"weights": wts, "wins": wins, "keep": keep,
+                                           "coeff_moved": mk.get("coeff_moved")}, indent=1))
+            CH["blend"] = {"weights": wts, "wins": wins, "keep": keep}
     # ---------------------------------------------------------------- conform: the picked face to the drawing
     # the earlier likeness method: the drawn head redrawn as a bald photographic front view (Qwen-Image-Edit), a
     # 3D head from it (image-to-3D), and the MetaHuman's face conformed to that head with 2D tracking of the same
@@ -368,6 +423,39 @@ def main():
             "folder": f"/Game/MetaHumans/{mh_name}", "melanin": hp.get("Melanin", 0.6),
             "redness": hp.get("Redness", 0.3), "whiteness": hp.get("Whiteness", 0.0)}, 600)
         CH["groom_colour"] = {"values": hp, "materials": len(r_.get("set") or {})}
+    # ---------------------------------------------------------------- the face the built character wears
+    # a kept conform first (it replaces the face's coefficients), else a kept blend, else the plain pick; and,
+    # with --skin-age, the face texture index nearest the drawn face's age (it goes in with the make, before the
+    # cloud rig: the editor locks it on a rigged face)
+    face_extra = {}
+    if not a.mh:
+        sys.path.insert(0, str(ASSETS / "characters"))
+        import face_blend as FB
+        conf_ = json.loads(conf_p.read_text()) if conf_p.exists() else None
+        blend_ = json.loads(blend_p.read_text()) if blend_p.exists() else None
+        which = FB.choose_face(blend_, conf_)
+        CH["face_worn"] = which
+        if which == "conform":
+            face_extra["fit"] = conf_["fit"]
+        elif which == "blend":
+            face_extra["face_blend"] = blend_["weights"]
+        if a.skin_age:
+            import face_skin as FS
+            tab_p = Path(C.LIBRARY) / "presets" / "face_texture_age.json"
+            if not tab_p.exists():
+                raise SystemExit(f"--skin-age: no measured table at {tab_p} (run characters/skin_age_calibrate.py once)")
+            sc_ = ch.get("scores") or {}
+            age_ = sc_.get("drawing_age") or sc_.get("age_used")
+            if age_ is None:
+                raise SystemExit("--skin-age: the choice has no age for the drawn face")
+            tbl = FS.attributes(C.UE_ENGINE)
+            stub = "Stubble" in ((ch.get("grooms") or {}).get("Beard") or "")
+            ages_ = FS.preset_ages(json.loads(tab_p.read_text()), ch["base"])
+            idx_ = FS.pick(age_, ages_, FS.allowed(tbl, stub), tbl)
+            face_extra["skin"] = {"face_texture_index": idx_}
+            CH["skin_age"] = {"age": age_, "index": idx_, "index_age": ages_[idx_], "stubble_allowed": stub,
+                              "attributes": {k: v["names"][v["values"][idx_]] for k, v in tbl["attrs"].items()}}
+        save()
     # ---------------------------------------------------------------- mh
     if not done("mh", fbx / f"{mh_name}_Head.fbx"):
         @timed("mh")
@@ -375,14 +463,20 @@ def main():
             os.environ.setdefault("MH_EXTRA_ARGS", "-NoMetaHumanAccountPortalLoginFallback")
             r = ue_job(W, "mh", str(ASSETS / "characters" / "char_render.py"), {
                 "out": str(W / "ue" / "mh"),
+                "coeff_cache": str(Path(C.LIBRARY) / "presets" / "face_coeffs.json"),
                 "make": [dict({"name": mh_name, "base": ch["base"], "grooms": ch["grooms"], "clear_slots": ch["clear_slots"],
-                               "params": ch["params"], "body": ch["body"]},
-                              **({"fit": json.loads(conf_p.read_text())["fit"]}
-                                 if conf_p.exists() and json.loads(conf_p.read_text()).get("keep") else {}))],
+                               "params": ch["params"], "body": ch["body"]}, **face_extra)],
                 "cloud": {"path": f"/Game/Char/{mh_name}", "build_path": "/Game/MetaHumans"},
                 "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
                 "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
             CH["mh_build"] = {"blueprint": (r.get("cloud") or {}).get("blueprint"), "make": r.get("make")}
+            mk_ = ((r.get("make") or {}).get(mh_name) or {})
+            want_i = (face_extra.get("skin") or {}).get("face_texture_index")
+            if want_i is not None and mk_.get("face_texture_index") != want_i:
+                raise RuntimeError(f"SKIN AGE: the built character has face texture {mk_.get('face_texture_index')}, "
+                                   f"not the {want_i} chosen")
+            if "face_blend" in face_extra and not mk_.get("coeff_set"):
+                raise RuntimeError("FACE BLEND: the built character's make did not set the blend")
             groom_colour()
     # ---------------------------------------------------------------- draw, gate, shape, mesh gate
     draw = W / "draw"
