@@ -256,6 +256,19 @@ def main():
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
             r["people"][p["key"]] = q
+        for p in it["people"]:            # each person's clothes below the chin, redraw and engine (accept.py judges)
+            mk = p.get("mask")
+            j2 = p.get("joints2d") or {}
+            if not mk or not Path(mk).exists():
+                continue
+            cut = j2["chin"][1] if "chin" in j2 and 0 <= j2["chin"][1] < 1 else 0.0
+            m = np.asarray(Image.open(mk).convert("L").resize((1152, 640))).copy()
+            m[: int(cut * 640) + 8] = 0
+            tmp = Path(cfg["out"]).with_suffix("") .as_posix() + f"_{it['id']}_{p['key']}_torso.png"
+            Image.fromarray(m).save(tmp)
+            r.setdefault("wear", {})[p["key"]] = {"redraw": lab_of(imgs["redraw"], tmp),
+                                                 "engine": lab_of(imgs["engine"], tmp) if "engine" in imgs else None}
+            Path(tmp).unlink(missing_ok=True)
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
             r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"]}
         out[it["id"]] = r

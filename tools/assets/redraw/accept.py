@@ -72,6 +72,9 @@ def item_fails(rec: dict) -> dict:
     for n, ok in (rec.get("things_ok") or {}).items():
         if ok is False:
             f.setdefault("set", []).append(f"colour {n}")
+    for k, ok in (rec.get("wear_ok") or {}).items():
+        if ok is False:
+            f.setdefault(k, []).append("clothes colour")
     return f
 
 
@@ -79,6 +82,31 @@ def item_fails(rec: dict) -> dict:
 # follow each shot's light (the same gold chair reads L 4, chroma 10 in the window's shade and L 20, chroma 21 by
 # the fire); the gold chair reads hue 65-71 in every shot that keeps it gold, drawn as red leather 45-55: 10 deg
 LAB_HUE, LAB_MIN_C = 10.0, 10.0
+
+
+WEAR_L = 12.0            # a person's clothes: lightness above the engine's in the same mask, v their usual
+
+
+def wear_eval(*results: dict) -> dict:
+    """Each person's clothes held from key to key: the redraw's lightness minus the engine's in the same mask (the
+    shot's light taken out) against the median of that person over the run's keys; a coat drawn grey in one key and
+    black in the next differs by 20+ (11-11)."""
+    import statistics
+    vals = {}
+    for res in results:
+        for rec in res.values():
+            for k, v in (rec.get("wear") or {}).items():
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] > 400:
+                    vals.setdefault(k, []).append(v["redraw"]["L"] - v["engine"]["L"])
+    med = {k: statistics.median(v) for k, v in vals.items()}
+    for res in results:
+        for rec in res.values():
+            ok = {}
+            for k, v in (rec.get("wear") or {}).items():
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] > 400 and k in med:
+                    ok[k] = abs((v["redraw"]["L"] - v["engine"]["L"]) - med[k]) <= WEAR_L
+            rec["wear_ok"] = ok
+    return med
 
 
 def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
@@ -132,7 +160,8 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
             j2 = tp.get("joints2d") or joints2d_from(res, p["key"], truth["camera"],
                                                       sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")
             c = cast.get(p["key"]) or {}
-            ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun")))
+            ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun"),
+                            mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
         things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place")}
                   for t in truth.get("things") or [] if t.get("mask")]
@@ -143,7 +172,8 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
     print(out_p, len(items))
 
 
-FIX = {"arms": "{Who}'s arms hang in their sleeves clear of the body, both sleeves and hands drawn.",
+FIX = {"clothes colour": "{Who}'s clothes keep exactly the colours of the character sheet.",
+       "arms": "{Who}'s arms hang in their sleeves clear of the body, both sleeves and hands drawn.",
        "hands": "{Who}'s hands are drawn where the engine frame shows them.",
        "neck": "{Who}'s neck is of natural length, the collar standing close under the jaw.",
        "outfit": ""}
@@ -153,6 +183,7 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     out = Path(run["out"])
     neck_eval(checked)
     colour_eval(checked)
+    wear_eval(checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -225,6 +256,7 @@ def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     out = Path(run["out"])
     neck_eval(checked, retry)
     colour_eval(checked, retry)
+    wear_eval(checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)
