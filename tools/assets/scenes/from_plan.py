@@ -241,14 +241,37 @@ STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses o
 ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm", "look")
 
 
-def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None):
+def reach_place(tgt: dict, his: list, things: list, room: list, gap: float = 0.5) -> tuple:
+    """Where a standing person stands to lay a hand on a (seated) person's forearm: beside them, at the side
+    nearer where he was, a little forward of their hips; clear of fixtures and inside the room. -> (pos, side)."""
+    f = tgt.get("facing") or [0.0, -1.0]
+    n = math.hypot(*f) or 1.0
+    f = [f[0] / n, f[1] / n]
+    left = [-f[1], f[0]]
+    W, D = room[0] / 2 - 0.3, room[1] / 2 - 0.3
+    best = None
+    for side, sx in (("l", 1.0), ("r", -1.0)):
+        p = [tgt["position"][0] + sx * left[0] * gap + f[0] * 0.3, tgt["position"][1] + sx * left[1] * gap + f[1] * 0.3]
+        bad = abs(p[0]) > W or abs(p[1]) > D or any(
+            t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.2
+            and abs(p[1] - t["center"][1]) < t["half"][1] + 0.2 for t in things)
+        cand = (bad, math.dist(p, his), [round(p[0], 3), round(p[1], 3)], side)
+        best = cand if best is None or cand[:2] < best[:2] else best
+    return best[2], best[3]
+
+
+def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None, landmark: str | None = None):
     """A move during the shot: its camera holds the mover's start, path and end place in one frame (speakers.py
-    move_points); without it a plan move shot was framed on the start alone (11-12)."""
+    move_points), and the thing the end place is named by (the place words' landmark: "by the fire") in view from
+    its front; without it a plan move shot was framed on the start alone, then from behind the fire (11-12)."""
     to = thing or st.get("seat")
     if not to:
         return
     cam["mover"], cam["move_to"] = k, to
     f["camera"].update(mover=k, move_to=to)
+    if landmark and landmark != to:
+        cam["move_landmark"] = landmark
+        f["camera"]["move_landmark"] = landmark
 
 
 def main():
@@ -429,7 +452,7 @@ def main():
                                     state[k].update(seat=seat["name"], position=list(seat["pos"]))
                             state[k]["pose"] = nxt.get("pose")
                             state[k]["at"] = nxt.get("at")
-                            mark_move(cam, f, k, state[k])
+                            mark_move(cam, f, k, state[k], landmark=thing["name"])
                             f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends where the plan next "
                                                                                     f"lists them: {nxt.get('at')}")
         for nm, th in ((sp.get("move_end") or {}).get(sid) or {}).items():     # where a move during this shot ends
@@ -441,7 +464,7 @@ def main():
                     state[k]["pose"] = "sitting" if sitting else "standing"
                     if state[k].get("seat") != was:
                         f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends at {th}")
-                        mark_move(cam, f, k, state[k], th)
+                        mark_move(cam, f, k, state[k], th, landmark=th)
         for nm, w in ((sp.get("worn_end") or {}).get(sid) or {}).items():      # worn state when the shot ends
             if nm in names and w not in NOTS:
                 worn[names[nm]] = w
@@ -481,6 +504,19 @@ def main():
                     c["body_pose"]["pose"] = pz
                 else:
                     c["body_pose"].setdefault("params", {})["action"] = pz
+                if pz == "reach_to_forearm" and v["pose"] != "sitting":
+                    # the reach places him: beside the person he reaches, at the forearm nearer him (the action's own
+                    # place, not a camera move); the arm is solved on the measured bodies (speakers.py)
+                    who = [kk for kk in (cam0.get("show") or []) if kk != k and kk in st] or \
+                          sorted((kk for kk in st if kk != k), key=lambda kk: math.dist(st[kk]["position"], v["position"]))
+                    if who:
+                        pos, side = reach_place(st[who[0]], v["position"], things, room)
+                        d = [st[who[0]]["position"][0] - pos[0], st[who[0]]["position"][1] - pos[1]]
+                        n_ = math.hypot(*d) or 1.0
+                        c.update(position=pos, facing=[round(d[0] / n_, 4), round(d[1] / n_, 4)],
+                                 reach={"to": who[0], "her_side": side})
+                        c.pop("marks", None)
+                        cam0["show_joints"] = [[k, "hand_r"], [who[0], f"lowerarm_{side}"]]
             if var:
                 c["worn"] = var                          # checked on the staged figure (speakers.staged_facts)
             wd = ((cv.get("worn") or {}).get(w) or {}) if w else {}

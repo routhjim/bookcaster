@@ -365,8 +365,9 @@ def act_veil_lift(s, p):
     h = s.pos["head"]
     for side in ("l", "r"):
         sx = 1.0 if side == "l" else -1.0
-        tgt = [h[0] + sx * 4.0, h[1] + p.get("veil_hand_fwd_cm", 13.0), h[2] - p.get("veil_hand_down_cm", 9.0)]
-        _ik(s, f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", tgt, add(tgt, [sx * 27.0, 6.0, -36.0]))
+        # the assets' pose solver's numbers (characters/poses_extra.veil_lift, t = 0), from this body's own head
+        tgt = [h[0] + sx * 8.0, h[1] + p.get("veil_hand_fwd_cm", 14.0), h[2] - p.get("veil_hand_down_cm", 9.0)]
+        _ik(s, f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", tgt, [h[0] + sx * 35.0, h[1] + 20.0, h[2] - 45.0])
         s.aim(f"hand_{side}", f"middle_01_{side}", [-sx * 0.55, 0.35, 0.75])
         _curl(s, side, 45, 20)
 

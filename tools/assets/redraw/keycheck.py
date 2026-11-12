@@ -169,9 +169,25 @@ def arm_hand(m: dict, j2: dict, box) -> dict:
     return res
 
 
-def lab_of(img: torch.Tensor, mask_path: str) -> dict | None:
-    """Median CIE Lab of the picture inside an engine mask (img: [3, H, W] RGB 0-255 on the card)."""
+LIT_RISE = 1.5           # a lit source's mask grown upward this many times its height (the flames above it)
+
+
+def lab_of(img: torch.Tensor, mask_path: str, rise: float = 0.0) -> dict | None:
+    """Median CIE Lab of the picture inside an engine mask (img: [3, H, W] RGB 0-255 on the card). rise: the mask
+    grown upward by this many times its own height (at least 30 px): flames stand above the source the engine
+    lights; at a frame edge the grate's glow was a strip under the redraw's flames and read them as unlit (11-12)."""
     m = torch.from_numpy(np.asarray(Image.open(mask_path).convert("L").resize((img.shape[2], img.shape[1])))).to(img.device) > 127
+    if rise and int(m.sum()):
+        rows = torch.nonzero(m.any(1)).flatten()
+        up, t = max(30, int(rise * (int(rows.max()) - int(rows.min()) + 1))), 0
+        g = m.clone()
+        while t < up:                            # grown by t rows; shifting by t + 1 more grows it to 2t + 1
+            s = min(t + 1, up - t)
+            sh = torch.zeros_like(g)
+            sh[:-s] = g[s:]
+            g |= sh
+            t += s
+        m = g
     if int(m.sum()) < 50:
         return None
     x = img[:, m] / 255.0
@@ -276,8 +292,9 @@ def main():
             if "engine" in imgs:
                 r["things_engine"] = {t["name"]: lab_of(imgs["engine"], t["mask"]) for t in it["things"] if t.get("mask")}
         if it.get("lit"):                 # each lit source's light, redraw and engine, inside its own mask
-            r["lit"] = {t["name"]: {"redraw": lab_of(imgs["redraw"], t["lit_mask"]),
-                                    "engine": lab_of(imgs["engine"], t["lit_mask"]) if "engine" in imgs else None}
+            r["lit"] = {t["name"]: {"redraw": lab_of(imgs["redraw"], t["lit_mask"], LIT_RISE),
+                                    "engine": lab_of(imgs["engine"], t["lit_mask"], LIT_RISE) if "engine" in imgs
+                                    else None}
                         for t in it["lit"]}
         out[it["id"]] = r
         print(json.dumps({"id": it["id"], "people": {k: {"arms": (v["redraw"]["arms_found"], v["redraw"]["arms_shown"]),

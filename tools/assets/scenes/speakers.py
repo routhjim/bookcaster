@@ -369,6 +369,11 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         q = framing.project(cam, q3, res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
             why.append(f"the move's place at {[round(v, 2) for v in q3]} is out of the frame")
+    lm = opts.get("landmark")
+    if lm:                                   # the end place's landmark seen from its front, not from behind it
+        d = [cam["position"][0] - lm["center"][0], cam["position"][1] - lm["center"][1]]
+        if d[0] * lm["front"][0] + d[1] * lm["front"][1] < 0.3 * math.hypot(*d):
+            why.append(f"the end place's {lm['name']} is seen from its side or back")
     mv = opts.get("mover")
     if mv and mv in subjects:                # the mover's face readable at the move's start
         mm = subjects[mv]["measured"]
@@ -496,6 +501,41 @@ def look_at(spec, speaker):
 
 
 ACTION_HANDS_M = {"veil_lift": 0.22}     # an action's start: both hands this near the chin (measured)
+REACH_M = 0.12               # a reach's hand this near the top of the other person's forearm (measured)
+SLEEVE_R_M, PALM_HALF_M, PALM_LEN_M = 0.05, 0.015, 0.09
+
+
+def solve_reach(spec, subjects):
+    """A person with "reach": {"to": key, "her_side": l|r} lays the hand nearer the other person on the top of
+    their forearm's sleeve: the steps from the assets' pose solver (characters/poses_extra.reach_forearm) on the
+    two measured skeletons, added to his pose. Returns {key: solver facts} or {}."""
+    tools = os.environ.get("SCENES_CHAR_TOOLS")
+    if not tools:
+        return {}
+    sys.path.insert(0, tools)
+    import poses_extra
+    out = {}
+    for k, c in spec["characters"].items():
+        r = c.get("reach")
+        if not r or r.get("to") not in subjects or k not in subjects:
+            continue
+        hj = subjects[k]["measured"].get("joints") or {}
+        sj = subjects[r["to"]]["measured"].get("joints") or {}
+        if not all(j in hj for j in ("upperarm_l", "upperarm_r")) or not all(
+                j in sj for j in (f"lowerarm_{r['her_side']}", f"hand_{r['her_side']}")):
+            continue
+        top, _, _ = poses_extra.forearm_contact(sj, r["her_side"], SLEEVE_R_M)
+        side = "l" if poses_extra.to_actor(top, c["position"], c["facing"])[0] > 0 else "r"
+        steps, facts = poses_extra.reach_forearm(hj, c["position"], c["facing"], sj, r["her_side"], SLEEVE_R_M,
+                                                 PALM_HALF_M, PALM_LEN_M, side=side)
+        bp = c["body_pose"]
+        bp.setdefault("params", {})["steps"] = steps + list(bp["params"].get("steps") or [])
+        r.update(side=side, contact=facts["palm_centre_set_m"])
+        for cam in spec["cameras"]:
+            if cam.get("show_joints"):
+                cam["show_joints"] = [[k, f"hand_{side}"], [r["to"], f"lowerarm_{r['her_side']}"]]
+        out[k] = dict(facts, side=side)
+    return out
 
 
 def staged_facts(spec, subjects):
@@ -511,6 +551,15 @@ def staged_facts(spec, subjects):
             if not c.get("wear_add"):
                 bad.append(f"worn '{w}': no words for it reach the redraw")
         act = ((c.get("body_pose") or {}).get("params") or {}).get("action")
+        if c.get("reach"):                   # the hand on the other's forearm, measured
+            m = (subjects.get(k) or {}).get("measured") or {}
+            hand = ((m.get("joints") or {}).get(f"hand_{c['reach'].get('side', 'r')}"))
+            ct = c["reach"].get("contact")
+            if not (hand and ct):
+                bad.append("reach: not solved (no measured hand or contact)")
+            elif math.dist(hand[:3], ct) > REACH_M + 0.1:          # the wrist joint sits a palm short of it
+                bad.append(f"reach: hand {math.dist(hand[:3], ct):.2f} m from her forearm")
+            act = None
         if act:
             m = (subjects.get(k) or {}).get("measured") or {}
             j = m.get("joints") or {}
@@ -545,7 +594,7 @@ def unlook(c):
 # ------------------------------------------------------------------ marks
 MARK_CLEAR_M = 0.55          # a mark this far from anyone else's place
 TRY_SAME, TRY_SINGLE, TRY_MARK = 2, 2, 2      # a failing talk shot's tries, in this order, each one rendered
-MAX_TRIES = 7
+MAX_TRIES = 9
 CAM_KEYS = ("position", "target", "focal_mm", "az", "el", "screen_x", "ots", "listener", "single", "show", "tight")
 
 
@@ -636,8 +685,30 @@ def move_points(spec, c):
         return []
     a = m["position"][:2]
     b = t["center"][:2]
-    return [[a[0], a[1], 1.65], [a[0], a[1], 0.05], [b[0], b[1], t["center"][2] + t["half"][2]],
-            [b[0], b[1], 0.05], [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0.8]]
+    pts = [[a[0], a[1], 1.65], [a[0], a[1], 0.05], [b[0], b[1], t["center"][2] + t["half"][2]],
+           [b[0], b[1], 0.05], [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0.8]]
+    lm = landmark(spec, c)
+    if lm:                                   # the end place's landmark: its middle and its top
+        pts += [list(lm["center"]), [lm["center"][0], lm["center"][1], lm["top"]]]
+    return pts
+
+
+def landmark(spec, c):
+    """The thing a move's end place is named by ("by the fire": the fireplace): its middle, top and the way its
+    front faces (into the room, off the wall it stands nearest)."""
+    if not c.get("move_landmark"):
+        return None
+    sys.path.insert(0, str(HERE.parent / "redraw"))
+    import setfacts
+    sd = Path(C.LIBRARY) / "set" / spec["set"]
+    t = next((x for x in setfacts.things(sd) if x["name"] == c["move_landmark"]), None)
+    if not t:
+        return None
+    W, D = json.loads((sd / "spec.json").read_text())["size_m"][:2]
+    x, y = t["center"][:2]
+    walls = [(W / 2 - x, [-1.0, 0.0]), (W / 2 + x, [1.0, 0.0]), (D / 2 - y, [0.0, -1.0]), (D / 2 + y, [0.0, 1.0])]
+    front = min(walls, key=lambda w: w[0])[1]
+    return {"name": t["name"], "center": list(t["center"]), "top": t["center"][2] + t["half"][2], "front": front}
 
 
 def cam_opts(spec, c):
@@ -647,6 +718,7 @@ def cam_opts(spec, c):
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
     return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [], "covered": covered,
+            "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"),
             "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
 
 
@@ -710,14 +782,26 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
                     if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
                         continue
-                    lens = (20, 24, 28) if opts.get("points") else (50, 65, 85, 100) if kind == "close" else \
-                        (35, 50, 65, 85) if mode == "single" or opts.get("_single") else (28, 35, 40, 50)
+                    if opts.get("_lens"):
+                        lens = opts["_lens"]
+                    elif opts.get("points"):
+                        lens = (20, 24, 28)
+                    elif kind in ("wide", "full"):
+                        lens = (20, 24, 28, 35)
+                    elif kind == "close":
+                        lens = (50, 65, 85, 100)
+                    elif mode == "single" or opts.get("_single"):
+                        lens = (35, 50, 65, 85)
+                    else:
+                        lens = (28, 35, 40, 50)
                     for f in lens:
                         q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
                         why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
                                              opts=opts)
-                        if not why:
+                        pc = opts.get("prev_cam") if opts.get("points") else None
+                        if not why:          # a move keeps the shot before's side of the room when it can
                             out.append((math.dist(p, cam0["position"])
+                                        + (3.0 if pc and p[0] * pc[0] + p[1] * pc[1] < 0 else 0.0)
                                         + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5)
                                         + 10.0 * area_excess(q, subjects, res, {spk, lis, opts.get("subject")}, opts),
                                         q, mode))
@@ -870,7 +954,7 @@ def run_scene(spec_path, cams=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("spec")
-    ap.add_argument("--rounds", type=int, default=12, help="render rounds at most (each shot: MAX_TRIES)")
+    ap.add_argument("--rounds", type=int, default=14, help="render rounds at most (each shot: MAX_TRIES)")
     ap.add_argument("--no-split", action="store_true", help="stage all cameras in one scene (no per-speaker looks)")
     ap.add_argument("--prev", help="the shot before's staged.json (its people's places): a vague mark keeps it")
     a = ap.parse_args()
@@ -917,6 +1001,9 @@ def main():
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     for c in spec["cameras"]:
         c["_points"] = move_points(spec, c)
+        c["_landmark"] = landmark(spec, c)
+    spec["_prev_cam"] = (json.loads(Path(a.prev).read_text()).get("camera") if a.prev and Path(a.prev).exists()
+                         else None)
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
@@ -938,8 +1025,9 @@ def main():
               "seating": {}, "marks": {}}
     todo = [c["name"] for c in spec["cameras"]]
     tried = {c["name"]: [] for c in spec["cameras"]}
-    tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "n": 0} for c in spec["cameras"]}
+    tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "wide": 0, "n": 0} for c in spec["cameras"]}
     tried_marks, pending, master = {}, None, None
+    reach_done = not any(v.get("reach") for v in spec["characters"].values())
     start_pos = {k: list(v["position"]) for k, v in spec["characters"].items()}
     tries_dir = odir / "tries"
 
@@ -1017,8 +1105,11 @@ def main():
         chk = shots[n_]["speaker_check"]
         face = [w for w in chk["why"] if w not in chk.get("framing", [])]
         partial = [w for w in chk.get("framing", []) if w.startswith("PARTIAL FACE")]
+        dropped = [w for w in chk["why"] if "(named for the shot)" in w]
         if face and c.get("speaker"):
             shots[n_]["reject"] = "speaker's face not shown: " + "; ".join(face)
+        elif dropped and len(c.get("show") or []) >= 2:
+            shots[n_]["reject"] = "a person the director names is not in frame or not readable: " + "; ".join(dropped)
         elif partial and c.get("speaker"):
             shots[n_]["reject"] = "; ".join(partial)
         else:                                # a shot without a speaker always ends with a key: the miss reported
@@ -1053,6 +1144,14 @@ def main():
             todo = [c["name"] for c in spec["cameras"]]
             report["rounds"].append({"round": rnd, "rendered": "all", "re-seated": True})
             continue
+        if not reach_done and rnd < a.rounds:  # a hand on a forearm: solved on the bodies as measured
+            reach_done = True
+            got = solve_reach(spec, subjects)
+            if got:
+                report["reach"] = got
+                todo = [c["name"] for c in spec["cameras"]]
+                report["rounds"].append({"round": rnd, "rendered": "all", "reach": True})
+                continue
         fails = []
         for c in spec["cameras"]:
             if c["name"] not in todo:
@@ -1154,7 +1253,18 @@ def main():
                                          tried[n_], dict(cam_opts(spec, c), _single=True))
                 cands = [(q, "single") for q, _ in tc[:1]]
             subj_k = spk or c.get("subject")
-            if not cands and not spk and subj_k in subjects and t["single"] < TRY_SINGLE:
+            named = [k for k in (c.get("show") or []) if k in subjects]
+            many = not spk and len(named) >= 2       # a shot naming two or more: every one of them stays in it
+            if not cands and many and t["wide"] < TRY_SINGLE:      # 2: a wider frame holding everyone named
+                tc = two_shot_candidates(dict(c, kind="full"), shots[n_], None, None, subjects, res, room, line,
+                                         est_side, tried[n_], cam_opts(spec, c))
+                cands = [(q, "wide") for q, _ in tc[:1]]
+            if not cands and many and t["mark"] >= TRY_MARK and t["single"] < TRY_SINGLE:
+                # 4: last, a tighter frame that still holds everyone named
+                tc = two_shot_candidates(c, shots[n_], None, None, subjects, res, room, line, est_side, tried[n_],
+                                         dict(cam_opts(spec, c), _lens=(50, 65, 85)))
+                cands = [(q, "tighter") for q, _ in tc[:1]]
+            if not cands and not spk and not many and subj_k in subjects and t["single"] < TRY_SINGLE:
                 # 2 (no speaker): a tighter frame on the shot's subject, the others clearly in or out
                 tc = two_shot_candidates(dict(c, show=[subj_k]), shots[n_], None, None, subjects, res, room, line,
                                          est_side, tried[n_], cam_opts(spec, c))
@@ -1176,6 +1286,11 @@ def main():
             elif md == "tight":          # the shot's subject alone named: the others need not be in it
                 c["show"] = [c.get("subject")]
                 c["tight"] = True
+                t["single"] += 1
+            elif md == "wide":
+                c["kind"] = "full"
+                t["wide"] += 1
+            elif md == "tighter":
                 t["single"] += 1
             else:
                 if md == "ots":
@@ -1223,8 +1338,10 @@ def main():
         sh["staged_facts"] = {k: v for k, v in report["staged_facts"].items() if v}
     log(f"staged facts: {report['staged_facts']}")
     (odir / "result.json").write_text(json.dumps(master, indent=1))
+    last = {s_["name"]: s_ for s_ in master["shots"]}.get(spec["cameras"][-1]["name"]) or {}
     (odir / "staged.json").write_text(json.dumps({"positions": {k: v["position"] for k, v in
-                                                                spec["characters"].items()}}, indent=1))
+                                                                spec["characters"].items()},
+                                                  "camera": (last.get("camera") or {}).get("position")}, indent=1))
     report["seconds"] = round(time.time() - t0, 1)
     (odir / "speakers.json").write_text(json.dumps(report, indent=1))
     for n, s in report["shots"].items():
