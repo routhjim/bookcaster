@@ -14,10 +14,12 @@ chimney breast and the fixtures / props of a set spec; ``named_places`` maps eac
 
 Order of work: openings on walls first (a fireplace in the middle of its wall, windows on an outer wall, a door
 clear of both), then pieces: against a wall or free by their kind's rule in the data file, stated relations as hard
-constraints, clearances (a seat's front, a door's swing, walkways) kept free. The search is a depth-first
-placement over a grid, in a fixed order, with the seed only breaking ties; it either meets every hard constraint
-(``ok: true``) or returns the best layout it has with ``unmet`` naming each constraint that could not be met.
-Nothing here knows a story: every rule about a kind of room or piece is data.
+constraints, clearances (a seat's front, a door's swing and approach, walkways) kept free. The search is a beam
+over enumerated candidates in a fixed order, scored by the soft rules of ``place_cost.py`` and then polished
+(a depth-first placement is the fallback), with the seed only breaking ties; it either meets every hard
+constraint (``ok: true``) or returns the best layout it has with ``unmet`` naming each constraint that could not
+be met. ``solve_recover`` adds the recovery ladder. Nothing here knows a story: every rule about a kind of room
+or piece is data (``room_kinds.json``, ``layout_rules.json``).
 """
 from __future__ import annotations
 
