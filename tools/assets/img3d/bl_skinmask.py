@@ -7,7 +7,8 @@ the highest cloth within 13 cm of the neck's axis, less MARGIN) AND cloth covers
 garment within REACH, or the garment is within NEAR of it, or (skin in a gap of the cloth, as between a bodice and
 a puffed sleeve) rays in at least COVER_FRAC of 17 directions round its normal meet the garment within 15 cm, or it
 is a shoulder (out to the side beyond the neck's radius plus 3 cm: skin poking out through a lower cloth shoulder
-has no cloth over it to find). Skin in an open neckline (no cloth over it, in front of the neck) stays. The per-vertex values are rasterised into the UV map by a Cycles
+has no cloth over it to find). Round the neck a hidden vertex must also have cloth outside it MARGIN higher up (the
+collar's own edge, not its highest point). Skin in an open neckline (no cloth over it, in front of the neck) stays. The per-vertex values are rasterised into the UV map by a Cycles
 emission bake on the GPU, then the hidden region is grown by GROW_PX texels (so no seam of skin shows at its edge).
 """
 import math
@@ -82,6 +83,20 @@ def build(HEAD, fig, J, JOB, REP, out_png):
                 hits += 1
         covered[i] = hits / len(dirs_local)
         hide[i] = covered[i] >= cover_min
+    # round the neck the collar's own edge decides, not its highest point at that angle: a neck vertex stays hidden
+    # only when the cloth still stands outside it MARGIN higher up (a collar dipping in front, or standing off the
+    # neck, left a notch of hidden skin above its edge that showed as a hole)
+    neck_zone = hide & ~shoulder & (np.linalg.norm(H[:, :2] - nk[:2], axis=1) < side_x)
+    kept_edge = 0
+    for i in np.nonzero(neck_zone)[0]:
+        o = H[i] + np.array([0.0, 0.0, margin])
+        d = np.array([o[0] - nk[0], o[1] - nk[1], 0.0])
+        if np.linalg.norm(d) < 1e-4:
+            continue
+        d /= np.linalg.norm(d)
+        if bvh.ray_cast(Vector(o), Vector(d), float(C.get("collar_reach_m", 0.10)))[0] is None:
+            hide[i] = False
+            kept_edge += 1
     if C.get("debug_npz"):
         np.savez_compressed(C["debug_npz"], head=H, hide=hide, below=below, top=top, neck=nk,
                             uv=np.array([[0, 0]]) if not HEAD.data.uv_layers else
@@ -90,7 +105,7 @@ def build(HEAD, fig, J, JOB, REP, out_png):
                             cloth=P[np.random.default_rng(0).choice(len(P), min(len(P), 40000), replace=False)])
     REP["skin_mask"] = {"hidden_verts": int(hide.sum()), "below_collar": int(below.sum()), "res": res,
                         "by_cover": int((covered >= cover_min).sum()), "by_shoulder": int(shoulder.sum()),
-                        "neck_r_m": round(neck_r, 3)}
+                        "neck_r_m": round(neck_r, 3), "kept_at_collar_edge": kept_edge}
     # bake: an emission of the vertex value onto an image through UV map 0, on a copy of the head mesh holding only
     # its skin section (the eyes, teeth, lashes and eye shells share the UV square and would paint over the skin)
     names = [(m.name if m else "") for m in HEAD.data.materials]

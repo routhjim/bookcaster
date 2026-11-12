@@ -340,21 +340,27 @@ def main():
     # (Neck Length shorter by the bare neck over 1.5 cm, never under 4.5 cm; Neck girth to the collar's inner girth
     # less 1 cm), the MetaHuman rebuilt and the fit run once more. Moving the cloth instead bunched collars.
     neck_p = W / "neck_fit.json"
-    if (combo / "report.json").exists() and not neck_p.exists() and not a.mh:
+    if (combo / "report.json").exists() and not neck_p.exists():
         rep = json.loads((combo / "report.json").read_text())
         bare, gi, gn = rep.get("bare_neck_measured_cm"), rep.get("collar_inner_girth_cm"), rep.get("neck_girth_cm")
         body0 = ch.get("body") or {}
         newb = {}
+        addb = {}
         if bare is not None and bare > 2.0:
-            newb["Neck Length"] = round(max(4.5, float(body0.get("Neck Length", 7.0)) - (bare - 1.5)), 1)
+            if "Neck Length" in body0:
+                newb["Neck Length"] = round(max(4.5, float(body0["Neck Length"]) - (bare - 1.5)), 1)
+            else:                   # a given MetaHuman (--mh): shorter than its own neck, whatever that is
+                addb["Neck Length"] = round(-(bare - 1.5), 1)
         if gi and gn and gn > gi - 1.0:
             newb["Neck"] = round(max(30.0, gi - 1.0), 1)
-        nf = {"measured": {"bare_neck_cm": bare, "collar_inner_girth_cm": gi, "neck_girth_cm": gn}, "set": newb}
-        if newb:
+        nf = {"measured": {"bare_neck_cm": bare, "collar_inner_girth_cm": gi, "neck_girth_cm": gn}, "set": newb,
+              "add": addb}
+        if newb or addb:
             @timed("neck_fit")
             def _():
                 r = ue_job(W, "neck_constraints", str(ASSETS / "characters" / "char_constraints.py"),
-                           {"path": f"/Game/Char/{mh_name}", "body": newb}, 600)
+                           {"path": f"/Game/Char/{mh_name}", "body": newb, "add": addb,
+                            "min": {"Neck Length": 4.5}}, 600)
                 nf["engine"] = r
                 ue_job(W, "mh_rebuild", str(ASSETS / "characters" / "char_render.py"), {
                     "out": str(W / "ue" / "mh_rebuild"),
@@ -410,8 +416,10 @@ def main():
             chars, cams = {}, []
             for k, ab in (("a4", 4), ("a8", 8), ("a12", 12)):
                 x = {"a4": -0.9, "a8": 0.2, "a12": 1.3}[k]
-                chars[k] = {"id": a.id, "position": [x, 0.4], "facing": [0, -1], "body_pose": {
-                    "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 0, "head_deg": 0, "head_tilt": 0,
+                # the check scene's own stance and turn (weight on the right, chest 4 deg, a 20 deg turn): measured
+                # square to the camera, a borderline right arm passed here and failed the check
+                chars[k] = {"id": a.id, "position": [x, 0.4], "facing": [0.3464, -0.9381], "body_pose": {
+                    "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 4, "head_deg": 0, "head_tilt": -2,
                                                         "hand_at_lapel": False, "steps": arm_steps(ab)}}}
 
             # one camera that holds all three copies (framed on the copies' marks, inside the room)

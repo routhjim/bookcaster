@@ -2,7 +2,8 @@
 after. Run through the line as an editor script (run_asset.py --ue-job), then rebuild with char_render's "cloud"
 and "export_geometry" steps.
 
-    job: {"path": "/Game/Char/<name>", "body": {"Neck Length": 6.0, "Neck": 37.0}, "result": path}
+    job: {"path": "/Game/Char/<name>", "body": {"Neck Length": 6.0, "Neck": 37.0}, "result": path,
+          "add": {"Neck Length": -2.0}, "min": {"Neck Length": 4.5}}   (add: relative to the current value)
 """
 import json
 
@@ -21,8 +22,13 @@ def run(job):
         new = []
         for b in mhs.get_body_constraints(c):          # the array holds copies: rebuild it
             b = b.copy()
-            if str(b.name) in job["body"]:
-                b.target_measurement = float(job["body"][str(b.name)])
+            n = str(b.name)
+            if n in job.get("body", {}):
+                b.target_measurement = float(job["body"][n])
+                b.is_active = True
+            elif n in job.get("add", {}):
+                b.target_measurement = max(float(b.target_measurement) + float(job["add"][n]),
+                                           float(job.get("min", {}).get(n, -1e9)))
                 b.is_active = True
             new.append(b)
         mhs.set_body_constraints(c, new)
@@ -33,7 +39,7 @@ def run(job):
         if added:
             mhs.remove_object_to_edit(c)
     EAL.save_asset(job["path"], False)
-    r = {"ok": True, "before": {k: before[k] for k in job["body"] if k in before},
-         "after": {k: after[k] for k in job["body"] if k in after}}
+    keys = list(job.get("body", {})) + list(job.get("add", {}))
+    r = {"ok": True, "before": {k: before[k] for k in keys if k in before}, "after": {k: after[k] for k in keys if k in after}}
     json.dump(r, open(job["result"], "w"), indent=1)
     return r
