@@ -501,8 +501,8 @@ def head_share(cam, m, res) -> float | None:
     pl = framing.project(cam, [e[0] - f[1] * 0.09, e[1] + f[0] * 0.09, m["eye_z"]], res)
     pr = framing.project(cam, [e[0] + f[1] * 0.09, e[1] - f[0] * 0.09, m["eye_z"]], res)
     pe = framing.project(cam, [e[0], e[1], m["eye_z"]], res)
-    if not (pl and pr and pe) or not (-0.2 < pe[1] < 1.2):
-        return None
+    if not (pl and pr and pe):
+        return 0.0                           # behind the camera
     x0, x1 = min(pl[0], pr[0]), max(pl[0], pr[0])
     w = max(x1 - x0, 1e-4)
     share = max(0.0, min(1.0, x1) - max(0.0, x0)) / w
