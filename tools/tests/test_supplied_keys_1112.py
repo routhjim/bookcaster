@@ -191,7 +191,9 @@ check("... the supplied key is there, a real file", (sdw / "talk-000100" / TALK[
       (sdw / "talk-000100" / TALK["id"] / "key.png").read_bytes() == (k / f"{TALK['id']}.png").read_bytes())
 check("... the given shot's old clip is not carried over", not (sdw / "ltx" / "out" / f"{TALK['id']}.mp4").exists())
 check("... another shot's clip is there for a cut, linked", (sdw / "ltx" / "out" / f"{ACT['id']}.mp4").is_symlink())
-check("... the looks are the book's own", (wb / "work" / "video" / "look.json").is_symlink())
+check("... the looks are the book's own (a real copy: 11-12, nothing small is linked)",
+      (wb / "work" / "video" / "look.json").is_file() and not (wb / "work" / "video" / "look.json").is_symlink() and
+      (wb / "work" / "video" / "look.json").read_text() == (b / "work" / "video" / "look.json").read_text())
 check("... the status line of the book is left alone", S.NO_STATUS is True)
 # what a render does there: a stale clip dropped, new files written, the shots folder's own files rewritten
 (sdw / "ltx" / "out" / f"{ACT['id']}.mp4").unlink()

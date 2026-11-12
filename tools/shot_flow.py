@@ -488,16 +488,45 @@ def absent_words(cx, s: dict) -> list:
 
 
 def drop_absent(text: str, absent: list) -> str:
-    """`text` without the clauses that name anyone in `absent` (or a group: "the two men", "the others"): a sentence
-    whose first clause names one goes whole; a later clause (after a comma, "and", "as", "while") goes alone."""
+    """`text` without the words for anyone in `absent`: a person in a joint subject goes alone ("<absent> and <present>
+    stand" -> "<present> stands"); a later clause about them goes alone (after a comma, "and", "as", "while"); a
+    sentence goes whole only when nobody else is left in its subject. A group word ("the two men", "the others")
+    counts as absent. Who IS in the key keeps their words (11-12 review: "<absent> and <present> stand near the
+    desk" lost the present man too)."""
+    pat = "|".join(re.escape(d) for d in sorted(absent, key=len, reverse=True) if d)
+
     def names(x):
-        return any(re.search(re.escape(d), x, re.I) for d in absent) or bool(GROUP_OFF.search(x))
+        return bool(pat and re.search(pat, x, re.I)) or bool(GROUP_OFF.search(x))
+
+    def subject_cut(s_):
+        """The sentence with an absent person taken out of its joint subject, or None when the subject is only them."""
+        if not pat:
+            return None
+        m = re.match(rf"\s*(?:{pat})(?:\s+(?:on the left|on the right|in the centre|in the middle|further back))?"
+                     rf"\s+and\s+(.*)$", s_, re.I | re.S)
+        if m:
+            rest = m.group(1)
+            rest = re.sub(r"\b(stand|sit|look|turn|walk|watch|wait|lean|move)\b", lambda v: v.group(1) + "s", rest, 1)
+            return rest
+        m = re.match(rf"(.*?)\s+and\s+(?:{pat})(?:\s+(?:on the left|on the right|in the centre|in the middle))?"
+                     rf"(\s+(?:stand|sit|look|turn|walk|watch|wait|lean|move)\w*\b.*)$", s_, re.I | re.S)
+        if m and not names(m.group(1)):
+            rest = re.sub(r"^\s+(stand|sit|look|turn|walk|watch|wait|lean|move)\b", lambda v: " " + v.group(1) + "s",
+                          m.group(2), 1)
+            return m.group(1) + rest
+        return None
     out = []
     for sent in re.split(r"(?<=[.;!?])\s+", str(text or "").strip()):
-        parts = re.split(r"(,\s*|\s+(?:and|as|while|whereas)\s+)", sent)
-        if not parts or names(parts[0]):
+        parts = re.split(r"(,\s*|\s+(?:as|while|whereas)\s+)", sent)
+        if not parts:
             continue
-        keep, i = parts[0], 1
+        head = parts[0]
+        if names(head):
+            cut = subject_cut(head)
+            if cut is None or names(cut):
+                continue
+            head = cut[0].upper() + cut[1:] if sent[:1].isupper() else cut
+        keep, i = head, 1
         while i < len(parts) - 1:
             if not names(parts[i + 1]):
                 keep += parts[i] + parts[i + 1]
@@ -5681,55 +5710,174 @@ def check_supplied(book: Path, shots: list, keys: Path, facts: Path | None, quie
     return bad, ppl, seeds
 
 
+WB_COPY_MAX = 300 * 2 ** 20     # a folder this small (bytes) is copied whole into a work root, never linked
+WB_LINK_MIN = 0                 # a media file this large or more may be linked (by its own name); others are copied
+WB_MEDIA = {".mp4", ".mp3", ".wav", ".png", ".jpg", ".safetensors", ".pt", ".glb", ".npy"}
+
+
+def _tree_size(d: Path, cap: int) -> int:
+    n = 0
+    for x in d.rglob("*"):
+        if x.is_file() and not x.is_symlink():
+            n += x.stat().st_size
+            if n > cap:
+                break
+    return n
+
+
+def _wb_place(x: Path, y: Path, inner=None, keep: Path | None = None) -> None:
+    """One entry of the book in a work root: a small folder copied whole; a large one made a real folder of its own
+    entries (recursively); a file copied, unless it is a large media file (then linked: the flow only reads those
+    under their own names, and a file it makes is a new name). `inner(x, y) -> bool`: a caller's own handling first;
+    `keep`: a folder never copied whole as part of a bigger one (the caller handles it through `inner`)."""
+    if inner and inner(x, y):
+        return
+    if y.is_symlink() and x.is_dir():            # (a reused root: a linked folder becomes a real one)
+        y.unlink()
+    if x.is_dir() and not x.is_symlink():
+        if not y.exists() and not (keep and (x == keep or x in keep.parents)) and \
+                _tree_size(x, WB_COPY_MAX) <= WB_COPY_MAX:
+            shutil.copytree(x, y, symlinks=False)
+            return
+        y.mkdir(parents=True, exist_ok=True)
+        for c in sorted(x.iterdir()):
+            _wb_place(c, y / c.name, inner, keep)
+        return
+    if y.exists() or y.is_symlink():
+        return
+    if x.suffix.lower() in WB_MEDIA and x.stat().st_size >= WB_LINK_MIN:
+        y.symlink_to(x)
+    else:
+        shutil.copy2(x, y)
+
+
+def work_root_check(wb: Path, root: Path, book: Path, stem: str, ids: list) -> None:
+    """Before any render: every place the flow writes for these shots is a real file or folder inside the work root
+    (11-12: a reused root kept a link to the book's own folder of a shot it now rendered, and the render wrote its
+    key and records into the book). Stops with the first offending path."""
+    root, book = Path(root).resolve(), Path(book).resolve()
+    sd = wb / "work" / "video" / stem / "shots"
+    targets = [wb / "work" / "job.json", wb / "work" / "job.log", wb / "work" / "sfx", wb / "work" / "sfx" / stem,
+               sd, sd / "log.jsonl", sd / "audio", sd / "review", sd / "ltx", sd / "ltx" / "out", sd / "ltx" / "chains",
+               sd / "ltx" / "emb", sd / "ltx" / "audio", sd / "ltx" / "out" / "timeline.jsonl",
+               sd / "ltx" / "out" / "pp_timing.jsonl"]
+    for i in ids:
+        mid = i.rsplit("_s", 1)[0]
+        targets += [sd / mid, sd / mid / i, sd / "review" / i, sd / "ltx" / "chains" / f"{i}.json"]
+        targets += list((sd / "ltx" / "out").glob(f"{i}*")) + list((sd / mid / i).glob("*") if (sd / mid / i).is_dir() else [])
+    for t in targets:
+        for q in [t] + [x for x in t.parents if root in x.parents or x == root]:
+            if q.is_symlink():
+                raise RuntimeError(f"work root: {q} is a link (to {q.resolve()}): the render would write through it")
+        if t.exists():
+            r = t.resolve()
+            if r != root and root not in r.parents:
+                raise RuntimeError(f"work root: {t} resolves to {r}, outside the work root")
+            if r == book or book in r.parents:
+                raise RuntimeError(f"work root: {t} resolves into the book itself ({r})")
+    for x in wb.rglob("*"):                         # (and no linked folder anywhere: a folder may be written into)
+        if x.is_symlink() and x.resolve().is_dir():
+            raise RuntimeError(f"work root: {x} links a folder ({x.resolve()})")
+
+
 def work_book(book: Path, stem: str, root: Path, ids: list, log=print) -> Path:
-    """A book to render supplied keys in without touching the book itself: <root>/<book's name>, where the given
-    shots' keys, every clip, record, chain state, review folder and cut of the run are written (all of them live
-    under the chapter's shots folder); everything else is the book's own, linked. The linked parts are read; the
-    clips of other shots are linked one by one (a stale one is unlinked here, never rewritten), and nothing the
-    render rewrites by name (the given shots' folders, the render's own folders) is linked."""
+    """A book to render supplied keys in without touching the book itself: <root>/<book's name>. Safe by
+    construction (11-12: a render under a reused root wrote into the book through a linked shot folder and linked
+    logs): nothing in it is a link to a folder; small folders and every small file are real copies; only large media
+    files are linked, by their own names (the flow reads those and writes new names). The given shots' folders and
+    their clips and records are the run's own (a link left by an earlier run is replaced by a real folder); the other
+    shots' clips are linked for a cut of the stretch. Checked before the render (work_root_check)."""
     book, root = Path(book).resolve(), Path(root).resolve()
     if root == book or book in root.parents:
         raise RuntimeError(f"work root {root}: inside the book itself")
     wb = root / book.name
-
-    def mirror(real: Path, mine: Path, keep: str | None) -> None:
-        mine.mkdir(parents=True, exist_ok=True)
-        for x in (sorted(real.iterdir()) if real.is_dir() else []):
-            y = mine / x.name
-            if x.name == keep or y.is_symlink() or y.exists():
-                continue
-            y.symlink_to(x)
-    vd_real = book / "work" / "video" / stem
-    mirror(book, wb, "work")
-    mirror(book / "work", wb / "work", "video")
-    mirror(book / "work" / "video", wb / "work" / "video", stem)
-    mirror(vd_real, wb / "work" / "video" / stem, "shots")
-    sd_real, sd = vd_real / "shots", wb / "work" / "video" / stem / "shots"
-    sd.mkdir(parents=True, exist_ok=True)
+    sd_real = book / "work" / "video" / stem / "shots"
     mids = {i.rsplit("_s", 1)[0] for i in ids}
-    for x in (sorted(sd_real.iterdir()) if sd_real.is_dir() else []):
-        y = sd / x.name
-        if x.name in ("ltx", "review") or x.name in mids or y.is_symlink() or y.exists():
-            continue
-        if x.name == "audio" and x.is_dir():        # the voice cuts are read; a mix made for this run is written here
-            y.mkdir()
-            for a_ in sorted(x.iterdir()):
-                (y / a_.name).symlink_to(a_)
-            continue
-        y.symlink_to(x)
-    for mid in mids:                                # the given shots' own folders are this run's; their siblings linked
-        (sd / mid).mkdir(exist_ok=True)
-        for x in (sorted((sd_real / mid).iterdir()) if (sd_real / mid).is_dir() else []):
-            y = sd / mid / x.name
-            if x.name not in ids and not (y.is_symlink() or y.exists()):
-                y.symlink_to(x)
-    out_real, out = sd_real / "ltx" / "out", sd / "ltx" / "out"
-    out.mkdir(parents=True, exist_ok=True)
-    for x in (sorted(out_real.iterdir()) if out_real.is_dir() else []):
-        y = out / x.name
-        if any(x.name.startswith(m) for m in mids) or y.is_symlink() or y.exists():
-            continue
-        y.symlink_to(x)                             # another shot's clip, for a cut of the stretch
+
+    def inner(x: Path, y: Path) -> bool:
+        if x == sd_real:                            # the chapter's shots: only what a cut or this run needs
+            y.mkdir(parents=True, exist_ok=True)
+            for c in sorted(x.iterdir()):
+                yc = sd_real_in(c, y)
+                if yc is None:
+                    continue
+            return True
+        if x.parent == book and x.name == "out":    # the book's cuts: never needed, never linked
+            y.mkdir(exist_ok=True)
+            return True
+        return False
+
+    def sd_real_in(c: Path, y: Path):
+        yc = y / c.name
+        if c.name in mids:                          # a shot folder this run renders: real, its own shots fresh
+            if yc.is_symlink():
+                yc.unlink()
+            yc.mkdir(exist_ok=True)
+            for g in sorted(c.iterdir()):
+                yg = yc / g.name
+                if g.name in ids:
+                    if yg.is_symlink():
+                        yg.unlink()
+                    yg.mkdir(exist_ok=True)
+                else:
+                    _wb_place(g, yg)
+            return yc
+        if c.name in ("review", "passages", "scenes"):  # records written by name: fresh / copied
+            if c.name == "review":
+                if yc.is_symlink():
+                    yc.unlink()
+                yc.mkdir(exist_ok=True)
+            else:
+                _wb_place(c, yc)
+            return yc
+        if c.name == "ltx":
+            if yc.is_symlink():
+                yc.unlink()
+            yc.mkdir(exist_ok=True)
+            for g in sorted(c.iterdir()):
+                yg = yc / g.name
+                if g.name == "out":
+                    if yg.is_symlink():
+                        yg.unlink()
+                    yg.mkdir(exist_ok=True)
+                    for f in sorted(g.iterdir()):
+                        yf = yg / f.name
+                        if any(f.name.startswith(i) for i in ids):
+                            if yf.is_symlink():
+                                yf.unlink()     # (a reused root: this run's shot, linked as another's before)
+                            continue
+                        if f.name in ("timeline.jsonl", "pp_timing.jsonl") or f.is_dir():
+                            continue            # (appended to by every run: fresh here)
+                        _wb_place(f, yf)
+                elif g.name == "chains":
+                    if yg.is_symlink():
+                        yg.unlink()
+                    yg.mkdir(exist_ok=True)
+                    for f in sorted(g.iterdir()):
+                        if not any(f.name.startswith(i) for i in ids):
+                            _wb_place(f, yg / f.name)
+                elif g.is_dir():
+                    if yg.is_symlink():
+                        yg.unlink()
+                    yg.mkdir(exist_ok=True)     # (emb, audio, syncnet, ...: this run's own)
+                elif g.suffix in (".py",) or g.name.startswith(("log_", "seg_")) or g.suffix == ".jsonl":
+                    continue
+                else:
+                    _wb_place(g, yg)
+            return yc
+        if c.name == "log.jsonl":
+            return None                             # (appended to: fresh here)
+        _wb_place(c, yc)
+        return yc
+
+    wb.mkdir(parents=True, exist_ok=True)
+    for c in sorted(book.iterdir()):
+        _wb_place(c, wb / c.name, inner, sd_real)
+    for f in ("job.json", "job.log"):               # (the job's status and log: this run's)
+        q = wb / "work" / f
+        if q.is_symlink():
+            q.unlink()
+    work_root_check(wb, root, book, stem, ids)
     log(f"work root: rendering in {wb} (the book {book} is only read)")
     return wb
 
