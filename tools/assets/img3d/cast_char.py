@@ -170,7 +170,8 @@ def main():
     a = ap.parse_args()
     W = Path(a.work)
     W.mkdir(parents=True, exist_ok=True)
-    tag = "".join(ch for ch in a.id.upper() if ch.isalnum())[:10]
+    tag = "".join(ch for ch in a.id.upper() if ch.isalnum())
+    tag = tag[:10] + tag[-2:] if len(tag) > 12 else tag     # the id's end kept: a rebuild beside (_04) gets its own assets
     choices_p, times_p = W / "choices.json", W / "times.json"
     CH = json.loads(choices_p.read_text()) if choices_p.exists() else {}
     TT = json.loads(times_p.read_text()) if times_p.exists() else {}
