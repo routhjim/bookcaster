@@ -181,6 +181,12 @@ def main():
     ap.add_argument("--work", required=True)
     ap.add_argument("--scene-tool", default=os.environ.get("ASSETS_SCENE_TOOL", str(ASSETS / "scenes")))
     ap.add_argument("--set", default="sitting_room_victorian_01")
+    ap.add_argument("--lie", action="store_true", help="also lying stances on the library's beds")
+    ap.add_argument("--lie-beds", nargs="*", default=None, help="only these bed props")
+    ap.add_argument("--lie-variants", nargs="*", default=["flat", "propped"], choices=["flat", "propped"])
+    ap.add_argument("--lie-spot", nargs=3, type=float, default=[0.3, -0.6, 0.0],
+                    help="where the bed stands in the set for the lab measure: x y (metres), and its yaw: 0 = foot "
+                         "toward -Y")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
@@ -818,6 +824,35 @@ def main():
                 made[name] = lid
             CH["seats"] = made
             seats_p.write_text(json.dumps(made, indent=1))
+    # ---------------------------------------------------------------- lying stances, one per bed in the library
+    # a bed's lie box (its library record's supports, characters/liebox.py) and a lying pose built from the scene
+    # tool's pose steps on the standing pose (the whole body turned onto its back about the hips, head to the head
+    # end, the back on the surface; "propped": the chest raised on the pillow, for someone talking in bed); the
+    # bed placed in a lab spot of the set, the engine poses and measures the joints, bl_settle.py lays the cloth
+    # with no relaxation and nothing through the mattress, shows the body's skin the cloth leaves open and builds the
+    # bed's cover over the body (set dressing for this stance and bed: head and shoulders out); each is a stance
+    # entry <id>_lying_<bed>[_propped] recording the support it was settled on (format agreed with the scene side)
+    lie_p = W / "lie.json"
+    if a.lie and not done("seats", lie_p):
+        @timed("lie")
+        def _():
+            lib_root = Path(C.LIBRARY)
+            beds = []
+            for d_ in sorted((lib_root / "prop").iterdir()):
+                aj_ = d_ / "asset.json"
+                if not aj_.exists():
+                    continue
+                rec_ = json.loads(aj_.read_text())
+                sup_ = next((x for x in rec_.get("supports", []) if x.get("posture") == "lying"), None)
+                if sup_ and (not a.lie_beds or d_.name in a.lie_beds):
+                    beds.append((d_.name, sup_))
+            cj0 = json.loads((lib / "character.json").read_text())
+            made = {}
+            for bed, sup in beds:
+                for variant in a.lie_variants:
+                    made[f"{bed}_{variant}"] = lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env)
+            CH["lie"] = made
+            lie_p.write_text(json.dumps(made, indent=1))
     # ---------------------------------------------------------------- check stills
     if not done("check", W / "scenes" / f"check_{tag}" / "close.png"):
         @timed("check")
@@ -1049,6 +1084,121 @@ def groom_words(hair, beard=None, moustache=None):
         ln, st = parse(beard)
         fh.append(" ".join(x for x in ({"L": "long", "M": "", "S": "short"}.get(ln, ""), _re.sub(r"(?<!^)([A-Z])", r" \1", st or "").lower(), "beard") if x))
     return worn, (" and ".join(fh) if fh else "none")
+
+
+def lie_frame(spot, sup):
+    """the bed's lie box in the set frame: its four corners, the pillow's centre and the foot end's middle"""
+    import math as _m
+    x0, y0, yaw = spot
+    f = [-_m.sin(_m.radians(yaw)), -_m.cos(_m.radians(yaw))]          # the bed's foot direction (its front)
+    ax, ay = [-f[1], f[0]], [-f[0], -f[1]]                            # asset x and y in the set
+    to = lambda p: [x0 + p[0] * ax[0] + p[1] * ay[0], y0 + p[0] * ax[1] + p[1] * ay[1]]
+    b = sup["box"]
+    xs, ys = b["x_m"], b["y_m"]
+    sgn = 1 if sup.get("head", "+y") == "+y" else -1
+    py = sup.get("pillow_y_m") or ([ys[1] - 0.35, ys[1]] if sgn > 0 else [ys[0], ys[0] + 0.35])
+    xm = (xs[0] + xs[1]) / 2
+    return {"corners": [to([xs[0], ys[0]]), to([xs[1], ys[0]]), to([xs[1], ys[1]]), to([xs[0], ys[1]])],
+            "head_xy": to([xm, (py[0] + py[1]) / 2]), "foot_xy": to([xm, ys[0] if sgn > 0 else ys[1]]),
+            "facing": f if sgn > 0 else [-f[0], -f[1]], "bed_facing": f, "bed_xy": [x0, y0]}
+
+
+def lie_pose(pelvis_z_cm, top_z_m, variant):
+    """the scene tool's pose steps on the standing pose: onto the back about the hips (head to the actor's back,
+    face up), the back on the surface; propped: the chest raised and the head forward"""
+    back = 0.10                                                       # hip joint above the surface lying on the back
+    steps = [["rot", "pelvis", [1, 0, 0], 90.0],
+             ["move", "pelvis", [0.0, 0.0, round((top_z_m + back) * 100 - pelvis_z_cm, 1)]]]
+    if variant == "propped":
+        steps += [["rot", "spine_02", [1, 0, 0], -35.0], ["rot", "neck_01", [1, 0, 0], -15.0]]
+    else:
+        steps += [["rot", "neck_01", [1, 0, 0], -12.0]]               # the head on the pillow
+    return {"pose": "stand", "params": {"steps": steps, "lie": variant}}
+
+
+def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
+    fr = lie_frame(a.lie_spot, sup)
+    top_z = float(sup["box"]["top_z_m"])
+    sid = f"liej_{tag}_{bed}_{variant}"
+    spec_bed = {"asset": f"prop/{bed}", "position": fr["bed_xy"], "facing": fr["bed_facing"]}
+    pelvis_z = 95.0
+    pos = list(fr["head_xy"])
+    meas = None
+    for k in range(2):                       # placed, measured, the error taken off once
+        bp = lie_pose(pelvis_z, top_z, variant)
+        c = {"id": a.id, "position": [round(pos[0], 3), round(pos[1], 3)], "facing": fr["facing"], "body_pose": bp}
+        spec = {"id": sid, "set": a.set, "guides": False, "characters": {"a": c, "bed": spec_bed},
+                "cameras": [{"name": "wide", "kind": "full", "subject": "a", "focal_mm": 28, "az": -60, "el": 25}]}
+        sp = W / f"{sid}.json"
+        sp.write_text(json.dumps(spec, indent=1))
+        p = subprocess.run([sys.executable, str(scene_py), str(sp)], cwd=str(Path(a.scene_tool).parents[2]),
+                           env=env, capture_output=True, text=True)
+        if p.returncode:
+            raise RuntimeError(f"lie joints scene {bed} {variant} failed: {p.stdout[-800:]}")
+        meas = json.loads((W / "scenes" / sid / "result.json").read_text())["subjects"]["a"]["measured"]
+        jt = meas["joints"]
+        # the head joint onto the pillow's centre, the hips onto the surface
+        dx, dy = fr["head_xy"][0] - jt["head"][0], fr["head_xy"][1] - jt["head"][1]
+        pz = (jt["thigh_l"][2] + jt["thigh_r"][2]) / 2
+        if k == 0:
+            # the move was computed against a guessed standing hip height: the measured error taken off
+            pelvis_z += (pz - (top_z + 0.10)) * 100
+            pos = [pos[0] + dx, pos[1] + dy]
+            if abs(dx) < 0.02 and abs(dy) < 0.02 and abs(pz - (top_z + 0.10)) < 0.02:
+                break
+    jt = meas["joints"]
+    lj = {"combo": str(combo), "joints": jt, "position": c["position"], "facing": c["facing"], "mode": "push",
+          "iters": 0, "shoulder_ease_m": 0.0, "thigh_from": 0.0,
+          "lie": dict(fr, top_z_m=top_z), "out": str(W / f"lying_{bed}_{variant}")}
+    jp = W / f"settle_lie_{bed}_{variant}.json"
+    jp.write_text(json.dumps(lj, indent=1))
+    p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_lie_{bed}_{variant}", "--", "flock",
+              "/tmp/gpu-igpu.lock", BLENDER, "-b", "--factory-startup", "-t", "0", "--python",
+              str(HERE / "bl_settle.py"), "--", str(jp)], W / f"settle_lie_{bed}_{variant}.log")
+    if p.returncode:
+        raise RuntimeError(f"lie settle {bed} {variant} failed")
+    sr = json.loads((W / f"lying_{bed}_{variant}" / "settle.json").read_text())
+    key = "".join(ch for ch in f"{bed}{variant}".upper() if ch.isalnum())[:14]
+    dest = f"/Game/Char/Outfit{tag}L{key}"
+    ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
+        "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),
+        "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "outfit.fbx"),
+                          "textures": str(W / f"lying_{bed}_{variant}" / "textures"), "dest": dest, "cloth_slots": False}},
+        900)
+    cover = None
+    if (W / f"lying_{bed}_{variant}" / "cover.fbx").exists():
+        ue_job(W, f"import_cover_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
+            "out": str(W / "ue" / f"import_cover_{bed}_{variant}"),
+            "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "cover.fbx"),
+                              "textures": str(W / f"lying_{bed}_{variant}" / "cover_textures"), "dest": dest + "C",
+                              "cloth_slots": False}}, 900)
+        cover = f"{dest}C/Outfit/outfit"
+    # the lie points in the stance's actor frame (metres): x along the actor's left, y forward, z up
+    import math as _m
+    f_ = c["facing"]
+    lft = [-f_[1], f_[0]]
+    to_actor = lambda q: [round((q[0] - c["position"][0]) * lft[0] + (q[1] - c["position"][1]) * lft[1], 3),
+                          round((q[0] - c["position"][0]) * f_[0] + (q[1] - c["position"][1]) * f_[1], 3),
+                          round(q[2], 3)]
+    heel = [(jt["foot_l"][i] + jt["foot_r"][i]) / 2 for i in range(3)]
+    pel = [(jt["thigh_l"][i] + jt["thigh_r"][i]) / 2 for i in range(3)]
+    lid = f"{a.id}_lying_{bed}" + ("_propped" if variant == "propped" else "")
+    st = {"base": a.id, "pose": "lying", "variant": variant,
+          "support": {"asset": bed, "posture": "lying", "top_z_m": top_z, "length_m": sup.get("length_m")}}
+    ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"] + ([cover] if cover else [])
+               + [g for g in cj0["garments"] if g.startswith("@")],
+               stance=st, body_pose=c["body_pose"],
+               lie={"head_m": to_actor(jt["head"]), "pelvis_m": to_actor(pel), "heels_m": to_actor(heel)},
+               face_up=True, cover={"asset": cover, "over": "chest" if cover else None},
+               note=f"Lying only, on {bed} ({variant}): {a.id} on its back with its cloth laid on the mattress "
+                    f"(bl_settle, no relaxation) and the bed's cover over the body (a separate piece, listed in "
+                    f"garments and in cover)")
+    ent.pop("relaxed_arm_steps", None)
+    (Path(C.LIBRARY) / "character" / lid).mkdir(parents=True, exist_ok=True)
+    (Path(C.LIBRARY) / "character" / lid / "character.json").write_text(json.dumps(ent, indent=1))
+    return {"id": lid, "settle": {k: sr.get(k) for k in ("lie_cloth_lifted", "lie_min_cloth_z_m", "body_skin", "cover",
+                                                         "pose_err_cm")}, "position": c["position"],
+            "facing": c["facing"], "bed": spec_bed, "frame": fr}
 
 
 # the skin probe's left-out column for an open or base neckline: the measured opening plus this share of the span

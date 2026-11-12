@@ -194,6 +194,8 @@ if JOB.get("mode") == "drape":
         b_ = J["calf_r"] + fr * (J["foot_r"] - J["calf_r"])
         caps.append((a_, b_, RAD["calf"], RAD["calf"]))
 SEAT = JOB.get("seat")
+# lying: the floor the cloth rests on is the lie box's top (the mattress, in the character's frame, metres)
+FLOOR_Z = float((JOB.get("lie") or {}).get("top_z_m", 0.0))
 hip_y = (J["thigh_l"][1] + J["thigh_r"][1]) / 2
 hip_x = (J["thigh_l"][0] + J["thigh_r"][0]) / 2
 
@@ -243,7 +245,7 @@ def collide(X, outward=None):
         inb = ((np.abs(X[:, 0] - hip_x) < SEAT.get("half_width", 0.32)) & (X[:, 1] > hip_y - SEAT.get("front", 0.42))
                & (X[:, 1] < hip_y + SEAT.get("back", 0.25)) & (X[:, 2] < z0 + CLR) & (X[:, 2] > z0 - 0.25))
         X[inb, 2] = z0 + CLR
-    X[:, 2] = np.maximum(X[:, 2], 0.004)
+    X[:, 2] = np.maximum(X[:, 2], FLOOR_Z + 0.004)
     return X
 
 
@@ -290,9 +292,9 @@ if mode == "drape" and mov.any():
         down = p.copy()
         down[:, 2] -= step
         q = collide(down.copy(), d)
-        sup = (q[:, 2] > down[:, 2] + 1e-6) | (q[:, 2] <= 0.0041)
+        sup = (q[:, 2] > down[:, 2] + 1e-6) | (q[:, 2] <= FLOOR_Z + 0.0041)
         nxt = collide(p + d * step, d)
-        stay = q[:, 2] <= 0.0041
+        stay = q[:, 2] <= FLOOR_Z + 0.0041
         if SEAT:
             on_seat = sup & (np.abs(q[:, 2] - (float(SEAT["z"]) + CLR)) < 0.003)
             stay |= on_seat & (d[:, 1] > float(JOB.get("sat_on_dir", 0.3)))
@@ -354,6 +356,17 @@ for it in range(int(JOB.get("iters", 40))):
     X[~free] = P[~free]
     X[mov] = collide(X[mov], None if outw is None else outw[mov])
 REP["times"]["relax"] = round(time.time() - t, 2)
+if JOB.get("lie"):
+    # lying: no cloth through the mattress (the posed outfit's back lies on it); the skin slot is the body's own
+    _cl = np.ones(nv, bool)
+    if "body_skin" in fig.data.attributes:
+        _sv0 = np.zeros(nv, np.int32)
+        fig.data.attributes["body_skin"].data.foreach_get("value", _sv0)
+        _cl &= _sv0 == 0
+    _below = _cl & (X[:, 2] < FLOOR_Z + CLR)
+    X[_below, 2] = FLOOR_Z + CLR
+    REP["lie_cloth_lifted"] = int(_below.sum())
+    REP["lie_min_cloth_z_m"] = round(float(X[_cl, 2].min()), 4)
 # check: worst penetration of the free cloth into legs and seat
 pen = 0.0
 for a, b, ra, rb in caps[:4]:
@@ -462,6 +475,102 @@ td = os.path.join(OUT, "textures")
 if os.path.isdir(td):
     shutil.rmtree(td)
 shutil.copytree(os.path.join(JOB["combo"], "textures"), td)
+
+# ------------------------------------------------------------------ lying: the bed's cover over the body
+# set dressing for this stance and bed, not the character's garment: a height field over the lie box from just
+# under the shoulders to the foot end, stretched over the settled body and cloth like a membrane (it bridges from
+# the toes to the knees and between the legs; no cloth solver), hanging over the sides and the foot; one surface,
+# drawn two-sided; bound wholly to the pelvis so it stays where it was laid
+LIE = JOB.get("lie")
+if LIE and LIE.get("cover", True):
+    tc = time.time()
+    loc2 = lambda p_: np.array(local([p_[0], p_[1], 0.0])[:2]) / CM
+    hd_, ft_ = loc2(LIE["head_xy"]), loc2(LIE["foot_xy"])
+    u_ = (ft_ - hd_) / np.linalg.norm(ft_ - hd_)
+    v_ = np.array([-u_[1], u_[0]])
+    cs = np.array([loc2(c) for c in LIE["corners"]])
+    cu, cv = (cs - hd_) @ u_, (cs - hd_) @ v_
+    zt = float(LIE["top_z_m"])
+    # the hem: a little toward the feet from the shoulders' line (head and shoulders show)
+    sh_ = (J["upperarm_l"] + J["upperarm_r"]) / 2
+    hem_u = float((sh_[:2] - hd_) @ u_) + float(LIE.get("hem_below_shoulders_m", 0.08))
+    over = float(LIE.get("overhang_m", 0.22))
+    step_ = 0.02
+    us = np.arange(hem_u, cu.max() + 0.12, step_)
+    vs = np.arange(cv.min() - over, cv.max() + over + 1e-6, step_)
+    nu, nv_ = len(us), len(vs)
+    # obstacle: the highest settled point (cloth and skin) over each cell
+    Xc = X.copy()
+    pu, pv = (Xc[:, :2] - hd_) @ u_, (Xc[:, :2] - hd_) @ v_
+    iu = np.floor((pu - us[0]) / step_).astype(int)
+    iv = np.floor((pv - vs[0]) / step_).astype(int)
+    okp = (iu >= 0) & (iu < nu) & (iv >= 0) & (iv < nv_) & (Xc[:, 2] > zt - 0.05)
+    obst = np.full((nu, nv_), zt)
+    np.maximum.at(obst, (iu[okp], iv[okp]), Xc[okp, 2])
+    thick = float(LIE.get("cover_clear_m", 0.02))
+    floor_h = np.where(obst > zt + 0.005, obst + thick, zt + 0.012)
+    # off the box: the cover falls away over the sides and the foot end
+    inside_v = (vs >= cv.min()) & (vs <= cv.max())
+    dv = np.maximum(np.maximum(cv.min() - vs, vs - cv.max()), 0)
+    du = np.maximum(us - cu.max(), 0)
+    drop = 1.6 * np.maximum(dv[None, :], du[:, None])
+    h = floor_h.copy()
+    for _ in range(int(LIE.get("membrane_iters", 80))):           # the membrane: averaged, never below the body
+        hp = np.pad(h, 1, mode="edge")
+        avg = (hp[:-2, 1:-1] + hp[2:, 1:-1] + hp[1:-1, :-2] + hp[1:-1, 2:]) / 4
+        h = np.maximum(avg, floor_h)
+        h = np.where(drop > 0, np.minimum(h, zt + 0.012 - drop + 0.0), h)
+    h = np.maximum(h, zt - 0.30)
+    # the top hem folded back: the first rows stand a little higher (a rolled edge)
+    h[:2] += 0.012
+    Vg = np.zeros((nu, nv_, 3))
+    for i, uu in enumerate(us):
+        xy = hd_[None, :] + uu * u_[None, :] + vs[:, None] * v_[None, :]
+        Vg[i, :, :2] = xy
+        Vg[i, :, 2] = h[i]
+    verts = (Vg.reshape(-1, 3) * CM).tolist()
+    faces = [(i * nv_ + k, i * nv_ + k + 1, (i + 1) * nv_ + k + 1, (i + 1) * nv_ + k)
+             for i in range(nu - 1) for k in range(nv_ - 1)]
+    cm_ = bpy.data.meshes.new("cover")
+    cm_.from_pydata(verts, [], faces)
+    uvl = cm_.uv_layers.new(name="UVMap")
+    for poly in cm_.polygons:
+        for li in poly.loop_indices:
+            vi = cm_.loops[li].vertex_index
+            uvl.data[li].uv = ((vi % nv_) / max(nv_ - 1, 1), (vi // nv_) / max(nu - 1, 1))
+    cm_.polygons.foreach_set("use_smooth", np.ones(len(cm_.polygons), bool))
+    cov = bpy.data.objects.new("cover", cm_)
+    bpy.context.scene.collection.objects.link(cov)
+    cov.parent = arm
+    g_ = cov.vertex_groups.new(name="pelvis")
+    g_.add(list(range(len(verts))), 1.0, "REPLACE")
+    am_ = cov.modifiers.new("Armature", "ARMATURE")
+    am_.object = arm
+    mc = bpy.data.materials.new("M_cover")
+    cm_.materials.append(mc)
+    ctd = os.path.join(OUT, "cover_textures")
+    os.makedirs(ctd, exist_ok=True)
+    col_c = list(LIE.get("cover_rgb", [0.86, 0.84, 0.79])) + [1.0]
+    for name, rgb in (("BaseColor", col_c), ("Normal", [0.5, 0.5, 1.0, 1.0]), ("RMA", [0.95, 0.0, 1.0, 1.0])):
+        im = bpy.data.images.new(f"T_outfit_{name}", 64, 64, alpha=False)
+        if name != "BaseColor":
+            im.colorspace_settings.name = "Non-Color"
+        im.pixels.foreach_set(np.tile(np.array(rgb, np.float32), 64 * 64))
+        im.filepath_raw = os.path.join(ctd, f"T_outfit_{name}.png")
+        im.file_format = "PNG"
+        im.save()
+    bpy.ops.object.select_all(action="DESELECT")
+    cov.select_set(True)
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, "cover.fbx"), use_selection=True,
+                             object_types={"ARMATURE", "MESH"}, apply_unit_scale=False, global_scale=1.0,
+                             apply_scale_options="FBX_SCALE_NONE", axis_forward="-Z", axis_up="Y", add_leaf_bones=False,
+                             use_armature_deform_only=False, primary_bone_axis="Y", secondary_bone_axis="X",
+                             armature_nodetype="NULL", bake_anim=False, mesh_smooth_type="FACE", use_tspace=True,
+                             path_mode="STRIP")
+    REP["cover"] = {"cells": [nu, nv_], "hem_u_m": round(hem_u, 3), "top_z_m": zt,
+                    "max_rise_m": round(float(h.max() - zt), 3), "s": round(time.time() - tc, 2)}
 if JOB.get("save_blend", True):
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "settled.blend"), compress=True)
 REP["total_s"] = round(time.time() - T0, 1)
