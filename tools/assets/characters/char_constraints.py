@@ -3,7 +3,8 @@ after. Run through the line as an editor script (run_asset.py --ue-job), then re
 and "export_geometry" steps.
 
     job: {"path": "/Game/Char/<name>", "body": {"Neck Length": 6.0, "Neck": 37.0}, "result": path,
-          "add": {"Neck Length": -2.0}, "min": {"Neck Length": 4.5}}   (add: relative to the current value)
+          "add": {"Neck Length": -2.0}, "min": {"Neck Length": 4.5},   (add: relative to the current value)
+          "copy_from": "/Game/Char/<other>"}                            (the changes go on a fresh copy of it)
 """
 import json
 
@@ -14,6 +15,12 @@ mhs = unreal.get_editor_subsystem(unreal.MetaHumanCharacterEditorSubsystem)
 
 
 def run(job):
+    if job.get("copy_from"):
+        # the changes go on a copy (a MetaHuman another character also uses is never changed)
+        if EAL.does_asset_exist(job["path"]):
+            EAL.delete_asset(job["path"])
+        if not EAL.duplicate_asset(job["copy_from"], job["path"]):
+            raise RuntimeError(f"copy of {job['copy_from']} failed")
     c = EAL.load_asset(job["path"])
     added = (not mhs.is_object_added_for_editing(c)) and mhs.try_add_object_to_edit(c)
     try:

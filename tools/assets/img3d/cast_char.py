@@ -163,6 +163,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
+    ap.add_argument("--until", default=None, choices=["face"], help="stop after this step")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
@@ -209,7 +210,39 @@ def main():
                       "--out", str(W / "choice.json"), "--look", a.look], W / "choose.log")
             if p.returncode:
                 raise RuntimeError(f"choose failed: {p.stdout[-800:]}")
+    # ---------------------------------------------------------------- face: the preset by comparison
+    # each candidate preset made with the chosen grooms and body and rendered as a neutral studio portrait (the
+    # editor's preview actor, no assembly); face_pick.py has the vision model compare them two at a time with the
+    # drawn head and keeps the one with the most wins
     ch = json.loads((W / "choice.json").read_text())
+    pool = (ch.get("scores") or {}).get("preset_pool") or []
+    if not a.mh and len(pool) > 1 and (not done("choose", W / "face_pick.json")):
+        @timed("face")
+        def _():
+            os.environ.setdefault("MH_EXTRA_ARGS", "-NoMetaHumanAccountPortalLoginFallback")
+            pdir = W / "ue" / "faces"
+            pdir.mkdir(parents=True, exist_ok=True)
+            names = {n: f"MHC_CAND_{tag}_{i}" for i, n in enumerate(pool)}
+            ue_job(W, "faces", str(ASSETS / "characters" / "char_render.py"), {
+                "map": "/Engine/Maps/Templates/Template_Default", "out": str(pdir), "warm_frames": 120,
+                "settle_frames": 30, "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5,
+                "make": [{"name": m, "folder": "/Game/Char/Cand", "base": n, "grooms": ch["grooms"],
+                          "clear_slots": ch["clear_slots"], "params": ch["params"], "body": ch["body"]}
+                         for n, m in names.items()],
+                "characters": {n: {"path": f"/Game/Char/Cand/{m}"} for n, m in names.items()},
+                "shots": [{"name": n, "char": n, "frame": "close", "az": 0} for n in pool]}, 2400)
+            p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_face", "--", "bash", CARD, "05", HY_PY, "-I",
+                      str(ASSETS / "characters" / "face_pick.py"), str(W / "choice.json"), "--portraits", str(pdir),
+                      "--vl-python", QWEN_PY], W / "face.log")
+            if p.returncode:
+                raise RuntimeError(f"face pick failed: {p.stdout[-800:]}")
+            (W / "face_pick.json").write_text(json.dumps(json.loads((W / "choice.json").read_text())["scores"]
+                                                         .get("preset_compare"), indent=1))
+        ch = json.loads((W / "choice.json").read_text())
+    if a.until == "face":
+        save()
+        log(f"stopped after the face: {ch['base']} {json.dumps((ch.get('scores') or {}).get('preset_compare'))}")
+        return
     CH["metahuman"] = {k: ch[k] for k in ("base", "gender", "grooms", "clear_slots", "body")}
     CH["metahuman_scores"] = ch["scores"]
     save()
@@ -370,11 +403,21 @@ def main():
         nf = {"measured": {"bare_neck_cm": bare, "collar_inner_girth_cm": gi, "neck_girth_cm": gn}, "set": newb,
               "add": addb}
         if newb or addb:
+            # a given MetaHuman (--mh) is another character's too: the neck changes go on a copy of it, never on it
+            src_mh = mh_name
+            if a.mh:
+                mh_name = f"{a.mh}_{tag}"
+                fbx = W / "fbx"
+                CH["mh_build"] = {"blueprint": f"/Game/MetaHumans/{mh_name}/BP_{mh_name}", "copied_from": a.mh}
+                nf["copy"] = {"from": a.mh, "to": mh_name}
+
             @timed("neck_fit")
             def _():
-                r = ue_job(W, "neck_constraints", str(ASSETS / "characters" / "char_constraints.py"),
-                           {"path": f"/Game/Char/{mh_name}", "body": newb, "add": addb,
-                            "min": {"Neck Length": 4.5, "Neck": 30.0}}, 600)
+                job_c = {"path": f"/Game/Char/{mh_name}", "body": newb, "add": addb,
+                         "min": {"Neck Length": 4.5, "Neck": 30.0}}
+                if src_mh != mh_name:
+                    job_c["copy_from"] = f"/Game/Char/{src_mh}"
+                r = ue_job(W, "neck_constraints", str(ASSETS / "characters" / "char_constraints.py"), job_c, 600)
                 nf["engine"] = r
                 ue_job(W, "mh_rebuild", str(ASSETS / "characters" / "char_render.py"), {
                     "out": str(W / "ue" / "mh_rebuild"),
@@ -382,6 +425,9 @@ def main():
                     "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
                     "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
                 jp = W / "combo_job.json"
+                cj_ = json.loads(jp.read_text())
+                cj_["body_fbx"], cj_["head_fbx"] = str(fbx / f"{mh_name}_Body.fbx"), str(fbx / f"{mh_name}_Head.fbx")
+                jp.write_text(json.dumps(cj_, indent=1))
                 p = line(["--line-cmd", "igpu", "combo", "--id", f"cast_{tag}_combo2", "--", "flock", "/tmp/gpu-igpu.lock",
                           BLENDER, "-b", "--factory-startup", "-t", "0", "--python", str(HERE / "bl_combo.py"), "--",
                           str(jp)], W / "combo2.log")
