@@ -354,6 +354,14 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     for k in show or []:
         if k in facts and not facts[k]["head_in"]:
             why.append(f"{k} (named for the shot) is not in view")
+    if opts.get("_single"):                  # a clean single: everyone else clearly in or clearly out
+        for k, v in subjects.items():
+            if k == speaker:
+                continue
+            pr = [framing.project(cam, q, res) for q in body_points(v["measured"]).values()]
+            xs = [q[0] for q in pr if q and q[1] < 1.0]
+            if xs and not (min(xs) > 1.10 or max(xs) < -0.10 or (min(xs) > 0.05 and max(xs) < 0.95)):
+                why.append(f"{k} near the edge of a single")
     for k, f in facts.items():
         # a face cut by the frame's edge is always a miss (any shot kind): the run rejects it if no camera clears it
         em = subjects[k]["measured"]
