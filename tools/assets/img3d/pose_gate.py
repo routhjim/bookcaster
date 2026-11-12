@@ -23,6 +23,65 @@ def runs(row, min_len=8):
     return [(a, b) for a, b in zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]) if b - a >= min_len]
 
 
+def pocket(fg, top, bot, cx, sgn):
+    """(armpit fraction, arm angle from vertical) by columns, or None."""
+    from collections import deque
+    Hh, Ww = fg.shape
+    H = bot - top
+    # the torso's edge on this side at chest height
+    r0 = top + int(0.35 * H)
+    rr = runs(fg[r0])
+    body = min(rr, key=lambda ab: 0 if ab[0] <= cx <= ab[1] else min(abs(ab[0] - cx), abs(ab[1] - cx))) if rr else None
+    if body is None:
+        return None
+    edge = body[1] if sgn > 0 else body[0]
+    # background reached from the bottom row on this side of the body (a flood over background pixels)
+    seen = np.zeros_like(fg)
+    q = deque()
+    cols = range(edge + 1, Ww) if sgn > 0 else range(0, edge)
+    for c in cols:
+        if not fg[bot, c]:
+            seen[bot, c] = True
+            q.append((bot, c))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            y2, x2 = y + dy, x + dx
+            if top <= y2 <= bot and 0 <= x2 < Ww and not seen[y2, x2] and not fg[y2, x2]:
+                if (sgn > 0 and x2 <= edge - int(0.02 * H)) or (sgn < 0 and x2 >= edge + int(0.02 * H)):
+                    continue            # stay on this side of the body
+                seen[y2, x2] = True
+                q.append((y2, x2))
+    # the pocket's highest point within 0.12 H of the body's edge
+    band = range(edge, min(Ww, edge + int(0.12 * H))) if sgn > 0 else range(max(0, edge - int(0.12 * H)), edge + 1)
+    tops = [np.nonzero(seen[:, c])[0] for c in band]
+    tops = [t.min() for t in tops if len(t)]
+    if not tops:
+        return None
+    arm_row = min(tops)
+    ap = float((bot - arm_row) / H)
+    # the arm's centre line: per column beyond the edge, the first figure run from the top of the shoulders down
+    pts = []
+    c0 = edge + sgn * int(0.05 * H)
+    c_end = Ww - 1 if sgn > 0 else 0
+    for c in range(c0, c_end, sgn * 2):
+        col = fg[top:top + int(0.7 * H), c]
+        ys = np.nonzero(col)[0]
+        if len(ys) == 0:
+            break
+        d = np.diff(np.r_[0, col.astype(np.int8), 0])
+        a_, b_ = np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]
+        if not len(a_):
+            break
+        pts.append((c, top + (a_[0] + b_[0]) / 2))
+    if len(pts) < 10:
+        return None
+    P = np.array(pts)
+    k = np.polyfit(P[:, 0], P[:, 1], 1)[0]              # rows per column
+    ang = float(90.0 - np.degrees(np.arctan(abs(k))))
+    return ap, ang
+
+
 def gate(path, key, min_angle, min_armpit):
     im = np.asarray(Image.open(path).convert("RGB")).astype(np.float32)
     border = np.concatenate([im[0], im[-1], im[:, 0], im[:, -1]])
@@ -63,8 +122,20 @@ def gate(path, key, min_angle, min_armpit):
         if armpit is not None:
             arm_pts = [(rr, c) for rr, c in arm_pts.items() if armpit <= rr < armpit + 2 * win]
         if armpit is None or len(arm_pts) < 5:
-            out[side] = {"armpit": None, "angle_deg": None, "pass": False}
-            ok = False
+            # arms near horizontal: no row crosses the arm apart from the body (the arm joins the shoulder in every
+            # row it is in), so the row walk finds nothing (11-12: good spread drawings at 70-90 degrees all read
+            # "no armpit"). Measured instead by columns: the background pocket under the arm, reached from the
+            # picture's bottom on that side, and its highest point next to the body is the armpit; the arm's
+            # centre line across the columns gives its angle
+            pk = pocket(fg, top, bot, cx, sgn)
+            if pk is None:
+                out[side] = {"armpit": None, "angle_deg": None, "pass": False}
+                ok = False
+                continue
+            ap, ang = pk
+            p = ang >= min_angle and ap >= min_armpit
+            out[side] = {"armpit": round(ap, 3), "angle_deg": round(ang, 1), "pass": p, "by": "columns"}
+            ok &= p
             continue
         P = np.array(arm_pts)
         k = np.polyfit(P[:, 0], P[:, 1], 1)[0]                 # columns per row
