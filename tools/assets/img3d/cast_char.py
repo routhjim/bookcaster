@@ -190,7 +190,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
-    ap.add_argument("--until", default=None, choices=["face"], help="stop after this step (face: after the conform)")
+    ap.add_argument("--until", default=None, choices=["face", "seats"],
+                    help="stop after this step (face: after the conform; seats: after the seated stances)")
     ap.add_argument("--conform", action="store_true",
                     help="conform the picked face to the drawing (about 9 min; kept only if it wins the comparison)")
     ap.add_argument("--face-blend", action="store_true",
@@ -923,6 +924,9 @@ def main():
                 made[name] = lid
             CH["seats"] = made
             seats_p.write_text(json.dumps(made, indent=1))
+    if a.until == "seats":
+        log("stopped after the seated stances (--until seats)")
+        return
     # ---------------------------------------------------------------- lying stances, one per bed in the library
     # a bed's lie box (its library record's supports, characters/liebox.py) and a lying pose built from the scene
     # tool's pose steps on the standing pose (the whole body turned onto its back about the hips, head to the head

@@ -1142,6 +1142,57 @@ if JOB.get("long_skirt"):
     skirt = np.array([any(g.group == gi_ for g in v.groups) for v in fig.data.vertices])
     fig.vertex_groups.remove(sg_)
     REP["inner_dropped_verts"] = int(inner.sum())
+# a foot drawn bare or in open footwear (a sandal): the body's own foot shows there (its skin shows wherever cloth
+# does not cover it), so the figure's drawn foot goes and what is left of its footwear is centred on the body's foot
+# (11-12: an empty sandal with a drawn foot in it stood beside the body's bare foot)
+if not STATUE and JOB.get("body_skin_shows", True) and JOB.get("open_footwear", True) and "fcol" in fig.data.attributes:
+    _zs = float(JOB.get("open_footwear_top_m", 0.11))    # (its own height: a long garment's job has no shoe top)
+    _fc = np.zeros(len(fig.data.vertices) * 4, np.float32)
+    fig.data.attributes["fcol"].data.foreach_get("color", _fc)
+    _sk = is_skin(_fc.reshape(-1, 4)[:, :3])
+    _co = np.array([v.co[:] for v in fig.data.vertices])
+    _gone = np.zeros(len(_co), bool)
+    REP["open_footwear"] = {"lowest_m": round(float(_co[:, 2].min()), 3), "under_shoe_top": int((_co[:, 2] < _zs).sum())}
+    for side, sg in (("l", 1), ("r", -1)):
+        _low = (_co[:, 2] < _zs) & (sg * (_co[:, 0] - J("pelvis").x) > 0)
+        if _low.sum() < 20:
+            continue
+        frac = float(_sk[_low].mean())
+        REP["open_footwear"][side] = {"verts": int(_low.sum()), "skin_frac": round(frac, 3)}
+        if frac < float(JOB.get("open_footwear_skin", 0.25)):
+            continue                                     # a closed shoe: as drawn, the body's foot stays hidden in it
+        _gone |= _low & _sk
+        _wear = _low & ~_sk
+        if _wear.sum() < float(JOB.get("open_footwear_min_share", 0.3)) * _low.sum():
+            _gone |= _low                                # footwear the colour cannot tell from the foot (tan leather):
+            REP["open_footwear"][side]["barefoot"] = True    # a clean bare foot, not crumbs of a sandal beside it
+            continue
+        if _wear.sum() >= 20 and f"ball_{side}" in arm.pose.bones:
+            tgt = (np.array(pose_head(f"foot_{side}")[:2]) + np.array(pose_head(f"ball_{side}")[:2])) / 2
+            sh_ = tgt - _co[_wear, :2].mean(0)
+            for i in np.nonzero(_wear)[0]:
+                fig.data.vertices[int(i)].co.x += float(sh_[0])
+                fig.data.vertices[int(i)].co.y += float(sh_[1])
+            REP["open_footwear"][side]["moved_m"] = [round(float(x), 3) for x in sh_]
+            # and it is rigid on that foot, not loose cloth
+            ids_ = [int(i) for i in np.nonzero(_wear)[0]]
+            for g_ in fig.vertex_groups:
+                g_.remove(ids_)
+            (fig.vertex_groups.get(f"foot_{side}") or fig.vertex_groups.new(name=f"foot_{side}")).add(ids_, 1.0, "REPLACE")
+            skirt[_wear] = False
+    if _gone.any():
+        sg_ = fig.vertex_groups.new(name="_skirt2")
+        sg_.add([int(i) for i in np.nonzero(skirt)[0]], 1.0, "REPLACE")
+        bm = bmesh.new()
+        bm.from_mesh(fig.data)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.nonzero(_gone)[0]], context="VERTS")
+        bm.to_mesh(fig.data)
+        bm.free()
+        gi_ = sg_.index
+        skirt = np.array([any(g.group == gi_ for g in v.groups) for v in fig.data.vertices])
+        fig.vertex_groups.remove(sg_)
+        REP["open_footwear"]["drawn_foot_verts_removed"] = int(_gone.sum())
 np.save(os.path.join(OUT, "skirt_idx.npy"), np.nonzero(skirt)[0].astype(np.int32))
 
 # shoes are rigid: everything under the ankle follows its foot bone only
