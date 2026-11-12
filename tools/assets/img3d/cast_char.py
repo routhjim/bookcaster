@@ -386,7 +386,8 @@ def main():
             # the character's own masked copy of its face skin, wearing the fit's mask (the shared material untouched)
             sk = ue_job(W, "skin_mask", str(ASSETS / "characters" / "char_skinmask.py"), {
                 "face_folder": bp.rsplit("/", 1)[0], "mask_png": str(combo / "textures" / "T_head_mask.png"),
-                "dest": f"{dest}/Skin"}, 1200)
+                "dest": f"{dest}/Skin", "blueprint": bp, "name": tag}, 1200)
+            bp = sk["blueprint"]          # the character's own Blueprint copy, its face wearing the masked skin
             CH["skin_mask"] = {"fit": json.loads((combo / "report.json").read_text()).get("skin_mask"), "engine": sk}
             lib.mkdir(parents=True, exist_ok=True)
             (lib / "character.json").write_text(json.dumps({

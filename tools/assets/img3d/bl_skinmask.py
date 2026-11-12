@@ -5,8 +5,9 @@ this texture (characters/char_skinmask.py), so skin under cloth is hidden rather
 A head vertex is hidden when it lies below the garment's top round the neck at its angle (per 15-degree sector:
 the highest cloth within 13 cm of the neck's axis, less MARGIN) AND cloth covers it: its outward ray meets the
 garment within REACH, or the garment is within NEAR of it, or (skin in a gap of the cloth, as between a bodice and
-a puffed sleeve) rays in at least COVER_FRAC of 17 directions round its normal meet the garment within 15 cm. Skin
-in an open neckline (no cloth over it) stays. The per-vertex values are rasterised into the UV map by a Cycles
+a puffed sleeve) rays in at least COVER_FRAC of 17 directions round its normal meet the garment within 15 cm, or it
+is a shoulder (out to the side beyond the neck's radius plus 3 cm: skin poking out through a lower cloth shoulder
+has no cloth over it to find). Skin in an open neckline (no cloth over it, in front of the neck) stays. The per-vertex values are rasterised into the UV map by a Cycles
 emission bake on the GPU, then the hidden region is grown by GROW_PX texels (so no seam of skin shows at its edge).
 """
 import math
@@ -54,7 +55,14 @@ def build(HEAD, fig, J, JOB, REP, out_png):
             a, t_ = 2 * math.pi * k / 8, math.radians(tilt)
             dirs_local.append(np.array([math.sin(t_) * math.cos(a), math.sin(t_) * math.sin(a), math.cos(t_)]))
     covered = np.zeros(len(H))
-    for i in np.nonzero(below)[0]:
+    # the shoulders: below the collar line and out to the side beyond the neck, skin is always under the garment's
+    # shoulder, so it is hidden even where it pokes out through the cloth (no cloth "over" it to find)
+    ring = np.abs(H[:, 2] - nk[2]) < 0.015
+    neck_r = float(np.median(np.linalg.norm(H[ring, :2] - nk[:2], axis=1))) if ring.sum() > 20 else 0.06
+    side_x = neck_r + float(C.get("shoulder_beyond_neck_m", 0.03))
+    shoulder = below & (np.abs(H[:, 0] - nk[0]) > side_x)
+    hide |= shoulder
+    for i in np.nonzero(below & ~shoulder)[0]:
         hit = bvh.ray_cast(Vector(H[i] + Hn[i] * 0.001), Vector(Hn[i]), reach)
         if hit[0] is not None:
             hide[i] = True
@@ -81,7 +89,8 @@ def build(HEAD, fig, J, JOB, REP, out_png):
                             loop_v=np.array([lp.vertex_index for lp in HEAD.data.loops]),
                             cloth=P[np.random.default_rng(0).choice(len(P), min(len(P), 40000), replace=False)])
     REP["skin_mask"] = {"hidden_verts": int(hide.sum()), "below_collar": int(below.sum()), "res": res,
-                        "by_cover": int((covered >= cover_min).sum())}
+                        "by_cover": int((covered >= cover_min).sum()), "by_shoulder": int(shoulder.sum()),
+                        "neck_r_m": round(neck_r, 3)}
     # bake: an emission of the vertex value onto an image through UV map 0, on a copy of the head mesh holding only
     # its skin section (the eyes, teeth, lashes and eye shells share the UV square and would paint over the skin)
     names = [(m.name if m else "") for m in HEAD.data.materials]
