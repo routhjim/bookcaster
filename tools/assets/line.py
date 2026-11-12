@@ -18,6 +18,9 @@ Settings (environment):
                             state (the sleep inhibitor stays held)                default 20
     ASSETS_POWER_RESUME_PCT resume once the battery is back at this %             default 40
 
+Memory: MemBudget below (settings in config.py, ASSETS_MEM_*); a command that only found a resource busy is
+run again (busy_exit, ASSETS_LINE_BUSY_*, ASSETS_LINE_RETRIES).
+
 The load is bounded by the stations themselves (one job each), the short lines and the batches; the battery is
 watched over time (percent and energy_now logged at every job start and end, cost per job kind) and only the floor
 above stops work. A lost charger or card is logged with its time and holds card jobs until both are back.
@@ -163,6 +166,191 @@ class Batcher:
 
     def state(self):
         return {s: {"kind": k, "n": n} for s, (k, n) in self.cur.items()}
+
+
+# ---------------------------------------------------------------- memory budget (pure arithmetic; assetd.py feeds it)
+class MemBudget:
+    """What may start, by system memory. A job kind declares what it needs (GiB); a job starts only when
+    MemAvailable, less what jobs that started within the ramp have declared (they are still loading: the memory
+    is promised, not yet taken), less the reserve, covers it. Two jobs that cannot both fit therefore never
+    overlap, whichever starts first, without either naming the other."""
+
+    def __init__(self, kind_gb, default_gb, reserve_gb, ramp_s, total_gb=None):
+        self.kind_gb, self.default_gb = dict(kind_gb), float(default_gb)
+        self.reserve_gb, self.ramp_s, self.total_gb = float(reserve_gb), float(ramp_s), total_gb
+
+    def need(self, kind, declared=None):
+        """GiB a job needs: what its entry declares, else its kind's figure, else the default."""
+        if declared is not None:
+            return max(0.0, float(declared))
+        return max(0.0, float(self.kind_gb.get(kind, self.default_gb)))
+
+    def pending(self, running, t):
+        """GiB promised to jobs still loading. running: [(need GiB, start time)]."""
+        return sum(n for n, t0 in running if t0 is not None and t - t0 < self.ramp_s)
+
+    def room(self, avail, running, t):
+        """GiB a new job may take now."""
+        return avail - self.pending(running, t) - self.reserve_gb
+
+    def fits(self, need, avail, running, t, reclaim=0.0, reserve=None, held=0.0):
+        """(ok, text). reclaim: GiB that will come back before the job loads (an editor that unloads for it);
+        reserve: kept free for this job (None: the budget's; 0 for a kind whose figure is its tool's own gate);
+        held: GiB counted as taken although not yet in use (an editor's growth to its ceiling)."""
+        if need <= 0:
+            return True, None
+        keep = self.reserve_gb if reserve is None else reserve
+        if self.total_gb is not None and need + keep > self.total_gb:
+            return False, (f"memory: it needs {need:.0f} GiB and {keep:.0f} kept free, more than the "
+                           f"box has ({self.total_gb:.0f}); it can never start (declare less, or cancel it)")
+        pend = self.pending(running, t)
+        room = avail + reclaim - pend - held - keep
+        if room >= need:
+            return True, None
+        return False, (f"memory: it needs {need:.0f} GiB; {avail:.0f} available"
+                       + (f", {pend:.0f} promised to jobs still loading" if pend else "")
+                       + (f", {held:.0f} counted for the editor's growth" if held else "")
+                       + (f", {keep:.0f} kept free" if keep else ""))
+
+    def never(self, need, reserve=None):
+        keep = self.reserve_gb if reserve is None else reserve
+        return self.total_gb is not None and need + keep > self.total_gb
+
+
+# ---------------------------------------------------------------- retries: a resource was busy, not a failure
+def busy_exit(rc, log_tail, rcs, log_re, run_s=None, max_run_s=None, kind=None, kinds=()):
+    """Why a failed command only found a resource busy (text), or None for a real failure: its exit code is one
+    of rcs, or its last log lines match log_re (tools that exit 1 after waiting for memory or a lock). Never for a
+    command that ran longer than max_run_s (it has done work; from the top again is not safe: an orchestration
+    script passing on the line client's own 75, or a job that waited, ran, then failed for a real reason), and
+    only for the kinds named when kinds is not empty."""
+    if rc is None or rc == 0:
+        return None
+    if max_run_s is not None and run_s is not None and run_s > max_run_s:
+        return None
+    if kinds and kind not in kinds:
+        return None
+    if rc in rcs:
+        return f"exit code {rc} (resource busy)"
+    if log_re and log_tail:
+        import re
+        m = re.search(log_re, log_tail, re.I)
+        if m:
+            return f"its log says: {m.group(0)[:80]}"
+    return None
+
+
+def retry_delay(n, base_s):
+    """Seconds before retry number n (1-based): base, doubled each time."""
+    return base_s * (2 ** max(0, n - 1))
+
+
+def log_tail(path, lines=4, max_bytes=4096):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            return "\n".join(f.read().decode(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- the standing fill list
+def parse_cmd_line(text):
+    """One "--line-cmd STATION KIND [--id NAME] [--log FILE] [--mem-gb N] [--vram-gb N] [--est-s N] [--fill]
+    [--detach] -- CMD..." line (the --feed format) as a dict {station, kind, id, log, mem_gb, vram_gb, est_s, cmd},
+    or (None, why) when it is not one. Returns (dict, None) or (None, why)."""
+    import shlex
+    try:
+        argv = shlex.split(text)
+    except ValueError as ex:
+        return None, f"cannot be split into arguments ({ex})"
+    if not argv or argv[0] != "--line-cmd":
+        return None, "not a --line-cmd line (only commands can be fill work)"
+    if "--" not in argv or argv.index("--") < 3 or argv.index("--") == len(argv) - 1:
+        return None, "needs STATION KIND [options] -- COMMAND"
+    k = argv.index("--")
+    head, cmd = argv[1:k], argv[k + 1:]
+    opts = head[2:]
+    get = lambda o: opts[opts.index(o) + 1] if o in opts and opts.index(o) + 1 < len(opts) else None
+    out = {"station": head[0], "kind": head[1], "id": get("--id"), "log": get("--log"), "cmd": cmd}
+    for o, key in (("--mem-gb", "mem_gb"), ("--vram-gb", "vram_gb"), ("--est-s", "est_s")):
+        v = get(o)
+        if v is not None:
+            try:
+                out[key] = float(v)
+            except ValueError:
+                return None, f"{o} is not a number ({v})"
+    return out, None
+
+
+def check_cmd_line(text, aliases):
+    """(entry, [problems]) for one list line: the station must resolve (aliases: name -> station) and not be the
+    video window; a script or binary the command names by absolute path must exist. Problems are plain words."""
+    d, why = parse_cmd_line(text)
+    if d is None:
+        return None, [why]
+    probs = []
+    b = aliases.get(str(d["station"]))
+    if b is None:
+        probs.append(f"station '{d['station']}' is not a station of this line ({', '.join(sorted(set(aliases)))})")
+    elif b == "video":
+        probs.append("the video window is not a fill station")
+    for a in d["cmd"]:
+        if "=" in a and not a.startswith("/"):
+            a = a.split("=", 1)[1]                      # VAR=/path in an "env VAR=... CMD" line
+        if a.startswith("/") and not Path(a).exists():
+            probs.append(f"{a} does not exist")
+    d["station_resolved"] = b
+    return d, probs
+
+
+class FillList:
+    """The standing fill list: a text file, one --line-cmd line per job, top first. take() removes a line (to
+    <list>.done with the time), reject() moves a line that cannot run to <list>.bad with the reason; both rewrite
+    the list atomically, so a line is never drawn twice and never lost."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def lines(self):
+        try:
+            return [ln.strip() for ln in self.path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+        except OSError:
+            return []
+
+    def _remove(self, line, to, note):
+        try:
+            raw = self.path.read_text().splitlines()
+        except OSError:
+            return
+        done, kept = False, []
+        for ln in raw:
+            if not done and ln.strip() == line:
+                done = True
+                continue
+            kept.append(ln)
+        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        tmp.write_text("\n".join(kept) + ("\n" if kept else ""))
+        tmp.replace(self.path)
+        with open(self.path.with_name(self.path.name + to), "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{note}\t{line}\n")
+
+    def take(self, line, note=""):
+        self._remove(line, ".done", note)
+
+    def reject(self, line, why):
+        self._remove(line, ".bad", why)
+
+    def add(self, lines):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        have = set(self.lines())
+        new = [ln for ln in lines if ln not in have]
+        with open(self.path, "a") as f:
+            for ln in new:
+                f.write(ln + "\n")
+        return len(new)
 
 
 # ---------------------------------------------------------------- power and hardware guard
