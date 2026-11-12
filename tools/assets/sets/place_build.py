@@ -82,15 +82,16 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
         lights.insert(0, dict(kit["lights"]["sun"], toward_sun=[round(-n[0] * 0.8 + n[1] * 0.3, 3),
                                                                round(-n[1] * 0.8 - n[0] * 0.3, 3), 0.35]))
     for f in fixtures:
-        if f.get("name", "").startswith("fireplace"):
+        if (f.get("name") or "").startswith("fireplace"):
             fx, fy = f["facing"]
             dx, dy, dz = kit["lights"]["fire_offset_m"]
             lights.append(dict(kit["lights"]["fire"], position=[round(f["position"][0] - fx * dy, 3),
                                                               round(f["position"][1] - fy * dy, 3), dz]))
     for pr in props:
-        if "lamp" in pr.get("asset", "") or pr.get("name", "").startswith("lamp"):
+        if "lamp" in (pr.get("asset") or "") or (pr.get("name") or "").startswith("lamp"):
             lights.append(dict(kit["lights"]["lamp"], position=[pr["position"][0], pr["position"][1],
                                                                round((pr.get("on_z_m") or 0.0) + 0.42, 3)]))
+    props = [pr for pr in props if pr.get("asset")]   # a piece with no library asset waits for generation (report)
     out.update(fixtures=fixtures, props=props, lights=lights)
     cams = []
     for i, (sx, sy) in enumerate(((1, -1), (-1, -1), (1, 1), (-1, 1))):
@@ -103,14 +104,15 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
 
 def build(spec: dict, set_id: str, library=None) -> tuple:
     rec, res = records_for(spec, library)
-    lay = L.solve(spec, rec)
+    lay = L.solve_recover(spec, rec)          # solve, then the ladder (never drops a piece the plan names)
     ss = L.to_set_spec(spec, lay)
     kit = json.loads((HERE / "period_kits.json").read_text()).get(spec.get("period")) or \
         json.loads((HERE / "period_kits.json").read_text())["victorian"]
     out = dict(id=set_id, description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
     report = {"pieces": res["summary"], "left_out": [p for p in res["pieces"] if p["status"] != "library"],
-              "layout_ok": lay["ok"], "unmet": lay["unmet"], "checks": L.check_layout(lay, spec),
+              "layout_ok": lay["ok"], "unmet": lay["unmet"], "status": lay.get("status"),
+              "ladder": lay.get("ladder"), "dropped": lay.get("dropped"), "reask": lay.get("reask"), "checks": L.check_layout(lay, spec),
               "named_places": ss["named_places"],
               "unresolved_phrases": [ph for ph in spec.get("_phrases") or [] if ph not in ss["named_places"]]}
     return out, ss["named_places"], report
