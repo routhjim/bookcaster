@@ -301,6 +301,10 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     answers = json.loads(Path(a[a.index("--answers") + 1]).read_text()) if "--answers" in a else {}
     sp = json.loads(Path(a[a.index("--pass") + 1]).read_text()) if "--pass" in a else None    # staging_pass.py
+    # the book's look file: each person's look phrase, as the director's lines name people ("the man in the ...")
+    look_txt = (json.loads(Path(a[a.index("--looks") + 1]).read_text()).get("characters") or {}) if "--looks" in a else {}
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from shot_people import look_phrase
     library = Path(C.LIBRARY)
     first = plan[ids[0]][0]
     questions, facts = [], {}
@@ -433,7 +437,13 @@ def main():
         if spk and ck not in NOTS:
             kind = {"close": "close", "wide": "full"}.get(ck, "medium" if kind == "close" and ck != "close" else kind)
         must = [names[x[0]] for x in (pa.get("must_show") or []) if isinstance(x, list) and x and x[0] in names]
+        # whom the shot's line is about: the person named (by name or look phrase) first in its action line
+        line = (sh.get("action") or "").lower()
+        at = {k_: min([i for i in (line.find(nm.lower()), line.find((look_phrase(look_txt.get(nm, "")) or "\0").lower()))
+                       if i >= 0] or [10 ** 6]) for nm, k_ in names.items() if k_ in state}
+        line_subj = min(at, key=at.get) if at and min(at.values()) < 10 ** 6 else None
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
+               "line_subject": line_subj,
                "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None}
         if lis:
             cam["listener"] = lis

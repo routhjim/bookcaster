@@ -475,6 +475,19 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     return why, facts
 
 
+def subject_face_why(shot, k, subjects, res, covered=False) -> list:
+    """The face of the person a shot is about, shown as a speaker's is: turned toward the camera and seen on the
+    still (a woman whose line it was showed only the back of her head in the foreground, 11-12)."""
+    m = subjects[k]["measured"]
+    cam = shot["camera"]
+    if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > MAX_HEAD_DEG + 15:
+        return [f"{k}'s face (the shot is about {k}) is turned from the camera"]
+    fv = face_seen(shot, k, m, res, covered)
+    if fv is not None and fv < MIN_FACE_VISIBLE:
+        return [f"{k}'s face (the shot is about {k}) {fv:.0%} visible"]
+    return []
+
+
 def placement_why(cam, subjects, room) -> list:
     """A camera stands inside the room and outside everyone's body: framed on a face turned to the window, the
     camera landed behind the glass and every check passed through it; another sat inside a man and drew black
@@ -1394,8 +1407,14 @@ def main():
                              c.get("show"),
                              bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")),
                              cam_opts(spec, c))
-            pw = placement_why(sh["camera"], subjects, room)
-            if pw:                           # a camera outside the room or inside a person: never a key
+            pw = [w for w in placement_why(sh["camera"], subjects, room)
+                  if not w.startswith("the camera is inside ") or
+                  ((chk.get("frame_facts") or {}).get(w.rsplit(" ", 1)[1], {}).get("mask") or {}).get("area", 0) > 0.3]
+            # the subject of an action or quiet shot (whom the plan's line is about) has a face shown, as a speaker
+            if not c.get("speaker") and c.get("line_subject") in subjects:
+                pw += subject_face_why(sh, c["line_subject"], subjects, res,
+                                       c["line_subject"] in (cam_opts(spec, c).get("covered") or ()))
+            if pw:                           # outside the room, a body filling the frame, the subject's face unseen
                 chk["why"] = pw + chk["why"]
                 chk["framing"] = pw + chk.get("framing", [])
                 chk["ok"] = False
@@ -1465,7 +1484,8 @@ def main():
             t = tries[n_]
             chk = shots[n_]["speaker_check"]
             face_fail = [w for w in chk["why"] if w not in chk.get("framing", [])]
-            spk = c.get("speaker")
+            spk = c.get("speaker") or (c.get("line_subject") if any("(the shot is about" in w for w in chk["why"])
+                                         else None)
             lis = listener_of(c, keys, spk)
             if t["n"] >= MAX_TRIES:
                 give_up(c)
