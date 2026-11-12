@@ -99,8 +99,12 @@ def lit_eval(*results: dict) -> None:
             ok = {}
             for n, v in (rec.get("lit") or {}).items():
                 r, e = v.get("redraw"), v.get("engine")
-                if r and e and e["L"] > 15:
-                    ok[n] = r["L"] >= LIT_L * e["L"] and r["b"] >= LIT_B * max(e["b"], 0.0)
+                # judged on the brightest tenth of the mask (a fire drawn as flames in a dark grate is lit; the
+                # engine's grate glows as a whole, so its median overstated what a lit redraw must reach)
+                rl, el = r.get("L90", r["L"]) if r else 0, e.get("L90", e["L"]) if e else 0
+                rb, eb = r.get("b90", r["b"]) if r else 0, e.get("b90", e["b"]) if e else 0
+                if r and e and el > 25:
+                    ok[n] = rl >= LIT_L * el and rb >= LIT_B * max(eb, 0.0)
             rec["lit_ok"] = ok
 
 

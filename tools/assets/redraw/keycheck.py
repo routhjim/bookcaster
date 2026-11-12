@@ -180,8 +180,10 @@ def lab_of(img: torch.Tensor, mask_path: str) -> dict | None:
     xyz = (M @ x) / torch.tensor([0.9505, 1.0, 1.089], device=img.device)[:, None]
     f = torch.where(xyz > 0.008856, xyz.clamp_min(1e-9) ** (1 / 3), 7.787 * xyz + 16 / 116)
     L, a, b = 116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])
+    q = torch.quantile(L.float()[:: max(1, L.numel() // 20000)], 0.9)
+    hot = L >= q                                  # the brightest tenth: a flame, not the dark grate around it
     return {"L": round(float(L.median()), 1), "a": round(float(a.median()), 1), "b": round(float(b.median()), 1),
-            "px": int(m.sum())}
+            "L90": round(float(q), 1), "b90": round(float(b[hot].median()), 1), "px": int(m.sum())}
 
 
 def main():
