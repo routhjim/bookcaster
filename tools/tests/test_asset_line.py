@@ -9,12 +9,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import atexit
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 TMP = tempfile.mkdtemp(prefix="asset_line_test_")
+atexit.register(shutil.rmtree, TMP, True)     # /tmp is memory here: never leave the test's folders behind
 os.environ["ASSETS_SCHED_DIR"] = TMP
 os.environ["ASSETS_LIBRARY"] = os.path.join(TMP, "lib")
 os.environ["ASSETS_LOGS"] = os.path.join(TMP, "logs")
@@ -728,7 +730,7 @@ class ReloadTest(unittest.TestCase):
 
         log = root / "logs" / f"assets_sched_{time.strftime('%m%d')}.log"
         n = 6
-        daemon_pid = None
+        daemon_pid = attached = None
         try:
             r = subprocess.run(job(0), env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -772,6 +774,13 @@ class ReloadTest(unittest.TestCase):
             self.assertTrue(any(" start igpu " in ln for ln in after.splitlines()), "nothing ran after the reload")
             self.assertEqual(len(starts), n, txt)
         finally:
+            if attached is not None and attached.poll() is None:   # a failed run leaves no client waiting
+                attached.kill()
+            if daemon_pid is None and log.exists():                # failed before the pid was read
+                for ln in log.read_text().splitlines():
+                    if "serving on" in ln and ln.split()[2].isdigit():
+                        daemon_pid = int(ln.split()[2])
+                        break
             t0 = time.time()
             while daemon_pid and Path(f"/proc/{daemon_pid}").exists() and time.time() - t0 < 15:
                 time.sleep(0.2)                                    # it exits by itself when idle (3 s)
