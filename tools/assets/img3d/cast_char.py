@@ -799,7 +799,7 @@ def main():
             # the check scene itself measures the arms (the scene tool's guides, arm_gap.py at its wide camera): a
             # forearm not separated in >= 8 of 10 rows on a side raises the abduction 2 deg (the smallest that passes:
             # more reads as arms held out) and the scene is run again
-            for _round in range(5):
+            for _round in range(8):
                 cj3 = json.loads((lib / "character.json").read_text())
                 spec = {"id": f"check_{tag}", "set": a.set, "guides": True, "characters": {"a": {
                     "id": a.id, "position": [0.3, 0.8], "facing": [0.3464, -0.9381], "body_pose": {
@@ -828,9 +828,11 @@ def main():
                 if all(v >= 8 for v in sep.values()):
                     break
                 ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 2
-                if ab > 16:
+                # loose sleeves hang against the body until the arm is further out: their limit is higher (a fact)
+                ab_max = 24 if ((ch.get("garment") or {}).get("sleeves") == "loose") else 16
+                if ab > ab_max:
                     save()
-                    raise RuntimeError(f"ARMS: a forearm still touches the body at 16 degrees ({sep}); the fit's arms are "
+                    raise RuntimeError(f"ARMS: a forearm still touches the body at {ab_max} degrees ({sep}); the fit's arms are "
                                        f"wrong (the check sheet shows how); the build stops here")
                 CH.setdefault("arms", {})["abduct_deg"] = ab
                 cj3["relaxed_arm_steps"] = arm_steps(ab)
