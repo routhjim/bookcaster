@@ -415,6 +415,37 @@ if (_dd > 0.01).any():
     bad_ = np.nonzero(_dd > 0.01)[0][:200]
     REP["rebind_err_m"]["groups"] = sorted({gn_[g.group] for i in bad_ for g in fig.data.vertices[int(i)].groups
                                             if g.weight > 0.05})[:30]
+# the body's skin shows where this stance's settled cloth does not cover it (bl_combo.py keeps every body vertex
+# off the head in the skin slot with a "body_skin" attribute): a leg the seated drape leaves open is the body's own
+# leg, not a hole showing the chair (11-12). Covered: cloth within NEAR of it or along its outward normal within REACH.
+if "body_skin" in fig.data.attributes:
+    import bmesh  # noqa: E402
+    from mathutils.bvhtree import BVHTree  # noqa: E402
+    _sv = np.zeros(len(fig.data.vertices), np.int32)
+    fig.data.attributes["body_skin"].data.foreach_get("value", _sv)
+    _skin_mi = {i for i, m_ in enumerate(fig.data.materials) if m_ is not None and m_.name.startswith("M_skin")}
+    _Vc = [Vector(v.co) for v in fig.data.vertices]
+    _polys = [tuple(p.vertices) for p in fig.data.polygons
+              if p.material_index not in _skin_mi and not any(_sv[i] for i in p.vertices)]
+    _cb = BVHTree.FromPolygons(_Vc, _polys)
+    _near = float(JOB.get("body_near_m", 0.03)) * CM
+    _reach = float(JOB.get("body_reach_m", 0.15)) * CM
+    _cov = []
+    for v in fig.data.vertices:
+        if not _sv[v.index]:
+            continue
+        if _cb.find_nearest(v.co, _near)[0] is not None or \
+                _cb.ray_cast(v.co + v.normal * 0.2, v.normal, _reach)[0] is not None:
+            _cov.append(v.index)
+    REP["body_skin"] = {"verts": int((_sv > 0).sum()), "covered_here": len(_cov),
+                        "shown_here": int((_sv > 0).sum()) - len(_cov)}
+    _bm = bmesh.new()
+    _bm.from_mesh(fig.data)
+    _bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(_bm, geom=[_bm.verts[i] for i in _cov], context="VERTS")
+    _bm.to_mesh(fig.data)
+    _bm.free()
+    fig.data.update()
 fig.data.polygons.foreach_set("use_smooth", np.ones(len(fig.data.polygons), bool))
 fig.data.update()
 bpy.ops.object.select_all(action="DESELECT")

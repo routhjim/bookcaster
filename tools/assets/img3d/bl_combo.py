@@ -1802,7 +1802,11 @@ if not STATUE and JOB.get("body_skin_shows", True):
     _hbv = BVHTree.FromObject(HEAD, _dg) if HEAD is not None else None
     _hnear = float(JOB.get("body_head_near_m", 0.015))
     hands.data.update()
+    # every body vertex off the head goes into the skin slot, marked "body_skin", and the ones cloth covers in this
+    # stance "covered_standing": they are cut just before this outfit's export, and a stance's settle (bl_settle.py)
+    # tests them again against its own settled cloth (a leg a seated drape leaves open must show, 11-12)
     _shown = np.zeros(len(hands.data.vertices), bool)
+    _elig = np.zeros(len(hands.data.vertices), bool)
     for v in hands.data.vertices:
         if keep[v.index]:
             continue
@@ -1810,13 +1814,19 @@ if not STATUE and JOB.get("body_skin_shows", True):
             continue
         if v.co.z > float(J("head").z):
             continue
+        _elig[v.index] = True
         loc_, _, _, d_ = _gb.find_nearest(v.co, _near)
         if loc_ is not None:
             continue
         if _gb.ray_cast(v.co + v.normal * 0.002, v.normal, _reach)[0] is not None:
             continue
         _shown[v.index] = True
-    keep |= _shown
+    keep |= _elig
+    # a point attribute, not a vertex group (a group would count as a bone influence in the weight limits):
+    # 0 not body skin (cloth, hands), 1 body skin shown, 2 body skin cloth covers in this stance
+    _st = np.where(_elig, np.where(_shown, 1, 2), 0).astype(np.int32)
+    _at = hands.data.attributes.new("body_skin", "INT", "POINT")
+    _at.data.foreach_set("value", _st)
     REP["body_skin_shown_verts"] = int(_shown.sum())
 # a bare limb's thickness from the generated figure: the MetaHuman's limb constraints (Forearm, Wrist, Hand) changed
 # the solved body not at all (11-12: Forearm 22.6 -> 35.7 left every measured girth as it was, as Neck Length did), so
@@ -2226,6 +2236,20 @@ for name, rgb in (("Normal", (0.5, 0.5, 1.0)), ("RMA", (float(JOB.get("roughness
     im.filepath_raw = os.path.join(OUT, "textures", f"T_outfit_{name}.png")
     im.file_format = "PNG"
     im.save()
+bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "combo.blend"), compress=True)
+# this stance's outfit: the body skin that cloth covers here is cut (combo.blend keeps it all for the stances)
+if "body_skin" in fig.data.attributes:
+    _sv = np.zeros(len(fig.data.vertices), np.int32)
+    fig.data.attributes["body_skin"].data.foreach_get("value", _sv)
+    _cut = [int(i) for i in np.nonzero(_sv == 2)[0]]
+    _bm = bmesh.new()
+    _bm.from_mesh(fig.data)
+    _bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(_bm, geom=[_bm.verts[i] for i in _cut], context="VERTS")
+    _bm.to_mesh(fig.data)
+    _bm.free()
+    fig.data.update()
+    REP["body_skin_cut_standing"] = len(_cut)
 bpy.ops.object.select_all(action="DESELECT")
 fig.select_set(True)
 arm.select_set(True)
@@ -2236,7 +2260,7 @@ bpy.ops.export_scene.fbx(filepath=os.path.join(OUT, "outfit.fbx"), use_selection
                          use_armature_deform_only=False, primary_bone_axis="Y", secondary_bone_axis="X",
                          armature_nodetype="NULL", bake_anim=False, mesh_smooth_type="FACE", use_tspace=True,
                          path_mode="STRIP")
-bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "combo.blend"), compress=True)
+
 mark("export", t)
 REP["total_s"] = round(time.time() - T0, 1)
 json.dump(REP, open(os.path.join(OUT, "report.json"), "w"), indent=1)
