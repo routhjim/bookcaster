@@ -344,15 +344,16 @@ def main():
         rep = json.loads((combo / "report.json").read_text())
         bare, gi, gn = rep.get("bare_neck_measured_cm"), rep.get("collar_inner_girth_cm"), rep.get("neck_girth_cm")
         body0 = ch.get("body") or {}
-        newb = {}
-        addb = {}
+        newb, addb = {}, {}
         if bare is not None and bare > 2.0:
             if "Neck Length" in body0:
                 newb["Neck Length"] = round(max(4.5, float(body0["Neck Length"]) - (bare - 1.5)), 1)
             else:                   # a given MetaHuman (--mh): shorter than its own neck, whatever that is
                 addb["Neck Length"] = round(-(bare - 1.5), 1)
         if gi and gn and gn > gi - 1.0:
-            newb["Neck"] = round(max(30.0, gi - 1.0), 1)
+            # relative: the fit's measured girth (round the head mesh's neck) and the MetaHuman's own "Neck"
+            # measure are on different scales; setting the collar's girth outright made a neck thicker (11-11)
+            addb["Neck"] = round((gi - 1.0) - gn, 1)
         nf = {"measured": {"bare_neck_cm": bare, "collar_inner_girth_cm": gi, "neck_girth_cm": gn}, "set": newb,
               "add": addb}
         if newb or addb:
@@ -360,7 +361,7 @@ def main():
             def _():
                 r = ue_job(W, "neck_constraints", str(ASSETS / "characters" / "char_constraints.py"),
                            {"path": f"/Game/Char/{mh_name}", "body": newb, "add": addb,
-                            "min": {"Neck Length": 4.5}}, 600)
+                            "min": {"Neck Length": 4.5, "Neck": 30.0}}, 600)
                 nf["engine"] = r
                 ue_job(W, "mh_rebuild", str(ASSETS / "characters" / "char_render.py"), {
                     "out": str(W / "ue" / "mh_rebuild"),
@@ -549,21 +550,43 @@ def main():
     if not done("check", W / "scenes" / f"check_{tag}" / "close.png"):
         @timed("check")
         def _():
-            cj3 = json.loads((lib / "character.json").read_text())
-            spec = {"id": f"check_{tag}", "set": a.set, "guides": False, "characters": {"a": {
-                "id": a.id, "position": [0.3, 0.8], "facing": [0.3464, -0.9381], "body_pose": {
-                    "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 4, "head_deg": 0, "head_tilt": -2,
-                                                        "hand_at_lapel": False,
-                                                        "steps": cj3.get("relaxed_arm_steps", [])}}}},
-                "cameras": [{"name": "wide", "kind": "full", "subject": "a", "focal_mm": 28},
-                            {"name": "medium", "kind": "medium", "subject": "a", "focal_mm": 50},
-                            {"name": "close", "kind": "close", "subject": "a", "focal_mm": 85, "az": 10, "el": 2}]}
-            sp = W / "check_scene.json"
-            sp.write_text(json.dumps(spec, indent=1))
-            p = subprocess.run([sys.executable, str(scene_py), str(sp)], cwd=str(Path(a.scene_tool).parents[2]),
-                               env=env, capture_output=True, text=True)
-            if p.returncode:
-                raise RuntimeError(f"check scene failed: {p.stdout[-1500:]}")
+            # the check scene itself measures the arms (the scene tool's guides, arm_gap.py at its wide camera): a
+            # forearm not separated in >= 8 of 10 rows on a side raises the abduction 4 deg and the scene is run again
+            for _round in range(3):
+                cj3 = json.loads((lib / "character.json").read_text())
+                spec = {"id": f"check_{tag}", "set": a.set, "guides": True, "characters": {"a": {
+                    "id": a.id, "position": [0.3, 0.8], "facing": [0.3464, -0.9381], "body_pose": {
+                        "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 4, "head_deg": 0,
+                                                            "head_tilt": -2, "hand_at_lapel": False,
+                                                            "steps": cj3.get("relaxed_arm_steps", [])}}}},
+                    "cameras": [{"name": "wide", "kind": "full", "subject": "a", "focal_mm": 28},
+                                {"name": "medium", "kind": "medium", "subject": "a", "focal_mm": 50},
+                                {"name": "close", "kind": "close", "subject": "a", "focal_mm": 85, "az": 10, "el": 2}]}
+                sp = W / "check_scene.json"
+                sp.write_text(json.dumps(spec, indent=1))
+                p = subprocess.run([sys.executable, str(scene_py), str(sp)], cwd=str(Path(a.scene_tool).parents[2]),
+                                   env=env, capture_output=True, text=True)
+                if p.returncode:
+                    raise RuntimeError(f"check scene failed: {p.stdout[-1500:]}")
+                sd = W / "scenes" / spec["id"]
+                p = line(["--line-cmd", "image", "guides", "--id", f"cast_{tag}_check_guides_{_round}", "--", "bash", "-c",
+                          f"cd {Path(a.scene_tool).parents[2]} && bash {CARD} 05 {GUIDES_PY} -I "
+                          f"{Path(a.scene_tool).parent / 'redraw' / 'guides.py'} {sd}"], W / "check_guides.log")
+                g = subprocess.run([GUIDES_PY, str(ASSETS / "characters" / "arm_gap.py"), str(sd), "--scene-tool",
+                                    str(a.scene_tool)], capture_output=True, text=True)
+                res = json.loads(g.stdout) if g.stdout.strip() else {}
+                sh = (res.get("wide") or {}).get("a") or {}
+                sep = {s_: (sh.get(s_) or {}).get("separated", 0) for s_ in ("l", "r")}
+                CH.setdefault("check_arms", []).append({"abduct_deg": (CH.get("arms") or {}).get("abduct_deg"), "wide": sep})
+                if all(v >= 8 for v in sep.values()):
+                    break
+                ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 4
+                if ab > 20:
+                    break
+                CH.setdefault("arms", {})["abduct_deg"] = ab
+                cj3["relaxed_arm_steps"] = arm_steps(ab)
+                (lib / "character.json").write_text(json.dumps(cj3, indent=1))
+                save()
     # ---------------------------------------------------------------- skin through the cloth, measured
     # flat-lit studio stills (no firelight to give dark cloth the face's warmth), each with a twin without the face
     # mesh: the head mesh's skin-coloured pixels at the shoulders must be under 0.2 % of the shoulder region
