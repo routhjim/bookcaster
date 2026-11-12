@@ -500,11 +500,8 @@ def main():
         bare, gi, gn = rep.get("bare_neck_measured_cm"), rep.get("collar_inner_girth_cm"), rep.get("neck_girth_cm")
         body0 = ch.get("body") or {}
         newb, addb = {}, {}
-        if bare is not None and bare > 2.0:
-            if "Neck Length" in body0:
-                newb["Neck Length"] = round(max(4.5, float(body0["Neck Length"]) - (bare - 1.5)), 1)
-            else:                   # a given MetaHuman (--mh): shorter than its own neck, whatever that is
-                addb["Neck Length"] = round(-(bare - 1.5), 1)
+        # the neck's length is not set: Neck Length 7.2 -> 4.5 (inside its range) left the built skeleton as it was
+        # (neck_01 to head 0.1178 -> 0.1177 m, 11-11 clean test); a bare neck is met by the collar lift instead
         if gi and gn and gn > gi - 1.0:
             # relative: the fit's measured girth (round the head mesh's neck) and the MetaHuman's own "Neck"
             # measure are on different scales; setting the collar's girth outright made a neck thicker (11-11)
@@ -554,7 +551,7 @@ def main():
                 d_neck = abs((eng.get("Neck") or [0, 0])[1] - (bef.get("Neck") or [0, 0])[1])
                 nf["effect"] = {"neck_length_set_cm": round(d_len, 2), "bare_changed_cm": round(d_bare, 2),
                                 "neck_set_cm": round(d_neck, 2), "girth_changed_cm": round(d_girth, 2)}
-                if (d_len >= 1.0 and d_bare < 0.3) or (d_neck >= 2.0 and d_girth < 0.5):
+                if d_neck >= 2.0 and d_girth < 0.5:
                     neck_p.write_text(json.dumps(nf, indent=1))
                     raise RuntimeError(f"NECK FIT HAD NO EFFECT: the MetaHuman's constraints changed "
                                        f"({json.dumps(nf['engine'])}) but the rebuilt body did not "
