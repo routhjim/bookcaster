@@ -80,6 +80,9 @@ UE_HOME = _p("ASSETS_UE_HOME", "~/ue")
 UE_ENGINE = _p("ASSETS_UE_ENGINE", UE_HOME / "UE_5.8.1")
 UE_PROJECT = _p("ASSETS_UE_PROJECT", UE_HOME / "proj" / "CharLab" / "CharLab.uproject")
 LIBRARY = _p("ASSETS_LIBRARY", UE_HOME / "library")
+# neutral studio portraits of every shipped MetaHuman preset (<Preset>_0.png), the character chooser's references;
+# run-time data, so under the library (never a lab folder)
+MH_PRESET_PORTRAITS = _p("ASSETS_MH_PRESET_PORTRAITS", LIBRARY / "presets" / "portraits")
 LOGS = _p("ASSETS_LOGS", UE_HOME / "logs")
 GPU_CARDS = [c.strip() for c in os.environ.get("ASSETS_GPU_CARDS", "65,05").split(",") if c.strip()]
 LOCK_WAIT_S = float(os.environ.get("ASSETS_LOCK_WAIT_S", "1200"))

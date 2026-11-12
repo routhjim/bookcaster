@@ -114,7 +114,7 @@ def main():
             im = Image.open(p).convert("RGB")
         except OSError:
             continue
-        if im.size[0] >= 1000:
+        if im.size[0] >= 1000 and im.size[0] == im.size[1]:      # a flat face texture, not a portrait
             continue
         th.setdefault(name, []).append(im)
     names = sorted(th)
@@ -122,7 +122,10 @@ def main():
     for n in names:
         im = th[n][0]
         w, h = im.size
-        crop = im.crop((int(0.2 * w), 0, int(0.8 * w), int(0.62 * h)))
+        if w > h:       # a studio portrait still (char_render close framing): the head in the middle
+            crop = im.crop((int(0.3 * w), 0, int(0.7 * w), int(0.85 * h)))
+        else:           # a shipped bust thumbnail
+            crop = im.crop((int(0.2 * w), 0, int(0.8 * w), int(0.62 * h)))
         crops[n] = crop
         pr = clip_probs(crop, ["a photo of a man", "a photo of a woman"])
         pg[n] = "man" if pr[0] >= pr[1] else "woman"

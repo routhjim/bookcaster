@@ -51,7 +51,7 @@ QWEN_PY = os.path.expanduser(os.environ.get("ASSETS_QWEN_PY", "~/tts-ab/.venv-qw
 GUIDES_PY = os.path.expanduser(os.environ.get("ASSETS_GUIDES_PY", "~/tts-ab/.venv-hyworld/bin/python"))
 OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
-THUMBS = os.environ.get("ASSETS_MH_THUMBS", str(Path(C.UE_HOME) / "lab" / "character" / "thumbs"))
+THUMBS = str(C.MH_PRESET_PORTRAITS)      # neutral studio portraits of every shipped preset (config.py)
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
@@ -177,6 +177,19 @@ def main():
     tag = "".join(ch for ch in a.id.upper() if ch.isalnum())
     tag = tag[:10] + tag[-2:] if len(tag) > 12 else tag     # the id's end kept: a rebuild beside (_04) gets its own assets
     choices_p, times_p = W / "choices.json", W / "times.json"
+    # everything this command reads at run time, checked before any step (a missing folder failed a run at its first
+    # step, 11-11): the sheet and LoRA, the preset portraits, the engine project, Blender, the Python environments
+    # and the scene tool
+    need = {"sheet": a.sheet, "preset portraits (config MH_PRESET_PORTRAITS)": THUMBS, "engine project": PROJECT,
+            "blender": BLENDER, "image-to-3D python": HY_PY, "image model python": QWEN_PY, "guides python": GUIDES_PY,
+            "scene tool": str(Path(a.scene_tool) / "scene.py"), "library": str(C.LIBRARY)}
+    if not a.mh and a.lora and Path(a.lora).suffix:
+        need["lora"] = a.lora
+    missing = {k: v for k, v in need.items() if not Path(v).exists()}
+    if not missing and len(list(Path(THUMBS).glob("*_0.png"))) < 10:
+        missing["preset portraits (fewer than 10 in the folder)"] = THUMBS
+    if missing:
+        raise SystemExit("cast_char: missing inputs, nothing run:\n" + "\n".join(f"  {k}: {v}" for k, v in missing.items()))
     CH = json.loads(choices_p.read_text()) if choices_p.exists() else {}
     TT = json.loads(times_p.read_text()) if times_p.exists() else {}
     redo = set(STEPS[STEPS.index(a.from_step):]) if a.from_step else set()
