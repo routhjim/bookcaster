@@ -120,6 +120,59 @@ def J(n):
     return B[n].head_local.copy()
 
 
+FIT_POSE = JOB.get("fit_pose")
+if FIT_POSE:
+    # a garment generated in a pose (seated): the body is first posed to that pose's measured joints (the scene
+    # tool's result: set frame, metres, with the mark and facing), and every joint the fit reads is the posed one;
+    # the posed body becomes the outfit's bind pose at the end, as a stance variant
+    _f = np.array(FIT_POSE["facing"], float)
+    _f /= np.linalg.norm(_f)
+    _left = np.array([-_f[1], _f[0]])
+    _pos = np.array(FIT_POSE["position"], float)
+
+    def _local(p):
+        d = np.array(p[:2]) - _pos
+        return Vector((float(d @ _left), float(-(d @ _f)), float(p[2])))
+    _JT = {k: _local(v) for k, v in FIT_POSE["joints"].items()}
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    _PB = arm.pose.bones
+
+    def _hd(n):
+        return arm.matrix_world @ _PB[n].head
+
+    def _turn(bone, frm, to):
+        q = Vector(frm).normalized().rotation_difference(Vector(to).normalized())
+        h = _hd(bone)
+        _PB[bone].matrix = (Matrix.Translation(h) @ q.to_matrix().to_4x4() @ Matrix.Translation(-h)) @ _PB[bone].matrix
+        bpy.context.view_layer.update()
+    _mt = (_JT["thigh_l"] + _JT["thigh_r"]) / 2
+    _mr = (_hd("thigh_l") + _hd("thigh_r")) / 2
+    _PB["pelvis"].matrix = Matrix.Translation(_mt - _mr) @ _PB["pelvis"].matrix
+    bpy.context.view_layer.update()
+    _turn("pelvis", _hd("thigh_l") - _hd("thigh_r"), _JT["thigh_l"] - _JT["thigh_r"])
+    for b_ in ("spine_01", "spine_02", "spine_03", "spine_04", "spine_05"):
+        v0 = _hd("neck_01") - _hd(b_)
+        q = v0.normalized().rotation_difference((_JT["neck_01"] - _hd(b_)).normalized())
+        if q.angle / 3 > 1e-4:
+            _turn(b_, v0, Matrix.Rotation(q.angle / 3, 4, q.axis) @ v0)
+    for a_, b_ in (("neck_01", "head"), ("upperarm_l", "lowerarm_l"), ("lowerarm_l", "hand_l"),
+                   ("upperarm_r", "lowerarm_r"), ("lowerarm_r", "hand_r"), ("thigh_l", "calf_l"), ("calf_l", "foot_l"),
+                   ("thigh_r", "calf_r"), ("calf_r", "foot_r")):
+        if a_ in _JT and b_ in _JT:
+            _turn(a_, _hd(b_) - _hd(a_), _JT[b_] - _hd(a_))
+    bpy.ops.object.mode_set(mode="OBJECT")
+    REP["fit_pose_err_cm"] = {k: round((_hd(k) - _JT[k]).length * 100, 2) for k in _JT if k in _PB}
+
+    def J(n):                                     # noqa: F811  the posed joints from here on
+        return (arm.matrix_world @ arm.pose.bones[n].head).copy()
+    if HEAD is not None:
+        # the head mesh moves rigidly with the posed neck (its face bones are not on the body's skeleton); the
+        # collar's measures and the push-out read it there
+        _pb = arm.pose.bones["neck_01"]
+        _M = (arm.matrix_world @ _pb.matrix) @ (arm.matrix_world @ _pb.bone.matrix_local).inverted()
+        HEAD.data.transform(HEAD.matrix_world.inverted() @ _M @ HEAD.matrix_world)
+        HEAD.data.update()
 if top_z is None:
     top_z = J("head").z + 0.135
 before = set(bpy.data.objects)
@@ -217,7 +270,8 @@ pel = co[band].mean(0) if band.any() else co.mean(0)
 co[:, 0] += J("pelvis").x - pel[0]
 # front-back: centre the body's chest between the figure's chest front and back (the coat's tails make any centroid
 # sit behind the body)
-bco0 = np.array([v.co[:] for v in body.data.vertices])
+bco0 = (np.array([v.co[:] for v in body.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices])
+        if FIT_POSE else np.array([v.co[:] for v in body.data.vertices]))
 cx = J("spine_05").x
 
 
@@ -284,7 +338,7 @@ def pose_head(n):
 
 
 REP["pose_deg"] = {}
-for side in ("l", "r"):
+for side in (() if FIT_POSE else ("l", "r")):
     a = turn(f"upperarm_{side}", pose_head(f"hand_{side}") - pose_head(f"upperarm_{side}"),
              Vector(LM[f"wrist_{side}"]) - pose_head(f"upperarm_{side}"))
     REP["pose_deg"][f"upperarm_{side}"] = round(a, 1)
@@ -295,7 +349,7 @@ for side in ("l", "r"):
 bpy.ops.object.mode_set(mode="OBJECT")
 # stretch the figure's arms along the arm so the sleeve end meets the body's (posed) wrist
 REP["arm_stretch"] = {}
-for side, sg in (("l", 1), ("r", -1)):
+for side, sg in (() if FIT_POSE else (("l", 1), ("r", -1))):
     S0 = np.array(pose_head(f"upperarm_{side}"))
     wr = np.array(LM[f"wrist_{side}"])
     axis = (wr - S0) / np.linalg.norm(wr - S0)
@@ -849,7 +903,9 @@ _nax = np.array(J("neck_01"))[:2]
 for i, p in enumerate(fco):
     if p[2] < zfeet:
         continue
-    if np.linalg.norm(p[:2] - _nax) > HEAD_PUSH_R:
+    # full push within HEAD_PUSH_R of the neck's axis, fading to none over the next 5 cm (a hard edge left a ridge)
+    _wr = float(np.clip((HEAD_PUSH_R + 0.05 - np.linalg.norm(p[:2] - _nax)) / 0.05, 0, 1))
+    if _wr <= 0:
         continue
     for bvh in bvhs:
         q = Vector(p) + Vector(disp[i])
@@ -859,7 +915,7 @@ for i, p in enumerate(fco):
         s_ = (q - loc).dot(nrm)
         ease = HEAD_EASE if (STATUE and p[2] > J("neck_02").z) else EASE_ALL
         if s_ < ease:
-            disp[i] = disp[i] + np.array(nrm) * (ease - s_)
+            disp[i] = disp[i] + np.array(nrm) * (ease - s_) * _wr
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())
 fig.data.update()
 # shoulders: the drawn coat's shoulders stand off the body's narrower ones; pull what stands more than SH_GAP off the
@@ -1008,7 +1064,7 @@ if DSM > 0 and not STATUE:
         hb_ = bvhs[-1]
         nfix = 0
         for i in range(len(fco)):
-            if np.linalg.norm(fco[i, :2] - _nax) > HEAD_PUSH_R:
+            if np.linalg.norm(fco[i, :2] - _nax) > HEAD_PUSH_R + 0.05:
                 continue
             q = Vector(fco[i] + disp[i])
             loc, nrm, _, dist = hb_.find_nearest(q, 0.05)

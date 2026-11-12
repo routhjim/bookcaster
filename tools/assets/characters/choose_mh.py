@@ -142,18 +142,21 @@ def main():
 
     def menu(items):
         return "\n".join(f"{i}. {t}" for i, t in enumerate(items))
-    asks, opts_by = {}, {}
-    for slot, opts in GROOMS.items():
-        if gender == "woman" and slot in ("Beard", "Mustache"):
-            continue
-        items = [words(slot, o) for o in opts]
-        if slot in ("Beard", "Mustache"):
-            items = [f"no {NOUN[slot]} at all"] + items
-        opts_by[slot] = items
-        asks[slot] = (f"Look at the {NOUN[slot]} of the person in this drawing. Which description below matches it "
-                      f"best? Consider length, shape and how it is worn. Reply with the number only.\n" + menu(items))
-    asks["colour"] = ("What colour is this person's hair in the drawing? Reply with the number only.\n"
-                      + menu([f"{c} hair" for c in COLOURS]))
+    # short, general questions with one-word answers (a long numbered list drew a fixed favourite number)
+    asks = {
+        "moustache": "Does this person have a moustache (hair on the upper lip)? Answer yes or no.",
+        "beard": "Does this person have a beard or stubble on the chin and cheeks? Answer yes or no.",
+        "worn": "How is this person's hair worn: up (pinned up, in a bun or an up-do), back (tied back) or down? "
+                "Answer with one word: up, back or down.",
+        "length": "How long is this person's hair: short, medium or long? Answer with one word.",
+        "bald": "Is this person bald or going bald on top? Answer yes or no.",
+        "style": "Which word describes this person's hair best: slicked, parted, curly, messy, cropped or fringe? "
+                 "Answer with one of these words.",
+        "beard_kind": "If this person has a beard: is it full, short or stubble? Answer with one word, or none.",
+        "moustache_kind": "If this person has a moustache: is it thin, full or large? Answer with one word, or none.",
+        "colour": "What colour is this person's hair in the drawing? Reply with the number only.\n"
+                  + menu([f"{c} hair" for c in COLOURS]),
+    }
     q = [{"id": "head", "image": str(head_p), "ask": asks, "max_new_tokens": 4}]
     q.append({"id": "fig", "image": str(fig_p), "max_new_tokens": 4,
               "ask": {"build": "How is this person built, as drawn? Reply with the number only.\n" + menu(list(BUILDS))}})
@@ -163,7 +166,7 @@ def main():
     ans = {}
     for ln in vl.stdout.splitlines():
         if ln.startswith("{"):
-            ans.update(json.loads(ln)["answers"])
+            ans.update({k: (v or "").strip().lower() for k, v in json.loads(ln)["answers"].items()})
     if not ans:
         raise SystemExit(f"vision model gave no answers: {vl.stderr[-800:]}")
 
@@ -172,18 +175,47 @@ def main():
         m = _re.search(r"\d+", v or "")
         return min(max(int(m.group()), 0), n - 1) if m else 0
     sc["vlm_answers"] = ans
+    yes = lambda k: ans.get(k, "").startswith("y")   # noqa: E731
+    # the hair: the answers narrow the shipped set (by the words in the grooms' names); CLIP picks within it
+    worn, length, style = ans.get("worn", ""), ans.get("length", ""), ans.get("style", "")
+    hair = GROOMS["Hair"]
+    if yes("bald"):
+        cand = [o for o in hair if o in ("S_BaldingStubble", "S_HairLoss", "S_RecedeMessy")]
+    elif worn.startswith("up"):
+        cand = [o for o in hair if "Updo" in o or "SweptUp" in o]
+    elif worn.startswith("back"):
+        cand = [o for o in hair if "Ponytail" in o or "PulledBack" in o or "SlickBack" in o]
+    else:
+        ln_ = {"short": "S_", "medium": "M_", "long": "L_"}.get(length.split()[0] if length else "", "")
+        cand = [o for o in hair if o.startswith(ln_) and "Updo" not in o and "Ponytail" not in o] or hair
+        key = {"slicked": ("SlickBack", "PulledBack"), "parted": ("SideSwept", "Clean", "Casual"),
+               "curly": ("Curly", "Coil", "Afro"), "messy": ("Messy", "Clumps", "Casual"),
+               "cropped": ("BuzzCut", "BrushCut", "Fade"), "fringe": ("Fringe", "Bangs")}.get(style.split()[0] if style else "")
+        if key:
+            cand = [o for o in cand if any(k_ in o for k_ in key)] or cand
     grooms, clear = {}, []
-    if gender == "woman":
-        clear += ["Beard", "Mustache"]
-    for slot, items in opts_by.items():
-        k = num(ans.get(slot), len(items))
-        opts = GROOMS[slot]
-        if slot in ("Beard", "Mustache"):
-            if k == 0:
-                clear.append(slot)
-                continue
-            k -= 1
-        grooms[slot] = f"WI_{slot}_{opts[k]}"
+
+    def best(slot, opts):
+        texts = [f"{subj} {words(slot, o)}" for o in opts]
+        pr = clip_probs(head, texts)
+        return opts[int(np.argmax(pr))]
+    subj = f"a drawing of a {gender} with"
+    grooms["Hair"] = f"WI_Hair_{best('Hair', cand)}"
+    grooms["Eyebrows"] = f"WI_Eyebrows_{best('Eyebrows', GROOMS['Eyebrows'])}"
+    if gender == "woman" or not yes("beard"):
+        clear.append("Beard")
+    else:
+        bk = ans.get("beard_kind", "")
+        bc = [o for o in GROOMS["Beard"] if ("Stubble" in o) == bk.startswith("stub")]
+        bc = [o for o in bc if not bk.startswith("short") or o.startswith("S_")] or bc
+        grooms["Beard"] = f"WI_Beard_{best('Beard', bc or GROOMS['Beard'])}"
+    if gender == "woman" or not yes("moustache"):
+        clear.append("Mustache")
+    else:
+        mk = ans.get("moustache_kind", "")
+        mc = [o for o in GROOMS["Mustache"] if (o.startswith("L_") if mk.startswith("large") else
+                                                 ("PencilThin" in o or "ChinStrap" in o) if mk.startswith("thin") else o.startswith(("S_", "M_")))]
+        grooms["Mustache"] = f"WI_Mustache_{best('Mustache', mc or GROOMS['Mustache'])}"
     col = list(COLOURS)[num(ans.get("colour"), len(COLOURS))]
     sc["hair_colour"] = col
     mel, red = COLOURS[col]

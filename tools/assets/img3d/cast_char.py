@@ -50,7 +50,7 @@ GUIDES_PY = os.path.expanduser(os.environ.get("ASSETS_GUIDES_PY", "~/tts-ab/.ven
 OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
 THUMBS = os.environ.get("ASSETS_MH_THUMBS", str(Path(C.UE_HOME) / "lab" / "character" / "thumbs"))
-STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "check"]
+STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
               "open with the fingers together and the palms facing down, legs slightly apart, looking at the viewer. "
@@ -391,6 +391,76 @@ def main():
             cj2 = json.loads((lib / "character.json").read_text())
             cj2["relaxed_arm_steps"] = arm_steps(pick)
             (lib / "character.json").write_text(json.dumps(cj2, indent=1))
+    # ---------------------------------------------------------------- seated stances, one per seat in the set
+    seats_p = W / "seats.json"
+    if not done("seats", seats_p):
+        @timed("seats")
+        def _():
+            sys.path.insert(0, str(a.scene_tool))
+            import seating  # noqa: E402  (the scene tool's: seat blocks, placement)
+            lib_root = Path(C.LIBRARY)
+            S = seating.seats(lib_root, lib_root / "set" / a.set)
+            cj0 = json.loads((lib / "character.json").read_text())
+            long_skirt = bool((CH.get("combo") or {}).get("measured", {}).get("long_skirt"))
+            sys.path.insert(0, str(ASSETS / "characters"))
+            import poses_extra as PX  # noqa: E402
+            made = {}
+            for name, seat in S.items():
+                seat = dict(seat, name=name)
+                if long_skirt:      # a dress: upright, hands in the lap
+                    c = {"id": a.id, "position": [0, 0], "facing": [0, -1], "body_pose": {"pose": "seated", "params": {
+                        "lean_deg": 4, "chin_deg": 2, "knee_spread_m": 0.03, "shin_fwd": 0.12}}}
+                else:               # back in the chair, forearms along its arms
+                    c = {"id": a.id, "position": [0, 0], "facing": [0, -1], "body_pose": {"pose": "sit_armchair_relaxed",
+                         "params": {"thigh_clearance_m": 0.1, "lean_deg": 10, "hand_fwd_m": 0.34, "head_deg": -6}}}
+                c = seating.place(c, seat, seating.fit(cj0))
+                c.pop("_seat", None)
+                pr = c["body_pose"]["params"]
+                if long_skirt:
+                    pr.pop("arm_z_m", None)
+                    pr.pop("arm_x_m", None)
+                    pr["steps"] = PX.hands_in_lap(pr["seat_z_m"])
+                sid = f"seatj_{tag}_{name}"
+                spec = {"id": sid, "set": a.set, "guides": False, "characters": {"a": c},
+                        "cameras": [{"name": "wide", "kind": "full", "subject": "a", "focal_mm": 28, "az": -20}]}
+                sp = W / f"{sid}.json"
+                sp.write_text(json.dumps(spec, indent=1))
+                p = subprocess.run([sys.executable, str(scene_py), str(sp)], cwd=str(Path(a.scene_tool).parents[2]),
+                                   env=env, capture_output=True, text=True)
+                if p.returncode:
+                    raise RuntimeError(f"seat joints scene {name} failed: {p.stdout[-800:]}")
+                r = json.loads((W / "scenes" / sid / "result.json").read_text())
+                b = seat["box"]
+                hip_y = b["back_y_m"] - seating.fit(cj0)["hip_back_m"]
+                sj = {"combo": str(combo), "joints": r["subjects"]["a"]["measured"]["joints"], "position": c["position"],
+                      "facing": c["facing"], "mode": "drape", "iters": 0, "shoulder_ease_m": 0.0,
+                      "seat": {"z": b["seat_z_m"], "front": round(hip_y - b["front_y_m"], 3), "back": seating.fit(cj0)["hip_back_m"],
+                               "half_width": round((b["inner_x_m"][1] - b["inner_x_m"][0]) / 2, 3)},
+                      "out": str(W / f"seated_{name}")}
+                jp = W / f"settle_{name}.json"
+                jp.write_text(json.dumps(sj, indent=1))
+                p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_settle_{name}", "--", "flock", "/tmp/gpu-igpu.lock",
+                          BLENDER, "-b", "--factory-startup", "-t", "0", "--python", str(HERE / "bl_settle.py"), "--", str(jp)],
+                         W / f"settle_{name}.log")
+                if p.returncode:
+                    raise RuntimeError(f"settle {name} failed")
+                dest = f"/Game/Char/Outfit{tag}S{''.join(ch for ch in name.upper() if ch.isalnum())[:6]}"
+                ue_job(W, f"import_seat_{name}", str(ASSETS / "characters" / "char_render.py"), {
+                    "out": str(W / "ue" / f"import_seat_{name}"),
+                    "import_outfit": {"outfit_fbx": str(W / f"seated_{name}" / "outfit.fbx"),
+                                      "textures": str(W / f"seated_{name}" / "textures"), "dest": dest, "cloth_slots": False}}, 900)
+                lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
+                st = {"base": a.id, "pose": "seated", "seat_asset": seat["asset"], "seat_z_m": b["seat_z_m"],
+                      "params": c["body_pose"]}
+                ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"], stance=st, seat_asset=seat["asset"],
+                           seat_z_m=b["seat_z_m"], note=f"Seated only, in the set's {name} ({seat['asset']}, seat "
+                           f"{b['seat_z_m']} m): {a.id} with its loose cloth laid over the thighs and seat (bl_settle, no relaxation).")
+                ent.pop("relaxed_arm_steps", None)
+                (Path(C.LIBRARY) / "character" / lid).mkdir(parents=True, exist_ok=True)
+                (Path(C.LIBRARY) / "character" / lid / "character.json").write_text(json.dumps(ent, indent=1))
+                made[name] = lid
+            CH["seats"] = made
+            seats_p.write_text(json.dumps(made, indent=1))
     # ---------------------------------------------------------------- check stills
     if not done("check", W / "scenes" / f"check_{tag}" / "close.png"):
         @timed("check")
