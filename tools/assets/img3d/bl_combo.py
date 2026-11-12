@@ -625,7 +625,24 @@ if HOLE_MAX > 0:
         if c_[2] > J("clavicle_l").z - 0.06 and np.linalg.norm(c_[:2] - _nk[:2]) < 0.14:
             return True
         return any(np.linalg.norm(c_ - w_) < 0.15 for w_ in _wr) or c_[2] < 0.15
-    small = [lp for lp in loops if len(lp) >= 3 and sum(e.calc_length() for e in lp) < HOLE_MAX and not _opening(lp)]
+    # the opening itself is the longest loop of each kind (the neck's, each cuff's, the hem's); smaller loops in the
+    # same place are tears beside it (a frayed neckline's slits showed the body through, 11-12) and are holes
+    _lens = [sum(e.calc_length() for e in lp) for lp in loops]
+    _open_ids = set()
+    for _kind in ("neck", "cuff_l", "cuff_r", "hem"):
+        def _is_kind(lp, kind=_kind):
+            c_ = np.mean([np.array(v.co[:]) for e in lp for v in e.verts], axis=0)
+            if kind == "neck":
+                return c_[2] > J("clavicle_l").z - 0.06 and np.linalg.norm(c_[:2] - _nk[:2]) < 0.14
+            if kind == "hem":
+                return c_[2] < 0.15
+            w_ = _wr[0 if kind == "cuff_l" else -1] if _wr else None
+            return w_ is not None and np.linalg.norm(c_ - w_) < 0.15
+        ks = [i for i, lp in enumerate(loops) if _is_kind(lp)]
+        if ks:
+            _open_ids.add(max(ks, key=lambda i: _lens[i]))
+    small = [lp for i, lp in enumerate(loops) if len(lp) >= 3 and _lens[i] < HOLE_MAX and i not in _open_ids
+             and (not _opening(lp) or _lens[i] < float(JOB.get("tear_max_m", 0.25)))]
     vuv = {}
     for lp in small:
         for e in lp:
