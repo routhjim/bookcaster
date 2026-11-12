@@ -338,17 +338,17 @@ def main():
         sp = sp or {}
         pa = {"camera": (sp.get("camera") or {}).get(sid), "pose": (sp.get("pose") or {}).get(sid) or {}}
         used = []
-        ir = (sp.get("in_room") or {}).get(sid)
-        if isinstance(ir, list) and not sh.get("people"):   # only where the plan lists nobody
-            inroom = {names[x] for x in ir if x in names}
-            for k in list(state):
-                if k not in inroom:
-                    away[k] = state.pop(k)
-                    used.append(f"{k} left the room")
-            for k in sorted(inroom):                         # back in the room: at the place they left from
-                if k not in state and k in away:
-                    state[k] = away.pop(k)
-                    used.append(f"{k} is back in the room")
+        # presence: a person leaves only on an exit the passage states in this shot's own span, and comes back on a
+        # stated entrance, at the place they left from; a pass without exit answers (only "who is in the room")
+        # takes nobody out (not being mentioned is not leaving, 11-12)
+        for x in (sp.get("exits") or {}).get(sid) or []:
+            if x in names and names[x] in state:
+                away[names[x]] = state.pop(names[x])
+                used.append(f"{names[x]} goes out of the room")
+        for x in (sp.get("enters") or {}).get(sid) or []:
+            if x in names and names[x] not in state and names[x] in away:
+                state[names[x]] = away.pop(names[x])
+                used.append(f"{names[x]} comes back into the room")
         f = {"id": sid, "kind": sh.get("kind"), "framing": sh.get("framing"), "speaker": sh.get("speaker"),
              "listener": sh.get("listener"), "people_listed": [p["name"] for p in sh.get("people") or []],
              "tight": sh.get("tight"), "defaults": [], "missing": []}

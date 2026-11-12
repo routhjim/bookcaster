@@ -188,7 +188,9 @@ def main():
     names = list(cast)
     var = {nm: variants(library, c.get("base") or c.get("id")) for nm, c in cast.items()}
     ask = Asker(url, cache, reps)
-    res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}}
+    res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}, "exits": {},
+           "enters": {}}
+    gone = set()                                  # people the passage has taken out of the room
     state = {}                                    # name -> place words, carried from the plan's own facts
     worn_now = {}                                 # name -> worn state at the scene's start
     claims = {}                                   # name -> [(shot, worn when that shot ends)], raw
@@ -217,9 +219,21 @@ def main():
                                                             "these choices?", var[nm]), var[nm])
                 if res["worn_start"][nm] != NOT:
                     worn_now[nm] = res["worn_start"][nm]
-        if not sh.get("people"):
-            res["in_room"][sid] = ask.subset(q_subset(psg, st, "Which of these people are in the room at this "
-                                                      "moment (shown or not)?", names), names)
+        # presence is like the worn state: a person stays in the room until this shot's OWN span says they go out
+        # (and stays out until it says they come in); not being mentioned is not leaving (asked "who is in the
+        # room", the model dropped a man not named in a shot's lines, 11-12)
+        here = [nm for nm in names if nm not in gone]
+        out_ = ask.subset(q_subset(own, st, "Which of these people go out of the room during this passage (the "
+                                             "passage says so)? Answer none if nobody leaves.", here), here) if here else []
+        back = ask.subset(q_subset(own, st, "Which of these people come into the room during this passage (the "
+                                            "passage says so)? Answer none if nobody comes in.", sorted(gone)),
+                          sorted(gone)) if gone else []
+        if isinstance(out_, list) and out_:
+            res.setdefault("exits", {})[sid] = out_
+            gone.update(out_)
+        if isinstance(back, list) and back:
+            res.setdefault("enters", {})[sid] = back
+            gone.difference_update(back)
         if sh.get("kind") == "talk":
             res["camera"][sid] = ask.choose(q_choose(psg, st, "This shot shows someone speaking. Which kind of camera "
                                                      "framing does the passage's moment call for?", CAMERAS), CAMERAS)
