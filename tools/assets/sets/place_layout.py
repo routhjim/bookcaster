@@ -22,12 +22,16 @@ Nothing here knows a story: every rule about a kind of room or piece is data.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import random
 import sys
 from collections import deque
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import place_cost as pc  # noqa: E402
 
 DATA = Path(__file__).resolve().parent / "room_kinds.json"
 NORMAL = {"north": (0.0, -1.0), "south": (0.0, 1.0), "east": (-1.0, 0.0), "west": (1.0, 0.0)}
@@ -188,8 +192,9 @@ def place_openings(spec: dict, records: dict, data: dict, W: float, D: float) ->
 
 # ------------------------------------------------------------------ pieces
 class Ctx:
-    def __init__(self, spec, records, data, seed):
+    def __init__(self, spec, records, data, seed, rules=None):
         self.spec, self.records, self.data = spec, records, data
+        self.R = rules or pc.load_rules()
         self.rk = data["room_kinds"][spec["kind"]]
         size = self.rk["sizes_m"][spec.get("size") if spec.get("size") in self.rk["sizes_m"] else "medium"]
         self.W, self.D, self.H = [float(x) for x in size]
@@ -199,9 +204,12 @@ class Ctx:
         self.openings, self.unmet = place_openings(spec, records, data, self.W, self.D)
         self.by_id = {o["id"]: o for o in self.openings}
         self.pieces = {p["id"]: p for p in spec.get("pieces", [])}
-        self.relations = [r for r in spec.get("relations", [])]
+        allrel = [r for r in spec.get("relations", [])]
+        # a relation the text states is hard; one the language model only infers (marked so) is a wish
+        self.inferred = [r for r in allrel if r.get("inferred") or r.get("stated") is False]
+        self.relations = [r for r in allrel if r not in self.inferred]
         self.partners, self.close = {}, {}          # related at all; related closely enough to share clear floor
-        for r in self.relations:
+        for r in self.relations + self.inferred:
             ids = [r.get("a"), r.get("b"), r.get("c")]
             for i in ids:
                 if i:
@@ -347,12 +355,21 @@ def fits(ctx: Ctx, cand: dict, placed: dict, fixed_zones: list) -> bool:
     for z in fixed_zones:
         if overlap(r, z):
             return False
+    hd = ctx.R["hard"]
+    if not cand.get("wall"):                        # a tall piece does not stand in front of a window
+        for o in ctx.openings:
+            if o["kind"] == "window" and cand["size_m"][2] > o.get("sill_m", 0.0) + hd["window_tall_over_sill_m"] \
+                    and overlap(r, span_rect(o["wall"], o["at_m"], o["width_m"] / 2, hd["window_keepout_m"],
+                                             ctx.W, ctx.D)):
+                return False
     for q in placed.values():
         if q["flat"] or q.get("on"):
             continue
-        if overlap(r, q["rect"], ctx.gap):
-            return False
         ok = exempt(ctx, q["id"], cand["id"])
+        air = ctx.gap if (ok or cand.get("wall") or q.get("wall") or q["kind"] == "fireplace") \
+            else max(ctx.gap, hd["around_free_m"])
+        if overlap(r, q["rect"], air):
+            return False
         if not ok and any(overlap(r, z) for z in q["zones"]):
             return False
         if not ok and any(overlap(z, q["rect"]) for z in cand["zones"]):
@@ -375,7 +392,8 @@ def near_score(ctx: Ctx, pid: str, cand: dict, placed: dict) -> float:
     want = rule.get("prefer_beside")
     if want and not ctx.close.get(pid):             # a stated companion outranks the kind's usual one
         ds = [gap(cand["rect"], q["rect"]) for q in placed.values() if not q["flat"] and q["id"] in ctx.pieces
-              and (want == ctx.base(q["id"]) or want == q["kind"] or (want == "seat" and q["seat"]))]
+              and (want == ctx.base(q["id"]) or want == q["kind"]
+                   or (want == "seat" and pc.is_kind(q, "seat", ctx.R)))]
         if ds:
             s += 2.0 * min(ds)
     for r in ctx.relations:                         # pull toward what it is related to, before the hard test
@@ -427,6 +445,86 @@ def face_for(ctx: Ctx, pid: str, c, placed: dict) -> tuple:
     return (0.0, -1.0)
 
 
+def free_facings(ctx: Ctx, pid: str, c, placed: dict) -> list:
+    """The fronts tried for a free piece at a point: where its rule turns it (at its partner, at the focal
+    opening), for a seat also that direction snapped to a round angle and to the nearest wall direction, and for
+    a piece with no rule both ways round."""
+    rule = ctx.rule(pid)
+    f0 = face_for(ctx, pid, c, placed)
+    out = [f0]
+    stated = any(r.get("a") == pid and r["rel"] == "facing" for r in ctx.relations)
+    if rule.get("seat") and rule.get("face") == "focal" and not stated:
+        step = math.radians(ctx.R["search"]["seat_snap_deg"])
+        a = math.atan2(f0[1], f0[0])
+        lim = math.radians(ctx.R["search"]["polish_turn_max_deg"])
+        for b in (round(a / step) * step, round(a / (math.pi / 2)) * (math.pi / 2)):
+            if abs((b - a + math.pi) % (2 * math.pi) - math.pi) <= lim + 1e-9:   # still turned to what it faces
+                out.append((math.cos(b), math.sin(b)))
+    elif not rule.get("face") and not stated:
+        size = ctx.size(pid)
+        if abs(size[0] - size[1]) > 0.05:
+            out.append((1.0, 0.0))
+    seen, uniq = set(), []
+    for f in out:
+        f = unit(f)
+        k = (round(f[0], 3), round(f[1], 3))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(f)
+    return uniq
+
+
+def slot_points(ctx: Ctx, pid: str, placed: dict) -> list:
+    """Where a companion stands by the group template (``reach`` in layout_rules.json): square before its
+    anchor's front, at either side of it, or at either side of its head end, at the wished gap. The grid alone
+    misses these by up to a cell."""
+    kind, size, out = ctx.pieces[pid]["kind"], ctx.size(pid), []
+    for rr in ctx.R["reach"]:
+        if rr["kind"] != kind:
+            continue
+        g = max(rr["gap_m"][0], ctx.gap + 0.01)
+        for t in placed.values():
+            if t.get("flat") or t.get("on") or t["id"] == pid or not pc.is_kind(t, rr["to"], ctx.R):
+                continue
+            f = t["facing"]
+            lat = (f[1], -f[0])
+            hx, hy = (t["rect"][2] - t["rect"][0]) / 2, (t["rect"][3] - t["rect"][1]) / 2
+            ef, el = abs(f[0]) * hx + abs(f[1]) * hy, abs(lat[0]) * hx + abs(lat[1]) * hy
+            mine = max(size[0], size[1]) / 2
+            if rr["where"] == "front":
+                out.append((t["c"][0] + f[0] * (ef + g + mine), t["c"][1] + f[1] * (ef + g + mine)))
+            else:
+                back = (ef - mine) if rr["where"] == "head" else 0.0
+                for sgn in (1.0, -1.0):
+                    out.append((t["c"][0] - f[0] * back + sgn * lat[0] * (el + g + mine),
+                                t["c"][1] - f[1] * back + sgn * lat[1] * (el + g + mine)))
+    return [(round(c[0], 3), round(c[1], 3)) for c in out]
+
+
+def rug_place(ctx: Ctx, placed: dict) -> tuple:
+    """Where a rug lies: under the seats gathered at the focal point, else beside a bed, else the middle of
+    the floor. -> (centre, the direction its long side runs or None)."""
+    seats = pc.seating(placed, ctx.R)
+    if len(seats) >= 2:
+        pts = [q["c"] for q in seats]
+        if ctx.focal and ctx.focal["id"] in placed:
+            pts = pts + [stand_point(placed[ctx.focal["id"]], ctx.data)]
+        c = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+        n = ctx.focal["normal"] if ctx.focal else None
+        return c, ((0.0, -1.0) if n is None or abs(n[1]) > abs(n[0]) else (1.0, 0.0))
+    beds = [q for q in placed.values() if q["kind"] == "bed"]
+    if beds:
+        b = beds[0]
+        f = b["facing"]
+        side = (f[1], -f[0])
+        if (b["c"][0] + side[0]) ** 2 + (b["c"][1] + side[1]) ** 2 > b["c"][0] ** 2 + b["c"][1] ** 2:
+            side = (-side[0], -side[1])             # the side toward the room's middle
+        hw = (abs(side[0]) * (b["rect"][2] - b["rect"][0]) + abs(side[1]) * (b["rect"][3] - b["rect"][1])) / 2
+        c = (b["c"][0] + side[0] * (hw + 0.6), b["c"][1] + side[1] * (hw + 0.6))
+        return c, ((1.0, 0.0) if abs(side[0]) > abs(side[1]) else (0.0, -1.0))
+    return (0.0, 0.0), None
+
+
 def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool = True) -> list:
     mode, at = ctx.mode(pid)
     size, rule = ctx.size(pid), ctx.rule(pid)
@@ -435,10 +533,24 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
     if mode == "fireplace":
         return []
     if mode == "floor":                             # a rug: the middle of the floor, long side along the room's
-        c = (0.0, 0.0)
-        facing = (0.0, -1.0) if (size[0] >= size[1]) == (W >= D) else (1.0, 0.0)
+        c, along = rug_place(ctx, placed)
+        if along is None:
+            facing = (0.0, -1.0) if (size[0] >= size[1]) == (W >= D) else (1.0, 0.0)
+        else:                                       # its long side across the group it lies under
+            facing = along if size[0] >= size[1] else (along[1], -along[0])
         h = half_extents(size, facing)
         sc = min(1.0, (W - 0.3) / (2 * h[0]), (D - 0.3) / (2 * h[1]))
+        fx = placed.get(ctx.focal["id"]) if ctx.focal and along is not None else None
+        if fx is not None:                          # before the hearth, not under the grate
+            n = ctx.focal["normal"]
+            fr = fx["rect"]
+            edge = (fr[0] if n[0] < 0 else fr[2]) if abs(n[0]) > abs(n[1]) else (fr[1] if n[1] < 0 else fr[3])
+            if abs(n[0]) > abs(n[1]):
+                c = (edge + n[0] * (h[0] + 0.05) if (c[0] - edge) * n[0] < h[0] + 0.05 else c[0], c[1])
+            else:
+                c = (c[0], edge + n[1] * (h[1] + 0.05) if (c[1] - edge) * n[1] < h[1] + 0.05 else c[1])
+        c = (max(-W / 2 + h[0], min(W / 2 - h[0], c[0])) if 2 * h[0] <= W else 0.0,
+             max(-D / 2 + h[1], min(D / 2 - h[1], c[1])) if 2 * h[1] <= D else 0.0)
         cand = make(ctx, pid, c, facing)
         if sc < 1.0:
             cand["note"] = "larger than the floor"
@@ -483,7 +595,13 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
         for i in range(-nx, nx + 1):
             for j in range(-ny, ny + 1):
                 c = (round(i * step, 3), round(j * step, 3))
-                out.append(make(ctx, pid, c, face_for(ctx, pid, c, placed)))
+                fs = free_facings(ctx, pid, c, placed)
+                for f in fs:
+                    out.append(make(ctx, pid, c, f, {"base_facing": fs[0]}))
+        for c in slot_points(ctx, pid, placed):     # its place in a group: before a desk, beside a seat
+            fs = free_facings(ctx, pid, c, placed)
+            for f in fs:
+                out.append(make(ctx, pid, c, f, {"base_facing": fs[0], "slot": True}))
     keep = []
     sc_m = rule.get("side_clear_m", 0.0)
     for cand in out:
@@ -510,6 +628,9 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             sc += 0.02 * abs(cand["u"]) + 0.01 * WALLS.index(cand["wall"])
         else:
             sc += 0.03 * min(W / 2 - abs(cand["c"][0]), D / 2 - abs(cand["c"][1]))
+        if cand.get("slot"):                        # a template slot is tried before the grid cells round it
+            sc -= ctx.R["search"]["slot_bonus"]
+        cand["near"] = round(sc, 4)
         keep.append((round(sc, 4), cand))
     ties = {}
     for sc, cand in keep:
@@ -624,7 +745,7 @@ def path_problems(ctx: Ctx, placed: dict) -> list:
             labels.append(o["name"])
     if len(pts) < 2:
         return []
-    ok = reach(ctx.W, ctx.D, rects, pts, ctx.data["walkway_m"] / 2)
+    ok = reach(ctx.W, ctx.D, rects, pts, ctx.data["walkway_m"] / 2, snap=ctx.R["hard"]["stand_snap_m"])
     if not ok[0]:
         return [f"no clear floor at {labels[0]}"]
     return [f"no clear path from {labels[0]} to {lab}" for lab, good in zip(labels[1:], ok[1:]) if not good]
@@ -645,19 +766,124 @@ def order_of(ctx: Ctx) -> list:
     return sorted(ctx.pieces, key=key)
 
 
+def fixed_zones(ctx: Ctx) -> list:
+    """Floor nothing stands on: each door's swing and the strip a person needs to come through it."""
+    ap = ctx.R["hard"]["door_approach_m"]
+    return [span_rect(o["wall"], o["at_m"], o["width_m"] / 2, o["width_m"] + ap, ctx.W, ctx.D)
+            for o in ctx.openings if o["kind"] == "door"]
+
+
+def objective(ctx: Ctx, placed: dict, with_pockets: bool = True) -> tuple:
+    """The whole cost of a (partial) layout: the soft terms plus each piece's pull toward what its kind likes."""
+    cost, terms, pieces = pc.total(ctx, placed, ctx.R, rel_ok, stand_point, with_pockets)
+    near = sum(q.get("near", 0.0) for q in placed.values() if q["id"] in ctx.pieces)
+    return cost + near, terms, pieces
+
+
+def hard_ok(ctx: Ctx, placed: dict, pid: str, fixed: list) -> bool:
+    cand = placed[pid]
+    others = {k: v for k, v in placed.items() if k != pid}
+    if not fits(ctx, cand, others, fixed):
+        return False
+    if any(rel_ok(ctx, r, placed) is False for r in ctx.relations):
+        return False
+    return bool(cand["flat"] or cand.get("on") or not path_problems(ctx, placed))
+
+
+def beam_search(ctx: Ctx, order: list, start: dict, fixed: list) -> dict | None:
+    """Place the pieces in order, keeping the few cheapest partial layouts at each step. Fixed order, stable
+    sort, the seed only breaking exact ties inside ``candidates``: the same inputs give the same room."""
+    sr = ctx.R["search"]
+    states = [dict(start)]
+    for pid in order:
+        nxt, seq = [], 0
+        for placed in states:
+            for cand in candidates(ctx, pid, placed, fixed)[:sr["expand"]]:
+                st = dict(placed)
+                st[pid] = cand
+                cost = objective(ctx, st, with_pockets=False)[0]
+                nxt.append((round(cost, 6), seq, st))
+                seq += 1
+        nxt.sort(key=lambda t: (t[0], t[1]))
+        keep = []
+        for _c, _s, st in nxt:
+            cand = st[pid]
+            if cand["flat"] or cand.get("on") or not path_problems(ctx, st):
+                keep.append(st)
+                if len(keep) == sr["beam"]:
+                    break
+        if not keep:
+            return None
+        states = keep
+    best = min(enumerate(states), key=lambda t: (round(objective(ctx, t[1])[0], 6), t[0]))
+    return best[1]
+
+
+def polish(ctx: Ctx, placed: dict, order: list, fixed: list) -> dict:
+    """Coordinate descent: one free piece at a time, a small shift or turn, kept only when every hard rule
+    still holds and the cost falls."""
+    sr = ctx.R["search"]
+    step, turn = sr["polish_step_m"], math.radians(sr["polish_turn_deg"])
+    tmax = math.radians(sr["polish_turn_max_deg"])
+    best = objective(ctx, placed)[0]
+    for _ in range(int(sr["polish_passes"])):
+        moved = False
+        for pid in order:
+            q = placed[pid]
+            if q["flat"] or q.get("on") or q.get("wall") or ctx.rule(pid).get("side_clear_m"):
+                continue
+            base = q.get("base_facing") or q["facing"]
+            a0 = math.atan2(q["facing"][1], q["facing"][0])
+            ab = math.atan2(base[1], base[0])
+            tries = [((q["c"][0] + dx, q["c"][1] + dy), q["facing"])
+                     for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step))]
+            stated = any(r.get("a") == pid and r["rel"] == "facing" for r in ctx.relations)
+            if q["seat"] and not stated:
+                for da in (turn, -turn):
+                    a = a0 + da
+                    off = (a - ab + math.pi) % (2 * math.pi) - math.pi
+                    if abs(off) <= tmax + 1e-9:
+                        tries.append((q["c"], (math.cos(a), math.sin(a))))
+            for c, f in tries:
+                cand = make(ctx, pid, (round(c[0], 3), round(c[1], 3)), f, {"base_facing": base})
+                cand["near"] = round(near_score(ctx, pid, cand, {k: v for k, v in placed.items() if k != pid}), 4)
+                trial = dict(placed)
+                trial[pid] = cand
+                for k, v in placed.items():         # what stands on it moves with it
+                    if v.get("on") == q["name"]:
+                        trial[k] = dict(v, c=cand["c"], rect=rect_at(cand["c"], half_extents(v["size_m"],
+                                                                                              v["facing"])))
+                cost = objective(ctx, trial)[0]
+                if cost < best - 1e-6 and hard_ok(ctx, trial, pid, fixed):
+                    placed, best, q, moved = trial, cost, cand, True
+                    a0 = math.atan2(q["facing"][1], q["facing"][0])
+        if not moved:
+            break
+    for pid in order:                               # a rug follows the group it lies under
+        q = placed[pid]
+        if q["flat"] and ctx.mode(pid)[0] == "floor":
+            cs = candidates(ctx, pid, {k: v for k, v in placed.items() if k != pid}, fixed)
+            if cs:
+                placed[pid] = cs[0]
+    return placed
+
+
 def solve(spec: dict, records: dict | None = None, data: dict | None = None, seed: int = 0,
-          budget: int = 6000, top: int = 10) -> dict:
+          budget: int = 6000, top: int = 10, rules: dict | None = None) -> dict:
     """The layout of a place: ``ok`` with every hard constraint met, or the best found with ``unmet`` naming each
-    constraint that could not be met. Same inputs and seed give the same answer."""
+    constraint that could not be met. Same inputs and seed give the same answer. The search is a beam over
+    enumerated candidates and then a polish (``layout_rules.json``); a depth-first search with backtracking is the
+    fallback when the beam finds no room that meets every hard rule. ``solve_recover`` adds the recovery ladder."""
     data = data or load_data()
     records = records or {}
     if spec.get("kind") not in data["room_kinds"]:
         raise ValueError(f"unknown room kind {spec.get('kind')!r}")
-    ctx = Ctx(spec, records, data, seed)
+    ctx = Ctx(spec, records, data, seed, rules)
     placed = {o["id"]: fire_piece(ctx, o) for o in ctx.openings if o["kind"] == "fireplace"}
-    fixed = [o["swing"] for o in ctx.openings if o["kind"] == "door"]
+    fixed = fixed_zones(ctx)
     order = order_of(ctx)
     left = [budget]
+    how = "beam"
 
     def dfs(k: int) -> bool:
         if k == len(order):
@@ -674,8 +900,18 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
         return False
 
     unmet = list(ctx.unmet)
-    solved = dfs(0) if not unmet else False
+    solved = False
+    if not unmet:
+        found = beam_search(ctx, order, placed, fixed)
+        if found is not None:
+            placed, solved = found, True
+        else:
+            how = "depth-first"
+            solved = dfs(0)
+        if solved:
+            placed = polish(ctx, placed, order, fixed)
     if not solved:
+        how = "best effort"
         for pid in list(placed):
             if pid in ctx.pieces:
                 del placed[pid]
@@ -706,10 +942,105 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
     for phrase, i in (spec.get("named_places") or {}).items():
         if i not in placed and i not in ctx.by_id:
             unmet.append(f"named place {phrase!r}: {i} is not in the room")
-    return export(ctx, placed, unmet)
+    pks = pc.pockets(ctx, placed, ctx.R, stand_point)
+    if solved:
+        unmet += pc.pocket_problems(pks)
+    return export(ctx, placed, unmet, how, pks)
 
 
-def export(ctx: Ctx, placed: dict, unmet: list) -> dict:
+def _unnamed(spec: dict) -> list:
+    """Pieces the text does not name: no plan phrase, no named place, no stated relation."""
+    named = set((spec.get("named_places") or {}).values())
+    tied = set()
+    for r in spec.get("relations", []):
+        if not (r.get("inferred") or r.get("stated") is False):
+            tied.update(x for x in (r.get("a"), r.get("b"), r.get("c")) if x)
+    return [p for p in spec.get("pieces", []) if not p.get("phrases") and p["id"] not in named
+            and p["id"] not in tied]
+
+
+def solve_recover(spec: dict, records: dict | None = None, data: dict | None = None, seed: int = 0,
+                  rules: dict | None = None) -> dict:
+    """``solve`` with the recovery ladder. Each rung gives up a little more and is logged with what it gave up;
+    the first rung that yields a room meeting every hard rule wins. A piece the text names is never dropped, and
+    a room that still fails comes back ``status: unresolved`` with the failures to put to the language model
+    again, never as a quiet partial layout."""
+    data0 = data or load_data()
+    R0 = rules or pc.load_rules()
+    lad = R0["ladder"]
+    spec_k, data_k, R_k = copy.deepcopy(spec), copy.deepcopy(data0), copy.deepcopy(R0)
+    log, first = [], None
+
+    def attempt(step: str, gave_up: str):
+        lay = solve(spec_k, records, data_k, seed, rules=R_k)
+        log.append({"step": step, "gave_up": gave_up, "ok": lay["ok"], "unmet": list(lay["unmet"])})
+        return lay
+
+    lay = attempt("as asked", "nothing")
+    first = lay
+    if not lay["ok"]:
+        f, floor = lad["clearance_factor"], lad["clearance_floor_m"]
+        for rule in data_k["piece_kinds"].values():
+            if rule.get("front_clear_m", 0.0) > 0:
+                rule["front_clear_m"] = max(min(floor, rule["front_clear_m"]), round(rule["front_clear_m"] * f, 3))
+        R_k["hard"]["around_free_m"] = 0.0
+        R_k["hard"]["door_approach_m"] = round(R_k["hard"]["door_approach_m"] * f, 3)
+        lay = attempt("clearances shrunk to their floor", "comfortable space in front of and around pieces")
+    if not lay["ok"]:
+        inf = [r for r in spec_k.get("relations", []) if r.get("inferred") or r.get("stated") is False]
+        if inf:
+            R_k["weights"]["inferred"] = 0.0
+            spec_k["relations"] = [r for r in spec_k["relations"] if r not in inf]
+            lay = attempt("inferred relations dropped", f"{len(inf)} relation(s) the text does not state")
+        else:
+            log.append({"step": "inferred relations dropped", "gave_up": "nothing (the spec has none)",
+                        "ok": False, "unmet": list(lay["unmet"]), "skipped": True})
+    if not lay["ok"]:
+        w = lad["band_widen"]
+        for k, lim in data_k["relations"].items():
+            for key in ("gap_m", "opening_gap_m", "side_m", "off_m"):
+                if key in lim:
+                    lim[key] = round(lim[key] * w, 3)
+            if "angle_deg" in lim:
+                lim["angle_deg"] = lim["angle_deg"] + lad["angle_widen_deg"]
+        lay = attempt("stated relations' bands widened", f"bands x{w}, facing +{lad['angle_widen_deg']} degrees")
+    if not lay["ok"]:
+        sizes = [s for s in lad["size_order"] if s in data_k["room_kinds"][spec_k["kind"]]["sizes_m"]]
+        cur = spec_k.get("size") if spec_k.get("size") in sizes else "medium"
+        if cur in sizes and sizes.index(cur) + 1 < len(sizes):
+            spec_k["size"] = sizes[sizes.index(cur) + 1]
+            lay = attempt("room stepped up one size class", f"size {cur} -> {spec_k['size']}")
+        else:
+            log.append({"step": "room stepped up one size class", "gave_up": "nothing (already the largest)",
+                        "ok": False, "unmet": list(lay["unmet"]), "skipped": True})
+    dropped = []
+    if not lay["ok"]:
+        rank = {k: i for i, k in enumerate(lad["drop_order"])}
+        for _ in range(int(lad["max_drops"])):
+            cand = sorted(_unnamed(spec_k), key=lambda p: (rank.get(p["kind"], len(rank)), p["id"]))
+            if not cand:
+                break
+            gone = cand[0]
+            dropped.append({"id": gone["id"], "kind": gone["kind"]})
+            spec_k["pieces"] = [p for p in spec_k["pieces"] if p["id"] != gone["id"]]
+            spec_k["relations"] = [r for r in spec_k.get("relations", [])
+                                   if gone["id"] not in (r.get("a"), r.get("b"), r.get("c"))]
+            lay = attempt("an unnamed piece dropped", f"{gone['kind']} {gone['id']} (the text does not name it)")
+            if lay["ok"]:
+                break
+    lay = dict(lay)
+    lay["ladder"] = log
+    lay["dropped"] = dropped
+    if lay["ok"]:
+        lay["status"] = "ok" if len(log) == 1 else "ok after recovery"
+        lay["size_class"] = spec_k.get("size")
+    else:
+        lay["status"] = "unresolved"
+        lay["reask"] = list(first["unmet"])          # the failures of the room as it was asked for
+    return lay
+
+
+def export(ctx: Ctx, placed: dict, unmet: list, how: str = "", pks: list | None = None) -> dict:
     pieces = []
     for pid in list(ctx.pieces) + [o["id"] for o in ctx.openings if o["kind"] == "fireplace"]:
         q = placed.get(pid)
@@ -740,9 +1071,16 @@ def export(ctx: Ctx, placed: dict, unmet: list) -> dict:
         if "breast" in o:
             d["breast"] = r3(o["breast"])
         ops.append(d)
+    cost, terms, by_piece = objective(ctx, placed)
+    for d in pieces:
+        d["cost"] = by_piece.get(d["id"], {})
+    pockets = [{"place": p["place"], "item": p["name"], "position": r3(p["pos"]), "facing": r3(p["facing"]),
+                "shots": {k: {"valid": v["valid"], "of": v["total"], "points": v["points"][:12]}
+                          for k, v in p["pocket"].items()}} for p in (pks or [])]
     return {"schema": "place_layout/1", "place": ctx.spec.get("place"), "kind": ctx.spec["kind"],
             "ok": not unmet, "unmet": unmet, "size_m": [ctx.W, ctx.D, ctx.H], "openings": ops, "pieces": pieces,
-            "names": dict(ctx.names)}
+            "names": dict(ctx.names), "search": how, "cost": {"total": round(cost, 4), "terms": terms},
+            "camera_pockets": pockets}
 
 
 # ------------------------------------------------------------------ check, named places, set spec
@@ -791,7 +1129,7 @@ def check_layout(layout: dict, spec: dict | None = None, data: dict | None = Non
             probs.append(f"named place {phrase!r}: {i} is not in the room")
     if len(pts) >= 2:
         rects = [p["rect"] for p in solid] + [o["breast"] for o in layout["openings"] if o["kind"] == "fireplace"]
-        ok = reach(W, D, rects, pts, data["walkway_m"] / 2)
+        ok = reach(W, D, rects, pts, data["walkway_m"] / 2, snap=pc.load_rules()["hard"]["stand_snap_m"])
         if not ok[0]:
             probs.append(f"no clear floor at {labels[0]}")
         else:
@@ -882,7 +1220,7 @@ def main():
     a = ap.parse_args()
     spec = json.loads(Path(a.spec).read_text())
     records = json.loads(Path(a.records).read_text()) if a.records else {}
-    lay = solve(spec, records, seed=a.seed)
+    lay = solve_recover(spec, records, seed=a.seed)
     text = json.dumps({"layout": lay, "set": to_set_spec(spec, lay)}, indent=1)
     if a.out:
         Path(a.out).write_text(text + "\n")

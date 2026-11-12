@@ -211,3 +211,26 @@ fixtures / props in the placement shape of this file (materials, lights and came
 piece (sizes, default openings, wall or free, clear floor, companions) are data in `room_kinds.json`. The answer
 is `ok`, or the best layout found with `unmet` naming each constraint that could not be met. Rectangular rooms
 only; nothing is hung on walls and only lamps and ornaments stand on other pieces.
+
+### Soft rules, camera pockets and the recovery ladder (place_cost.py, layout_rules.json)
+
+`place_layout.solve` searches with a beam over enumerated candidates (wall positions, a floor grid, template
+slots for companions, and for seats the focal-facing angle plus its snapped variants), then polishes free pieces
+by small shifts and turns. Hard rules are as before plus: a door's approach strip, no tall free piece before a
+window, a little air round free pieces, and a camera pocket at every named place. Soft rules are small cost
+functions in `place_cost.py` weighed by `layout_rules.json` (face the focal point, conversation distance and
+angle, reach and side of companions, comfortable clearance, alignment, wall prior, symmetry, balance, an empty
+middle, bed sides, bed away from the door, inferred relations, camera pocket quality). A relation marked
+`"inferred": true` (or `"stated": false`) in a place spec is a wish; every other relation is a rule.
+
+The layout carries `search`, `cost` (total and per term; each piece its own share), and `camera_pockets` (per
+named place: where the face is, which way it looks, and the valid camera points for a medium and a close).
+
+`solve_recover` wraps `solve` with the ladder, logged in `ladder`: as asked; clearances shrunk to their floor;
+inferred relations dropped; stated bands widened; the room one size class up; unnamed pieces dropped one at a
+time (never a piece with a plan phrase, a named place or a stated relation). The result has `status`: `ok`,
+`ok after recovery`, or `unresolved` with `reask` naming the failures of the room as asked. The command line
+uses `solve_recover`. `place_plan_draw.py LAYOUT.json OUT.png` draws a layout in plan.
+
+Every weight and band is a starting value from published layout work or derived from the scene tool's framing
+rule; none has been measured on a built room.
