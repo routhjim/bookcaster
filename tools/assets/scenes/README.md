@@ -52,9 +52,13 @@ changing. So:
             "facing": [dx, dy],            // plan direction the character faces
             "body_pose": {"pose": "stand_relaxed", "params": {...}}     // pose.py, or
                        | {"anim": "/Game/...AnimSequence", "t": s}       // a clip frame, or {"anim", "scan": "arms_up"}
-            "face_pose": {"curves": {"CTRL_expressions_jawOpen": 0.3}} | {"anim", "t"}}
+            "face_pose": {"curves": {"CTRL_expressions_jawOpen": 0.3}} | {"anim", "t"}},
+  "<key>": {"asset": "<class>/<id>",       // or a plain-mesh figure (a picture-to-3D statue: no skeleton, no pose):
+            "position": [x, y], "facing": [dx, dy]}   // measured from its bounds (img3d/ue_stage_figure.py), guides too
  },
  "lights": [ ... ],                        // extra lights, the set builder's point / spot / rect format
+ "hide": ["<set item name>", ...],         // set items hidden for these stills (restored after): e.g. the set's
+                                           // armchair where a seated figure brings its own chair
  "cameras": [
   {"name": "wide", "kind": "wide", "subject": "<key>", "position": [x, y, z], "target": [x, y, z] | "subject",
    "focal_mm": 22},
@@ -92,3 +96,34 @@ y forward, z up, centimetres). Garments follow through the character tools' lead
 Output: `<out>/<id>/` (`SCENES_OUT`, default `$ASSETS_UE_HOME/lab/scenes/out`): `<camera>.png`, `result.json`,
 `times.json` (queue wait, editor time, per-step and per-still seconds), `job.json`, `sheet.png` (Pillow, pasting
 only). `SCENES_CHAR_TOOLS` points at another copy of the character tools.
+
+## Seats (seating.py, seatbox.py)
+
+A seated character names its seat: `"seat": "<set item name>"` (or `true`: the nearest seat) with a sitting pose
+(`sit_armchair_relaxed`, `seated`). Before staging, `speakers.py` places them from the seat's own box: hips centred
+between the arms (or on the nearest of a sofa's places) a hip's depth in front of the back, facing the seat's real
+front, the pose's seat height and arm rests from the box. After the engine has posed them, their hip joints are
+checked: inside the arms with room for hips and clothes (`character.json` `"seat_fit": {"hip_half_m", "hip_back_m"}`,
+default 0.20 / 0.16), above the cushion, in front of the back, clear of the front edge, feet on the floor. A failure
+moves them and renders every camera again; a seat too narrow for the sitter is skipped for the nearest one that fits.
+
+Every seat in the library carries a `"seat"` block in its `asset.json`, in the seat's own frame (front -y, metres):
+`seat_z_m` (cushion top), `front_y_m`, `back_y_m` (the back's front face where a back rests), `inner_x_m` [left,
+right] (the arms' inner faces), `arm_z_m` (arm-rest top, null without arms), `width_m`, `depth_m`, `places` (sitter
+centres across a sofa) and `front_asset` (the mesh's real front in its own frame). **Prop builders: write it for
+every new chair, sofa or bench** with `python tools/assets/scenes/seatbox.py <library>/prop/<id> --write` (reads
+the exported glTF; under a second), and keep the mesh's front at -Y; the set builder turns a mesh whose
+`front_asset` is not -Y onto its facing, so a wrong front no longer turns the chair in the room, but it is still a
+contract break worth fixing at the source.
+
+## Framing rules (speakers.py)
+
+Checked on every still from the engine's facts, then re-framed: a talk shot that is not a close keeps the listener
+in view (a two-shot: their head in the frame and at least 1 % of it theirs; an over-the-shoulder: their head or
+shoulder, 3 %, at the frame's side with the speaker toward the middle), the speaker's face is at least 0.10 of the
+frame's height (0.18 in a close), the listener's head is not bigger than the speaker's in a two-shot, and nobody's
+visible body reaches the left, right or top edge (the still's own depth passes) except an over-the-shoulder's
+listener. A shot without a speaker keeps its `"show": [keys]` in view. A miss is re-framed by a placed camera (a
+two-shot aimed between the faces nearer the speaker, or over the listener's shoulder), the passing standpoint
+nearest the old one; a framing miss that cannot be fixed is reported (`framing_miss`), only an unseen speaker's
+face rejects a shot.

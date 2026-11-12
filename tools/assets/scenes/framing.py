@@ -87,8 +87,11 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
 
 def project(cam, p, res=(1152, 640)):
     """Set-frame point -> (u, v, depth): u, v in 0..1 from the frame's top-left; depth along the view (m)."""
-    f = _unit([cam["target"][i] - cam["position"][i] for i in range(3)])
-    up0 = [0.0, 0.0, 1.0]
+    d0 = [cam["target"][i] - cam["position"][i] for i in range(3)]
+    if not any(abs(x) > 1e-9 for x in d0):
+        return None                          # a camera on its own aim point: no view
+    f = _unit(d0)
+    up0 = [0.0, 0.0, 1.0] if abs(f[2]) < 0.999 else [0.0, 1.0, 0.0]     # straight up or down: another up
     r = _unit([f[1] * up0[2] - f[2] * up0[1], f[2] * up0[0] - f[0] * up0[2], f[0] * up0[1] - f[1] * up0[0]])
     u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]]
     v = [p[i] - cam["position"][i] for i in range(3)]

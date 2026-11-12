@@ -1,0 +1,119 @@
+{
+ "ROOM_KINDS": [
+  "sitting_room",
+  "bedroom",
+  "study",
+  "dining_room",
+  "kitchen",
+  "hall",
+  "parlour",
+  "office",
+  "library",
+  "bar_room",
+  "shop",
+  "cottage_room",
+  "cell",
+  "attic",
+  "corridor"
+ ],
+ "PERIODS": [
+  "victorian",
+  "georgian",
+  "edwardian",
+  "early_modern",
+  "medieval",
+  "modern",
+  "rural_traditional"
+ ],
+ "SIZES": [
+  "small",
+  "medium",
+  "large"
+ ],
+ "OPENINGS": [
+  "window",
+  "door",
+  "fireplace"
+ ],
+ "WALLS": [
+  "north",
+  "south",
+  "east",
+  "west",
+  "not stated"
+ ],
+ "AGAINST": [
+  "wall",
+  "free",
+  "not stated"
+ ],
+ "RELATIONS": [
+  "beside",
+  "by",
+  "near",
+  "facing",
+  "in_front_of",
+  "behind",
+  "between"
+ ],
+ "PIECE_KINDS": [
+  "armchair",
+  "bed",
+  "bedside_table",
+  "bell_pull",
+  "bench",
+  "bookcase",
+  "books",
+  "bureau",
+  "cabinet",
+  "candlestick",
+  "chair",
+  "chest_of_drawers",
+  "clock",
+  "coal_scuttle",
+  "curtain",
+  "desk",
+  "desk_chair",
+  "dining_chair",
+  "dressing_table",
+  "fender",
+  "fire_irons",
+  "floor_lamp",
+  "lamp",
+  "lantern",
+  "mirror",
+  "papers",
+  "picture",
+  "plant",
+  "rug",
+  "safe",
+  "screen",
+  "shelf",
+  "side_table",
+  "single_bed",
+  "sofa",
+  "stool",
+  "table",
+  "trunk",
+  "vase",
+  "wardrobe",
+  "washstand",
+  "wingback_armchair",
+  "writing_desk"
+ ],
+ "SEATS": [
+  "armchair",
+  "bench",
+  "chair",
+  "desk_chair",
+  "dining_chair",
+  "sofa",
+  "stool",
+  "wingback_armchair"
+ ],
+ "LIE": [
+  "bed",
+  "single_bed"
+ ],
+ "_piece_kinds_source": "tools/assets/places/piece_kinds.json (exp-ue-places-pieces 1): the kind names, copied until the branches merge"
+}

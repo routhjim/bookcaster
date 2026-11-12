@@ -77,6 +77,10 @@ Output: `<out>/<id>/asset.json` (manifest entry, class `set`), `spec.json`, `sce
 "z_m": 0}}` (evenly spaced, both ends included). `z` is the height of the asset's base (0 = on the floor).
 A prop standing on another placed item: `"on": "<that item's name>", "on_z_m": <its surface height>` (the plan
 checks that it lies fully on the host and ignores their overlap).
+A picture or anything else hung on a wall: `"hang": true` with `[x, y, z]` (the plan checks that its back touches
+a wall's inner face or a side of a structure `box`, such as a chimney breast, instead of something under it). A
+backdrop seen through a window: `"outside": true` (the plan checks that it stays clear of the room and skips the
+overlap and floating checks for it).
 
 ### Structure kinds
 
@@ -189,3 +193,44 @@ to run it in the shared editor instead of a private one:
    `/Game/Sets/<id>/L_<id>`; asset jobs expect the stage level).
 Until then sets build in their own project copy (`SETS_UE_PROJECT`), so they never write the chain's project
 while its resident editor lives.
+
+## A room laid out from a place spec (`place_layout.py`)
+
+```
+python tools/assets/sets/place_layout.py PLACE_SPEC.json [RECORDS.json] [--seed N] [--out LAYOUT.json]
+```
+
+`place_layout.solve(spec, records)` takes a validated place spec (`place_spec/1`: kind, size class, openings,
+pieces with kind / against, relations, named places) and the matched library record per piece id
+(`{"asset", "size_m"}`; a piece without one takes its kind's default size and is listed for generation) and
+returns the room's size, each opening's wall and span, and a position and facing for every piece, in the frame
+above. `to_set_spec` gives the walls with their windows and doors, a chimney breast per fireplace, and the
+fixtures / props in the placement shape of this file (materials, lights and cameras are not laid out);
+`named_places` maps each plan phrase to a set item name (the kind, numbered on repeats) with a standing point;
+`check_layout` reports overlaps, blocked doors and named places without a clear path. Rules of a kind of room or
+piece (sizes, default openings, wall or free, clear floor, companions) are data in `room_kinds.json`. The answer
+is `ok`, or the best layout found with `unmet` naming each constraint that could not be met. Rectangular rooms
+only; nothing is hung on walls and only lamps and ornaments stand on other pieces.
+
+### Soft rules, camera pockets and the recovery ladder (place_cost.py, layout_rules.json)
+
+`place_layout.solve` searches with a beam over enumerated candidates (wall positions, a floor grid, template
+slots for companions, and for seats the focal-facing angle plus its snapped variants), then polishes free pieces
+by small shifts and turns. Hard rules are as before plus: a door's approach strip, no tall free piece before a
+window, a little air round free pieces, and a camera pocket at every named place. Soft rules are small cost
+functions in `place_cost.py` weighed by `layout_rules.json` (face the focal point, conversation distance and
+angle, reach and side of companions, comfortable clearance, alignment, wall prior, symmetry, balance, an empty
+middle, bed sides, bed away from the door, inferred relations, camera pocket quality). A relation marked
+`"inferred": true` (or `"stated": false`) in a place spec is a wish; every other relation is a rule.
+
+The layout carries `search`, `cost` (total and per term; each piece its own share), and `camera_pockets` (per
+named place: where the face is, which way it looks, and the valid camera points for a medium and a close).
+
+`solve_recover` wraps `solve` with the ladder, logged in `ladder`: as asked; clearances shrunk to their floor;
+inferred relations dropped; stated bands widened; the room one size class up; unnamed pieces dropped one at a
+time (never a piece with a plan phrase, a named place or a stated relation). The result has `status`: `ok`,
+`ok after recovery`, or `unresolved` with `reask` naming the failures of the room as asked. The command line
+uses `solve_recover`. `place_plan_draw.py LAYOUT.json OUT.png` draws a layout in plan.
+
+Every weight and band is a starting value from published layout work or derived from the scene tool's framing
+rule; none has been measured on a built room.

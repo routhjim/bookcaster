@@ -596,11 +596,15 @@ def asset_items(S, spec, assets, key):
             if "on" in it:                      # standing on another placed item's surface at on_z_m
                 p[2] = it["on_z_m"]
             out.append({"asset": it["asset"], "position": p, "facing": it.get("facing", [0, -1]),
-                        "name": it.get("name", it["asset"]), "on": it.get("on")})
+                        "name": it.get("name", it["asset"]), "on": it.get("on"), "hang": bool(it.get("hang")),
+                        "outside": bool(it.get("outside"))})
     for o in out:
         a = assets[o["asset"]]
+        yaw = yaw_from_facing(o["facing"])
+        if a.get("front"):                      # a mesh whose real front is not -Y: turn that front onto the facing
+            yaw += math.degrees(math.atan2(a["front"][1], a["front"][0])) + 90.0
         S.assets.append({"id": o["asset"], "name": o["name"], "path": a["ue_path"], "c": ue_pt(o["position"]),
-                         "yaw": round(yaw_from_facing(o["facing"]), 3), "f": f"{key.capitalize()}",
+                         "yaw": round(yaw, 3), "f": f"{key.capitalize()}",
                          **({"glb": a["glb"]} if a.get("glb") else {})})
     return out
 
@@ -664,12 +668,34 @@ def expand(spec, assets):
             "counts": S.stats, "placed": placed}
 
 
+def hung_ok(spec, fp, tol=0.05):
+    """A hung item's plan rectangle touches a wall's inner face or a side of a structure box (a chimney breast)."""
+    W, D, _ = spec["size_m"]
+    x0, y0, x1, y1 = fp
+    if x0 < -W / 2 + tol or x1 > W / 2 - tol or y0 < -D / 2 + tol or y1 > D / 2 - tol:
+        return True
+    for el in spec.get("structure", []):
+        if el.get("kind") != "box":
+            continue
+        b, s = el["base"], el["size_m"]
+        bx0, bx1, by0, by1 = b[0] - s[0] / 2, b[0] + s[0] / 2, b[1] - s[1] / 2, b[1] + s[1] / 2
+        near_x = min(abs(x1 - bx0), abs(x0 - bx1)) < tol and y1 > by0 and y0 < by1
+        near_y = min(abs(y1 - by0), abs(y0 - by1)) < tol and x1 > bx0 and x0 < bx1
+        if near_x or near_y:
+            return True
+    return False
+
+
 def check(spec, assets, placed):
     """Plan checks a writer (person or model) can act on: in bounds, no overlaps, nothing floating."""
     W, D, H = spec["size_m"]
     probs = []
     fps = [(p, *footprint(p, assets)) for p in placed]
     for p, (x0, y0, x1, y1), (z0, z1) in fps:
+        if p.get("outside"):                    # beyond the walls on purpose (a backdrop seen through a window)
+            if not (x1 < -W / 2 or x0 > W / 2 or y1 < -D / 2 or y0 > D / 2):
+                probs.append(f"{p['name']}: marked outside, but it reaches into the room")
+            continue
         if x0 < -W / 2 - 1e-3 or x1 > W / 2 + 1e-3 or y0 < -D / 2 - 1e-3 or y1 > D / 2 + 1e-3:
             probs.append(f"{p['name']}: outside the room ({x0:.2f},{y0:.2f})-({x1:.2f},{y1:.2f})")
         if z1 > H:
@@ -682,8 +708,11 @@ def check(spec, assets, placed):
                 r = hosts[0][1]
                 if not (r[0] - 1e-3 <= x0 and x1 <= r[2] + 1e-3 and r[1] - 1e-3 <= y0 and y1 <= r[3] + 1e-3):
                     probs.append(f"{p['name']}: overhangs {p['on']} (not fully on its surface)")
+        elif p.get("hang"):                     # hung on a wall: its back must touch a wall face or a structure box
+            if not hung_ok(spec, (x0, y0, x1, y1)):
+                probs.append(f"{p['name']}: hung, but its back touches no wall (within 5 cm)")
         elif z0 > 0.005:
-            sup = [q for q, (a0, b0, a1, b1), (c0, c1) in fps if q is not p and abs(c1 - z0) < 0.03
+            sup =[q for q, (a0, b0, a1, b1), (c0, c1) in fps if q is not p and abs(c1 - z0) < 0.03
                    and a0 <= p["position"][0] <= a1 and b0 <= p["position"][1] <= b1]
             ok_surf = any(abs(s.get("z_m", -1) - z0) < 0.03 for s in spec.get("support_surfaces", []))
             if not sup and not ok_surf:
@@ -691,7 +720,7 @@ def check(spec, assets, placed):
     for i in range(len(fps)):
         for j in range(i + 1, len(fps)):
             (p, a, za), (q, b, zb) = fps[i], fps[j]
-            if p.get("on") == q["name"] or q.get("on") == p["name"]:
+            if p.get("on") == q["name"] or q.get("on") == p["name"] or p.get("outside") or q.get("outside"):
                 continue
             ox = min(a[2], b[2]) - max(a[0], b[0])
             oy = min(a[3], b[3]) - max(a[1], b[1])

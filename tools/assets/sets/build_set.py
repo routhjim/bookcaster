@@ -44,6 +44,12 @@ GPU_HOLD = Path(C.UE_HOME) / "GPU_HOLD"
 MANNEQUIN = "/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple"
 
 
+def line_client() -> Path:
+    """The line's client: ASSETS_LINE_CLIENT (the run_asset.py of the worktree the line runs from), else this
+    copy's. Run from its own worktree, so a client that starts the line starts that worktree's daemon."""
+    return Path(os.environ.get("ASSETS_LINE_CLIENT") or (HERE.parent / "run_asset.py")).resolve()
+
+
 def out_root():
     if os.environ.get("SETS_OUT"):
         return Path(os.path.expanduser(os.environ["SETS_OUT"]))
@@ -75,6 +81,11 @@ def library_assets():
         ue = ent.get("ue") or {}
         if ue.get("bounds_cm") and a.get("ue_path"):
             out[aid] = {"ue_path": a["ue_path"].split(".")[0], "bounds_cm": ue["bounds_cm"], "class": a["class"]}
+            # the mesh's real front when it is not -Y (a seat's block from scenes/seatbox.py, or "front_asset"):
+            # placed by the spec's facing alone, such a chair stood turned and a sitter sat across its arm (11-11)
+            fr = (ent.get("seat") or {}).get("front_asset") or ent.get("front_asset")
+            if fr and [round(v, 3) for v in fr] != [0.0, -1.0]:
+                out[aid]["front"] = fr
             glb = (ent.get("export") or {}).get("glb")
             if glb and (p.parent / glb).exists():
                 out[aid]["glb"] = str(p.parent / glb)     # imported on demand into a project that lacks it
@@ -318,8 +329,9 @@ def run_sched(job, adir, timeout):
         Path(o).unlink(missing_ok=True)
     t0 = time.time()
     for attempt in range(3):              # a scheduler restart (code update) drops queued jobs: resubmit
-        p = subprocess.run([sys.executable, str(HERE.parent / "run_asset.py"), "--ue-job", str(jp)],
-                           capture_output=True, text=True, env=dict(os.environ, ASSETS_SCHED="1"))
+        client = line_client()
+        p = subprocess.run([sys.executable, str(client), "--ue-job", str(jp)],
+                           capture_output=True, text=True, cwd=str(client.parents[2]), env=dict(os.environ, ASSETS_SCHED="1"))
         if "scheduler went away" not in p.stderr:
             break
         log(f"the scheduler restarted under the job; resubmitting ({attempt + 1})")
@@ -344,6 +356,14 @@ def run_sched(job, adir, timeout):
 
 
 # ------------------------------------------------------------------ main
+def is_interior(spec) -> bool:
+    """A room: the spec says so ("interior"), else it has a ceiling. Scenes use it (indoors hair strands must not
+    take the open sky's light)."""
+    if "interior" in spec:
+        return bool(spec["interior"])
+    return any(e.get("kind") == "ceiling" for e in spec.get("structure", []))
+
+
 def write_manifest(spec, adir, scene, problems, res, times):
     shots = [str(Path(s["path"]).relative_to(adir)) for s in res.get("shots", [])]
     ent = {"id": spec["id"], "class": "set", "description": spec["description"], "tags": spec.get("tags", []),
@@ -352,7 +372,8 @@ def write_manifest(spec, adir, scene, problems, res, times):
            "spec": "spec.json", "scene": "scene.json", "counts": scene["counts"],
            "assets_used": sorted({a["id"] for a in scene["assets"]}), "plan_problems": problems,
            "thumbnails": {"ue": shots}, "render": {k: res.get(k) for k in ("card", "editor", "cvars", "log")},
-           "times_s": times, "updated": time.strftime("%Y-%m-%dT%H:%M:%S")}
+           "times_s": times, "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+           "interior": is_interior(spec)}
     (adir / "asset.json").write_text(json.dumps(ent, indent=1))
     if out_root() == Path(C.LIBRARY) / "set":
         mp = Path(C.LIBRARY) / "manifest.json"

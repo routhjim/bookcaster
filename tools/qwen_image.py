@@ -16,6 +16,7 @@ jobs: {"id": "p001", "prompt": "...", "seed": 1, "path": "/abs/out.png", "size":
                                          (tools/charlora.py), applied at run time on top of the merged
                                          Lightning LoRA (JobLoras); the optional 0-1 box = regional: the LoRA
                                          acts on the picture's tokens only there (no bleed onto others),
+                                         or a region picture's path (white = there, averaged per token),
        "init": {"image": "/abs/start.png", "strength": 0.7}}   optional img2img: the schedule is scaled by
                                          strength and the init latents noised to the (shifted) first sigma
                                          structure control through the ControlNet Union; the image is a
@@ -453,7 +454,14 @@ class JobLoras:
         self.active = []
         for l in loras or []:
             mask = None
-            if len(l) > 2 and l[2] and grid:
+            if len(l) > 2 and isinstance(l[2], str) and grid:
+                # a region picture (white = this LoRA; e.g. a person's own region, guides.py): averaged per token
+                from PIL import Image as _I
+                gh, gw = grid
+                im = _I.open(l[2]).convert("L").resize((gw, gh), _I.BOX)
+                mask = (torch.frombuffer(bytearray(im.tobytes()), dtype=torch.uint8).to(self.device).float()
+                        / 255.0).reshape(-1)
+            elif len(l) > 2 and l[2] and grid:
                 gh, gw = grid
                 x0, y0, x1, y1 = l[2]
                 ys = (torch.arange(gh, device=self.device).float() + 0.5) / gh

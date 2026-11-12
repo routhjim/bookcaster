@@ -1,6 +1,6 @@
 """Blender 4.5, GPU (Cycles HIP): skin an image-to-3D mesh from orbit frames.
 
-    blender -b -t 4 --factory-startup --python bl_orbit_skin.py -- job.json
+    blender -b -t 0 --factory-startup --python bl_orbit_skin.py -- job.json
 
 job: {"mesh": "shape.glb", "out": dir, "name": "orbit_fig", "height_m": 1.85,
       "views": [{"image": "f.png", "az": 0.0}, ...],      az in degrees: the camera's angle around the figure,

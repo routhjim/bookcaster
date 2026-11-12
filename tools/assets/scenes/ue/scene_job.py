@@ -6,14 +6,16 @@ JOB (written by scene.py; set-frame metres converted to UE centimetres there):
    "char_tools": folder of the character tools (char_render.py is loaded from there and called),
    "set_tools": folder of the set builder's UE scripts (set_build.spawn_light is called for extra lights),
    "bp_deps": [assets to load before any character Blueprint],
-   "characters": {key: {"path", "garments", "body_swap", "rebuild_from", "garment_material",
+   "characters": {key: {"path", "garments", "body_swap", "hide_body", "rebuild_from", "garment_material",
                         "loc_cm": [x, y, z], "yaw": deg, "facing": [dx, dy] (set frame),
                         "body_pose": {"anim", "t" | "scan"} | null, "face_pose": {"curves": {...}} | {"anim", "t"} | null}},
    "cameras": [{"name", "kind": wide|full|medium|close, "subject": key,
                 "position"/"target" (set frame, metres; wide) | "az", "el", "screen_x" (computed shots),
                 "focal_mm", "aperture"}],
    "lights": [expanded lights (layout.light_items)], "exposure_ev100": float | null,
-   "warm_frames", "settle_frames", "attach_tol_cm"}
+   "warm_frames", "settle_frames", "attach_tol_cm",
+   "interior": the set is a room (hair strands then take no sky light),
+   "hide": [set item names hidden for these stills (a figure that brings its own chair takes the set's chair's place)]}
 Returns {"ok", "shots": [{name, path, t_s, camera, frame_check, attach}], "subjects", "times_s", "notes"}.
 Nothing is saved: the set level is loaded, dressed for the stills and left as it was (spawned actors destroyed,
 post settings restored).
@@ -39,6 +41,8 @@ act = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 EYES = ("FACIAL_L_Eye", "FACIAL_R_Eye")
 HEAD = "head"
 FEET = ("foot_l", "foot_r", "ball_l", "ball_r")
+POSE_JOINTS = ("head", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r", "hand_l", "hand_r",
+               "thigh_l", "thigh_r", "calf_l", "calf_r", "foot_l", "foot_r")
 
 
 def log(m):
@@ -88,7 +92,11 @@ def measure(key, body, face, spec, head_top_off):
     spine = sock(body, "spine_05")
     chin = sock(face, "FACIAL_C_Jaw")
     s_eye = to_set(eye)
-    out = {"eye_z": s_eye[2], "eye_xy": s_eye[:2],
+    # where the head faces, in plan: from the head joint (over the neck) to the eyes' midpoint
+    s_head = to_set(head)
+    hf = [s_eye[0] - s_head[0], s_eye[1] - s_head[1]]
+    hn = math.hypot(*hf) or 1.0
+    out = {"eye_z": s_eye[2], "eye_xy": s_eye[:2], "head_fwd_xy": [hf[0] / hn, hf[1] / hn],
            "head_top_z": to_set(head)[2] + head_top_off["top_above_head_m"],
            "chin_z": s_eye[2] - head_top_off["chin_below_eye_m"],
            "waist_z": (to_set(pelvis)[2] * 0.4 + to_set(sock(body, "spine_02"))[2] * 0.6),
@@ -97,7 +105,12 @@ def measure(key, body, face, spec, head_top_off):
            "jaw_z": to_set(chin)[2],
            "feet_above_floor_m": to_set(unreal.Vector(0, 0, feet_z))[2] - head_top_off.get("sole_below_foot_m", 0.0)
            - spec["loc_cm"][2] / 100.0}
-    return {k: ([round(x, 4) for x in v] if isinstance(v, list) else round(v, 4)) for k, v in out.items()}
+    out = {k: ([round(x, 4) for x in v] if isinstance(v, list) else round(v, 4)) for k, v in out.items()}
+    # joints for a skeleton picture (guide pass): body joints, the head joint and the eyes, set-frame metres
+    J = {n: sock(body, n) for n in POSE_JOINTS if body.does_socket_exist(n)}
+    J.update({n: sock(face, n) for n in EYES})
+    out["joints"] = {n: [round(c, 4) for c in to_set(v)] for n, v in J.items()}
+    return out
 
 
 def attach_check(body, face, tol_cm):
@@ -193,6 +206,64 @@ class _SpawnAt:
         return getattr(self._real, name)
 
 
+def plan_angle(fwd, frm, to):
+    """Degrees between a plan direction and the direction from `frm` to `to` (0 = facing it, 180 = facing away)."""
+    d = [to[0] - frm[0], to[1] - frm[1]]
+    a = math.degrees(math.atan2(d[1], d[0]) - math.atan2(fwd[1], fwd[0]))
+    return round(abs((a + 180) % 360 - 180), 1)
+
+
+def truth(cs, subjects):
+    """Per person, from the scene itself: the angle between where the head (and the body) faces and the camera."""
+    out = {}
+    for k, v in subjects.items():
+        m = v["measured"]
+        j = m.get("joints") or {}
+        near = None
+        if "upperarm_l" in j and "upperarm_r" in j:
+            near = "left" if math.dist(j["upperarm_l"], cs["position"]) < math.dist(j["upperarm_r"], cs["position"]) \
+                else "right"
+        out[k] = {"head_to_camera_deg": plan_angle(m["head_fwd_xy"], m["eye_xy"], cs["position"]),
+                  "nearer_shoulder": near,
+                  "body_to_camera_deg": plan_angle(m["facing"], m["pelvis_xy"], cs["position"]),
+                  "distance_m": round(math.dist(m["eye_xy"] + [m["eye_z"]], cs["position"]), 3)}
+    return out
+
+
+def guide_capture(cs, res, path, show_only=None):
+    """The camera's linear scene depth (UE centimetres, float RGBA) through a SceneCapture2D with the still's own
+    position, aim and horizontal field of view, written to `path` (.exr); show_only: only these actors drawn."""
+    world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+    loc, tgt = to_ue(cs["position"]), to_ue(cs["target"])
+    a = act.spawn_actor_from_class(unreal.SceneCapture2D, loc, unreal.MathLibrary.find_look_at_rotation(loc, tgt))
+    try:
+        comp = a.capture_component2d
+        rt = unreal.RenderingLibrary.create_render_target2d(world, res[0], res[1],
+                                                            unreal.TextureRenderTargetFormat.RTF_RGBA32F)
+        comp.set_editor_property("texture_target", rt)
+        comp.set_editor_property("capture_source", unreal.SceneCaptureSource.SCS_SCENE_DEPTH)
+        comp.set_editor_property("fov_angle", math.degrees(2 * math.atan(18.0 / cs["focal_mm"])))
+        comp.set_editor_property("capture_every_frame", False)
+        comp.set_editor_property("capture_on_movement", False)
+        if show_only is not None:
+            comp.set_editor_property("primitive_render_mode",
+                                     unreal.SceneCapturePrimitiveRenderMode.PRM_USE_SHOW_ONLY_LIST)
+            for x in show_only:
+                comp.show_only_actor_components(x, True)
+        comp.capture_scene()
+        yield
+        yield
+        # EXR keeps the float depth (the render-target export's .hdr is RGBE: 8-bit steps, banded normals)
+        opt = unreal.ImageWriteOptions()
+        opt.set_editor_property("format", unreal.DesiredImageFormat.EXR)
+        opt.set_editor_property("overwrite_file", True)
+        opt.set_editor_property("async_", False)
+        opt.set_editor_property("compression_quality", 1)        # 1 = uncompressed EXR (read without OpenEXR)
+        unreal.ImageWriteBlueprintLibrary.export_to_disk(rt, path, opt)
+    finally:
+        act.destroy_actor(a)
+
+
 def find_post():
     for a in act.get_all_level_actors():
         if isinstance(a, unreal.PostProcessVolume) and a.get_actor_label() == "SetPost":
@@ -205,6 +276,7 @@ def run(job):
     r = {"ok": False, "id": job["id"], "shots": [], "subjects": {}, "times_s": {}, "notes": []}
     res = job.get("res", [1152, 640])
     temp = []
+    hidden = []
     post_old = None
     CR = None
     framing = _load("scene_framing", os.path.join(os.path.dirname(HERE), "framing.py"))
@@ -216,6 +288,8 @@ def run(job):
                   "result": os.path.join(os.path.dirname(job["result"]), "char_render_side.json")}
         CR.RES = res
         CR.reset()
+        if hasattr(CR, "interior_hair"):     # a room: hair strands not lit by the open sky (restored in cleanup)
+            CR.interior_hair(job.get("interior"))
         t = time.time()
         les.load_level(job["level"])
         yield from frames(5)
@@ -234,6 +308,12 @@ def run(job):
             pp.set_editor_property("override_auto_exposure_bias", True)
             pp.set_editor_property("auto_exposure_bias", -float(job["exposure_ev100"]))
             ppv.set_editor_property("settings", pp)
+        for a in act.get_all_level_actors() if job.get("hide") else []:
+            if a.get_actor_label() in job["hide"] and not a.is_hidden_ed():
+                a.set_is_temporarily_hidden_in_editor(True)
+                a.set_actor_hidden_in_game(True)
+                hidden.append(a)
+        r["hidden"] = [a.get_actor_label() for a in hidden]
         if job.get("lights"):
             SB = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
             for l in job["lights"]:
@@ -250,10 +330,28 @@ def run(job):
                 CR.character_actor(key)
             finally:
                 CR.act = real_act
+        FG = _load("scene_figure", job["figure_tools"]) if job.get("figures") else None
+        figs = {}
+        for key, f in (job.get("figures") or {}).items():
+            figs[key] = FG.spawn(key, f)
+            temp.append(figs[key])
+
         def comps(key):
             a = CR.S["actors"][key][0]
             body, face = CR.skel_comps(a)
             return a, body, face
+
+        def live_face(key):
+            """The face component as the actor holds it NOW: clearing its leader pose can rebuild the Blueprint's
+            components, and the one fetched before is then a dead object ("ObjectInstance is null" on the next
+            call, 11-11, a figure with a face pose of curves)."""
+            a, body, face = comps(key)
+            if face is not None and unreal.SystemLibrary.is_valid(face):
+                return a, body, face
+            for c in a.get_components_by_class(unreal.SkeletalMeshComponent):
+                if "face" in c.get_name().lower() and unreal.SystemLibrary.is_valid(c):
+                    return a, body, c
+            raise RuntimeError(f"{key}: no live face component after clearing its leader pose")
 
         def rewire(key):
             a, body, face = comps(key)
@@ -289,9 +387,11 @@ def run(job):
             # the face follows the body through its own Animation Blueprint, which by default only updates while
             # the face is rendered: off-view (or before the first camera) it keeps the last pose and the head
             # floats off the neck after a body pose change. Always tick it.
-            a, body, face = comps(key)
-            face.set_editor_property("visibility_based_anim_tick_option",
-                                     unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
+            # the same for the body: an assembled Blueprint's Body only refreshes its bones while drawn, so a pose
+            # applied before a camera sees it (or on a hidden body) never reaches the bones, the face or the garments
+            for i in (1, 2):             # fetched again each time: the property set can replace the components
+                comps(key)[i].set_editor_property("visibility_based_anim_tick_option",
+                                                  unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
         yield from frames(3)
         for key in job["characters"]:
             rewire(key)
@@ -361,15 +461,20 @@ def run(job):
                 a, body, face = comps(key)
                 fp = spec.get("face_pose") or {}
                 if fp.get("curves"):
+                    # the face anim is made ONCE, before the leader is cleared, and reused by the later calls: made
+                    # again it deleted the AnimSequence the face was still playing (same asset path), and the next
+                    # call on the face failed with "ObjectInstance is null" (11-11, every character)
+                    if spec.get("_face_anim") is None:
+                        mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
+                        spec["_face_anim"] = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
+                    anim, n = spec["_face_anim"]
                     face.set_leader_pose_component(None, True, False)
-                    a, body, face = comps(key)              # the call can replace the Blueprint's components
-                    mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
-                    anim, n = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
+                    a, body, face = live_face(key)          # the call can replace the Blueprint's components
                     CR.apply_anim(face, anim, 1.0 / 30)
                     r["subjects"].setdefault(key, {})["face_follow"] = f"anim ({n} bones from the body)"
                 elif fp.get("anim"):
                     face.set_leader_pose_component(None, True, False)
-                    a, body, face = comps(key)
+                    a, body, face = live_face(key)
                     CR.apply_anim(face, EAL.load_asset(fp["anim"]), fp.get("t", 0.0))
                     r["subjects"].setdefault(key, {})["face_follow"] = "clip (head pose from the clip)"
                 else:
@@ -405,6 +510,8 @@ def run(job):
             subj = measure(key, body, face, spec, head_off[key])
             r["subjects"][key]["measured"] = subj
             r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items() if k != "_anim"}
+        for key, f in (job.get("figures") or {}).items():
+            r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)
         # cameras
         cams = []
@@ -455,7 +562,23 @@ def run(job):
                     raise RuntimeError(f"screenshot not written: {path}")
                 yield
             les.eject_pilot_level_actor()
-            shot = {"name": c["name"], "path": path, "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
+            guides = {}
+            if job.get("guides"):
+                # guide passes for an image model: the scene's depth, and each person's own depth (their mask is
+                # where it meets the scene's: the visible part)
+                g = os.path.join(job["out"], "guides")
+                os.makedirs(g, exist_ok=True)
+                guides["depth"] = os.path.join(g, f"{c['name']}_depth.exr")
+                yield from guide_capture(cs, res, guides["depth"])
+                for key in job["characters"]:
+                    a_ = CR.S["actors"][key][0]
+                    who = [a_] + list(CR.S.get("followers", {}).get(id(a_), []))
+                    guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
+                    yield from guide_capture(cs, res, guides[f"depth_{key}"], who)
+                for key, fa in figs.items():
+                    guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
+                    yield from guide_capture(cs, res, guides[f"depth_{key}"], [fa])
+            shot = {"name": c["name"], "path": path, "guides": guides, "truth": truth(cs, r["subjects"]), "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):
                 shot["reject"] = "head detached from the body at capture"
@@ -474,6 +597,12 @@ def run(job):
         for a in temp:
             try:
                 act.destroy_actor(a)
+            except Exception:
+                pass
+        for a in hidden:
+            try:
+                a.set_is_temporarily_hidden_in_editor(False)
+                a.set_actor_hidden_in_game(False)
             except Exception:
                 pass
         if post_old:

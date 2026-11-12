@@ -1,0 +1,15 @@
+{
+ "id": "backdrop_street_01",
+ "class": "prop",
+ "description": "Painted backdrop for a window view: the far side of a quiet 1880s town street (a terrace of brick and stucco town houses with sash windows, railings, pavement and cobbles under an overcast sky), 24 x 12 m, one flat picture. Front -Y; origin at the middle of the bottom edge. Stand it a street's width outside a window, facing the window, its bottom below the outside ground line.",
+ "tags": ["backdrop", "matte", "street", "terrace", "exterior", "victorian", "window view"],
+ "tier": "background",
+ "texture_px": 2048,
+ "size_m": [24.0, 0.02, 12.0],
+ "size_tolerance": 0.05,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script; picture drawn by the local image model)",
+ "backdrop": {"w": 24.0, "h": 12.0},
+ "cameras": [{"name": "front", "position": [0.0, -30.0, 6.0], "target": [0.0, 0.0, 6.0], "focal": 28}]
+}
