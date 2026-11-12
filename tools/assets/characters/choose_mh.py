@@ -157,18 +157,41 @@ def main():
         "colour": "What colour is this person's hair in the drawing? Reply with the number only.\n"
                   + menu([f"{c} hair" for c in COLOURS]),
     }
-    q = [{"id": "head", "image": str(head_p), "ask": asks, "max_new_tokens": 4}]
-    q.append({"id": "fig", "image": str(fig_p), "max_new_tokens": 4,
-              "ask": {"build": "How is this person built, as drawn? Reply with the number only.\n" + menu(list(BUILDS))}})
+    asks["build"] = "How is this person built? Reply with the number only.\n" + menu(list(BUILDS))
     import subprocess
-    vl = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
-                        input="".join(json.dumps(x) + "\n" for x in q), capture_output=True, text=True)
-    ans = {}
-    for ln in vl.stdout.splitlines():
-        if ln.startswith("{"):
-            ans.update({k: (v or "").strip().lower() for k, v in json.loads(ln)["answers"].items()})
-    if not ans:
-        raise SystemExit(f"vision model gave no answers: {vl.stderr[-800:]}")
+
+    def ask_vl(questions):
+        vl = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
+                            input="".join(json.dumps(x) + "\n" for x in questions), capture_output=True, text=True)
+        out_ = {}
+        for ln in vl.stdout.splitlines():
+            if ln.startswith("{"):
+                out_.update({k: (v or "").strip().lower() for k, v in json.loads(ln)["answers"].items()})
+        if not out_:
+            raise SystemExit(f"vision model gave no answers: {vl.stderr[-800:]}")
+        return out_
+    # the sheet's text is the fact where it states something: each question is first put to the written description
+    # (answer "unstated" when the text does not say); only what the text leaves open is asked of the picture
+    ans, src = {}, {}
+    if a.look.strip():
+        tq = {k: (f"Here is a written description of a person: \"{a.look.strip()}\"\nUse only this description, not "
+                  f"the picture. {v.split(' Answer')[0].split(' Reply')[0]} If the description does not say, answer "
+                  f"unstated." + (" Otherwise " + v[v.index("Answer"):] if "Answer" in v else
+                                  " Otherwise " + v[v.index("Reply"):]))
+              for k, v in asks.items()}
+        tans = ask_vl([{"id": "text", "image": str(head_p), "ask": tq, "max_new_tokens": 6}])
+        for k, v in tans.items():
+            if v and "unstated" not in v and "not" not in v.split()[:1]:
+                ans[k], src[k] = v, "text"
+    rest = {k: v for k, v in asks.items() if k not in ans}
+    if rest:
+        pans = ask_vl([{"id": "head", "image": str(head_p), "max_new_tokens": 4,
+                        "ask": {k: v for k, v in rest.items() if k != "build"}}]
+                      + ([{"id": "fig", "image": str(fig_p), "max_new_tokens": 4, "ask": {"build": rest["build"]}}]
+                         if "build" in rest else []))
+        for k, v in pans.items():
+            ans[k], src[k] = v, "picture"
+    sc["answer_source"] = src
 
     def num(v, n):
         import re as _re

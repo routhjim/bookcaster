@@ -1095,6 +1095,23 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
     z_sh = float(J("clavicle_l").z) - 0.02
     top0 = float(P_[front_ & (P_[:, 2] < chin_), 2].max()) if (front_ & (P_[:, 2] < chin_)).any() else None
     REP["collar_height"] = {"chin_z": round(chin_, 3), "collar_top_front_z": round(top0, 3) if top0 else None}
+    # the innermost cloth round the neck (a shirt collar, a cravat): per 22.5-degree sector round the neck's axis,
+    # the cloth within 2.5 cm of that sector's smallest radius between the shoulder line and the chin. Only this
+    # layer is lifted or laid: an outer coat collar and the lapels are never moved.
+    ang_ = np.arctan2(P_[:, 1] - nc_[1], P_[:, 0] - nc_[0])
+    sec_ = ((ang_ + math.pi) / (2 * math.pi) * 16).astype(int) % 16
+    band_ = (P_[:, 2] > z_sh) & (P_[:, 2] < chin_) & (rr_ < 0.15)
+    rmin_ = np.full(16, 9.0)
+    for k_ in range(16):
+        m_ = band_ & (sec_ == k_)
+        if m_.any():
+            rmin_[k_] = float(np.quantile(rr_[m_], 0.03))
+    inner_w = np.clip((rmin_[sec_] + 0.035 - rr_) / 0.02, 0, 1) * (rr_ < 0.15)
+    REP["collar_height"]["inner_layer_verts"] = int((inner_w > 0.5).sum())
+    BARE_MAX = float(JOB.get("bare_neck_max_m", 0.02))
+    if top0 is not None and (chin_ - top0) <= BARE_MAX:
+        REP["bare_neck_cm"] = round((chin_ - top0) * 100, 1)       # already under the limit: nothing is moved
+        top0 = None
     if top0 is not None:
         lift = (chin_ - float(JOB.get("collar_under_chin_m", 0.012))) - top0
         if lift > 0.003 and top0 > z_sh + 0.02:
@@ -1102,8 +1119,7 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
             z_lo_ = min(z_sh, float(J("spine_04").z))
             t_ = np.clip((P_[:, 2] - z_lo_) / (top0 - z_lo_), 0, 1)
             t_ = t_ * t_ * (3 - 2 * t_)
-            rw = np.clip((0.15 - rr_) / 0.06, 0, 1)
-            dz = lift * t_ * rw
+            dz = lift * t_ * inner_w
             disp[:, 2] += dz
             # anything the lift took into the head mesh goes out again
             hb2 = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
@@ -1125,7 +1141,7 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
             z_front = min(top0, chin_ - 0.004)
             # height of the edge surface at each vertex: front at z_front, rising backward (+y) by tan(tilt)
             zedge = z_front + np.maximum(P2[:, 1] - (nc_[1] - 0.06), 0) * math.tan(tilt_c)
-            sel = (rr2 < float(JOB.get("collar_edge_r_m", 0.11))) & (P2[:, 2] > zedge)
+            sel = (rr2 < float(JOB.get("collar_edge_r_m", 0.11))) & (P2[:, 2] > zedge) & (inner_w > 0.5)
             disp[sel, 2] -= (P2[sel, 2] - zedge[sel])
             REP["collar_height"]["edge_laid_verts"] = int(sel.sum())
 fig.data.vertices.foreach_set("co", (fco + disp).ravel())

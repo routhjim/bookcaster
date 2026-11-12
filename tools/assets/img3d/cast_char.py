@@ -365,8 +365,10 @@ def main():
                 chars[k] = {"id": a.id, "position": [x, 0.4], "facing": [0, -1], "body_pose": {
                     "pose": "stand_relaxed", "params": {"weight_on": "r", "chest_deg": 0, "head_deg": 0, "head_tilt": 0,
                                                         "hand_at_lapel": False, "steps": arm_steps(ab)}}}
-                # a full shot at 24 mm stays inside a 5 m room (at 50 mm the camera stood behind the wall)
-                cams.append({"name": f"wide_{k}", "kind": "full", "subject": k, "focal_mm": 24, "az": 0})
+
+            # one camera that holds all three copies (framed on the copies' marks, inside the room)
+            cams = [{"name": "wide_all", "kind": "wide", "subject": "a8", "position": [0.2, -2.2, 1.0],
+                     "target": [0.2, 0.4, 0.95], "focal_mm": 22}]
             spec = {"id": f"arms_{tag}", "set": a.set, "guides": True, "characters": chars, "cameras": cams}
             sp = W / "arms_scene.json"
             sp.write_text(json.dumps(spec, indent=1))
@@ -382,8 +384,12 @@ def main():
                                 str(a.scene_tool)], capture_output=True, text=True)
             res = json.loads(g.stdout)
             pick = 12
+            for k in ("a4", "a8", "a12"):
+                for s_ in ("l", "r"):
+                    if not ((res.get("wide_all", {}).get(k) or {}).get(s_) or {}).get("rows"):
+                        raise RuntimeError(f"arms measure empty for copy {k} side {s_}: the copy is not in the frame")
             for k, ab in (("a4", 4), ("a8", 8), ("a12", 12)):
-                sh = res.get(f"wide_{k}", {}).get(k, {})
+                sh = res.get("wide_all", {}).get(k, {})
                 if all((sh.get(s_) or {}).get("separated", 0) >= 8 for s_ in ("l", "r")):
                     pick = ab
                     break
