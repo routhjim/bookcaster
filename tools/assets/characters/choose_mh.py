@@ -164,6 +164,12 @@ def main():
                   + menu([f"{c} hair" for c in COLOURS]),
     }
     asks["build"] = "How is this person built? Reply with the number only.\n" + menu(list(BUILDS))
+    # the garment's facts for the fit and the drawing: a garment to the ankles (skirt, dress, gown) takes the dress
+    # rules; how loose the sleeves are at the upper arm sets the spread drawing's starting arm angle
+    asks["long_garment"] = ("Does this person wear a garment that reaches the ankles, such as a long skirt, a dress, "
+                            "a gown or a nightgown? Answer yes or no.")
+    asks["sleeves"] = ("How loose are this person's sleeves at the upper arm: close (fitted to the arm), medium, or "
+                       "loose (full, hanging away from the arm)? Answer with one word: close, medium or loose.")
     import subprocess
 
     def ask_vl(questions):
@@ -191,10 +197,11 @@ def main():
                 ans[k], src[k] = v, "text"
     rest = {k: v for k, v in asks.items() if k not in ans}
     if rest:
+        FIG_KEYS = ("build", "long_garment", "sleeves")     # asked of the whole figure, not the head
+        figq = {k: v for k, v in rest.items() if k in FIG_KEYS}
         pans = ask_vl([{"id": "head", "image": str(head_p), "max_new_tokens": 4,
-                        "ask": {k: v for k, v in rest.items() if k != "build"}}]
-                      + ([{"id": "fig", "image": str(fig_p), "max_new_tokens": 4, "ask": {"build": rest["build"]}}]
-                         if "build" in rest else []))
+                        "ask": {k: v for k, v in rest.items() if k not in FIG_KEYS}}]
+                      + ([{"id": "fig", "image": str(fig_p), "max_new_tokens": 4, "ask": figq}] if figq else []))
         for k, v in pans.items():
             ans[k], src[k] = v, "picture"
     sc["answer_source"] = src
@@ -276,7 +283,11 @@ def main():
     sc["preset_pool"] = pool
     sc["compare_keep"] = a.compare
     base = pool[0] if pool else base
-    out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params,
+    lg = ans.get("long_garment", "")
+    garment = {"long": True if lg.startswith("y") else False if lg.startswith("n") else None,
+               "sleeves": next((w for w in ("close", "medium", "loose") if (ans.get("sleeves") or "").startswith(w)), None),
+               "source": {k: src.get(k) for k in ("long_garment", "sleeves")}}
+    out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params, "garment": garment,
            "body": {k: round(float(v), 1) for k, v in body.items()}, "scores": sc}
     Path(a.out).write_text(json.dumps(out, indent=1))
     print(json.dumps({k: out[k] for k in ("base", "gender", "grooms", "clear_slots", "body")}))

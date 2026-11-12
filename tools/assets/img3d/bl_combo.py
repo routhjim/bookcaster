@@ -252,14 +252,21 @@ if match == "neck":
     # the neck: the narrowest horizontal slice of the upper figure (head above is wider, collar and shoulders
     # below are wider; spread arms hang lower), matched to the body's neck_01 joint
     Hf = zmax - zmin
-    zs_ = np.linspace(zmin + 0.74 * Hf, zmin + 0.95 * Hf, 43)
+    # searched only near where the body's own neck sits as a fraction of its height (the drawing is made from a pose
+    # map of this body's joints): long loose hair framing a face made the narrowest slice the top of the head
+    # (0.95 of the height), the figure was scaled to put its head at the body's neck and its face stayed on the
+    # garment (11-11)
+    exp_ = 0.5 * (J("neck_01").z + J("neck_02").z) / top_z
+    lo_, hi_ = max(0.74, exp_ - float(JOB.get("neck_search_below", 0.05))), min(0.95, exp_ + float(JOB.get("neck_search_above", 0.03)))
+    zs_ = np.linspace(zmin + lo_ * Hf, zmin + hi_ * Hf, 31)
     wid = []
     for z_ in zs_:
         sl = co[np.abs(co[:, 2] - z_) < 0.004 * Hf]
         wid.append(np.ptp(sl[:, 0]) if len(sl) > 10 else 9.0)
     zn = zs_[int(np.argmin(wid))]
     s = 0.5 * (J("neck_01").z + J("neck_02").z) / (zn - zmin)        # the narrowest slice is mid-neck
-    REP["neck_match"] = {"figure_neck_frac": round(float((zn - zmin) / Hf), 3), "width_frac": round(float(min(wid) / Hf), 3)}
+    REP["neck_match"] = {"figure_neck_frac": round(float((zn - zmin) / Hf), 3), "width_frac": round(float(min(wid) / Hf), 3),
+                         "expected_frac": round(float(exp_), 3), "window": [round(lo_, 3), round(hi_, 3)]}
 elif white.sum() > 20 and match == "collar":
     cz = np.quantile(co[white, 2], 0.98)
     s = (J("neck_02").z + float(JOB.get("collar_above_neck02_m", 0.0))) / (cz - zmin)
@@ -1689,6 +1696,17 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
                 me_l.attributes.remove(a_)
         me_l.materials.clear()
         REP["liner"] = {"covered": int(cov.sum()), "verts": len(me_l.vertices), "s": round(time.time() - t_l, 2)}
+if not STATUE and HEAD is not None:
+    # nothing of the garment in front of the face or inside the head above the chin: a generated head left on the
+    # garment by a wrong neck line is thousands of vertices there (11-11); cast_char fails the build on it
+    _hv = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    _hx = np.array(J("head"))
+    _chin = (REP.get("collar_height") or {}).get("chin_z") or float(J("head").z) - 0.03
+    _fv = np.array([fig.matrix_world @ v.co for v in fig.data.vertices])
+    _face_y = float(np.quantile(_hv[_hv[:, 2] > _chin, 1], 0.5)) if (_hv[:, 2] > _chin).any() else float(_hx[1])
+    _sel = ((_fv[:, 2] > _chin + 0.01) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05)
+            & (np.abs(_fv[:, 0] - _hx[0]) < 0.10) & (_fv[:, 1] < _face_y))
+    REP["head_volume_verts"] = int(_sel.sum())
 if JOB.get("skin_mask") is not None and not STATUE and HEAD is not None:
     # the head mesh's skin under the cloth, as an opacity mask in its UVs (the engine hides it: char_skinmask.py)
     t = time.time()

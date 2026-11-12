@@ -52,6 +52,7 @@ GUIDES_PY = os.path.expanduser(os.environ.get("ASSETS_GUIDES_PY", "~/tts-ab/.ven
 OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
 THUMBS = str(C.MH_PRESET_PORTRAITS)      # neutral studio portraits of every shipped preset (config.py)
+HEAD_VOLUME_MAX = 150      # garment vertices allowed in front of the face above the chin (a collar edge, a curl)
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
@@ -381,7 +382,12 @@ def main():
         def _():
             lk = a.look.lower()
             # a full skirt and puffed sleeves need the arms a little higher for air between arm and bodice
-            deg0 = a.pose_deg or (48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
+            # the starting arm angle by how loose the sleeves are (a fact, text first): the angles that passed the
+            # mesh gate so far were 45-54 for close sleeves, 60 for a tweed jacket, 72 for loose ones
+            sl_ = ((ch.get("garment") or {}).get("sleeves") or "")
+            deg0 = a.pose_deg or {"close": 46, "medium": 58, "loose": 70}.get(
+                sl_, 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
+            CH["draw_start_deg"] = {"deg": deg0, "sleeves": sl_ or None}
             look = spread_look(a.look)
             CH["draw_look"] = look
             tried, meshes, chosen = [], [], None
@@ -452,11 +458,27 @@ def main():
     drawing = json.loads(gate_p.read_text())["chosen"]
     # ---------------------------------------------------------------- combo
     combo = W / "combo"
+
+    def head_check():
+        hv = json.loads((combo / "report.json").read_text()).get("head_volume_verts")
+        CH["head_volume_verts"] = hv
+        if hv is not None and hv > HEAD_VOLUME_MAX:
+            save()
+            raise RuntimeError(f"GARMENT IN THE HEAD: {hv} garment vertices in front of the face or inside the head "
+                               f"above the chin (at most {HEAD_VOLUME_MAX}); the figure's own head was probably left "
+                               f"on the garment (its neck line); the build stops here")
     if not done("combo", combo / "outfit.fbx"):
         @timed("combo")
         def _():
             m = legs_apart(drawing)
             lk = a.look.lower()
+            gf = (ch.get("garment") or {})
+            if gf.get("long") is not None:
+                # the text-first fact (a garment to the ankles) decides; the drawing's legs measure is the fallback
+                # (two shoes under a nightgown's hem read as trousers, 11-11)
+                m["long_skirt_drawing"] = m["long_skirt"]
+                m["long_skirt"] = bool(gf["long"])
+                m["long_skirt_source"] = (gf.get("source") or {}).get("long_garment") or "fact"
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
                    "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
                    "collar_lift": False, "liner": False,
@@ -490,6 +512,7 @@ def main():
                       str(jp)], W / "combo.log")
             if p.returncode or not (combo / "outfit.fbx").exists():
                 raise RuntimeError(f"combo failed: {p.stdout[-800:]}")
+            head_check()
     # ---------------------------------------------------------------- the body fits the clothes at the neck
     # the fit measures the bare neck (chin to the generated collar's front top) and both girths (the collar's inner
     # one, the MetaHuman's neck); where the collar sits low or tight, the MetaHuman's neck is changed to meet it
@@ -577,6 +600,7 @@ def main():
                           str(HERE / "bl_combo.py"), "--", str(jp)], W / "combo_lift.log")
                 if p.returncode:
                     raise RuntimeError("refit with the collar lift failed")
+                head_check()
                 rep2 = json.loads((combo / "report.json").read_text())
                 CH["collar_lift"] = {"bare_before_cm": bare, "bare_after_cm": rep2.get("bare_neck_cm"),
                                      "lift": rep2.get("collar_height")}
