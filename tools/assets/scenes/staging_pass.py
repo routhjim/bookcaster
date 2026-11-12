@@ -216,10 +216,14 @@ def main():
                 q = f"The shot's action: {act}\nThings the director names in it: {named}\n"
                 # a move only where the plan's own posture changes over the shot (sitting -> standing or back)
                 if (sh.get("pose_end") or {}).get(nm) not in (None, p.get("pose")):
-                    end = ask.choose(q_choose(psg, st, q + f"Where is {nm} when this shot ends? Choose a named "
-                                              "place.", place_opts), place_opts)
+                    # the places offered by number and description only: offered by the set's own names, the
+                    # model took the plain-named "armchair" over the described leather one every time (11-11)
+                    nums = [f"place {i + 1}: {o.split(' (', 1)[1].rstrip(')')}" for i, o in enumerate(place_opts)]
+                    keys = [f"place {i + 1}" for i in range(len(place_opts))]
+                    end = ask.choose(q_choose(psg, st, q + f"Where is {nm} when this shot ends? Choose the place's "
+                                              "number from this list:\n" + "\n".join(nums), keys), keys)
                     if end != NOT:
-                        res["move_end"].setdefault(sid, {})[nm] = end.split(" (")[0]
+                        res["move_end"].setdefault(sid, {})[nm] = things[keys.index(end)]["name"]
                 w = ask.choose(q_choose(psg, st, q + f"What is {nm} wearing when this shot ends, among these "
                                                      "choices?", var[nm]), var[nm])
                 if w != NOT:
