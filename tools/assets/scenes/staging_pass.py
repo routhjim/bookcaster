@@ -289,6 +289,18 @@ def main():
     for (nm, ps), sids in by.items():
         if len(sids) < 2:
             continue
+        # the shots whose own line states the action each own it (a second consecutive shot continues it); one
+        # owner is picked only among claimants whose lines do not state it (11-12: the arm look at 04:01 and 04:04)
+        states = [x for x in sids if ask.choose(
+            HEAD + "A film shot's own action line:\n" + (plan[x][0].get("action") or plan[x][0].get("picture") or "")
+            + f"\nQuestion: Does this line say that someone {POSE_WORDS[ps]} (the line names people by their looks)?"
+            "\nAnswer with exactly one of these, nothing else: yes; no", ["yes", "no"]) == "yes"]
+        if states:
+            res["_action_owner"][f"{nm}: {ps}"] = states
+            for x in sids:
+                if x not in states:
+                    res["pose"][x][nm] = "none"
+            continue
         acts = [x for x in sids if plan[x][0].get("kind") == "action"]   # only an action shot states an action
         if len(acts) == 1:
             keep = acts[0]
