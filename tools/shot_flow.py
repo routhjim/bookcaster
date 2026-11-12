@@ -241,21 +241,28 @@ CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(
 # 11-11: the fixed state of the room the supplied keys were staged in (supplied_keys(facts=)): its light, what is lit
 # and each large piece with its look and place, one fact a line. "" = none (every flow run): the prompts as before.
 SCENE_FACTS = ""
+# 11-12 review: CAMERA above is the director's rule check (any camera word); as the test for "the director asked for a
+# camera move" it also matched a close-up of hands, "the camera holds on her face", a drawer pushed in and a person
+# pulling back to look, and dropped the hold sentence there. A move is the camera doing it, or a move's own term.
+CAMERA_MOVE = re.compile(
+    r"\bcamera\s+(?:(?:slowly|quickly|gently|steadily|then)\s+)*"
+    r"(?:pan|tilt|zoom|doll|track|follow|mov|push|pull|crane|orbit|circl|sweep|ris|descend|swing|drift|glid|whip)\w*"
+    r"|\b(?:zoom|doll(?:y|ies))\w*\s+(?:in|out|back|forward|toward|towards)\b"
+    r"|\b(?:pan|tilt|tracking|crane|dolly|zoom)\s+shot\b|\bwhip[- ]pan\b", re.I)
 HOLD_CAMERA = False     # the camera sentence alone, without facts (supplied_keys(hold=True))
 KEY_PEOPLE: dict = {}    # shot id -> how many people its supplied key shows (supplied_keys(key_people=True))
-SHOT_FACTS: dict = {}    # shot id -> what that shot's own facts file states, its people named by their looks
+KEY_BOXES: dict = {}     # shot id -> {cast name: [left, top, right, bottom] (0-1)} where its key's facts give boxes
+KEY_BOX_PAD = 0.08       # a speaker's key box widened by this much of the picture each side for the lip-sync zone
+NO_STATUS = False        # a supplied-keys run under a work root leaves the book's job status line alone
 QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys(quiet_seeds=)); () = QUIET_SEED alone
 
 
 def with_facts(prompt: str, s: dict, words: str = "") -> str:
-    """A clip's words with the scene's fixed state (SCENE_FACTS) as the room's state for the whole clip (11-11 user,
-    on the first supplied-key clips: a fire lit in one shot was out in the next, a chair changed colour, and a walk
-    whose key did not show where it ends moved the camera and made up room), and the camera held on the opening
-    picture's framing unless the director's own words for the shot (its action, or `words`: a chain line) ask for a
-    camera move. Unchanged without facts."""
-    own = SHOT_FACTS.get(str(s.get("id") or ""), "")
-    if own:
-        prompt = f"{prompt.rstrip()} {own}"
+    """A clip's words with what a supplied-keys run adds. The key's head count closes a talk shot's words. The camera
+    is held on the opening picture's framing (hold, or facts) unless the director's own words for the shot (its
+    action, or `words`: a chain line) ask for a camera move. The scene's fixed state (SCENE_FACTS) goes on QUIET
+    shots only, here and not by the caller's shot list (11-11/11-12 measured: with the facts a close-up held on 6 of
+    6 seeds, a walk froze and both talk clips dissolved into an empty room). Unchanged without any of these."""
     n = KEY_PEOPLE.get(str(s.get("id") or ""))
     # the key's head count closes talk words too (quiet ones have it from _offscreen); never action shots or chain
     # lines: measured 11-04 (CHANGES #29), the sentence drew walk-ins in action clips (5 of 6 with it, 1 of 6 without)
@@ -264,12 +271,22 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
                                                     be="is" if n == 1 else "are")
     if not (SCENE_FACTS or HOLD_CAMERA):
         return prompt
-    hold = "" if CAMERA.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
+    hold = "" if CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
         else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
-    if not SCENE_FACTS:
+    if not SCENE_FACTS or s.get("kind") != "quiet":
         return f"{prompt.rstrip()}{hold}" if hold else prompt
     return (f"{prompt.rstrip()} The room keeps its fixed state through the whole clip, as in the opening picture: "
             f"{SCENE_FACTS}{hold}")
+
+
+def quiet_take_seeds(retake: bool) -> tuple:
+    """A quiet shot's takes' seeds: QUIET_SEED alone, or the given ones (QUIET_SEEDS); with a retake one more, RETAKE
+    or - when that is already one of the given - the next seed not yet taken (11-12 review: the retake repeated a
+    given seed, the same clip twice)."""
+    qs = QUIET_SEEDS or (QUIET_SEED,)
+    if not retake:
+        return qs
+    return qs + (next(x for x in (RETAKE + 101 * i for i in range(len(qs) + 1)) if x not in qs),)
 
 
 def _chain_words(st: dict, text: str) -> str:
@@ -434,7 +451,7 @@ def _pose_hold(cx, s: dict) -> str:
     for w, c in (s.get("pose_held") or {}).items():
         if c == "stand" or (s.get("pose_after") or {}).get(w, c) != c:
             continue
-        first = describe(RG.Book(cx.book), w, _shot_dress(cx, s)) + on_side(list(s.get("who") or []), w)
+        first = describe(RG.Book(cx.book), w, _shot_dress(cx, s)) + _side(s, w)
         out.append(f" {first[0].upper() + first[1:]} stays {POSE_WORDS[c]} throughout.")
     return "".join(out)
 
@@ -3102,6 +3119,8 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
                f" {', '.join(rest[:-1])} and {rest[-1]} listen with closed mouths.")    # (a group: 10-28)
     n_ = len(s.get("who") or [])
     pos = f" {talk_layout(s)[s['who'].index(who)][1]}" if n_ > 1 and who in s["who"] else ""
+    if str(s.get("id") or "") in KEY_SIDES:     # a supplied key: where IT shows the speaker, no "nearest the viewer"
+        pos = _side(s, who)
     says = (f' {dict(his="He says", her="She says").get(pron, "They say")}, "{e["words"]}"'
             if e.get("words") else "")      # the line itself, as LTX's captions quote it (10-29)
     return (f"Static camera, the framing does not change. {who}{pos}, {look}{at}, speaks{emo} lips and jaw moving "
@@ -3758,7 +3777,11 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"qh_{s['id']}_{MF._h(hp)}", "prompt": hp}
                 enc_dev.append({"name": hd["emb"], "prompt": hp})
-            for t, seed in enumerate((QUIET_SEEDS or (QUIET_SEED,)) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
+            qs_ = quiet_take_seeds(False)
+            if len(qs_) > 1 and not all((L / "out" / f"{s['id']}{'' if t == 0 else f'_t{t + 1}'}.mp4").exists()
+                                        for t in range(len(qs_))):
+                (L / "out" / f"{s['id']}.judged").unlink(missing_ok=True)     # (the seeds' takes are judged together)
+            for t, seed in enumerate(quiet_take_seeds(s["id"] in (retake or ()))):
                 quiet.append({"name": s["id"] + ("" if t == 0 else f"_t{t + 1}"), "emb": emb, "prompt": p_, "base": "dev",
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
@@ -3775,6 +3798,12 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 old.get("audio_src") != j.get("audio_src") or \
                 any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end", "base"))
             # (10-27: a new voice cut is a new clip; 10-28: so are other render settings)
+            if not stale and j.get("route") != "a2v" and "people" in j and "people" in old and \
+                    old["people"] != j["people"] and not re.search(r"_t\d+$", j["name"]):
+                # (11-12 review) the key's people are not the plan's: the take is the same, its verdict was for
+                # another head count - judged again against this one
+                (L / "out" / f"{j['name']}.judged").unlink(missing_ok=True)
+                rj.write_text(json.dumps(dict(old, people=j["people"]), indent=1))
             if not stale and "speaker_box" in j and old.get("speaker_box") != j["speaker_box"]:
                 # SyncNet's zone measures, it draws nothing: a kept clip takes the plan's zone (E29: the over-the-
                 # shoulder zone was wrong) and _sync_offsets measures it again there
@@ -4160,7 +4189,14 @@ def _chain_state(L: Path, s: dict, key: Path) -> dict:
     f = L / "chains" / f"{s['id']}.json"
     f.parent.mkdir(exist_ok=True)
     lines = list(s["chain"]["lines"])
-    sig = MF._h(json.dumps([lines, key.stat().st_mtime_ns if key.exists() else 0]))
+    sig = [lines, key.stat().st_mtime_ns if key.exists() else 0]
+    # 11-12 review: with a key left in place between runs, the same lines under other options (the camera sentence,
+    # the key's people) kept the old takes and a finished chain was skipped. What a supplied-keys run changes is part
+    # of the chain: the words its clips are made of, and how many people its key shows. Nothing more without one.
+    words = [_chain_words({"id": s["id"]}, x) for x in lines]
+    if words != lines or s["id"] in KEY_PEOPLE:
+        sig += [words, KEY_PEOPLE.get(s["id"])]
+    sig = MF._h(json.dumps(sig))
     st = json.loads(f.read_text()) if f.exists() else {}
     if st.get("sig") != sig:
         for x in (L / "out").glob(f"{s['id']}_x*"):
@@ -4426,7 +4462,8 @@ def judge_takes(book: Path, stem: str, shots: list, log=print) -> set:
         if not a.exists() or (out_ / f"{s['id']}.judged").exists():
             continue
         n_ = None if s.get("crowd") else len(s.get("who") or [])
-        takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + DUPE_TAKES)) if x.exists()]
+        takes = [a] + [x for x in (out_ / f"{s['id']}_t{k}.mp4" for k in range(2, 3 + max(DUPE_TAKES, len(QUIET_SEEDS))))
+                       if x.exists()]
         fs = [MF.fight_clip_ok(x, n_) for x in takes]
         if len(takes) == 1:
             if fs[0]:
@@ -4603,8 +4640,12 @@ def _speaker_box(s: dict, speaker) -> list | None:
     drew them in (group_layout, left to right in "who" order) - for any number of people (10-28 user: crop to the
     speaker's own zone, not a half, once talk shots hold more than two). None for a close-up."""
     who = s.get("who") or []
+    speaker = s.get("key_speaker") or speaker       # (a supplied key's talk shot: the cast name of the line's speaker)
     if len(who) < 2 or speaker not in who:
         return None
+    bx = KEY_BOXES.get(str(s.get("id") or ""), {}).get(speaker)
+    if bx:      # a supplied key says where the speaker is: their own box, a little wider, the picture's whole height
+        return [round(max(0.0, bx[0] - KEY_BOX_PAD), 3), 0.0, round(min(1.0, bx[2] + KEY_BOX_PAD), 3), 1.0]
     if s.get("ots") and s["ots"] != speaker and len(who) == 2:
         # E29 (11-08): an over-the-shoulder shot has no side-by-side halves (talk_layout gives it group_layout's, its
         # key's LoRA boxes, a zone from x 0.42): its picture (TALK_OTS) puts the listener's back in the outer third
@@ -5173,6 +5214,8 @@ def out_path(book: Path, stem: str, t0: float, t1: float) -> Path:
 
 def _step(book: Path, text: str) -> None:
     """The job's status line follows the flow's steps (10-27: it said "character LoRAs" through the whole render)."""
+    if NO_STATUS:
+        return
     try:
         sys.path.insert(0, str(HERE.parent))
         from tts_reader import bookcaster as BC
@@ -5450,21 +5493,65 @@ def _clips(book, stem, es, shots, log, op: Path | None = None) -> None:
         judge_takes(book, stem, shots, log)
 
 
-def shot_facts_words(book: Path, stem: str, s: dict, text: str) -> str:
-    """A shot's own facts (one a line, people by name) as the video model's words: each of the shot's people named
-    the way the flow's prompts name them (describe, in the shot's clothes, with their side), never by name."""
-    R_ = RG.Book(book)
-    cx = _ctx(book, stem)[1]
-    lines = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in str(text).splitlines()]
-    out = " ".join(x if x.endswith(".") else x + "." for x in lines if x)
-    who = list(s.get("who") or [])
-    for w in sorted(who, key=len, reverse=True):
-        out = re.sub(rf"\b{re.escape(w)}\b", (describe(R_, w, _shot_dress(cx, s)) + on_side(who, w)).replace("\\", "\\\\"),
-                     out, flags=re.I)
-    left = [w for w in R_.people() if re.search(rf"\b{re.escape(w)}\b", out)]
-    if left:
-        raise RuntimeError(f"{s.get('id')}: shot facts name someone not in the shot: {left}")
-    return out[0].upper() + out[1:] if out else out
+SIDE_AFTER = (r"(?:(?:in front|behind), )?(?:on the (?:far )?(?:left|right)|in the cent(?:re|er))"
+              r"(?:, (?:nearest the viewer|further back))?")
+KEY_SIDES: dict = {}     # shot id -> {cast name: side words} from its supplied key (its boxes, else its order)
+STOPPED: dict = {}       # shot id -> why a supplied-keys run did not render it
+
+
+def _side(s: dict, w: str) -> str:
+    """" on the left" for one of a shot's people: where its supplied key shows them (KEY_SIDES) when it has one, else
+    the flow's own layout (on_side)."""
+    ks = KEY_SIDES.get(str(s.get("id") or ""))
+    if ks is None:
+        return on_side(list(s.get("who") or []), w)
+    return f" {ks[w]}" if w in ks and len(ks) > 1 else ""
+
+
+def key_sides(vis: list, boxes: dict) -> dict:
+    """{name: side words} for a key's people: from each one's box centre when every one has a box and the words tell
+    them apart, else from their left-to-right order (group_layout's words)."""
+    def word(c):
+        return "on the left" if c < 0.4 else "in the centre" if c < 0.6 else "on the right"
+    if vis and all(w in boxes for w in vis):
+        out = {w: word((boxes[w][0] + boxes[w][2]) / 2) for w in vis}
+        if len(set(out.values())) == len(vis):
+            return out
+        vis = sorted(vis, key=lambda w: boxes[w][0] + boxes[w][2])
+    lay = group_layout(len(vis))
+    return {w: lay[i][1] for i, w in enumerate(vis)}
+
+
+def reside(R_, cx, s: dict, text: str) -> str:
+    """The director's words for a shot with the side words that follow a person's description made to agree with the
+    shot's supplied key (11-12 review: "the woman ... on the right ... the woman ... on the left" in one prompt, the
+    plan's sides against the key's, and the clip grew a second woman): each "<description> <side>" becomes the
+    description with the key's side for that person, or with none when the key does not show them, shows them alone,
+    or two people share the description (the side cannot then say which). Unchanged for a shot without key people."""
+    ks = KEY_SIDES.get(str(s.get("id") or ""))
+    if ks is None or not text:
+        return text
+    people = R_.people()
+    try:
+        dress = MF._dress(cx.book, cx.stem, str(s.get("id") or "").rsplit("_s", 1)[0], people)
+    except Exception:                                   # noqa: BLE001 - no wardrobe: the looks' own clothes
+        dress = {}
+    by = {}
+    for w in people:
+        for d in {describe(R_, w, dress), describe(R_, w), describe(R_, w, _shot_dress(cx, s))}:
+            if d and d != "the figure":
+                by.setdefault(d, set()).add(w)
+    for d in sorted(by, key=len, reverse=True):
+        w = next(iter(by[d])) if len(by[d]) == 1 else None
+        new = d + (f" {ks[w]}" if w in ks and len(ks) > 1 else "")
+        text = re.sub(re.escape(d) + r",?\s+" + SIDE_AFTER + r"(?![\w-])", lambda m, new=new: new, text, flags=re.I)
+    return text
+
+
+def _facts_file(keys: Path, s: dict) -> Path | None:
+    mid = s["id"].rsplit("_s", 1)[0]
+    return next((x for x in (Path(keys) / f"{s['id']}.shot_facts.json", Path(keys) / f"{mid}.shot_facts.json")
+                 if x.exists()), None)
 
 
 def key_people(book: Path, s: dict, facts: dict) -> list:
@@ -5480,29 +5567,145 @@ def key_people(book: Path, s: dict, facts: dict) -> list:
     return list(dict.fromkeys(out))
 
 
+def key_boxes(book: Path, s: dict, facts: dict) -> dict:
+    """{cast name: [left, top, right, bottom]} (each 0-1, left < right, top < bottom) for the people of a key whose
+    facts give a "box"; a box that is not four such numbers stops the run."""
+    R_ = RG.Book(book)
+    out = {}
+    for v in facts.get("visible") or []:
+        if v.get("box") is None:
+            continue
+        w = R_.person(v.get("name")) or next((x for x in s.get("who") or [] if R_.same(x, v.get("name"))), None)
+        b = v["box"]
+        ok = isinstance(b, (list, tuple)) and len(b) == 4 and all(isinstance(x, (int, float)) for x in b) and \
+            0 <= b[0] < b[2] <= 1 and 0 <= b[1] < b[3] <= 1
+        if not ok or not w:
+            raise RuntimeError(f"{s.get('id')}: the box of {v.get('name')!r} is {b!r}: not [left, top, right, bottom] "
+                               f"in 0-1 for a person of the book")
+        out[w] = [float(x) for x in b]
+    return out
+
+
+def check_supplied(book: Path, shots: list, keys: Path, facts: Path | None, quiet_seeds, key_people_: bool) -> tuple:
+    """Everything a supplied-keys run reads, checked before it writes anything (11-12 review: a wrong-size third key
+    stopped a run after two shots' keys were already replaced). -> (problems, {shot id: (people, boxes)}, seeds)."""
+    from PIL import Image
+    bad, ppl, seeds = [], {}, ()
+    try:
+        seeds = tuple(int(x) for x in quiet_seeds)
+    except (TypeError, ValueError):
+        bad.append(f"quiet seeds {tuple(quiet_seeds)!r}: whole numbers")
+    if facts is not None and not Path(facts).is_file():
+        bad.append(f"scene facts {facts}: no such file")
+    for s in shots:
+        src = Path(keys) / f"{s['id']}.png"
+        try:
+            with Image.open(src) as im:
+                if im.size != (W, H):
+                    bad.append(f"{src}: {im.size[0]}x{im.size[1]}, the clips are {W}x{H}")
+                if im.mode != "RGB":
+                    bad.append(f"{src}: mode {im.mode}, a key is RGB")
+        except OSError as x:
+            bad.append(f"{src}: not a readable picture ({x.__class__.__name__})")
+        if not key_people_:
+            continue
+        f = _facts_file(keys, s)
+        if not f:
+            bad.append(f"{s['id']}: no {s['id']}.shot_facts.json beside its key (--key-people needs one for every shot)")
+            continue
+        try:
+            fj = json.loads(f.read_text())
+            vis, bx = key_people(book, s, fj), key_boxes(book, s, fj)
+        except (ValueError, RuntimeError, AttributeError, TypeError) as x:
+            bad.append(f"{f}: {x}")
+            continue
+        if not vis:
+            bad.append(f"{f}: no \"visible\" people (a key without people has no facts to give)")
+            continue
+        ppl[s["id"]] = (vis, bx)
+    return bad, ppl, seeds
+
+
+def work_book(book: Path, stem: str, root: Path, ids: list, log=print) -> Path:
+    """A book to render supplied keys in without touching the book itself: <root>/<book's name>, where the given
+    shots' keys, every clip, record, chain state, review folder and cut of the run are written (all of them live
+    under the chapter's shots folder); everything else is the book's own, linked. The linked parts are read; the
+    clips of other shots are linked one by one (a stale one is unlinked here, never rewritten), and nothing the
+    render rewrites by name (the given shots' folders, the render's own folders) is linked."""
+    book, root = Path(book).resolve(), Path(root).resolve()
+    if root == book or book in root.parents:
+        raise RuntimeError(f"work root {root}: inside the book itself")
+    wb = root / book.name
+
+    def mirror(real: Path, mine: Path, keep: str | None) -> None:
+        mine.mkdir(parents=True, exist_ok=True)
+        for x in (sorted(real.iterdir()) if real.is_dir() else []):
+            y = mine / x.name
+            if x.name == keep or y.is_symlink() or y.exists():
+                continue
+            y.symlink_to(x)
+    vd_real = book / "work" / "video" / stem
+    mirror(book, wb, "work")
+    mirror(book / "work", wb / "work", "video")
+    mirror(book / "work" / "video", wb / "work" / "video", stem)
+    mirror(vd_real, wb / "work" / "video" / stem, "shots")
+    sd_real, sd = vd_real / "shots", wb / "work" / "video" / stem / "shots"
+    sd.mkdir(parents=True, exist_ok=True)
+    mids = {i.rsplit("_s", 1)[0] for i in ids}
+    for x in (sorted(sd_real.iterdir()) if sd_real.is_dir() else []):
+        y = sd / x.name
+        if x.name in ("ltx", "review") or x.name in mids or y.is_symlink() or y.exists():
+            continue
+        if x.name == "audio" and x.is_dir():        # the voice cuts are read; a mix made for this run is written here
+            y.mkdir()
+            for a_ in sorted(x.iterdir()):
+                (y / a_.name).symlink_to(a_)
+            continue
+        y.symlink_to(x)
+    for mid in mids:                                # the given shots' own folders are this run's; their siblings linked
+        (sd / mid).mkdir(exist_ok=True)
+        for x in (sorted((sd_real / mid).iterdir()) if (sd_real / mid).is_dir() else []):
+            y = sd / mid / x.name
+            if x.name not in ids and not (y.is_symlink() or y.exists()):
+                y.symlink_to(x)
+    out_real, out = sd_real / "ltx" / "out", sd / "ltx" / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    for x in (sorted(out_real.iterdir()) if out_real.is_dir() else []):
+        y = out / x.name
+        if any(x.name.startswith(m) for m in mids) or y.is_symlink() or y.exists():
+            continue
+        y.symlink_to(x)                             # another shot's clip, for a cut of the stretch
+    log(f"work root: rendering in {wb} (the book {book} is only read)")
+    return wb
+
+
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
                   review: str = "agent", facts: Path | None = None, hold: bool = False,
-                  quiet_seeds: tuple = (), shot_facts: bool = False, key_people_: bool = False) -> list:
+                  quiet_seeds: tuple = (), key_people_: bool = False, work_root: Path | None = None,
+                  in_place: bool = False) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
-    by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
-    as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
-    size. Each key becomes its shot's key.png, newer than any clip of it, so the flow's own redo takes it: a clip
-    from an older key is made again, a chain starts again from its line 1. Then the render as run() does it (same
-    jobs, prompts, voice cuts, flags, judges and review cards); no assembly. facts: the fixed state of the scene the
-    keys were staged in, one fact a line: every clip's words carry it (with_facts). hold: the camera sentence alone
-    (with_facts without facts). quiet_seeds: a quiet shot's takes, one per seed (judge_takes keeps the best, the
-    others stay as <id>_t<k>.mp4), to tell a prompt's effect from seed noise. -> the shots' clips."""
-    global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, SHOT_FACTS, KEY_PEOPLE
-    from PIL import Image
+    by the image model): `plan` is a saved plan (plan_*.json, as run() writes it), used as it is - nothing planned,
+    drawn or judged before the render; `keys` a folder of <shot id>.png at the clip size. Everything is checked
+    before anything is written (check_supplied). Each key becomes its shot's key.png, newer than any clip of it, so
+    the flow's own redo takes it: a clip from an older key is made again, a chain starts again from its line 1. Then
+    the render as run() does it (same jobs, prompts, voice cuts, flags, judges and review cards); no assembly.
+
+    work_root: render in a copy of the book's shots folder under this directory (work_book); the book itself is only
+    read. Without it a book that already has clips for these shots from other keys is refused (in_place=True: the
+    keys and clips are replaced where they are - what the first runs did under a private mount).
+    facts: the fixed state of the scene the keys were staged in, one fact a line: QUIET shots' words carry it
+    (with_facts). hold: the camera sentence (with_facts). quiet_seeds: a quiet shot's takes, one per seed
+    (judge_takes keeps the best), to tell a prompt's effect from seed noise. key_people_: each key's own
+    <shot id>.shot_facts.json says who is in the picture: {"visible": [{"name": <cast name>, "box": [left, top,
+    right, bottom]}, ...]} left to right, box optional, each 0-1 of the picture; they are the shot's people (head
+    count, judge, lip-sync zone, side words), and a talk shot whose speaker is not among them is not rendered
+    (STOPPED). -> the shots' clips."""
+    global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED, NO_STATUS
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
-    REVIEW = review
-    HOLD_CAMERA = bool(hold)
-    QUIET_SEEDS = tuple(int(x) for x in quiet_seeds)
-    if facts:
-        fl = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in Path(facts).read_text().splitlines()]
-        SCENE_FACTS = " ".join(dict.fromkeys(x if x.endswith(".") else x + "." for x in fl if x))
-        log(f"scene facts from {facts}: {SCENE_FACTS}")
+    # (11-12 review: an option of an earlier call in the same process stayed on when the next call left it out)
+    SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED = "", False, (), {}, {}, {}, {}
+    NO_STATUS = False
     by = json.loads(Path(plan).read_text())
     es = by.pop("_es")
     for k in [k for k in by if k.startswith("_")]:
@@ -5510,44 +5713,78 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     shots = [s for e in es for s in by.get(e["id"], []) if s["id"] in set(ids)]
     if missing := sorted(set(ids) - {s["id"] for s in shots}):
         raise RuntimeError(f"not in the plan: {missing}")
+    bad, ppl, seeds = check_supplied(book, shots, keys, facts, quiet_seeds, key_people_)
+    sd0 = shot_dir(book, stem)
+    if not work_root and not in_place:
+        mine = [s["id"] for s in shots
+                if (sd0 / "ltx" / "out" / f"{s['id']}.mp4").exists() and (Path(keys) / f"{s['id']}.png").is_file() and
+                not ((k_ := sd0 / s["id"].rsplit("_s", 1)[0] / s["id"] / "key.png").exists() and
+                     k_.read_bytes() == (Path(keys) / f"{s['id']}.png").read_bytes())]
+        if mine:
+            bad.append(f"{book} already has clips for {mine} from other keys: supplied keys would replace those keys "
+                       f"and clips where they are. Give a work root (--work-root DIR), or --in-place to replace them")
+    if bad:
+        raise RuntimeError("supplied keys: nothing was written:\n  " + "\n  ".join(bad))
+    REVIEW, HOLD_CAMERA, QUIET_SEEDS = review, bool(hold), seeds
+    if facts:
+        fl = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in Path(facts).read_text().splitlines()]
+        SCENE_FACTS = " ".join(dict.fromkeys(x if x.endswith(".") else x + "." for x in fl if x))
+        log(f"scene facts from {facts} (quiet shots): {SCENE_FACTS}")
+    R_ = RG.Book(book)
+    byid = {e["id"]: e for e in es}
+    for s in shots:             # 11-12 user: who is in the picture is the key's staging, not the plan's shot list (a
+        if s["id"] not in ppl:  # single let a second person walk in and pass; a wide key was retaken against a list of 2)
+            continue
+        vis, bx = ppl[s["id"]]
+        listed = list(s.get("who") or [])
+        if s["kind"] == "talk":
+            e = byid.get(s["id"].rsplit("_s", 1)[0]) or {}
+            spk = R_.person(e.get("speaker")) or MF._cast_name(e.get("speaker"), listed, []) or e.get("speaker")
+            if spk not in vis:
+                STOPPED[s["id"]] = (f"its line is spoken by {spk!r}, who is not in its key: the key shows {vis} "
+                                    f"(the plan listed {listed})")
+                log(f"!!! {s['id']}: NOT RENDERED: {STOPPED[s['id']]}")
+                continue
+            s["key_speaker"] = spk
+            if s.get("ots") and (s["ots"] not in vis or len(vis) < 2):
+                log(f"!!! {s['id']}: the plan has it over the shoulder of {s['ots']!r}, the key shows {vis}: "
+                    f"taken as the key shows it")
+                s["ots"] = None
+        log(f"{s['id']}: the key shows {vis} (the plan listed {listed})")
+        s["who"], s["others"] = vis, []
+        for k in ("pose_held", "pose_after", "pose_end"):
+            if isinstance(s.get(k), dict):
+                s[k] = {w: c for w, c in s[k].items() if w in vis}
+        KEY_PEOPLE[s["id"]] = len(vis)
+        KEY_SIDES[s["id"]] = key_sides(vis, bx)
+        if bx:
+            KEY_BOXES[s["id"]] = bx
+    shots = [s for s in shots if s["id"] not in STOPPED]
+    if work_root:
+        book = work_book(book, stem, Path(work_root), [s["id"] for s in shots], log)
+        NO_STATUS = True
+    if KEY_SIDES:
+        cx = _ctx(book, stem)[1]
+        Rb = RG.Book(book)
+        for s in shots:
+            if s["id"] in KEY_SIDES:
+                if s.get("action"):
+                    s["action"] = reside(Rb, cx, s, s["action"])
+                if s.get("chain") and s["chain"].get("lines"):
+                    s["chain"]["lines"] = [reside(Rb, cx, s, x) for x in s["chain"]["lines"]]
     sd = shot_dir(book, stem)
     for s in shots:
         src = Path(keys) / f"{s['id']}.png"
-        with Image.open(src) as im:
-            if im.size != (W, H):
-                raise RuntimeError(f"{src}: {im.size[0]}x{im.size[1]}, the clips are {W}x{H}")
         d = sd / s["id"].rsplit("_s", 1)[0] / s["id"]
         d.mkdir(parents=True, exist_ok=True)
         if (d / "key.png").exists() and (d / "key.png").read_bytes() == src.read_bytes():
             log(f"{s['id']}: key from {src} already in place (its clips so far are kept: a stopped render resumes)")
             continue
+        (d / "key.png").unlink(missing_ok=True)         # (never through a link)
         shutil.copyfile(src, d / "key.png")             # (a fresh mtime: newer than every clip of the shot)
         log(f"{s['id']}: key from {src}")
-    KEY_PEOPLE = {}
-    for s in shots if key_people_ else []:          # 11-12 user: who is in the picture is the key's staging, not the
-        mid = s["id"].rsplit("_s", 1)[0]            # plan's shot list (a single let a second person walk in and pass;
-        f = next((x for x in (Path(keys) / f"{s['id']}.shot_facts.json", Path(keys) / f"{mid}.shot_facts.json")
-                  if x.exists()), None)             # a wide key with all three was retaken against a list of two)
-        if not f:
-            continue
-        vis = key_people(book, s, json.loads(f.read_text()))
-        if vis:
-            log(f"{s['id']}: the key shows {vis} (the plan listed {s.get('who')})")
-            s["who"], s["others"] = vis, []
-            for k in ("pose_held", "pose_after", "pose_end"):
-                if isinstance(s.get(k), dict):
-                    s[k] = {w: c for w, c in s[k].items() if w in vis}
-            KEY_PEOPLE[s["id"]] = len(vis)
-    SHOT_FACTS = {}
-    for s in shots if shot_facts else []:          # shot_facts: <keys>/<moment id or shot id>.shot_facts.txt
-        mid = s["id"].rsplit("_s", 1)[0]
-        f = next((x for x in (Path(keys) / f"{s['id']}.shot_facts.txt", Path(keys) / f"{mid}.shot_facts.txt")
-                  if x.exists()), None)
-        if f:
-            SHOT_FACTS[s["id"]] = shot_facts_words(book, stem, s, f.read_text())
-            log(f"{s['id']}: shot facts: {SHOT_FACTS[s['id']]}")
     _clips(book, stem, es, shots, log)
-    return [sd / "ltx" / "out" / f"{s['id']}.mp4" for s in shots]
+    return [sd / "ltx" / "out" / f"{i}.mp4" for i in ids]
 
 
 def assemble_stretch(book: Path, stem: str, plan: Path, first: str, last: str, out: Path, log=print) -> Path:
@@ -5561,9 +5798,16 @@ def assemble_stretch(book: Path, stem: str, plan: Path, first: str, last: str, o
     for k in [k for k in by if k.startswith("_")]:
         by.pop(k)
     mids = [e["id"] for e in es]
-    a, b = mids.index(first.rsplit("_s", 1)[0]), mids.index(last.rsplit("_s", 1)[0])
+    fm, lm = first.rsplit("_s", 1)[0], last.rsplit("_s", 1)[0]
+    if unknown := [x for x in (fm, lm) if x not in mids]:
+        raise RuntimeError(f"not in the plan: {unknown}")
+    a, b = mids.index(fm), mids.index(lm)
+    if a > b:
+        raise RuntimeError(f"{first} comes after {last} in the plan: the stretch runs from its first shot to its last")
     es = es[a: b + 1]
     mix = book / "work" / "final" / f"{stem}.mp3"
+    if not mix.exists():
+        raise RuntimeError(f"{mix}: the chapter has no final mix to cut the stretch on")
     return assemble(book, stem, es, {e["id"]: by.get(e["id"], []) for e in es},
                     video_mix(book, stem, mix, pauses, log), Path(out), log, pauses)
 
@@ -5574,23 +5818,34 @@ if __name__ == "__main__":
     ap.add_argument("book", type=Path)
     ap.add_argument("stem")
     ap.add_argument("--plan", type=Path, required=True, help="a saved plan (plan_*.json)")
-    ap.add_argument("--keys", type=Path, required=True, help="a folder of <shot id>.png")
-    ap.add_argument("--shots", required=True, help="shot ids, comma-separated")
+    ap.add_argument("--keys", type=Path, default=None, help="a folder of <shot id>.png (not needed with --assemble)")
+    ap.add_argument("--shots", default="", help="shot ids, comma-separated (not needed with --assemble)")
     ap.add_argument("--review", choices=["off", "agent", "user"], default="agent")
-    ap.add_argument("--facts", type=Path, default=None, help="the keys' scene facts, one a line (with_facts)")
-    ap.add_argument("--hold", action="store_true", help="the camera-hold sentence without facts (with_facts)")
+    ap.add_argument("--facts", type=Path, default=None,
+                    help="the keys' scene facts, one a line: carried in QUIET shots' words only (with_facts)")
+    ap.add_argument("--hold", action="store_true", help="the camera-hold sentence (with_facts)")
     ap.add_argument("--quiet-seeds", default="", help="a quiet shot's take seeds, comma-separated")
-    ap.add_argument("--shot-facts", action="store_true", help="each shot's own <id>.shot_facts.txt beside its key")
     ap.add_argument("--assemble", nargs=3, metavar=("FIRST_SHOT", "LAST_SHOT", "OUT"), default=None,
                     help="no render: the flow's own cut of the stretch FIRST..LAST (shot ids) from its clips")
     ap.add_argument("--key-people", action="store_true",
-                    help="the people each key shows (<id>.shot_facts.json \"visible\") are the shot's people")
+                    help="each key's <shot id>.shot_facts.json says who is in the picture and they are the shot's "
+                         "people: {\"visible\": [{\"name\": <cast name>, \"box\": [left, top, right, bottom]}, ...]}, "
+                         "left to right; \"box\" is optional, each number 0-1 of the picture (left < right, top < "
+                         "bottom), and when given sets the lip-sync zone and the side words. Every shot needs one")
+    ap.add_argument("--work-root", type=Path, default=None,
+                    help="render under DIR/<book name>: keys, clips, records, review folders and cuts are written "
+                         "there and the book is only read (with --assemble: cut the stretch from the clips there)")
+    ap.add_argument("--in-place", action="store_true",
+                    help="replace the book's own keys and clips for these shots (refused otherwise when it has clips "
+                         "from other keys and no --work-root is given)")
     a = ap.parse_args()
     if a.assemble:
-        print("cut:", assemble_stretch(a.book, a.stem, a.plan, a.assemble[0], a.assemble[1], Path(a.assemble[2])))
+        bk = a.work_root.resolve() / a.book.resolve().name if a.work_root else a.book
+        print("cut:", assemble_stretch(bk, a.stem, a.plan, a.assemble[0], a.assemble[1], Path(a.assemble[2])))
         sys.exit(0)
+    if not a.keys or not a.shots:
+        ap.error("--keys and --shots are needed to render (only --assemble runs without them)")
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
-                           facts=a.facts, hold=a.hold,
-                           quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x), shot_facts=a.shot_facts,
-                           key_people_=a.key_people):
-        print("clip:", c, "" if c.exists() else "(not made)")
+                           facts=a.facts, hold=a.hold, quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x),
+                           key_people_=a.key_people, work_root=a.work_root, in_place=a.in_place):
+        print("clip:", c, "" if c.exists() else f"(not made{': ' + STOPPED[c.stem] if c.stem in STOPPED else ''})")
