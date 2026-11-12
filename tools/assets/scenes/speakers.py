@@ -479,6 +479,7 @@ def unlook(c):
 MARK_CLEAR_M = 0.55          # a mark this far from anyone else's place
 TRY_SAME, TRY_SINGLE, TRY_MARK = 2, 2, 2      # a failing talk shot's tries, in this order, each one rendered
 MAX_TRIES = 6
+CAM_KEYS = ("position", "target", "focal_mm", "az", "el", "screen_x", "ots", "listener", "single")
 
 
 def turn2(v, deg):
@@ -886,6 +887,20 @@ def main():
             c_["_points"] = move_points(spec, c_)
         if line:
             line = [spec["characters"][kk]["position"][:2] for kk in keys]
+        return subj2
+
+    def reframe_at(c, subj2):
+        """A camera for the shot with the people at their new marks (the old one looked past the moved person at
+        the same blocker): its own kind first, else a clean single; None keeps the camera."""
+        spk = c.get("speaker")
+        lis = listener_of(c, keys, spk)
+        tc = two_shot_candidates(c, shots[c["name"]], spk, lis, subj2, res, room, line, est_side, [],
+                                 cam_opts(spec, c))
+        if tc:
+            return tc[0]
+        tc = two_shot_candidates(dict(c, show=None), shots[c["name"]], spk, None, subj2, res, room, line, est_side,
+                                 [], dict(cam_opts(spec, c), _single=True))
+        return (tc[0][0], "single") if tc else None
 
     def in_way(c, spk):
         """The people the shot's failures name or whose bodies stood between its cameras and the speaker's face,
@@ -1004,6 +1019,10 @@ def main():
                 f"{len(passing)}, {'kept' if better else 'back'}")
             if not better and rnd < a.rounds:
                 move_to_mark(pending["k"], pending["from"])
+                cam_back = next(c_ for c_ in spec["cameras"] if c_["name"] == pending["shot"])
+                for kk in CAM_KEYS:
+                    cam_back.pop(kk, None)
+                cam_back.update(pending["camera"])
                 pending = None
                 todo = [c["name"] for c in spec["cameras"]]
                 continue
@@ -1073,9 +1092,23 @@ def main():
             t["same"] = min(t["same"], TRY_SAME - 1)        # one more camera search, one more single, at the mark
             t["single"] = min(t["single"], TRY_SINGLE - 1)
             pending = {"k": k, "from": list(spec["characters"][k]["position"]), "to": mk, "shot": c["name"],
-                       "passing": len(passing)}
+                       "passing": len(passing), "camera": {kk: c[kk] for kk in CAM_KEYS if kk in c}}
             tried_marks.setdefault(k, []).append(mk)
-            move_to_mark(k, mk)
+            subj2 = move_to_mark(k, mk)
+            rf = reframe_at(c, subj2)        # the move and a camera found for it, rendered together
+            if rf:
+                q, md = rf
+                c.update(position=q["position"], target=q["target"], focal_mm=q["focal_mm"])
+                for kk in ("az", "el", "screen_x"):
+                    c.pop(kk, None)
+                if md == "single":
+                    c["listener"], c["single"] = None, True
+                    c.pop("ots", None)
+                elif md == "ots":
+                    c["ots"] = listener_of(c, keys, c.get("speaker"))
+                elif md in ("two", "action", "move"):
+                    c.pop("ots", None)
+                pending["new_camera"] = dict(q, mode=md)
             todo = [c_["name"] for c_ in spec["cameras"]]
         if not todo:
             break
