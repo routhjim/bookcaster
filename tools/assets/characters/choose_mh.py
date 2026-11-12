@@ -51,7 +51,7 @@ NOUN = {"Hair": "hair", "Beard": "beard", "Mustache": "moustache", "Eyebrows": "
 COLOURS = {"jet black": (0.95, 0.15, 0.0), "black": (0.85, 0.2, 0.0), "dark brown": (0.65, 0.35, 0.0),
            "brown": (0.5, 0.45, 0.0), "auburn": (0.45, 0.8, 0.0), "red": (0.35, 0.95, 0.0),
            "light brown": (0.35, 0.4, 0.0), "blond": (0.15, 0.35, 0.0), "grey": (0.3, 0.05, 0.75),
-           "white": (0.05, 0.0, 1.0), "black with grey streaks": (0.7, 0.1, 0.3), "grey-brown": (0.5, 0.35, 0.45),
+           "white": (0.05, 0.0, 1.0), "black with grey streaks": (0.7, 0.1, 0.3), "grey-brown": (0.45, 0.3, 0.65),
            "salt and pepper": (0.75, 0.1, 0.5)}
 BUILDS = {"slim": dict(Fat=-1.6, Muscularity=-1.2, d=-12), "average": dict(Fat=-0.4, Muscularity=0.0, d=0),
           "stocky": dict(Fat=0.6, Muscularity=0.6, d=10), "very heavily built": dict(Fat=1.6, Muscularity=1.4, d=22)}
