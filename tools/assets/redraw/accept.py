@@ -104,7 +104,9 @@ def lit_eval(*results: dict) -> None:
                 rl, el = r.get("L90", r["L"]) if r else 0, e.get("L90", e["L"]) if e else 0
                 rb, eb = r.get("b90", r["b"]) if r else 0, e.get("b90", e["b"]) if e else 0
                 if r and e and el > 25:
-                    ok[n] = rl >= LIT_L * el and rb >= LIT_B * max(eb, 0.0)
+                    # warmth from either the median or the brightest tenth (a flame's white core has little yellow)
+                    warm = max(r["b"] / max(e["b"], 1.0), rb / max(eb, 1.0))
+                    ok[n] = rl >= LIT_L * el and warm >= LIT_B
             rec["lit_ok"] = ok
 
 
