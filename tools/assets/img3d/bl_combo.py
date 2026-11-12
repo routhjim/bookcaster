@@ -561,6 +561,7 @@ if JOB.get("collar_build") and not STATUE:
 # it is nearer the figure's own skin (its hands: the far end of each arm, past the body's wrist) than its cloth (the
 # chest and back between the armpits, off the neck)
 SKL_SURE = None
+CUFF = {}          # side -> (shoulder, arm axis, cuff station): the body's own forearm shows beyond a short sleeve
 
 
 def _skin_like():
@@ -620,12 +621,14 @@ def _limb_edge(S0, E0, sg, tube, step_min, ratio, lo_frac, hi_frac):
 
 if not STATUE and not FIT_POSE and JOB.get("cut_bare_limbs", True):
     SKL, _refs = _skin_like()
+    CUFF = {}
     REP["bare_limbs"] = {"colours": _refs}
     for side, sg in (("l", 1), ("r", -1)):
         S0 = np.array(pose_head(f"upperarm_{side}"))
         E0 = np.array(pose_head(f"hand_{side}"))
         c_, p_, rad_, side_, rep_ = _limb_edge(S0, E0, sg, 0.14, 0.012, 1.3, 0.3, 1.0)
         if c_ is not None:
+            CUFF[side] = (S0, (E0 - S0) / np.linalg.norm(E0 - S0), c_)
             # a cuff is not square to the arm (its underside hangs lower): the bare limb inside the cuff's reach,
             # as thin as the bare limb and skin-like, goes too
             cut_ = side_ & (p_ > c_) & (rad_ < 0.16)
@@ -1689,6 +1692,20 @@ for v in hands.data.vertices:
     best = max(v.groups, key=lambda g: g.weight, default=None)
     if best is not None and gi[best.group].startswith(HANDB) and "toe" not in gi[best.group]:
         keep[v.index] = True
+# beyond a short sleeve's cuff the body's own forearm shows (the body is hidden under the outfit): kept with the hands
+# from a little inside the cuff
+_hv = np.array([v.co[:] for v in hands.data.vertices])
+_hgw = {g.index: g.name for g in hands.vertex_groups}
+REP["forearm_verts"] = {}
+for side, (S0_, ax_, c_) in CUFF.items():
+    p_ = (_hv - S0_) @ ax_
+    r_ = np.linalg.norm((_hv - S0_) - p_[:, None] * ax_[None, :], axis=1)
+    arm_ = np.array([bool(v.groups) and _hgw[max(v.groups, key=lambda g: g.weight).group].endswith("_" + side)
+                     and _hgw[max(v.groups, key=lambda g: g.weight).group].startswith(("lowerarm", "upperarm", "hand"))
+                     for v in hands.data.vertices])
+    fa_ = arm_ & (p_ > c_ - float(JOB.get("forearm_under_cuff_m", 0.04))) & (r_ < 0.12)
+    keep |= fa_
+    REP["forearm_verts"][side] = int(fa_.sum())
 bm = bmesh.new()
 bm.from_mesh(hands.data)
 bm.verts.ensure_lookup_table()
