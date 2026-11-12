@@ -30,7 +30,6 @@ Writes WORK/times.json (seconds per step) and WORK/choices.json (every automatic
 from __future__ import annotations
 
 import argparse
-from statistics import mean as _mean
 import json
 import os
 import subprocess
@@ -640,58 +639,6 @@ def main():
                                        f"({json.dumps(nf['effect'])}); the build stops here")
         neck_p.write_text(json.dumps(nf, indent=1))
         CH["neck_fit"] = nf
-        save()
-    # ---------------------------------------------------------------- the body fits the drawing where a limb is bare
-    # below a short sleeve or a hem the MetaHuman's own limb shows; its thickness comes from the generated figure
-    # (the fit's girths of the figure's bare limb and of the posed body at the same stations, both arms or legs
-    # averaged): the MetaHuman's matching constraints (Forearm, Wrist, Elbow; Calf, Knee) changed by the difference,
-    # relative as for the neck, clamped to each range; the hand follows the wrist in proportion; rebuilt, refitted,
-    # and the change must show in the rebuilt body or the build stops (11-12: the bare forearms were thin)
-    limb_p = W / "limb_fit.json"
-    if (combo / "report.json").exists() and not done("combo", limb_p):
-        rep = json.loads((combo / "report.json").read_text())
-        lg = rep.get("limb_girths") or {}
-        addl = {}
-        for name in ("Forearm", "Wrist", "Elbow", "Calf", "Knee"):
-            ds = [v[name]["delta_cm"] for v in lg.values() if name in v]
-            if ds and abs(float(_mean(ds))) >= 0.5:
-                addl[name] = round(float(_mean(ds)), 1)
-        lf = {"measured": {k: {n: v for n, v in g.items() if n != "_profile"} for k, g in lg.items()}, "add": addl}
-        if addl:
-            @timed("limb_fit")
-            def _():
-                job_c = {"path": f"/Game/Char/{mh_name}", "add": addl,
-                         "follow": {"Hand Circumference": "Wrist"} if "Wrist" in addl else {}}
-                r = ue_job(W, "limb_constraints", str(ASSETS / "characters" / "char_constraints.py"), job_c, 600)
-                lf["engine"] = r
-                ue_job(W, "mh_rebuild_limbs", str(ASSETS / "characters" / "char_render.py"), {
-                    "out": str(W / "ue" / "mh_rebuild_limbs"),
-                    "cloud": {"path": f"/Game/Char/{mh_name}", "build_path": "/Game/MetaHumans"},
-                    "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
-                    "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
-                jp = W / "combo_job.json"
-                p = line(["--line-cmd", "igpu", "combo", "--id", f"cast_{tag}_combo_limbs", "--", "flock",
-                          "/tmp/gpu-igpu.lock", BLENDER, "-b", "--factory-startup", "-t", "0", "--python",
-                          str(HERE / "bl_combo.py"), "--", str(jp)], W / "combo_limbs.log")
-                if p.returncode:
-                    raise RuntimeError("refit after the limb change failed")
-                rep2 = json.loads((combo / "report.json").read_text())
-                lg2 = rep2.get("limb_girths") or {}
-                eff = {}
-                for name, d_set in addl.items():
-                    b0 = [v[name]["body_cm"] for v in lg.values() if name in v]
-                    b1 = [v[name]["body_cm"] for v in lg2.values() if name in v]
-                    eff[name] = {"set_cm": d_set, "body_before_cm": round(float(_mean(b0)), 1) if b0 else None,
-                                 "body_after_cm": round(float(_mean(b1)), 1) if b1 else None}
-                lf["effect"] = eff
-                dead = [n for n, e in eff.items() if abs(e["set_cm"]) >= 2.0 and e["body_before_cm"] is not None
-                        and e["body_after_cm"] is not None and abs(e["body_after_cm"] - e["body_before_cm"]) < 0.5]
-                if dead:
-                    limb_p.write_text(json.dumps(lf, indent=1))
-                    raise RuntimeError(f"LIMB FIT HAD NO EFFECT on {dead}: constraints {json.dumps(r)}, measured "
-                                       f"{json.dumps(eff)}; the build stops here")
-        limb_p.write_text(json.dumps(lf, indent=1))
-        CH["limb_fit"] = lf
         save()
     # still a bare neck over 2 cm once the neck is as short as allowed: the fit's collar lift (the collar region raised
     # by one smooth displacement to meet the jaw), measured, only then

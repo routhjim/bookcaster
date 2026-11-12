@@ -1818,6 +1818,54 @@ if not STATUE and JOB.get("body_skin_shows", True):
         _shown[v.index] = True
     keep |= _shown
     REP["body_skin_shown_verts"] = int(_shown.sum())
+# a bare limb's thickness from the generated figure: the MetaHuman's limb constraints (Forearm, Wrist, Hand) changed
+# the solved body not at all (11-12: Forearm 22.6 -> 35.7 left every measured girth as it was, as Neck Length did), so
+# the body's shown limb is thickened here, round its own axis, station by station: to the figure's forearm girth just
+# below the cuff, tapering to the figure's wrist at the wrist; never wider than a little under the sleeve's opening;
+# the wrist held in the body's own proportion to the hand (the figure's hand against the body's: a wrist wider than
+# its hand is the 3D model's blobbing, not the drawing); the hand as it is; never thinner than the body's own
+REP["limb_thicken"] = {}
+for side, (S0_, ax_, c_) in CUFF.items():
+    lg_ = LIMB_GIRTH.get(f"arm_{side}") or {}
+    if "Forearm" not in lg_ or "Wrist" not in lg_:
+        continue
+    sg_ = 1 if side == "l" else -1
+    L_ = float(np.linalg.norm(np.array(pose_head(f"hand_{side}")) - S0_))
+    BVp_ = np.array([v.co[:] for v in hands.data.vertices])
+    fh, bh = _girth_at(co, S0_, ax_, L_ + 0.05, sg_), _girth_at(BVp_, S0_, ax_, L_ + 0.05, sg_)
+    cap_ = lg_.get("_cap_cm") or 1e9
+    t_f = min(lg_["Forearm"]["figure_cm"], cap_)
+    t_w = min(lg_["Wrist"]["figure_cm"], cap_)
+    if fh and bh:
+        t_w = min(t_w, lg_["Wrist"]["body_cm"] * fh / bh)
+    p_ = (BVp_ - S0_) @ ax_
+    rr_ = (BVp_ - S0_) - p_[:, None] * ax_[None, :]
+    rad_ = np.linalg.norm(rr_, axis=1)
+    sel_ = keep & (sg_ * (BVp_[:, 0] - J("pelvis").x) > 0) & (p_ > c_ - 0.06) & (p_ < L_ + 0.02) & (rad_ < 0.12)
+    ks, k_w = [], 1.0
+    for st in np.arange(c_ - 0.06, L_ + 0.02, 0.01):
+        m_ = sel_ & (np.abs(p_ - st) < 0.005)
+        if m_.sum() < 6:
+            continue
+        b_ = _girth_at(BVp_, S0_, ax_, st, sg_)
+        if not b_:
+            continue
+        if st <= L_ - 0.04:
+            w_ = float(np.clip((st - c_) / max(L_ - 0.04 - c_, 0.02), 0, 1))
+            k_ = max(1.0, ((1 - w_) * t_f + w_ * t_w) / b_)
+            k_w = k_
+        else:                                     # wrist to hand: back to the body's own by the hand
+            k_ = 1.0 + (k_w - 1.0) * max(0.0, 1 - (st - (L_ - 0.04)) / 0.06)
+        ctr = BVp_[m_].mean(0)
+        dv = BVp_[m_] - ctr
+        dv -= (dv @ ax_)[:, None] * ax_[None, :]
+        BVp_[m_] = BVp_[m_] + (k_ - 1) * dv
+        ks.append((round(st / L_, 3), round(k_, 2)))
+    hands.data.vertices.foreach_set("co", BVp_.ravel())
+    hands.data.update()
+    REP["limb_thicken"][f"arm_{side}"] = {"forearm_target_cm": round(t_f, 1), "wrist_target_cm": round(t_w, 1),
+                                          "opening_cm": lg_.get("_opening_cm"), "cap_cm": lg_.get("_cap_cm"),
+                                          "figure_hand_cm": fh, "body_hand_cm": bh, "scale_by_station": ks}
 bm = bmesh.new()
 bm.from_mesh(hands.data)
 bm.verts.ensure_lookup_table()
