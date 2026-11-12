@@ -5498,6 +5498,9 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
                 raise RuntimeError(f"{src}: {im.size[0]}x{im.size[1]}, the clips are {W}x{H}")
         d = sd / s["id"].rsplit("_s", 1)[0] / s["id"]
         d.mkdir(parents=True, exist_ok=True)
+        if (d / "key.png").exists() and (d / "key.png").read_bytes() == src.read_bytes():
+            log(f"{s['id']}: key from {src} already in place (its clips so far are kept: a stopped render resumes)")
+            continue
         shutil.copyfile(src, d / "key.png")             # (a fresh mtime: newer than every clip of the shot)
         log(f"{s['id']}: key from {src}")
     SHOT_FACTS = {}
