@@ -601,14 +601,21 @@ def _limb_edge(S0, E0, sg, tube, step_min, ratio, lo_frac, hi_frac):
         r_.append(float(np.quantile(rad_[m_], 0.9)) if m_.sum() >= 8 else tube)    # nothing near the axis: cloth
         sk_.append(float(SKL[m_].mean()) if m_.sum() >= 8 else 0.0)                # standing off it
     r_, sk_ = np.array(r_), np.array(sk_)
-    best = None
+    cands = []
     for i in range(4, len(st_) - 3):
         above, below = np.median(r_[max(0, i - 8):i]), np.median(r_[i:i + 8])
         rest = r_[i:]
         if (above - below >= step_min and above >= ratio * below and np.quantile(rest, 0.9) <= 1.3 * below
                 and sk_[i:].mean() >= 0.5):
-            if best is None or above - below > best[1]:
-                best = (i, above - below)
+            cands.append((i, above - below))
+    best = None
+    if cands:
+        # the windowed step is flat over several stations round the cuff (a plateau of medians): among those within
+        # 2 mm of the largest, the station with the steepest single drop is the cuff, not the first one (noise
+        # decided among ties and the cut landed up to 3.5 cm inside the sleeve)
+        top = max(c[1] for c in cands)
+        tied = [c for c in cands if c[1] >= top - 0.002]
+        best = max(tied, key=lambda c: (r_[c[0] - 1] - r_[c[0]], -c[0]))
     rep_ = {"radius_cm": [round(100 * x, 1) for x in r_[::2]], "skin": [round(x, 2) for x in sk_[::2]]}
     if best is None:
         return None, p_, rad_, side_, rep_
@@ -629,7 +636,9 @@ def _hull_perimeter(Q):
     def half(P_):
         h = []
         for q in P_:
-            while len(h) >= 2 and np.cross(h[-1] - h[-2], q - h[-2]) <= 0:
+            # the 2-D cross written out (np.cross on 2-D vectors is gone in numpy 2)
+            while len(h) >= 2 and ((h[-1][0] - h[-2][0]) * (q[1] - h[-2][1])
+                                   - (h[-1][1] - h[-2][1]) * (q[0] - h[-2][0])) <= 0:
                 h.pop()
             h.append(q)
         return h
