@@ -154,6 +154,31 @@ def thing_for(at: str, things: list, names: dict) -> tuple:
     return None, None
 
 
+def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12) -> list:
+    """Every allowed mark for a place given only as a relation or a region ("beside him", "near the desk"): free
+    floor points within the place's reach, best first (free_mark's order); the camera rules choose among them."""
+    W, D = room[0] / 2 - 0.35, room[1] / 2 - 0.35
+    out = []
+    for r10 in range(int(near[0] * 10), int(near[1] * 10) + 1, 2):
+        r = r10 / 10
+        for a in range(0, 360, 20):
+            p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
+            if abs(p[0]) > W or abs(p[1]) > D or any(math.dist(p, o) < 0.55 for o in others):
+                continue
+            if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
+                   and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
+                continue
+            out.append((r + 0.3 * math.hypot(*p) / max(W, D), [round(p[0], 3), round(p[1], 3)]))
+    out.sort(key=lambda x: x[0])
+    picked = []
+    for _, p in out:                       # spread out: no two marks closer than 0.35 m
+        if all(math.dist(p, q) >= 0.35 for q in picked):
+            picked.append(p)
+        if len(picked) >= n:
+            break
+    return picked
+
+
 def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6)) -> list:
     """The nearest free floor point to the target thing's middle, between near[0] and near[1] m from it, clear of
     fixtures (their footprint + 0.25 m) and other people (0.55 m), inside the room, toward the room's middle."""
@@ -311,6 +336,10 @@ def main():
                     near = (0.6, 1.6)
                 others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
                 entry.update(seat=None, position=free_mark(tgt, others, things, room, near))
+                # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
+                # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
+                entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, things, room, near)
+                                                        if math.dist(m, entry["position"]) > 0.2]
             state[k] = entry
             placed_now.append(entry)
         # facing from the words: a person's name, else a named thing, else the room's middle
@@ -421,6 +450,11 @@ def main():
                 vid = f"{base}_{var}" if var and (library / "character" / f"{base}_{var}").exists() else base
                 c = {"id": vid, "position": v["position"], "facing": v["facing"],
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
+                if v.get("marks"):
+                    # the previous shot's mark first: it is kept whenever it still passes (no unmotivated move)
+                    prev = (groups[gi - 2][-1][1].get(k) or {}).get("position") if gi > 1 else None
+                    mk = [prev] if prev and any(math.dist(prev, m) < 0.05 for m in v["marks"]) else []
+                    c["marks"] = mk + [m for m in v["marks"] if not mk or math.dist(m, mk[0]) >= 0.05]
             lk = (cam0.get("_looks") or {}).get(k)
             if lk in st:
                 c["look_at"] = lk

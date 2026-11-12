@@ -272,6 +272,23 @@ def est_area(cam, m, res):
     return max(0.0, x1 - x0) * max(0.0, y1 - y0) * 0.9
 
 
+def area_scale(shots, subjects, res, scale=None):
+    """Per person, how much bigger their rendered share of the frame is than est_area's box (a coat's skirt, the
+    arms out): the largest ratio over the rendered stills, 0.5-3. A candidate camera's estimate for a person turned
+    away read 10 % where the render showed 14 % and the re-framing went round five rounds (11-11)."""
+    scale = dict(scale or {})
+    for sh in shots:
+        ff = (sh.get("speaker_check") or {}).get("frame_facts") or {}
+        for k, f in ff.items():
+            ma = (f.get("mask") or {}).get("area")
+            if ma is None or k not in subjects:
+                continue
+            e = est_area(sh["camera"], subjects[k]["measured"], res)
+            if e > 0.02 and ma > 0.02:
+                scale[k] = round(max(scale.get(k, 0.0), min(3.0, max(0.5, ma / e))), 3)
+    return scale
+
+
 def turned_away(cam, m):
     return plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > 100
 
@@ -310,8 +327,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             why.append(f"{k}'s head ({h:.3f}) is bigger than the speaker's ({sh_spk:.3f})")
         if k not in keep and turned_away(cam, v["measured"]):
             ma = (facts[k].get("mask") or {}).get("area")
-            if ma is None:                   # no still yet (a candidate camera): the area from the body
-                ma = est_area(cam, v["measured"], res)
+            if ma is None:                   # no still yet (a candidate camera): the area from the body, scaled
+                ma = est_area(cam, v["measured"], res) * (opts.get("area_scale") or {}).get(k, 1.0)   # as rendered
             if ma > FG_AREA:
                 why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
             elif ma is not None and ma > 0.02 and not facts[k]["head_in"]:
@@ -395,7 +412,7 @@ def look_at(spec, speaker):
     eye_z = lambda c: 1.15 if any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED) else 1.6
     for k, c in list(ch.items()):
         tgt_k = c.get("look_at") if c.get("look_at") in ch and c.get("look_at") != k else speaker
-        if tgt_k is None or k == tgt_k or tgt_k not in ch or c.get("asset") or c.get("look") is False:
+        if tgt_k is None or k == tgt_k or tgt_k not in ch or c.get("asset") or c.get("look") is False or "_look" in c:
             continue
         sp = ch[tgt_k]
         f = unit2(c.get("facing", [0, -1]))
@@ -416,8 +433,178 @@ def look_at(spec, speaker):
                   ["rot", "neck_01", [1, 0, 0], round(pitch * 0.4, 2)], ["rot", "head", [1, 0, 0], round(pitch * 0.6, 2)]]
         pr["steps"] = list(pr.get("steps") or []) + steps
         bp["params"] = pr
-        ch[k] = dict(c, body_pose=bp, _look={"at": tgt_k, "yaw": round(yaw + chest, 1), "pitch": round(pitch, 1)})
+        ch[k] = dict(c, body_pose=bp, _look={"at": tgt_k, "yaw": round(yaw + chest, 1), "pitch": round(pitch, 1),
+                                             "steps": len(steps)})
     return spec
+
+
+def unlook(c):
+    """A character without the head turns look_at added (they are the last pose steps)."""
+    lk = c.get("_look")
+    if not lk:
+        return c
+    c = {kk: vv for kk, vv in c.items() if kk != "_look"}
+    bp = dict(c.get("body_pose") or {})
+    pr = dict(bp.get("params") or {})
+    st = list(pr.get("steps") or [])
+    pr["steps"] = st[:len(st) - lk.get("steps", 0)]
+    bp["params"] = pr
+    c["body_pose"] = bp
+    return c
+
+
+# ------------------------------------------------------------------ marks
+MARK_CLEAR_M = 0.55          # a mark this far from anyone else's place
+
+
+def turn2(v, deg):
+    a = math.radians(deg)
+    return [v[0] * math.cos(a) - v[1] * math.sin(a), v[0] * math.sin(a) + v[1] * math.cos(a)]
+
+
+def mark_ref(spec, k, speaker):
+    """Whom a person on a vague mark is turned toward: their look target, else the other of the line, else the
+    speaker; keeps their facing relative to that person when they change marks."""
+    ch = spec["characters"]
+    r = ch[k].get("look_at") or (ch[k].get("_look") or {}).get("at")
+    if not r:
+        ln = [x for x in (spec.get("line") or []) if x != k and x in ch]
+        r = ln[0] if k in (spec.get("line") or []) and ln else speaker
+    return r if r in ch and r != k else None
+
+
+def mark_turn(spec, k, p, ref_pos):
+    """Degrees the person turns on moving from their place to p, keeping the same angle to the reference person."""
+    if not ref_pos:
+        return 0.0
+    o = spec["characters"][k]["position"]
+    a0 = math.atan2(ref_pos[1] - o[1], ref_pos[0] - o[0])
+    a1 = math.atan2(ref_pos[1] - p[1], ref_pos[0] - p[0])
+    return math.degrees(a1 - a0)
+
+
+def shifted(subjects, spec, moves, speaker):
+    """The measured people as they would stand with `moves` ({key: mark}): bodies carried to the mark and turned
+    by the same angle toward their reference person, listeners' heads re-aimed at whom they look at."""
+    out = json.loads(json.dumps(subjects))
+    for k, p in moves.items():
+        m = out[k]["measured"]
+        o = spec["characters"][k]["position"]
+        ref = mark_ref(spec, k, speaker)
+        rp = (moves.get(ref) or spec["characters"][ref]["position"]) if ref else None
+        deg = mark_turn(spec, k, p, rp)
+        d = [p[0] - o[0], p[1] - o[1]]
+        mv = lambda q: [o[0] + turn2([q[0] - o[0], q[1] - o[1]], deg)[0] + d[0],
+                        o[1] + turn2([q[0] - o[0], q[1] - o[1]], deg)[1] + d[1]]
+        for f in ("eye_xy", "pelvis_xy", "chest_xy"):
+            if f in m:
+                m[f] = mv(m[f])
+        for f in ("head_fwd_xy", "facing"):
+            if f in m:
+                m[f] = turn2(m[f], deg)
+        for j, v in (m.get("joints") or {}).items():
+            m["joints"][j] = mv(v) + list(v[2:])
+    for k, c in spec["characters"].items():
+        at = (c.get("_look") or {}).get("at")
+        if at and k in out and at in out and (k in moves or at in moves):
+            m = out[k]["measured"]
+            t = out[at]["measured"]["eye_xy"]
+            m["head_fwd_xy"] = unit2([t[0] - m["eye_xy"][0], t[1] - m["eye_xy"][1]])
+    return out
+
+
+def mark_fails(spec, subj, shots, res, room, line, est_side, keys, moves):
+    """The cameras whose rules fail with the people at these marks (measured geometry, no render): a speaker's face
+    (turned, blocked, small) or the framing rules on the shot's camera, unless the re-framing's own search finds a
+    camera that passes; a camera without a speaker fails only on a face cut by the frame's edge."""
+    bad = []
+    for c in spec["cameras"]:
+        sh = shots.get(c["name"])
+        if not sh:
+            continue
+        cam = dict(sh["camera"])
+        subj_k = c.get("subject") or c.get("speaker")
+        if not c.get("position") and subj_k in moves:    # a camera framed on its subject follows them
+            o = spec["characters"][subj_k]["position"]
+            d = [moves[subj_k][0] - o[0], moves[subj_k][1] - o[1]]
+            cam["position"] = [cam["position"][0] + d[0], cam["position"][1] + d[1], cam["position"][2]]
+            cam["target"] = [cam["target"][0] + d[0], cam["target"][1] + d[1], cam["target"][2]]
+        spk = c.get("speaker")
+        lis = listener_of(c, keys, spk)
+        opts = cam_opts(spec, c)
+        why, _ = framing_why(cam, c["kind"], spk, lis, bool(c.get("ots")), c.get("show"), subj, res, opts=opts)
+        if not moves and sh.get("speaker_check"):   # nobody moved: the render's own check
+            why = list(sh["speaker_check"]["why"])
+        if spk:
+            m = subj[spk]["measured"]
+            others = [v["measured"] for k, v in subj.items() if k != spk and not (c.get("ots") and k == lis)]
+            if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > MAX_HEAD_DEG:
+                why.append("speaker's head turned from the camera")
+            if blocked(cam["position"], [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]], others):
+                why.append("speaker's face blocked")
+            if why and two_shot_candidates(c, dict(sh, camera=cam), spk, lis, subj, res, room, line, est_side, [],
+                                           opts):
+                why = []
+        else:
+            why = [w for w in why if w.startswith("PARTIAL FACE")]
+        if why:
+            bad.append(f"{c['name']}: {why[0]}")
+    return bad
+
+
+def solve_marks(spec, subjects, shots, res, room, line, est_side, keys, prev, speaker):
+    """People with a vague place ("marks": the allowed floor points) take the first mark, the previous shot's place
+    first, with which the speaker and no-edge-face rules pass; a person with an exact place (a seat, a stated spot:
+    no marks) never moves for the camera. One person at a time, the others at their chosen marks. Returns
+    ({key: mark} moves, report)."""
+    ch = spec["characters"]
+    moves, rep = {}, {}
+    for k in sorted(ch):
+        c = ch[k]
+        if not c.get("marks") or any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED):
+            continue
+        marks = [list(m) for m in c["marks"]]
+        pv = (prev or {}).get(k)
+        if pv and any(math.dist(pv, m) < 0.05 for m in marks):        # where they stood in the shot before
+            marks = [pv] + [m for m in marks if math.dist(m, pv) >= 0.05]
+        tried, best = [], None
+        for i, mk in enumerate(marks):
+            others = [moves.get(o) or ch[o]["position"] for o in ch if o != k]
+            if any(math.dist(mk, o) < MARK_CLEAR_M for o in others):
+                continue
+            mv = dict(moves)
+            if math.dist(mk, c["position"]) > 0.05:
+                mv[k] = mk
+            bad = mark_fails(spec, shifted(subjects, spec, mv, speaker), shots, res, room, line, est_side, keys, mv)
+            tried.append({"mark": mk, "fails": bad})
+            if best is None or len(bad) < len(best[1]):
+                best = (mk, bad)
+            if not bad:
+                break
+        if best and math.dist(best[0], c["position"]) > 0.05:
+            moves[k] = best[0]
+        rep[k] = {"from": c["position"], "to": best[0] if best else c["position"], "previous": pv,
+                  "kept_previous": bool(pv) and best is not None and math.dist(best[0], pv) < 0.05,
+                  "tried": tried}
+        log(f"marks {k}: {len(tried)} tried, at {rep[k]['to']} (previous {pv}) fails {best[1] if best else None}")
+    return moves, rep
+
+
+def apply_marks(spec, moves, speaker, relook):
+    """Move people to their chosen marks (turned to keep their angle to their reference person), heads re-aimed."""
+    ch = spec["characters"]
+    new = {}
+    for k, p in moves.items():
+        ref = mark_ref(spec, k, speaker)
+        rp = (moves.get(ref) or ch[ref]["position"]) if ref else None
+        deg = mark_turn(spec, k, p, rp)
+        new[k] = dict(ch[k], position=[round(p[0], 3), round(p[1], 3)],
+                      facing=[round(v, 4) for v in unit2(turn2(ch[k].get("facing", [0, -1]), deg))])
+    ch.update(new)
+    if relook:
+        for k in list(ch):
+            ch[k] = unlook(ch[k])
+        look_at(spec, relook)
 
 
 def move_points(spec, c):
@@ -444,7 +631,7 @@ def cam_opts(spec, c):
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [],
-            "points": c.get("_points") or [], "mover": c.get("mover")}
+            "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
 
 
 def listener_of(c, spec_line, speaker):
@@ -664,6 +851,7 @@ def main():
     ap.add_argument("spec")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--no-split", action="store_true", help="stage all cameras in one scene (no per-speaker looks)")
+    ap.add_argument("--prev", help="the shot before's staged.json (its people's places): a vague mark keeps it")
     a = ap.parse_args()
     t0 = time.time()
     spec = json.loads(Path(a.spec).read_text())
@@ -679,15 +867,24 @@ def main():
         groups.setdefault(c.get("speaker"), []).append(c)
     if len(groups) > 1 and not a.no_split:
         rc = 0
-        for spk, cams in groups.items():
+        prev = a.prev
+        for spk, cams in groups.items():          # in turn: each group keeps the places the one before chose
             sub = dict(spec, id=f"{spec['id']}_{spk or 'q'}", cameras=cams)
             sp_path = odir.parent / f"{sub['id']}.spec.json"
             sp_path.write_text(json.dumps(sub, indent=1))
             log(f"group {sub['id']}: {[c['name'] for c in cams]}")
-            rc |= subprocess.run([sys.executable, __file__, str(sp_path), "--rounds", str(a.rounds), "--no-split"]).returncode
+            rc |= subprocess.run([sys.executable, __file__, str(sp_path), "--rounds", str(a.rounds), "--no-split"]
+                                 + (["--prev", prev] if prev else [])).returncode
+            st = odir.parent / sub["id"] / "staged.json"
+            if st.exists():
+                prev = str(st)
+        if prev and prev != a.prev:
+            (odir / "staged.json").write_text(Path(prev).read_text())
         return rc
-    if len(groups) == 1:
-        look_at(spec, list(groups)[0])
+    prev = json.loads(Path(a.prev).read_text()).get("positions") if a.prev and Path(a.prev).exists() else None
+    relook = list(groups)[0] if len(groups) == 1 else None
+    if relook:
+        look_at(spec, relook)
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     for c in spec["cameras"]:
         c["_points"] = move_points(spec, c)
@@ -700,17 +897,20 @@ def main():
             if c["kind"] in ("wide", "full"):
                 break
     # first pass: over-the-shoulder cameras from the spec's marks (eye height assumed until measured)
+    auto_ots = set()
     for c in spec["cameras"]:
         if c.get("ots") and c.get("speaker") and not c.get("position"):
+            auto_ots.add(c["name"])
             ch = spec["characters"]
             guess = lambda k: {"eye_xy": ch[k]["position"][:2], "eye_z": 1.6}
             c.update(ots_camera(guess(c["speaker"]), guess(c["ots"]), est_side, line))
             c["kind"] = c.get("kind", "medium")
     report = {"scene": spec["id"], "line": keys, "established_side": est_side, "rounds": [], "shots": {},
-              "seating": {}}
+              "seating": {}, "marks": {}}
     todo = [c["name"] for c in spec["cameras"]]
     tried = {c["name"]: [] for c in spec["cameras"]}
     master = None
+    marks_done = not any(v.get("marks") for v in spec["characters"].values())
     for rnd in range(a.rounds + 1):
         sp = odir / f"spec_round{rnd}.json"
         sp.write_text(json.dumps(spec, indent=1))
@@ -758,8 +958,27 @@ def main():
             report["shots"][c["name"]].update(speaker=c.get("speaker"), ok=chk["ok"], rounds=rnd)
             if not chk["ok"]:
                 fails.append(c)
-        report["rounds"].append({"round": rnd, "rendered": todo, "failed": [c["name"] for c in fails]})
+        spec["_area_scale"] = area_scale([shots[n] for n in todo], subjects, res, spec.get("_area_scale"))
+        report["rounds"].append({"round": rnd, "rendered": todo, "failed": [c["name"] for c in fails],
+                                 "area_scale": spec["_area_scale"]})
         log(f"round {rnd}: rendered {len(todo)}, failed {[c['name'] + ': ' + '; '.join(shots[c['name']]['speaker_check']['why']) for c in fails]}")
+        if not marks_done:                   # vague places: the marks that let the camera rules pass
+            marks_done = True
+            mv, report["marks"] = solve_marks(spec, subjects, shots, res, room, line, est_side, keys, prev,
+                                              relook)
+            if mv:
+                subj2 = shifted(subjects, spec, mv, relook)
+                apply_marks(spec, mv, relook, relook)
+                for c in spec["cameras"]:    # over-the-shoulder cameras set from the old places: set again
+                    if c["name"] in auto_ots:
+                        c.update(ots_camera(subj2[c["speaker"]]["measured"], subj2[c["ots"]]["measured"], est_side,
+                                            line))
+                    c["_points"] = move_points(spec, c)
+                if line:
+                    line = [spec["characters"][k]["position"][:2] for k in keys]
+                todo = [c["name"] for c in spec["cameras"]]
+                report["rounds"].append({"round": rnd, "rendered": "all", "marks_moved": mv})
+                continue
         if not fails or rnd == a.rounds:
             for c in fails:                  # only a speaker's unseen face rejects; a framing miss is reported
                 chk = shots[c["name"]]["speaker_check"]
@@ -815,6 +1034,8 @@ def main():
         if not todo:
             break
     (odir / "result.json").write_text(json.dumps(master, indent=1))
+    (odir / "staged.json").write_text(json.dumps({"positions": {k: v["position"] for k, v in
+                                                                spec["characters"].items()}}, indent=1))
     report["seconds"] = round(time.time() - t0, 1)
     (odir / "speakers.json").write_text(json.dumps(report, indent=1))
     for n, s in report["shots"].items():
