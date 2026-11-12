@@ -900,6 +900,11 @@ def main():
                          W / f"settle_{name}.log")
                 if p.returncode:
                     raise RuntimeError(f"settle {name} failed")
+                srep = json.loads((W / f"seated_{name}" / "settle.json").read_text())
+                if srep.get("cloth_under_floor"):      # the whole garment, not only its loose set (11-12: a tube of
+                    raise RuntimeError(                # skirt through the seat and floor passed on the loose set's hem)
+                        f"settle {name}: {srep['cloth_under_floor']} cloth vertices under the floor "
+                        f"(lowest {srep.get('cloth_min_z_m')} m)")
                 dest = f"/Game/Char/Outfit{tag}S{''.join(ch for ch in name.upper() if ch.isalnum())}"   # whole name: armchair and armchair_2 collided
                 ue_job(W, f"import_seat_{name}", str(ASSETS / "characters" / "char_render.py"), {
                     "out": str(W / "ue" / f"import_seat_{name}"),

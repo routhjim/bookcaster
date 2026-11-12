@@ -151,6 +151,21 @@ sk = np.load(os.path.join(JOB["combo"], "skirt_idx.npy"))
 sk = sk[sk < nv]
 free = np.zeros(nv, bool)
 free[sk] = True
+# strays: cloth below the hips that the loose set missed (small islands and inner patches of a generated skirt, all
+# weighted to the pelvis) kept its standing shape under the pelvis - seated, a tube through the seat and the floor;
+# the loose cloth touching it was pinned there, and the skin test hid the shins against it. It is loose cloth too.
+_cloth = np.ones(nv, bool)
+if "body_skin" in fig.data.attributes:
+    _bs = np.zeros(nv, np.int32)
+    fig.data.attributes["body_skin"].data.foreach_get("value", _bs)
+    _cloth &= _bs == 0
+_gi = fig.vertex_groups.get("pelvis")
+_hip_z = min(arm.data.bones[b_].head_local[2] for b_ in ("thigh_l", "thigh_r") if b_ in arm.data.bones) / CM
+_cand = np.where(_cloth & ~free & (R[:, 2] < _hip_z - float(JOB.get("stray_below_hip_m", 0.05))))[0]
+_stray = [int(i) for i in _cand if _gi is not None and any(
+    g.group == _gi.index and g.weight > 0.5 for g in fig.data.vertices[int(i)].groups)]
+free[_stray] = True
+REP["strays_freed"] = len(_stray)
 ED = np.array([e.vertices[:] for e in fig.data.edges])
 # pinned: free vertices touching a non-free one, and the top 3 cm of the free cloth
 touch = np.zeros(nv, bool)
@@ -356,6 +371,9 @@ for it in range(int(JOB.get("iters", 40))):
     X[~free] = P[~free]
     X[mov] = collide(X[mov], None if outw is None else outw[mov])
 REP["times"]["relax"] = round(time.time() - t, 2)
+# the whole garment, not only the loose set: nothing of it under the floor
+REP["cloth_min_z_m"] = round(float(X[_cloth, 2].min()), 3)
+REP["cloth_under_floor"] = int((X[_cloth, 2] < FLOOR_Z - 0.02).sum())
 if JOB.get("lie"):
     # lying: no cloth through the mattress (the posed outfit's back lies on it); the skin slot is the body's own
     _cl = np.ones(nv, bool)
