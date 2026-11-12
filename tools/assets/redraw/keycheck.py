@@ -53,6 +53,10 @@ BODY = {"l_sh": 5, "r_sh": 6, "l_el": 7, "r_el": 8, "l_wr": 9, "r_wr": 10, "nose
 CHIN = 23 + 8            # the 68-point face contour's chin, after the 23 body and feet points
 HAND_L, HAND_R = slice(91, 112), slice(112, 133)
 
+LOOK_AREA = 0.01         # a large piece is asked about when its mask is at least this share of the frame
+LOOK_Q = ("Picture 1 is part of a reference render of a room; Picture 2 is the same part of a film frame of that room. "
+          "Look at the main piece of furniture in Picture 2: its build (shape, back, arms) and its material. Which "
+          "of these descriptions of the room's pieces fits the piece in Picture 2?")
 OUTFIT_Q = ("Picture 1 is a costume reference sheet. Picture 2 shows the same character in a film frame. Compare "
             "the shirt collar and neckwear in Picture 2 with Picture 1. Answer with one word: same, larger, open, "
             "turned, missing.")
@@ -313,6 +317,25 @@ def main():
                                                          "engine": lab_of(imgs["engine"], tmp) if "engine" in imgs
                                                          else None}
                     Path(tmp).unlink(missing_ok=True)
+        opts = it.get("look_opts") or []
+        if judge is not None and it.get("things") and len(opts) >= 2 and "engine" in it:
+            # each large piece's build and material: which of the room's own pieces the redraw's crop is, a closed
+            # choice among their descriptions (a fabric wing-back drawn as buttoned leather passed the colour check)
+            for t in it["things"]:
+                if (t.get("area") or 0) < LOOK_AREA or t["name"] not in {o["name"] for o in opts}:
+                    continue
+                mk = np.asarray(Image.open(t["mask"]).convert("L").resize((1152, 640))) > 127
+                ys, xs = np.nonzero(mk)
+                if not len(xs):
+                    continue
+                bx = (max(0, xs.min() - 12), max(0, ys.min() - 12), min(1152, xs.max() + 12), min(640, ys.max() + 12))
+                crops = [Image.open(it[w]).convert("RGB").resize((1152, 640)).crop(bx) for w in ("engine", "redraw")]
+                q = (LOOK_Q + "\n" + "\n".join(f"{i + 1}. {o['words']}" for i, o in enumerate(opts))
+                     + "\nAnswer with the number only.")
+                a_ = judge.ask_images(crops, q, 4, 512).strip()
+                num = int("".join(ch for ch in a_ if ch.isdigit()) or 0)
+                want = 1 + [o["name"] for o in opts].index(t["name"])
+                r.setdefault("look", {})[t["name"]] = {"answer": a_, "want": want, "ok": num == want}
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
             r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"] if t.get("mask")}
             if "engine" in imgs:

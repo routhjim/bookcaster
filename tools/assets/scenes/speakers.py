@@ -714,6 +714,17 @@ def end_thing(spec, c):
                 None)
 
 
+def similar_seats(spec, t):
+    """The room's other seats like the end place (the same kind by name: "armchair", "armchair_2"): a mover with one
+    of them nearer than the end place sat in the nearer one in two of three video takes (11-12)."""
+    import re
+    sys.path.insert(0, str(HERE.parent / "redraw"))
+    import setfacts
+    base = re.sub(r"_\d+$", "", t["name"])
+    return [x for x in setfacts.things(Path(C.LIBRARY) / "set" / spec["set"])
+            if x["name"] != t["name"] and re.sub(r"_\d+$", "", x["name"]) == base]
+
+
 def seg_dist(p, a, b):
     d = [b[0] - a[0], b[1] - a[1]]
     L2 = d[0] * d[0] + d[1] * d[1] or 1e-9
@@ -736,8 +747,10 @@ def clear_walks(spec, seat_names=()):
             continue
         end = t["center"][:2]
         m = ch[mv]
-        if m.get("marks"):
-            best = min(m["marks"], key=lambda q: math.dist(q, end))
+        sim = [x["center"][:2] for x in similar_seats(spec, t)]
+        if m.get("marks"):                   # nearest the end place, and no seat like it nearer than the end place
+            best = min(m["marks"], key=lambda q: (any(math.dist(q, x) < math.dist(q, end) for x in sim),
+                                                  math.dist(q, end)))
             if math.dist(best, m["position"]) > 0.05 and not any(
                     math.dist(best, ch[o]["position"]) < MARK_CLEAR_M for o in ch if o != mv):
                 out["moved"][mv] = [list(m["position"]), list(best)]
@@ -893,9 +906,21 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                         why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
                                              opts=opts)
                         pc = opts.get("prev_cam") if opts.get("points") else None
+                        sim_pen = 0.0
+                        ep = opts.get("end_place")
+                        if ep and ep.get("similar") and opts.get("mover") in subjects:
+                            # a seat like the end place nearer the mover in the frame than the end place, in view
+                            mm = subjects[opts["mover"]]["measured"]["pelvis_xy"]
+                            mq = framing.project(q, [mm[0], mm[1], 0.5], res)
+                            eq = framing.project(q, [ep["center"][0], ep["center"][1], 0.5], res)
+                            for sc_ in ep["similar"]:
+                                sq = framing.project(q, [sc_[0], sc_[1], 0.5], res)
+                                if mq and eq and sq and 0 < sq[0] < 1 and 0 < sq[1] < 1 and \
+                                        math.dist(mq, sq) < math.dist(mq, eq):
+                                    sim_pen += 3.0
                         if not why:          # a move keeps the shot before's side of the room when it can
                             out.append((math.dist(p, cam0["position"])
-                                        + (3.0 if pc and p[0] * pc[0] + p[1] * pc[1] < 0 else 0.0)
+                                        + (3.0 if pc and p[0] * pc[0] + p[1] * pc[1] < 0 else 0.0) + sim_pen
                                         + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5)
                                         + 10.0 * area_excess(q, subjects, res, {spk, lis, opts.get("subject")}, opts),
                                         q, mode))
@@ -1103,7 +1128,8 @@ def main():
         c["_points"] = move_points(spec, c)
         c["_landmark"] = landmark(spec, c)
         t = end_thing(spec, c) if c.get("mover") else None
-        c["_end_place"] = {"center": t["center"], "top": t["center"][2] + t["half"][2]} if t else None
+        c["_end_place"] = ({"center": t["center"], "top": t["center"][2] + t["half"][2],
+                            "similar": [x["center"] for x in similar_seats(spec, t)]} if t else None)
     spec["_prev_cam"] = (json.loads(Path(a.prev).read_text()).get("camera") if a.prev and Path(a.prev).exists()
                          else None)
     keys = spec.get("line") or list(spec["characters"])[:2]

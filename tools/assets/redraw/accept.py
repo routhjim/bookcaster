@@ -79,6 +79,9 @@ def item_fails(rec: dict) -> dict:
     for n, ok in (rec.get("lit_ok") or {}).items():
         if ok is False:
             f.setdefault("set", []).append(f"lit {n}")
+    for n, got in (rec.get("look") or {}).items():
+        if got.get("ok") is False:
+            f.setdefault("set", []).append(f"look {n}")
     for k, ok in (rec.get("wear_ok") or {}).items():
         if ok is False:
             f.setdefault(k, []).append("clothes colour")
@@ -318,11 +321,15 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
                             mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png"), named=p["key"] in named,
                             action=acts.get(p["key"]) if acts.get(p["key"]) in ACTION_SEEN else None))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
-        things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place")}
-                  for t in truth.get("things") or [] if t.get("mask")]
+        things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place"),
+                   "area": t.get("mask_area")} for t in truth.get("things") or [] if t.get("mask")]
         lit = [{"name": t["name"], "lit_mask": t["lit_mask"], "words": t["words"]}
                for t in truth.get("things") or [] if t.get("lit_mask")]
-        items.append({"id": iid, "redraw": path, "engine": m["still"],
+        if run.get("set") and "_look_opts" not in run:     # the room's own large pieces: the look question's options
+            import setfacts
+            run["_look_opts"] = [{"name": t["name"], "words": t["words"]} for t in setfacts.things(run["set"])
+                                 if t.get("large") and t["kind"] != "window" and t["name"] != "rug"]
+        items.append({"id": iid, "redraw": path, "engine": m["still"], "look_opts": run.get("_look_opts") or [],
                       "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl, "things": things,
                       "lit": lit})
     out_p.write_text(json.dumps({"out": str(out_p.with_suffix("")) + "_result.json", "pose_model": pose_model,
@@ -372,6 +379,11 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
                 add.append(f"{t['words'].split(' with ')[0].split(' (')[0].capitalize()} is lit: "
                            + ("the fire in its grate burns brightly with real flames and glowing coals, as in Picture 1."
                               if t.get("fire") else "its flame burns, as in Picture 1."))
+            elif t and x.startswith("look "):        # its build and material, from its own words
+                add.append(f"{t['words'].split(' (')[0].capitalize()} keeps exactly its build and material: "
+                           f"{t['words'].split(' (', 1)[1].rstrip(')') if ' (' in t['words'] else t['words']}"
+                           f"{', ' + t['place'] if t.get('place') else ''}; it is not drawn as any other piece of the "
+                           "room.")
             elif t:
                 add.append(f"{t['words'].split(' (')[0].capitalize()} {('(' + t['words'].split(' (', 1)[1]) if ' (' in t['words'] else ''}"
                            f"{', ' + t['place'] if t.get('place') else ''} keeps exactly the colour and shape of its "
