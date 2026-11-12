@@ -178,6 +178,8 @@ class LineBase(unittest.TestCase):
         S.wl = L.WorkList(Path(root) / "line")
         S.verdict = {"cards": True, "pause": False, "why": []}
         S.started = []
+        S.mem_read = lambda: 1000.0                         # never the box's real memory (MemoryTest sets its own)
+        S.editor_mem = lambda e: 0.0
         for c in S.cards.values():                          # never the box's real card locks
             c.lock_path = str(Path(root) / f"gpu-{c.bus}.lock")
             c.tenant_path = Path(root) / f"gpu-{c.bus}.tenant"

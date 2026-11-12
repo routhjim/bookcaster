@@ -234,6 +234,61 @@ as both `ASSETS_UE_JOB` and `MH_JOB`, so the asset chain's shim and the characte
 scheduler's server loop (`ue/ue_render.py`); a project without a shim gets the chain's. Other projects are not
 given the stage level, ray-tracing settings or mannequin.
 
+## The line: memory, retries, the stuck report, fill work
+
+All settings are in `config.py` (`ASSETS_MEM_*`, `ASSETS_LINE_BUSY_*`, `ASSETS_FILL_*`, `ASSETS_WINDOW_*`).
+
+**Memory budget.** Each job kind declares the system memory it needs (`ASSETS_MEM_KIND_GB`, or `--mem-gb N` on one
+`--line-cmd`). A job starts only when MemAvailable, less what jobs still loading have declared (for
+`ASSETS_MEM_RAMP_S` after their start), less the reserve, covers it; `--status` says so when it holds one. Two jobs
+that cannot both fit never overlap, whichever starts first. A video window is not opened (the cards keep their
+work) while its clips could not load. An idle editor that holds at least `ASSETS_UE_RECYCLE_GB` is quit when a
+waiting job would fit with its memory back, once per waiting job; no editor is started that the budget does not
+cover. A job held only for memory for `ASSETS_MEM_TURN_S` gets the turn (no new engine work when it needs the
+editor's memory, no other job above `ASSETS_MEM_SMALL_GB`), but only when the line's own memory could cover it.
+Only `llm` (the tool's own gate) and `video` are measured figures; the others are estimates until the line
+records memory per job.
+
+**Retries.** A command that ends with one of `ASSETS_LINE_BUSY_RCS` (75), or fails with a last log line matching
+`ASSETS_LINE_BUSY_LOG_RE` (it waited for memory or a lock and gave up), did not fail: it goes back on the line and
+becomes ready again after `ASSETS_LINE_RETRY_S` (doubled each time), `ASSETS_LINE_RETRIES` times at most. An
+engine job whose editor the line stopped for memory is treated the same. New tools should exit 75.
+
+**Stuck report.** When no station runs anything, no editor loads or unloads, and work has waited
+`ASSETS_LINE_STUCK_REPORT_S`, the line logs one line (and `--status` shows it): the oldest waiting entry, the
+condition it waits for, followed through whatever it waits behind, and `NOTHING IN THE LINE WILL CHANGE THIS` when
+no timer, outside holder or next step of the line can release it.
+
+**Fill work.** `--line-cmd STATION KIND --fill ... -- CMD` (or a line in the standing list `ASSETS_FILL_LIST`,
+added with `run_asset.py --fill-add LIST`; `--fill-check LIST` only says which lines can run). A fill job starts at
+a station only when no normal job runs or waits there and the memory budget allows; it never counts for LINE FULL;
+it is never stopped mid-job, but no further fill job starts once normal work or a video window arrives. The line
+draws one job per idle device from the standing list. Fill work alone brings the cards back after a video window
+(without loading the editor), never after `--release-cards`. It borrows the engine card only when the editor is
+unloaded or has been idle `ASSETS_FILL_ENGINE_IDLE_S`.
+
+### Inside a video window (`ASSETS_WINDOW_FILL`, off)
+
+With the switch on, a card whose lock nobody has held, and which has been idle, for `ASSETS_WINDOW_IDLE_S` while
+clips run may start one command (normal first, else fill) that states its VRAM (`--vram-gb`, or
+`ASSETS_VRAM_KIND_GB`) and is known to end within `ASSETS_WINDOW_JOB_MAX_S` (`--est-s`, or the measured mean of
+its kind). The cards stay released; the command takes the card's lock itself like every command.
+
+Do not switch it on before this passes on the box, with the video flow's normal flags:
+
+1. During a real window, log each card's lock holder, `mem_info_vram_used` and `gpu_busy_percent` once a second
+   (`--status` has all three). Find the stretches where a card's lock is free for longer than
+   `ASSETS_WINDOW_IDLE_S`: the pauses for judging and review, and a card the flow does not use for a batch.
+2. In those stretches, read the card's free VRAM. If the video model stays loaded there, free VRAM is what a
+   command may use, less `ASSETS_WINDOW_VRAM_KEEP_GB`; a command whose stated VRAM does not fit must be refused
+   (check the hold in `--status`).
+3. Run one short command (a measure, a check) in such a stretch by hand, taking the card's lock as the line's
+   commands do, and watch the video flow: it must wait for the lock when it comes back, not end its batch and
+   reload its model. A flow that gives up its batch when another process holds the lock costs minutes per
+   window, far more than the idle card is worth; in that case leave the switch off.
+4. Peak VRAM of the command and of the next video batch together must stay under the card's total, and the
+   clips of that window must be byte-identical or pass their checks as in a window without it.
+
 ## Settings
 
 Environment variables, documented in `config.py`: `ASSETS_BLENDER` (default `$BLENDER`, else

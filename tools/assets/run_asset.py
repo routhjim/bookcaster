@@ -687,10 +687,14 @@ def main():
         guard_main(int(a1[1]), a1[2])
         return 0
     if a1 and a1[0] in ("--status", "--stop-editor", "--release-card", "--release-cards", "--reclaim-cards",
-                        "--ue-job", "--cancel", "--line-cmd", "--feed", "--start"):
+                        "--ue-job", "--cancel", "--line-cmd", "--feed", "--start", "--fill-check", "--fill-add"):
         import assetd as S
         if a1[0] == "--line-cmd":
             return S.client_line_cmd(a1[1:])
+        if a1[0] in ("--fill-check", "--fill-add"):
+            if len(a1) != 2:
+                raise SystemExit(f"usage: run_asset.py {a1[0]} LIST   (a --feed style list of --line-cmd lines)")
+            return S.fill_check(a1[1], add=a1[0] == "--fill-add")
         if a1[0] == "--feed":
             if len(a1) != 2:
                 raise SystemExit("usage: run_asset.py --feed LIST   (one run_asset.py argument line per entry)")
