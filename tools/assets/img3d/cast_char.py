@@ -385,7 +385,7 @@ def main():
             # the starting arm angle by how loose the sleeves are (a fact, text first): the angles that passed the
             # mesh gate so far were 45-54 for close sleeves, 60 for a tweed jacket, 72 for loose ones
             sl_ = ((ch.get("garment") or {}).get("sleeves") or "")
-            deg0 = a.pose_deg or {"close": 46, "medium": 58, "loose": 70}.get(
+            deg0 = a.pose_deg or {"close": 46, "medium": 60, "loose": 66}.get(
                 sl_, 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
             CH["draw_start_deg"] = {"deg": deg0, "sleeves": sl_ or None}
             gf_ = ch.get("garment") or {}
@@ -402,11 +402,14 @@ def main():
                 # enough for the hands at any of these angles
                 deg = deg0 + 6 * rnd
                 pose_map = rdir / f"pose{deg}.png"
+                # past 56 degrees the outstretched hands run off a 896-wide picture (the gate then finds no
+                # armpit, 11-12): a wider canvas and a slightly smaller figure
+                cw, cf = (1152, 920) if deg >= 56 else (896, 1000)
                 subprocess.run([sys.executable, str(HERE / "apose_map.py"), str(pose_map), "--deg", str(deg),
-                                "--w", "896", "--h", "1344", "--fig", "1000"], check=True)
+                                "--w", str(cw), "--h", "1344", "--fig", str(cf)], check=True)
                 CH.setdefault("pose_deg", []).append(deg)
                 seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
-                jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [896, 1344],
+                jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [cw, 1344],
                          "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + (
                              " No outer layer over the shoulders: the arms, the sides of the body and the clothes "
                              "under it all in view." if gf_.get("outer_layer") else ""), "refs": [a.sheet],
