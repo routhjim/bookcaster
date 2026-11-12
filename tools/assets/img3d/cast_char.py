@@ -809,7 +809,9 @@ def main():
                     break
                 ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 2
                 if ab > 16:
-                    break
+                    save()
+                    raise RuntimeError(f"ARMS: a forearm still touches the body at 16 degrees ({sep}); the fit's arms are "
+                                       f"wrong (the check sheet shows how); the build stops here")
                 CH.setdefault("arms", {})["abduct_deg"] = ab
                 cj3["relaxed_arm_steps"] = arm_steps(ab)
                 (lib / "character.json").write_text(json.dumps(cj3, indent=1))
