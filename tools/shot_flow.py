@@ -353,6 +353,7 @@ def _chain_words(st: dict, text: str) -> str:
     if DROP_ABSENT and st.get("id") in AUDIT:
         cx, s = AUDIT[st["id"]]
         text = drop_absent(text, absent_words(cx, s)) or text
+    text += CHAIN_HOLD.get(st.get("id"), "")
     return with_facts(text, {"id": st.get("id")}, text)
 
 
@@ -516,6 +517,19 @@ def _pose_hold(cx, s: dict) -> str:
         first = describe(RG.Book(cx.book), w, _shot_dress(cx, s)) + _side(s, w)
         out.append(f" {first[0].upper() + first[1:]} stays {POSE_WORDS[c]} throughout.")
     return "".join(out)
+
+
+CHAIN_HOLD: dict = {}       # chain shot id -> its held-pose sentence(s) (_chain_hold), part of every line's words
+
+
+def _chain_hold(cx, s: dict) -> str:
+    """_pose_hold for a chain's head shot. A chain replaces the director's shots after the poses were carried
+    (apply_chains), so it has no pose_held: its opening pose is the head's own `pose`, its last the chain's pose_end.
+    (11-12: two chains with a seated person had no "stays sitting" in any line, and she stood up in both.)"""
+    who = s.get("who") or []
+    held = {w: pose_cat(v) for w, v in (s.get("pose") or {}).items() if w in who and pose_cat(v)}
+    after = {w: pose_cat((s.get("pose_end") or {}).get(w) or "") or c for w, c in held.items()}
+    return _pose_hold(cx, dict(s, pose_held=held, pose_after=after))
 
 
 ONLY_HERE = " Only the {n} already in the picture {be} ever in it: nobody else comes into the picture."
@@ -4021,6 +4035,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                          "guider": dict(TALK_GUIDER), "lock_end": None, "images": [dict(img[0], strength=TALK_KEY)]})
         elif s.get("chain"):                # an action chain: its own jobs, line by line (_chains_as_they_land)
             if not (retake and s["id"] not in retake):
+                CHAIN_HOLD[s["id"]] = _chain_hold(cx, s)
                 _chain_state(L, s, key)
                 chains.append(s["id"])
         elif s["kind"] == "action":

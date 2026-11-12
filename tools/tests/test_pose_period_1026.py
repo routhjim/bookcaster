@@ -66,6 +66,22 @@ check("clip prompt: the one description of him, held: 'The man in the ragged pat
       hold)       # (11-01: with the side the key draws him on, in a two-person shot)
 check("clip prompt: nothing held in the shot that heals him", SF._pose_hold(cx, out["m4"][0]) == "")
 
+# --- a chain replaces the director's shots after the poses are carried: its lines say the held pose too (11-12: two
+# chains with a seated person had no such sentence in any line, and she stood up in both)
+ch = {"id": "c_s0", "who": ["Peter", "Lame Man"], "kind": "action", "pose": {"Peter": "standing", "Lame Man": "sitting"},
+      "pose_end": {"Peter": "standing"}, "chain": {"lines": ["He gives a start.", "He stares up."]}}
+hc = SF._chain_hold(cx, ch)
+check("chain: a seated person with no change of pose stays sitting", hc == hold.replace("  ", " ") or
+      re.fullmatch(r" The man in the ragged patched brown tunic( on the (left|right))? stays sitting throughout\.", hc), hc)
+check("chain: one who rises by the chain's end is not held",
+      SF._chain_hold(cx, dict(ch, pose_end={"Peter": "standing", "Lame Man": "standing"})) == "")
+check("chain: someone the key does not show is not named",
+      SF._chain_hold(cx, dict(ch, who=["Peter"])) == "")
+SF.CHAIN_HOLD["c_s0"] = hc
+check("chain: every line's words end with it", all(SF._chain_words({"id": "c_s0"}, x) == x + hc for x in ch["chain"]["lines"]))
+check("chain: another chain's lines are as written", SF._chain_words({"id": "other_s0"}, "He nods.") == "He nods.")
+SF.CHAIN_HOLD.clear()
+
 # --- posture out of the looks; the outfit checked in the key
 lk = "a man of about 35, gaunt build, wearing a ragged patched brown tunic, sitting on the ground with legs extended"
 check("look without its posture", SF.no_pose(lk) == "a man of about 35, gaunt build, wearing a ragged patched brown tunic", SF.no_pose(lk))
