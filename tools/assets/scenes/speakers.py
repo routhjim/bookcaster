@@ -356,7 +356,10 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             why.append(f"{k} (named for the shot) is not in view")
     for k, f in facts.items():
         # a face cut by the frame's edge is always a miss (any shot kind): the run rejects it if no camera clears it
-        if f["cut"] and f["head_any"] and not turned_away(cam, subjects[k]["measured"]) and k != speaker:
+        em = subjects[k]["measured"]
+        ep = framing.project(cam, [em["eye_xy"][0], em["eye_xy"][1], em["eye_z"]], res)
+        near_edge = bool(ep) and -0.08 < ep[0] < 1.08 and -0.05 < ep[1] < 1.0      # the head at or just past an edge
+        if f["cut"] and (f["head_any"] or near_edge) and not turned_away(cam, em) and k != speaker:
             why.append(f"PARTIAL FACE: {k}'s face cut by the frame's {'/'.join(f['cut_edges'])} edge")
         elif f["cut"] and not (ots and k == listener) and kind != "close":
             why.append(f"{k} cut by the frame's {'/'.join(f['cut_edges'])} edge")
@@ -742,8 +745,13 @@ def main():
                                                             c.get("show"), subjects, res, opts=cam_opts(spec, c))[0]]
                 cands = good or (cands if face_fail else [])
             if not cands and chk.get("framing"):
-                tc = two_shot_candidates(c, shots[c["name"]], c.get("speaker"), lis, subjects, res, room, line,
-                                         est_side, tried[c["name"]], cam_opts(spec, c))
+                partial = any(w.startswith("PARTIAL FACE") for w in chk["framing"])
+                if partial and c.get("speaker"):  # nobody else can be fully in or out: a clean single at once
+                    tc = two_shot_candidates(dict(c, show=None), shots[c["name"]], c["speaker"], None, subjects, res,
+                                             room, line, est_side, tried[c["name"]], dict(cam_opts(spec, c), _single=True))
+                else:
+                    tc = two_shot_candidates(c, shots[c["name"]], c.get("speaker"), lis, subjects, res, room, line,
+                                             est_side, tried[c["name"]], cam_opts(spec, c))
                 if tc:
                     if tc[0][1] == "single":     # a clean single: the listener is no longer required in it
                         c["listener"] = None
