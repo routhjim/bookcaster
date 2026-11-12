@@ -77,8 +77,8 @@ def item_fails(rec: dict) -> dict:
 
 # hue angle (deg), judged when both are coloured (chroma > LAB_MIN_C). Lightness and chroma are not judged: they
 # follow each shot's light (the same gold chair reads L 4, chroma 10 in the window's shade and L 20, chroma 21 by
-# the fire); a hue tolerance of 35 deg let the gold chair drawn as red leather pass (hue 47 v 67), 15 catches it
-LAB_HUE, LAB_MIN_C = 15.0, 10.0
+# the fire); the gold chair reads hue 65-71 in every shot that keeps it gold, drawn as red leather 45-55: 10 deg
+LAB_HUE, LAB_MIN_C = 10.0, 10.0
 
 
 def colour_eval(*results: dict, ref_id: str | None = None) -> dict:
