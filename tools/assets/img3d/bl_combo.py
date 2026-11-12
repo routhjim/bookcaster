@@ -1151,9 +1151,9 @@ if DSM > 0 and not STATUE:
         REP["disp_smooth"] = {"rounds": DSM, "head_refix_verts": nfix}
 # the collar's height: a generated figure's collar and cravat reach its chin, but its neck is shorter than the
 # MetaHuman's, so after the fit they can end centimetres under the jaw (a bare neck). Measured: the front top of the
-# cloth round the neck against the head mesh's chin; the collar-and-cravat region above the shoulder line is lifted
-# by one smooth displacement (full at the top, nothing at the shoulder line, fading out away from the neck) so its
-# top sits COLLAR_UNDER_CHIN under the chin. REP["bare_neck_cm"] is what remains.
+# cloth round the neck against the head mesh's chin; the whole garment is lifted by one smooth ramp from the hip line
+# (nothing) to the collar (full), sleeves following their shoulder end, so its top sits COLLAR_UNDER_CHIN under the
+# chin and the collar keeps its generated shape and texture. REP["bare_neck_cm"] is what remains.
 COLLAR_LIFT = bool(JOB.get("collar_lift", False))
 if not STATUE and HEAD is not None:
     P_ = fco + disp
@@ -1191,12 +1191,36 @@ if not STATUE and HEAD is not None:
     if top0 is not None:
         lift = (chin_ - float(JOB.get("collar_under_chin_m", 0.012))) - top0
         if lift > 0.003 and top0 > z_sh + 0.02:
-            # spread over a long run (from mid-chest, inside the lapels) so the stretch per centimetre is small
-            z_lo_ = min(z_sh, float(J("spine_04").z))
+            # the whole garment rises, one smooth ramp from the hip line (nothing) to the collar (the full lift): a
+            # 3 cm rise over 50-60 cm is a 5 % stretch nobody sees, so the collar keeps its generated shape and texture
+            # and only sits higher (a lift over the chest or the inner layer alone stretched and smeared the collar
+            # into a tall band or a bib). A sleeve follows its shoulder end, the rise fading to nothing at the cuff.
+            z_lo_ = float(J("pelvis").z)
             t_ = np.clip((P_[:, 2] - z_lo_) / (top0 - z_lo_), 0, 1)
             t_ = t_ * t_ * (3 - 2 * t_)
-            dz = lift * t_ * inner_w
+            gidx = {g.index: g.name for g in fig.vertex_groups}
+            armw_ = np.zeros(len(P_))
+            for v in fig.data.vertices:
+                for g in v.groups:
+                    nm = gidx.get(g.group, "")
+                    if nm.startswith(("upperarm", "lowerarm", "hand", "clavicle")) or "_finger" in nm:
+                        armw_[v.index] += g.weight if not nm.startswith("clavicle") else 0.0
+            armw_ = np.clip(armw_, 0, 1)
+            dz_arm = np.zeros(len(P_))
+            for side, sg in (("l", 1), ("r", -1)):
+                S0 = np.array(J(f"upperarm_{side}"))
+                Hd = np.array(J(f"hand_{side}"))
+                L_ = max(np.linalg.norm(Hd - S0), 0.1)
+                ax_ = (Hd - S0) / L_
+                ts0 = float(np.clip((S0[2] - z_lo_) / (top0 - z_lo_), 0, 1))
+                ts0 = ts0 * ts0 * (3 - 2 * ts0)
+                on = sg * (P_[:, 0] - float(J("pelvis").x)) > 0
+                along = np.clip(((P_ - S0) @ ax_) / L_, 0, 1)
+                dz_arm[on] = lift * ts0 * (1 - along[on])
+            dz = (1 - armw_) * lift * t_ + armw_ * dz_arm
             disp[:, 2] += dz
+            REP.setdefault("collar_height", {})["lift_shape"] = "torso"
+        if lift > 0.003 and top0 > z_sh + 0.02:
             # anything the lift took into the head mesh goes out again
             hb2 = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
             for i in np.nonzero(dz > 1e-4)[0]:
