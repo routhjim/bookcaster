@@ -206,8 +206,19 @@ def main():
                   f"unstated." + (" Otherwise " + v[v.index("Answer"):] if "Answer" in v else
                                   " Otherwise " + v[v.index("Reply"):]))
               for k, v in asks.items()}
-        tans = ask_vl([{"id": "text", "image": str(head_p), "ask": tq, "max_new_tokens": 6}])
+        # the garment facts: first whether the description speaks of that part at all (a plain "tunic" was answered
+        # "neckline at the base", 11-12; the drawing shows an open neck): only then is its answer the fact
+        ASPECT = {"neckline": "the garment's collar or neckline (how high it comes up the neck)",
+                  "sleeves": "the garment's sleeves", "long_garment": "how long the garment is",
+                  "outer_layer": "a garment worn over the other clothes"}
+        aq = {f"says_{k}": (f"Here is a written description of a person: \"{a.look.strip()}\"\nDoes it say anything "
+                            f"about {d}? Answer yes or no.") for k, d in ASPECT.items() if k in asks}
+        tans = ask_vl([{"id": "text", "image": str(head_p), "ask": dict(tq, **aq), "max_new_tokens": 6}])
         for k, v in tans.items():
+            if k.startswith("says_"):
+                continue
+            if k in ASPECT and not (tans.get(f"says_{k}") or "").startswith("y"):
+                continue
             if v and "unstated" not in v and "not" not in v.split()[:1]:
                 ans[k], src[k] = v, "text"
     rest = {k: v for k, v in asks.items() if k not in ans}
