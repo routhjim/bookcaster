@@ -146,6 +146,24 @@ def test_an_action_subject_turning_to_a_named_thing_puts_that_thing_in_the_shot(
     assert cam_of(specs, "quiet-2")[1]["face_thing"] is None           # only an action shot's turn asks for it
 
 
+def test_a_speaker_faces_whom_he_speaks_to_after_turning_to_a_thing(lib, tmp_path, monkeypatch):
+    turn = shot("action", [person(A, "standing", "near the desk", "toward the desk")],
+                action=f"{A} turns toward the large desk.")
+    talk = shot("talk", [person(A, "standing", "near the desk", "toward the desk")], speaker=A, listener=B)
+    specs, facts = run(tmp_path, monkeypatch, {"quiet-1": OPEN, "action-2": turn, "talk-3": talk})
+    g, _ = cam_of(specs, "talk-3")
+    a, st = g["characters"]["a"], facts["talk-3"]["staged"]
+    assert a["facing_to"] == "b"                                       # the listener, not the desk he turned to
+    to_b = S.unit([st["b"]["position"][0] - st["a"]["position"][0], st["b"]["position"][1] - st["a"]["position"][1]])
+    assert a["facing"][0] * to_b[0] + a["facing"][1] * to_b[1] > 0.99
+    # a staging whose people are posed with him facing elsewhere is left when he speaks
+    alone = shot("quiet", [person(B, "sitting", "in the chair by the window", ""),
+                           person(A, "standing", "near the desk", "toward the desk")], action=f"{A} reads.")
+    specs, _ = run(tmp_path, monkeypatch, {"quiet-1": alone, "talk-2": talk})
+    g, _ = cam_of(specs, "talk-2")
+    assert g is not cam_of(specs, "quiet-1")[0] and g["characters"]["a"]["facing_to"] == "b"
+
+
 # ------------------------------------------------------------------ cameras
 def test_camera_class_and_the_talk_camera_kind(lib, tmp_path, monkeypatch):
     shots = {"quiet-1": dict(OPEN, framing="wide"),

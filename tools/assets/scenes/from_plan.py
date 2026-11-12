@@ -454,6 +454,21 @@ def main():
             v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
         spk = names.get(sh.get("speaker")) if sh.get("speaker") else None
         lis = names.get(sh.get("listener")) if sh.get("listener") else None
+        if sh.get("kind") == "talk" and spk in state:
+            # the speaker faces whom he speaks to, from where everyone is now: the listener, else the middle of the
+            # others; a place word or an earlier turn toward a thing does not hold him once he speaks (11-12: he
+            # talked toward the window with her by the fire behind him)
+            v = state[spk]
+            if lis in state and lis != spk:
+                tgt, v["facing_to"] = state[lis]["position"], lis
+            else:
+                o = [vv["position"] for kk, vv in state.items() if kk != spk]
+                tgt, v["facing_to"] = ([sum(x[0] for x in o) / len(o), sum(x[1] for x in o) / len(o)] if o else None), None
+            if tgt is not None:
+                v["facing_thing"] = None
+                d = [tgt[0] - v["position"][0], tgt[1] - v["position"][1]]
+                nd = math.hypot(*d) or 1.0
+                v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
         listed = [names[p["name"]] for p in sh.get("people") or [] if p["name"] in names]
         subj = spk or (listed[0] if listed else next(iter(state)))
         kind = FRAMING.get(sh.get("framing") or "medium", "medium")
@@ -492,7 +507,10 @@ def main():
         facts[sid] = f
         sig = json.dumps({k: (v["position"], v["pose"], v.get("seat")) for k, v in state.items()}, sort_keys=True) \
             + json.dumps([cam.get("_poses"), cam.get("_worn")], sort_keys=True)
-        if sig != cur_sig and cur:
+        # a standing speaker who turns to whom he now speaks is a new staging (the group's people are posed once)
+        turned = bool(cur) and sh.get("kind") == "talk" and spk in state and state[spk]["pose"] != "sitting" and \
+            (cur[0][1].get(spk) or {}).get("facing_to") != state[spk].get("facing_to")
+        if (sig != cur_sig or turned) and cur:
             groups.append(cur)
             cur = []
         cur_sig = sig
