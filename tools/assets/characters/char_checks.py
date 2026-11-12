@@ -243,6 +243,68 @@ def main():
                 e["seating"] = seating.check(rr["subjects"]["a"]["measured"], seat, seating.fit(cj), 0.0)
             e["ok"] = e["fields"] and (e.get("seating") or {}).get("ok", False)
         C["seated"] = {"ok": all(e["ok"] for e in st), "scenes": st}
+    # every limb present (11-12: the body is hidden under the outfit, so a bare forearm or a leg the seated drape
+    # left open showed as nothing): in each check scene's wide still the person's region holds pixels along each
+    # forearm (elbow to hand) and each lower leg (knee to foot), at 12 points from 30 to 95 % of the way, at least 80 % of them on the person. The knees and feet are
+    # projected with the shot's camera, its scale fitted on the joints the scene tool projects itself.
+    lim = []
+    for d in [a.relaxed] + list(a.seated):
+        tp, rp = Path(d) / "truth.json", Path(d) / "result.json"
+        if not (tp.exists() and rp.exists()):
+            continue
+        sh = json.loads(tp.read_text())["shots"].get("wide") or {}
+        pe = (sh.get("people") or {}).get("a") or {}
+        J3 = (json.loads(rp.read_text())["subjects"]["a"]["measured"].get("joints") or {})
+        if not pe.get("region") or not Path(pe["region"]).exists() or not J3 or not sh.get("camera"):
+            continue
+        # the person's own mask (its holes are holes), not the region (filled)
+        mp_ = Path(pe["region"]).with_name(Path(pe["region"]).name.replace("_region_", "_mask_"))
+        reg = np.asarray(Image.open(mp_ if mp_.exists() else pe["region"]).convert("L")) > 127
+        Hh, Ww = reg.shape
+        j2 = pe.get("joints2d") or {}
+        cam = sh["camera"]
+        Cp, Tg = np.array(cam["position"], float), np.array(cam["target"], float)
+        F_ = (Tg - Cp) / np.linalg.norm(Tg - Cp)
+        R_ = np.cross(F_, [0.0, 0.0, 1.0])
+        R_ /= np.linalg.norm(R_)
+        U_ = np.cross(R_, F_)
+
+        def ray(p3):
+            d3 = np.array(p3, float) - Cp
+            return float(d3 @ R_) / float(d3 @ F_), float(d3 @ U_) / float(d3 @ F_)
+        common = [k for k in j2 if k in J3]
+        if len(common) < 4:
+            continue
+        A_ = np.array([ray(J3[k]) for k in common])
+        B_ = np.array([j2[k][:2] for k in common], float)
+        cu = np.polyfit(A_[:, 0], B_[:, 0], 1)
+        cv = np.polyfit(A_[:, 1], B_[:, 1], 1)
+
+        def px(p3):
+            x_, y_ = ray(p3)
+            return np.polyval(cu, x_), np.polyval(cv, y_)
+
+        def hit(x, y, r=4):
+            xi, yi = int(x * Ww), int(y * Hh)
+            if not (0 <= xi < Ww and 0 <= yi < Hh):
+                return None
+            return bool(reg[max(yi - r, 0):yi + r + 1, max(xi - r, 0):xi + r + 1].any())
+        e = {"scene": Path(d).name, "fit_err_px": round(float(np.abs(np.array([px(J3[k]) for k in common]) - B_).max()
+                                                              * Ww), 1)}
+        for nm, (j0, j1) in {"forearm_l": ("lowerarm_l", "hand_l"), "forearm_r": ("lowerarm_r", "hand_r"),
+                             "lower_leg_l": ("calf_l", "foot_l"), "lower_leg_r": ("calf_r", "foot_r")}.items():
+            if j0 in J3 and j1 in J3:
+                P0, P1 = np.array(J3[j0]), np.array(J3[j1])
+                hs = [hit(*px(P0 + t * (P1 - P0)), 2) for t in np.linspace(0.3, 0.95, 12)]
+                hs = [h for h in hs if h is not None]
+                if hs:
+                    e[nm] = round(sum(hs) / len(hs), 2)
+        # a limb is present when at least LIMB_MIN of the points along it are the person (a strip of drape across
+        # it is not a leg)
+        e["ok"] = all(v >= 0.8 for k, v in e.items() if k not in ("scene", "fit_err_px"))
+        lim.append(e)
+    if lim:
+        C["limbs"] = {"ok": all(e["ok"] for e in lim), "scenes": lim}
     R["ok"] = all(v.get("ok") is not False for v in C.values())
     Path(a.out).with_suffix(".json").write_text(json.dumps(R, indent=1))
     # sheet
