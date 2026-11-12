@@ -1,8 +1,9 @@
 """Director's plan -> scene specs that speakers.py stages (stdlib). Mechanics only; judgment is read from answers.
 
     python tools/assets/scenes/from_plan.py PLAN.json SHOTS.txt CAST.json OUT_DIR [--answers ANSWERS.json]
-           [--pass PASS.json]   (staging_pass.py's answers: the set, who is in the room, places, moves and where
-                                 they end, worn state, poses, what the key must show, looks, the talk camera kind)
+           [--pass PASS.json]   (staging_pass.py's closed answers for the plan's gaps: who is in the room where the
+                                 plan lists nobody, where a move ends, worn state at the start and at a shot's end,
+                                 the action's start pose, the talk camera kind; never a fact the plan gives)
 
 PLAN.json   the director's plan for a chapter: {shot id: [shot record, ...], ...} (the first record is the shot)
 SHOTS.txt   the shot ids of one scene, in story order, one per line
@@ -225,7 +226,7 @@ def main():
     questions, facts = [], {}
     set_id, sets = pick_set(first, library)
     questions.append(q_set(first, sets))
-    set_id = (sp or {}).get("set") or answers.get("set", set_id)
+    set_id = answers.get("set", set_id)
     set_dir = library / "set" / set_id
     things = setfacts.things(set_dir)
     room = json.loads((set_dir / "spec.json").read_text())["size_m"]
@@ -247,29 +248,22 @@ def main():
             return why
         return None
 
-    if sp:
-        for nm, v in ((sp.get("scene") or {}).get("people") or {}).items():
-            k = names.get(nm)
-            if k and isinstance(v, dict) and v.get("in_room") is not False:
-                apply_place(k, v, "pass")
-                if v.get("worn") not in NOTS:
-                    worn[k] = v["worn"]
+    if sp:                                       # worn state at the scene's start (the pass's closed answer)
+        for nm, w in (sp.get("worn_start") or {}).items():
+            if nm in names and w not in NOTS:
+                worn[names[nm]] = w
     for n, sid in enumerate(ids, 1):
         sh = plan[sid][0]
-        pa = (sp or {}).get("shots", {}).get(sid) or {}
+        sp = sp or {}
+        pa = {"camera": (sp.get("camera") or {}).get(sid), "pose": (sp.get("pose") or {}).get(sid) or {}}
         used = []
-        if isinstance(pa.get("in_room"), list):          # who is in the room: those not named leave
-            inroom = {names[x] for x in pa["in_room"] if x in names}
+        ir = (sp.get("in_room") or {}).get(sid)
+        if isinstance(ir, list) and not sh.get("people"):   # only where the plan lists nobody
+            inroom = {names[x] for x in ir if x in names}
             for k in list(state):
                 if k not in inroom:
                     state.pop(k)
                     used.append(f"{k} left the room")
-        for nm, mv in (pa.get("moved") or {}).items():
-            if nm in names and apply_place(names[nm], mv, "pass"):
-                used.append(f"{names[nm]} moved to {mv.get('thing')}")
-        for nm, w in (pa.get("worn") or {}).items():
-            if nm in names and w not in NOTS:
-                worn[names[nm]] = w
         f = {"id": sid, "kind": sh.get("kind"), "framing": sh.get("framing"), "speaker": sh.get("speaker"),
              "listener": sh.get("listener"), "people_listed": [p["name"] for p in sh.get("people") or []],
              "tight": sh.get("tight"), "defaults": [], "missing": []}
@@ -283,15 +277,10 @@ def main():
             f["missing"].append("pose for the action's start; what the key must show")
         questions.append(q_worn(f"worn:{sid}", sh, [p["name"] for p in sh.get("people") or []]))
         placed_now = []
-        moved_now = {names[nm] for nm in (pa.get("moved") or {}) if nm in names}
         for p in sh.get("people") or []:
             k = names.get(p["name"])
             if not k:
                 f["missing"].append(f"library figure for a person ({p['name'][:1]}.)")
-                continue
-            if sp and (k in moved_now or (k in state and state[k].get("at", "").split(" ")[-1] in
-                                          {t["name"] for t in things})):
-                state[k]["facing_words"] = p.get("facing")        # the pass placed this person: keep it
                 continue
             prev = state.get(k)
             if prev and prev["at"] == p.get("at") and prev["pose"] == p.get("pose"):
@@ -357,11 +346,9 @@ def main():
         if spk and ck == "single":
             cam["single"] = True
             cam.pop("listener", None)
-        looks = {names[a_]: (names.get(b_) or b_) for a_, b_ in (pa.get("looks_at") or {}).items()
-                 if a_ in names and b_ not in NOTS}
+        looks = {}
         poses = {names[a_]: b_ for a_, b_ in (pa.get("pose") or {}).items() if a_ in names and b_ not in NOTS}
-        f["pass"] = {"used": used, "camera": ck, "looks": looks, "pose": poses, "must_show": pa.get("must_show"),
-                     "worn": dict(worn)}
+        f["pass"] = {"used": used, "camera": ck, "pose": poses, "worn": dict(worn)}
         cam["_looks"] = looks
         cam["_poses"] = poses
         cam["_worn"] = dict(worn)
@@ -375,9 +362,19 @@ def main():
             cur = []
         cur_sig = sig
         cur.append((cam, json.loads(json.dumps(state))))
-        for nm, mv in (pa.get("move_ends") or {}).items():       # where a move during this shot ends
+        pe = sh.get("pose_end") or {}
+        for nm, th in ((sp.get("move_end") or {}).get(sid) or {}).items():     # where a move during this shot ends
             if nm in names:
-                apply_place(names[nm], mv, "pass")
+                k = names[nm]
+                was = (state.get(k) or {}).get("seat") or ""
+                sitting = (pe.get(nm) or (state.get(k) or {}).get("pose")) == "sitting"
+                if apply_place(k, {"thing": th, "sitting": sitting, "side": "front", "distance": "near"}, "pass"):
+                    state[k]["pose"] = "sitting" if sitting else "standing"
+                    if state[k].get("seat") != was:
+                        f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends at {th}")
+        for nm, w in ((sp.get("worn_end") or {}).get(sid) or {}).items():      # worn state when the shot ends
+            if nm in names and w not in NOTS:
+                worn[names[nm]] = w
     if cur:
         groups.append(cur)
     specs = []

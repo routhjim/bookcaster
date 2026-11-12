@@ -1,16 +1,24 @@
-"""Staging pass: the facts a director's plan leaves out, asked of the language model from the passage (stdlib).
+"""Staging pass: the gaps a director's plan leaves, as small closed questions to the language model (stdlib).
 
-    python tools/assets/scenes/staging_pass.py PLAN.json SHOTS.txt CAST.json CHAPTER.txt OUT_ANSWERS.json
-           [--cache DIR] [--url http://127.0.0.1:18100/v1/chat/completions] [--set-dir LIBRARY_SET]
+    python tools/assets/scenes/staging_pass.py PLAN.json SHOTS.txt CAST.json TIMELINE.json SET_DIR OUT.json
+           [--cache DIR] [--url http://127.0.0.1:18100/v1/chat/completions] [--repeats 3]
 
-One call per scene (the set; who is in the room at the start; each person's place, posture and worn state), then one
-call per shot only where something changes or is missing (an action, a talk shot, a shot whose listed people differ
-from the carried state): who is in the room, who moved and where the move ends, worn state, the start pose from the
-pose list, what the first picture must show, who looks at whom, the talk camera kind. The model answers from the
-passage and the lists only, in a fixed JSON schema; where the passage does not say, it answers "not stated" and
-from_plan.py keeps the previous state. Prompts are general: the scene's own text and lists are the only specifics,
-passed as data. Answers are cached on disk keyed by the prompt (re-runs are free; --cache to a new dir is a cold run).
-Output: {"scene": {...}, "shots": {shot id: {...}}, "_calls": n, "_cached": n} for from_plan.py --pass.
+The pass never overwrites a fact the plan gives; it asks only for these gaps, each its own question with a closed
+answer set built from data, "not stated" always among the options (code then keeps the previous state):
+  in_room     shots whose plan lists nobody: which of the cast are in the room (a subset of the cast list)
+  move_end    action shots: for each person the plan lists, where they are when the shot ends (one of the set's
+              named things or seats)
+  worn_start  the scene's first shot, each person: one of that figure's worn-state variants
+  worn_end    action shots, each listed person: one of that figure's variants
+  pose        action shots, each listed person: one of the pose list, or "none"
+  camera      talk shots: one of the camera kinds
+Each question carries the smallest passage span that covers the shot (the chapter's timeline from the shot before
+to the end of this one) and the carried state before it. Temperature 0 and a fixed seed; each question is asked
+--repeats times and an answer is kept only when every repeat gives it, else "not stated". Answers are cached on disk
+keyed by the prompt and the repeat (a new --cache directory is a cold run).
+Output: {"in_room": {shot: [names]}, "move_end": {shot: {name: thing}}, "worn_start": {name: variant},
+         "worn_end": {shot: {name: variant}}, "pose": {shot: {name: pose}}, "camera": {shot: kind},
+         "_asked": n, "_calls": n, "_cached": n, "_split": n}  for from_plan.py --pass.
 """
 from __future__ import annotations
 
@@ -32,127 +40,92 @@ import setfacts  # noqa: E402
 
 POSES = ["stand", "stand_relaxed", "stand_hand_on_mantel", "gesture_point", "seated", "sit_armchair_relaxed",
          "veil_lift", "look_at_sleeve", "reach_to_forearm", "look"]
-CAMERAS = ["wide", "two_shot", "over_the_shoulder", "single", "close"]
+CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
-
-RULES = (
-    "Answer only from the passage and the lists given. Where the passage does not say something, answer \"" + NOT
-    + "\" for it; do not invent. Use only the names, places, poses and choices exactly as they appear in the lists. "
-    "Answer with the JSON object only.")
+SEED = 7
 
 
-def passage(chapter: str, plan: dict, ids: list) -> str:
-    """The chapter's text from a little before the scene's first spoken line to just after its last one: the first
-    words of the first line and the last words of the last line, found in the chapter by their letters alone (the
-    spoken lines leave out the narration between their parts)."""
-    es = {e["id"]: e for e in plan.get("_es", [])}
-    pos, letters = [], []
-    for i, ch in enumerate(chapter):         # letters-and-digits only, with each one's place in the chapter
-        if ch.isalnum():
-            letters.append(ch.lower())
-            pos.append(i)
-    flat = "".join(letters)
-    key = lambda s, n, last=False: "".join(c.lower() for c in " ".join(
-        (re.findall(r"\w+", s)[-n:] if last else re.findall(r"\w+", s)[:n])) if c.isalnum())
-    talk = [es[i].get("words") for i in ids if es.get(i, {}).get("words")]
-    if not talk:
-        raise SystemExit("no spoken line in the scene's shots: the passage cannot be found")
-    a = b = -1
-    for n in (6, 4, 3):
-        a = flat.find(key(talk[0], n)) if a < 0 else a
-        k_end = key(talk[-1], n, last=True)
-        b = flat.find(k_end, max(a, 0)) + len(k_end) if b < 0 and flat.find(k_end, max(a, 0)) >= 0 else b
-    if a < 0 or b < 0:
-        raise SystemExit("the scene's spoken lines were not found in the chapter")
-    start = chapter.rfind("\n\n", 0, max(0, pos[a] - 1200)) + 2
-    end = chapter.find("\n\n", pos[min(b, len(pos) - 1)])
-    return chapter[max(0, start):end if end > 0 else len(chapter)]
+def span(timeline: list, t0: float, t1: float) -> str:
+    """The chapter's lines (narration and speech) between two times."""
+    return "\n".join(f"[{s.get('speaker', 'narrator')}] {s.get('text', '')}" for s in timeline
+                     if t0 - 0.5 <= s.get("t", 0) <= t1 + 0.5)
 
 
-def set_words(set_dir: Path, library: Path) -> tuple:
-    things = [t for t in setfacts.things(set_dir) if t["kind"] in ("fixture", "window", "door")]
-    seats = seating.seats(library, set_dir)
-    lines = []
-    for t in things:
-        w = t["words"]
-        lines.append(f"{t['name']}: {w}" + (f", {t['place']}" if t.get("place") else "")
-                     + (" (a seat)" if t["name"] in seats else ""))
-    return things, seats, lines
+def variants(library: Path, base: str) -> list:
+    """A figure's worn-state choices: "usual" and its library variants' suffixes (base_<suffix>, not stances)."""
+    out = {"usual"}
+    for d in (library / "character").glob(f"{base}_*"):
+        suf = d.name[len(base) + 1:]
+        if "seated" in suf:
+            suf = suf.split("_", 2)[-1] if suf.count("_") >= 2 else ""
+        if suf and not suf.startswith(("seated", "walk")):
+            out.add(suf)
+    return sorted(out)
 
 
-def cast_words(cast: dict, library: Path) -> list:
-    out = []
-    for nm, c in cast.items():
-        base = c.get("base") or c.get("id")
-        variants = sorted({d.name[len(base) + 1:].replace("seated_", "").split("_", 1)[-1]
-                           for d in (library / "character").glob(f"{base}_*")
-                           if "veil" in d.name or d.name.endswith(("_raised", "_down"))} - {""})
-        out.append(f"{nm}: usual clothes" + (f"; worn-state variants: {', '.join(sorted(set(variants)))}" if variants else ""))
-    return out
+class Asker:
+    def __init__(self, url: str, cache: Path, repeats: int):
+        self.url, self.cache, self.repeats = url, cache, repeats
+        self.asked = self.calls = self.cached = self.split = 0
+
+    def one(self, prompt: str, rep: int) -> str:
+        key = hashlib.sha256(f"{rep}\n{prompt}".encode()).hexdigest()[:24]
+        f = self.cache / f"{key}.txt"
+        if f.exists():
+            self.cached += 1
+            return f.read_text()
+        body = {"model": "default", "messages": [{"role": "user", "content": prompt}], "temperature": 0.0,
+                "seed": SEED, "max_tokens": 60, "chat_template_kwargs": {"enable_thinking": False}}
+        req = Request(self.url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=600) as r:
+            txt = json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        self.calls += 1
+        self.cache.mkdir(parents=True, exist_ok=True)
+        f.write_text(txt)
+        return txt
+
+    def choose(self, prompt: str, options: list) -> str:
+        """One of the options (or "not stated"), kept only when every repeat gives the same."""
+        self.asked += 1
+        got = []
+        for rep in range(self.repeats):
+            a = self.one(prompt, rep).strip().strip('."\'`').lower()
+            pick = next((o for o in options if a == o.lower()), None) or next(
+                (o for o in sorted(options, key=len, reverse=True) if o.lower() in a), NOT)
+            got.append(pick)
+        if len(set(got)) > 1:
+            self.split += 1
+            return NOT
+        return got[0]
+
+    def subset(self, prompt: str, options: list) -> list | str:
+        self.asked += 1
+        got = []
+        for rep in range(self.repeats):
+            a = self.one(prompt, rep).lower()
+            if NOT in a:
+                got.append(NOT)
+                continue
+            got.append(tuple(sorted(o for o in options if o.lower() in a)))
+        if len(set(got)) > 1:
+            self.split += 1
+            return NOT
+        return NOT if got[0] == NOT else list(got[0])
 
 
-def scene_prompt(psg: str, set_lines: list, sets: list, people: list, shot0: dict) -> str:
-    return (
-        "You are staging a scene of a story for a film. The passage of the story for this scene:\n<<<\n" + psg
-        + "\n>>>\nThe director's description of the place: " + json.dumps({k: shot0.get(k) for k in ("place", "room")})
-        + "\nThe sets available (id: description):\n" + "\n".join(sets)
-        + "\nThe chosen set's named things (name: what it is, where it stands):\n" + "\n".join(set_lines)
-        + "\nThe people (name: worn-state choices):\n" + "\n".join(people)
-        + "\nFor the moment the scene begins, give: the set id; for each person whether they are in the room; for "
-        "each person in the room, the named thing they are at (a name from the list), whether they sit in it (only if "
-        "it is a seat), the side of it they are on (one of: front, left, right, behind, in), the distance (one of: "
-        "touching, near, a few steps), their posture (sitting or standing), and their worn state (usual, or one of "
-        "their worn-state choices).\n" + RULES + "\nSchema: {\"set\": id, \"people\": {name: {\"in_room\": true or "
-        "false or \"" + NOT + "\", \"thing\": name or \"" + NOT + "\", \"sitting\": true or false, \"side\": word, "
-        "\"distance\": word, \"posture\": word, \"worn\": word}}}")
+HEAD = ("You help stage a scene of a story for a film. Answer from the passage only. If the passage does not say, "
+        "answer exactly: " + NOT + ".\n")
 
 
-def shot_prompt(psg: str, set_lines: list, people: list, shot: dict, state: dict, n: int) -> str:
-    return (
-        "You are staging a scene of a story for a film. The passage of the story for this scene:\n<<<\n" + psg
-        + "\n>>>\nThe set's named things (name: what it is, where it stands):\n" + "\n".join(set_lines)
-        + "\nThe people (name: worn-state choices):\n" + "\n".join(people)
-        + "\nThe pose list: " + ", ".join(POSES) + "\nThe camera kinds: " + ", ".join(CAMERAS)
-        + f"\nShot {n} of the scene, as the director wrote it: "
-        + json.dumps({k: shot.get(k) for k in ("kind", "framing", "speaker", "listener", "action", "people", "line",
-                                                "things")
-                      if shot.get(k)}, ensure_ascii=False)
-        + "\nWhere everyone was just before this shot: " + json.dumps(state, ensure_ascii=False)
-        + "\nFor the FIRST picture of this shot (the moment before its action happens) give: who is in the room; who "
-        "has moved since the shot before and where they are now (a named thing from the list, sitting or not, side, "
-        "distance, posture); for a move that happens during this shot, where it ends; each person's worn state; for "
-        "each person who acts, the pose from the pose list at the start; which body parts of which people must be "
-        "visible for the action to read; whom each person looks at (a name, or the camera); and for a shot with a "
-        "speaker, the camera kind from the list.\n" + RULES + "\nSchema: {\"in_room\": [names] or \"" + NOT + "\", "
-        "\"moved\": {name: {\"thing\": name, \"sitting\": bool, \"side\": word, \"distance\": word, \"posture\": "
-        "word}}, \"move_ends\": {name: {\"thing\": name, \"sitting\": bool, \"side\": word, \"distance\": word, "
-        "\"posture\": word}}, \"worn\": {name: word}, \"pose\": {name: pose}, \"must_show\": [[name, body part]], "
-        "\"looks_at\": {name: name or \"camera\" or \"" + NOT + "\"}, \"camera\": kind or \"" + NOT + "\"}")
+def q_choose(psg: str, state: str, what: str, options: list) -> str:
+    return (HEAD + "Passage:\n<<<\n" + psg + "\n>>>\nWhere things stood just before: " + state + "\nQuestion: " + what
+            + "\nAnswer with exactly one of these, nothing else: " + "; ".join(options + [NOT]))
 
 
-def ask(url: str, prompt: str, cache: Path, max_tokens: int = 900) -> tuple:
-    key = hashlib.sha256(prompt.encode()).hexdigest()[:24]
-    f = cache / f"{key}.json"
-    if f.exists():
-        return json.loads(f.read_text()), True
-    body = {"model": "default", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3,
-            "max_tokens": max_tokens, "chat_template_kwargs": {"enable_thinking": False}}
-    req = Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urlopen(req, timeout=1200) as r:
-        txt = json.loads(r.read())["choices"][0]["message"]["content"]
-    m = re.search(r"\{.*\}", txt, re.S)
-    try:
-        ans = json.loads(m.group(0)) if m else {"_raw": txt}
-    except json.JSONDecodeError:
-        ans = {"_raw": txt}
-    cache.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(ans, indent=1))
-    return ans, False
-
-
-def needs_call(sh: dict, state_names: set) -> bool:
-    listed = {p["name"] for p in sh.get("people") or []}
-    return sh.get("kind") in ("action", "talk") or not listed or bool(listed - state_names)
+def q_subset(psg: str, state: str, what: str, options: list) -> str:
+    return (HEAD + "Passage:\n<<<\n" + psg + "\n>>>\nWhere things stood just before: " + state + "\nQuestion: " + what
+            + "\nAnswer with the names from this list that apply, separated by commas, nothing else (or " + NOT
+            + "): " + "; ".join(options))
 
 
 def main():
@@ -160,54 +133,62 @@ def main():
     plan = json.loads(Path(a[0]).read_text())
     ids = [x.strip() for x in Path(a[1]).read_text().splitlines() if x.strip()]
     cast = json.loads(Path(a[2]).read_text())
-    chapter = Path(a[3]).read_text()
-    out = Path(a[4])
+    timeline = json.loads(Path(a[3]).read_text())
+    set_dir = Path(a[4])
+    out = Path(a[5])
     cache = Path(a[a.index("--cache") + 1]) if "--cache" in a else out.parent / "llm_cache"
     url = a[a.index("--url") + 1] if "--url" in a else "http://127.0.0.1:18100/v1/chat/completions"
+    reps = int(a[a.index("--repeats") + 1]) if "--repeats" in a else 3
     library = Path(C.LIBRARY)
-    set_dir = Path(a[a.index("--set-dir") + 1]) if "--set-dir" in a else None
-    sets = []
-    for d in sorted((library / "set").iterdir()):
-        if (d / "asset.json").exists():
-            aj = json.loads((d / "asset.json").read_text())
-            sets.append(f"{aj['id']}: {aj.get('description', '')[:300]}")
-    psg = passage(chapter, plan, ids)
-    people = cast_words(cast, library)
-    first = plan[ids[0]][0]
-    calls = cached = 0
+    es = {e["id"]: e for e in plan.get("_es", [])}
+    things = [t for t in setfacts.things(set_dir) if t["kind"] in ("fixture", "window", "door")]
+    place_opts = [f"{t['name']} ({t['words'].split(' (')[0]}" + (f", {t['place']}" if t.get("place") else "") + ")"
+                  for t in things]
+    names = list(cast)
+    var = {nm: variants(library, c.get("base") or c.get("id")) for nm, c in cast.items()}
+    ask = Asker(url, cache, reps)
+    res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}}
+    state = {}                                    # name -> place words, carried from the plan's own facts
     t0 = time.time()
-    # the set first (its own call when not given), then the scene's start
-    if set_dir is None:
-        ans, hit = ask(url, scene_prompt(psg, [], sets, people, first), cache)
-        calls += 1
-        cached += hit
-        set_dir = library / "set" / (ans.get("set") if isinstance(ans.get("set"), str) else "")
-        if not (set_dir / "spec.json").exists():
-            set_dir = library / "set" / sorted(d.name for d in (library / "set").iterdir())[0]
-    _, _, set_lines = set_words(set_dir, library)
-    scene, hit = ask(url, scene_prompt(psg, set_lines, sets, people, first), cache)
-    calls += 1
-    cached += hit
-    state = {nm: v for nm, v in (scene.get("people") or {}).items() if isinstance(v, dict) and v.get("in_room") is not False}
-    shots = {}
-    for n, sid in enumerate(ids, 1):
-        sh = plan[sid][0]
-        if not needs_call(sh, set(state)):
-            continue
-        ans, hit = ask(url, shot_prompt(psg, set_lines, people, sh, state, n), cache)
-        calls += 1
-        cached += hit
-        shots[sid] = ans
-        for nm, mv in list((ans.get("moved") or {}).items()) + list((ans.get("move_ends") or {}).items()):
-            if isinstance(mv, dict) and mv.get("thing") not in (None, NOT):
-                state[nm] = dict(state.get(nm) or {}, **mv)
-        for nm, w in (ans.get("worn") or {}).items():
-            if w and w != NOT and nm in state:
-                state[nm]["worn"] = w
-    res = {"set": set_dir.name, "scene": scene, "shots": shots, "_calls": calls, "_cached": cached,
-           "_s": round(time.time() - t0, 1)}
+    prev_t = None
+    for n, sid in enumerate(ids):
+        sh, e = plan[sid][0], es.get(sid, {})
+        t1 = e.get("t", 0.0) + e.get("dur", 0.0)
+        psg = span(timeline, prev_t if prev_t is not None else e.get("t", 0.0) - 20, t1)
+        prev_t = e.get("t", 0.0)
+        for p in sh.get("people") or []:
+            state[p["name"]] = f"{p.get('pose')} {p.get('at')}"
+        st = "; ".join(f"{k}: {v}" for k, v in state.items()) or NOT
+        if n == 0:
+            for nm in names:
+                res["worn_start"][nm] = ask.choose(q_choose(psg, st, f"What is {nm} wearing at this moment, among "
+                                                            "these choices?", var[nm]), var[nm])
+        if not sh.get("people"):
+            res["in_room"][sid] = ask.subset(q_subset(psg, st, "Which of these people are in the room at this "
+                                                      "moment (shown or not)?", names), names)
+        if sh.get("kind") == "talk":
+            res["camera"][sid] = ask.choose(q_choose(psg, st, "This shot shows someone speaking. Which kind of camera "
+                                                     "framing does the passage's moment call for?", CAMERAS), CAMERAS)
+        if sh.get("kind") == "action":
+            act = sh.get("action") or ""
+            for p in sh.get("people") or []:
+                nm = p["name"]
+                q = f"The shot's action: {act}\n"
+                end = ask.choose(q_choose(psg, st, q + f"Where is {nm} when this shot ends? Choose a named place.",
+                                          place_opts), place_opts)
+                if end != NOT:
+                    res["move_end"].setdefault(sid, {})[nm] = end.split(" (")[0]
+                w = ask.choose(q_choose(psg, st, q + f"What is {nm} wearing when this shot ends, among these "
+                                                     "choices?", var[nm]), var[nm])
+                if w != NOT:
+                    res["worn_end"].setdefault(sid, {})[nm] = w
+                ps = ask.choose(q_choose(psg, st, q + f"Which pose from this list fits {nm} at the START of this "
+                                                      "shot?", POSES + ["none"]), POSES + ["none"])
+                if ps != NOT:
+                    res["pose"].setdefault(sid, {})[nm] = ps
+    res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
-    print(json.dumps({k: res[k] for k in ("set", "_calls", "_cached", "_s")}))
+    print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))
 
 
 if __name__ == "__main__":
