@@ -257,7 +257,9 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
     if own:
         prompt = f"{prompt.rstrip()} {own}"
     n = KEY_PEOPLE.get(str(s.get("id") or ""))
-    if n and "already in the picture" not in prompt:    # (quiet shots have it from _offscreen already)
+    # the key's head count closes talk words too (quiet ones have it from _offscreen); never action shots or chain
+    # lines: measured 11-04 (CHANGES #29), the sentence drew walk-ins in action clips (5 of 6 with it, 1 of 6 without)
+    if n and s.get("kind") == "talk" and "already in the picture" not in prompt:
         prompt = prompt.rstrip() + ONLY_HERE.format(n="one person" if n == 1 else f"{n} people",
                                                     be="is" if n == 1 else "are")
     if not (SCENE_FACTS or HOLD_CAMERA):
