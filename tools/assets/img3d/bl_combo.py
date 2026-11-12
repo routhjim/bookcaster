@@ -299,6 +299,11 @@ for side, sg in (("l", 1), ("r", -1)):
     cand_ = skin & side_pts
     far_ = np.quantile(dsh[cand_], 0.98) if cand_.sum() > 20 else 9.0
     hand = cand_ & (dsh > far_ - float(JOB.get("hand_len_m", 0.22)))
+    if FIT_POSE:
+        # a posed figure (hands in the lap): the hand is the skin round the posed body's hand, not the far end of
+        # a spread arm
+        hj = np.array(J(f"hand_{side}"))
+        hand = skin & (np.linalg.norm(co - hj, axis=1) < float(JOB.get("hand_len_m", 0.22)) * 0.6)
     REP.setdefault("hand_search", {})[side] = {"skin_side": int(cand_.sum()), "far_m": round(float(far_), 3),
                                                "hand": int(hand.sum())}
     if hand.sum() < 20:
