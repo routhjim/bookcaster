@@ -78,6 +78,26 @@ def J(n):
     return np.array(B[n].head_local)
 
 
+# the body posed to the drawing's arm angle (the layer was drawn on a figure standing so), bound in that pose
+DRAW_DEG = JOB.get("draw_deg")
+if DRAW_DEG is not None:
+    import math
+    from mathutils import Matrix
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    th = math.radians(float(DRAW_DEG))
+    for side, sg in (("l", 1), ("r", -1)):
+        pb = arm.pose.bones[f"upperarm_{side}"]
+        hd = pb.head.copy()
+        frm = arm.pose.bones[f"hand_{side}"].head - hd
+        to = Vector((sg * math.sin(th), 0.0, -math.cos(th)))
+        q = frm.normalized().rotation_difference(to)
+        pb.matrix = Matrix.Translation(hd) @ q.to_matrix().to_4x4() @ Matrix.Translation(-hd) @ pb.matrix
+        bpy.context.view_layer.update()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    REP["posed_deg"] = float(DRAW_DEG)
+
+
 # the character's fitted outfit (collider): centimetres in its FBX
 on = import_fbx(JOB["outfit_fbx"])
 flatten_empties()
@@ -153,7 +173,7 @@ s = top_z / (zmax - zmin)
 co = (co - [0, 0, zmin]) * s
 band = (co[:, 2] > 0.52 * top_z) & (co[:, 2] < 0.58 * top_z)
 co[:, 0] += J("pelvis")[0] - float(np.median(co[band, 0]))
-bv = np.array([v.co[:] for v in body.data.vertices])
+bv = np.array([v.co[:] for v in body.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices])
 cz = (co[:, 2] > J("spine_03")[2]) & (co[:, 2] < J("spine_05")[2]) & (np.abs(co[:, 0] - J("spine_05")[0]) < 0.08)
 bz = (bv[:, 2] > J("spine_03")[2]) & (bv[:, 2] < J("spine_05")[2]) & (np.abs(bv[:, 0] - J("spine_05")[0]) < 0.08)
 co[:, 1] += float(np.median(bv[bz, 1])) - float(np.median(co[cz, 1]))
@@ -211,7 +231,9 @@ for v0 in bm.verts:
                 comp[w.index] = cid
                 stack.append(w)
 sizes = np.bincount(np.array([comp[v.index] for v in bm.verts]))
-small = [v for v in bm.verts if sizes[comp[v.index]] < 0.02 * len(bm.verts)]
+# only crumbs (the colour cut leaves the layer in several large pieces where the figure showed through it)
+small = [v for v in bm.verts if sizes[comp[v.index]] < int(JOB.get("crumb_verts", 300))]
+REP["pieces"] = int((sizes >= int(JOB.get("crumb_verts", 300))).sum())
 bmesh.ops.delete(bm, geom=small, context="VERTS")
 bm.to_mesh(me)
 bm.free()
@@ -220,7 +242,17 @@ REP["layer_verts"] = len(me.vertices)
 
 # ------------------------------------------------------------------ 3. outside the body and the outfit
 margin = float(JOB.get("margin_m", 0.015))
-cols = [bvb] + [BVHTree.FromObject(o, dg) for o in oc]
+# the outfit's torso only: its sleeves are in the outfit's own bind pose (the drawing's spread), not this one
+shx = abs(float(J("upperarm_l")[0]))
+torso_cols = []
+for o in oc:
+    bm_ = bmesh.new()
+    bm_.from_mesh(o.data)
+    bm_.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm_, geom=[v for v in bm_.verts if abs(v.co.x) > shx + 0.02], context="VERTS")
+    torso_cols.append(BVHTree.FromBMesh(bm_))
+    bm_.free()
+cols = [bvb] + torso_cols
 P = np.array([v.co[:] for v in me.vertices])
 moved = 0
 for i in range(len(P)):
@@ -283,6 +315,11 @@ for vi, w in W.items():
 REP["groups"] = sorted(groups)
 
 # ------------------------------------------------------------------ 5. export as an outfit
+if DRAW_DEG is not None:
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    bpy.ops.pose.armature_apply(selected=False)
+    bpy.ops.object.mode_set(mode="OBJECT")
 bpy.data.objects.remove(body)
 fig.data.polygons.foreach_set("use_smooth", np.ones(len(fig.data.polygons), bool))
 for i, u in enumerate(fig.data.uv_layers):
