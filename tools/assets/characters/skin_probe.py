@@ -21,6 +21,11 @@ from PIL import Image
 NECK_DROP = 0.12
 NECK_HALF = 0.2          # of the shoulder span: half the neck column left out
 MAX_FRAC = 0.002
+# a view fails only when its skin pixels also exceed this count: a percentage of a small region (a side view) let a
+# handful of edge pixels decide. Set from data (11-12): the largest count on the known-clean views of the five
+# passing characters was 15; the smallest on the known-bad control's failing views (the unmasked woman) was 99;
+# 40 lies between them (about their geometric mean, 38.5)
+MIN_PX = 40
 
 
 def probe_shot(sh, max_frac=MAX_FRAC, neck_half=None):
@@ -61,7 +66,7 @@ def probe_shot(sh, max_frac=MAX_FRAC, neck_half=None):
     bg = im[..., 2] / np.maximum(im[..., 1], 1e-3)
     skin = (np.abs(rg / rg0 - 1) < 0.25) & (np.abs(bg - bg0) < 0.15) & (im.mean(2) > 0.08)
     n = int((seen & reg & skin).sum())
-    out.update(skin_px=n, skin_frac=round(n / reg.sum(), 5), ok=bool(n / reg.sum() < max_frac))
+    out.update(skin_px=n, skin_frac=round(n / reg.sum(), 5), ok=bool(n / reg.sum() < max_frac or n <= MIN_PX))
     return out
 
 
