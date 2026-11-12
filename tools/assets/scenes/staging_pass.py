@@ -288,7 +288,8 @@ def main():
         lines = "\n".join(f"shot {i + 1}: {plan[x][0].get('action') or plan[x][0].get('picture') or ''}"
                           for i, x in enumerate(sids))
         own_q = (HEAD + "The film's shots, each with its own action line:\n" + lines + "\nQuestion: In which shot "
-                 f"does {nm} {POSE_WORDS[ps]}, as that shot's own action line states?\nAnswer with exactly one of "
+                 f"does someone {POSE_WORDS[ps]}, as that shot's own action line states? (The lines name people by "
+                 "their looks.)\nAnswer with exactly one of "
                  "these, nothing else: " + "; ".join(opts + [NOT]))
         got = ask.choose(own_q, opts)
         keep = sids[opts.index(got)] if got in opts else None
