@@ -535,6 +535,7 @@ def main():
     seed = int(run.get("seed", 7))
     only = set(run.get("only") or [])
     jobs = []
+    colour_said = set()                  # people whose hair colour words were said (their first key)
     crops = anchor_crops(run, out)
     for sd in map(Path, run["scenes"]):
         truth = json.loads((sd / "truth.json").read_text())
@@ -575,7 +576,13 @@ def main():
                         c2 = dict(cast[k])
                         # hair, facial hair, missing layers: the built figure's own facts (library entry), never
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
-                        lw_, miss = look_words(entry_facts(wv.get("id")), "her" if c2.get("noun") == "woman" else "his")
+                        ef = dict(entry_facts(wv.get("id")))
+                        if k in colour_said:     # the colour said once, in the person's first key (the anchor):
+                            ef.pop("hair_colour", None)   # strong colour words swung her hair grey in one key
+                        elif any(pp[0] == k for pp in ppl) and ef.get("hair_colour"):
+                            colour_said.add(k)
+                        lw_, miss = look_words(ef, "her" if c2.get("noun") == "woman" else "his")
+                        miss = [x for x in miss if not (x == "hair_colour" and k in colour_said)]
                         if lw_:
                             c2["wear"] = c2.get("wear", "") + "; " + lw_
                         if miss:

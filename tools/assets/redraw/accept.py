@@ -64,6 +64,10 @@ def failures(v: dict) -> list:
         f.append("neck")
     if v.get("outfit_ok") is False:
         f.append("outfit")
+    if v.get("face_ok") is False:
+        f.append("face")
+    if v.get("action_ok") is False:
+        f.append("action")
     return f
 
 
@@ -78,6 +82,9 @@ def item_fails(rec: dict) -> dict:
     for k, ok in (rec.get("wear_ok") or {}).items():
         if ok is False:
             f.setdefault(k, []).append("clothes colour")
+    for k, ok in (rec.get("hair_ok") or {}).items():
+        if ok is False:
+            f.setdefault(k, []).append("hair")
     return f
 
 
@@ -108,6 +115,96 @@ def lit_eval(*results: dict) -> None:
                     warm = max(r["b"] / max(e["b"], 1.0), rb / max(eb, 1.0))
                     ok[n] = rl >= LIT_L * el and warm >= LIT_B
             rec["lit_ok"] = ok
+
+
+FACE_MIN = 0.45          # a face the pose model finds: nose and an eye above this score, the contour's median too
+YAW_TURN = 0.45          # the nose this far (in eye spacings) off the eyes' middle: the head clearly turned
+
+
+def face_seen(q: dict) -> bool:
+    fs = q.get("face_scores") or [0, 0, 0]
+    return fs[0] >= FACE_MIN and max(fs[1], fs[2]) >= FACE_MIN and (q.get("face_contour") or 0) >= FACE_MIN
+
+
+def face_eval(*results: dict) -> None:
+    """Every person the director names (and the speaker, the listener) readable in the redraw where the engine
+    still shows their face: the face found by the pose model in the redraw, turned the same way as in the engine
+    (the readable check on the engine passed a key whose redraw turned her to the fire, 11-12)."""
+    for res in results:
+        for rec in res.values():
+            for k, v in rec.get("people", {}).items():
+                if not v.get("named"):
+                    continue
+                r, e = v.get("redraw") or {}, v.get("engine") or {}
+                if not e or not face_seen(e):
+                    continue
+                ok = face_seen(r)
+                ey, ry = e.get("yaw"), r.get("yaw")
+                if ok and ey is not None and ry is not None and abs(ey) > YAW_TURN and abs(ry) > YAW_TURN and ey * ry < 0:
+                    ok = False               # turned the other way
+                v["face_ok"] = ok
+
+
+ACTION_SEEN = ("veil_lift", "look_at_sleeve", "reach_to_forearm")
+
+
+def action_there(act: str, q: dict) -> bool | None:
+    """The staged start action in one picture's pose estimate (None: not measurable): hands near the chin for the
+    veil lift (both, within 1.6 face heights), a forearm raised for the sleeve look (a wrist above its elbow, or a
+    hand within 2.2 face heights of the chin), a hand reaching out for the reach (a wrist out past its elbow)."""
+    t = q.get("pts") or {}
+    eye = [x for x in (t.get("l_eye"), t.get("r_eye")) if x]
+    if not (t.get("chin") and eye):
+        return None
+    fh = max(1e-3, t["chin"][1] - sum(x[1] for x in eye) / len(eye)) * 2.2      # eyes-to-chin ~ half the face
+    hands = [t.get("l_hand") or t.get("l_wr"), t.get("r_hand") or t.get("r_wr")]
+    d = [((h[0] - t["chin"][0]) ** 2 + (h[1] - t["chin"][1]) ** 2) ** 0.5 / fh if h else None for h in hands]
+    if act == "veil_lift":
+        return None if None in d else max(d) <= 1.6
+    if act == "look_at_sleeve":
+        up = any(t.get(f"{s}_wr") and t.get(f"{s}_el") and t[f"{s}_wr"][1] < t[f"{s}_el"][1] for s in "lr")
+        return up or any(x is not None and x <= 2.2 for x in d)
+    if act == "reach_to_forearm":
+        return any(t.get(f"{s}_wr") and t.get(f"{s}_el") and t.get(f"{s}_sh") and
+                   abs(t[f"{s}_wr"][0] - t[f"{s}_sh"][0]) > abs(t[f"{s}_el"][0] - t[f"{s}_sh"][0]) for s in "lr")
+    return None
+
+
+def action_eval(*results: dict) -> None:
+    """A start action the engine still shows must also be in the redraw (the same measures on its pose estimate)."""
+    for res in results:
+        for rec in res.values():
+            for k, v in rec.get("people", {}).items():
+                act = v.get("action")
+                if not act:
+                    continue
+                e, r = action_there(act, v.get("engine") or {}), action_there(act, v.get("redraw") or {})
+                if e:
+                    v["action_ok"] = bool(r)
+
+
+HAIR_L = 12.0            # a person's hair: lightness above the engine's in the same region, v their own median
+
+
+def hair_eval(*results: dict) -> dict:
+    """Each person's hair reads the same in every key: the redraw's lightness minus the engine's in the hair region
+    against the median of that person over the run's keys (grey in one key, dark in the next, 11-12)."""
+    import statistics
+    vals = {}
+    for res in results:
+        for rec in res.values():
+            for k, v in (rec.get("hair") or {}).items():
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= 60:
+                    vals.setdefault(k, []).append(v["redraw"]["L"] - v["engine"]["L"])
+    med = {k: statistics.median(v) for k, v in vals.items() if len(v) >= 3}
+    for res in results:
+        for rec in res.values():
+            ok = {}
+            for k, v in (rec.get("hair") or {}).items():
+                if v.get("redraw") and v.get("engine") and v["redraw"]["px"] >= 60 and k in med:
+                    ok[k] = abs((v["redraw"]["L"] - v["engine"]["L"]) - med[k]) <= HAIR_L
+            rec["hair_ok"] = ok
+    return med
 
 
 WEAR_L = 12.0            # a person's clothes: lightness above the engine's in the same mask, v their usual
@@ -196,6 +293,12 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
         sd = scenes[m["scene"]]
         truth = json.loads((sd / "truth.json").read_text())["shots"][m["cam"]]
         res = json.loads((sd / "result.json").read_text())
+        rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+        spec = json.loads(rounds[-1].read_text()) if rounds else {}
+        cam = next((c for c in spec.get("cameras") or [] if c["name"] == m["cam"]), {})
+        named = set(cam.get("show") or []) | {x for x in (cam.get("speaker"), cam.get("listener")) if x}
+        acts = {k: ((v.get("body_pose") or {}).get("params") or {}).get("action") for k, v in
+                (spec.get("characters") or {}).items()}
         ppl = []
         for p in m["people"]:
             tp = truth["people"].get(p["key"]) or {}
@@ -203,7 +306,8 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
                                                       sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")
             c = cast.get(p["key"]) or {}
             ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun"),
-                            mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")))
+                            mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png"), named=p["key"] in named,
+                            action=acts.get(p["key"]) if acts.get(p["key"]) in ACTION_SEEN else None))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
         things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place")}
                   for t in truth.get("things") or [] if t.get("mask")]
@@ -216,6 +320,11 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
                                  "judge": True, "items": items}, indent=1))
     print(out_p, len(items))
 
+
+ACTION_WORDS = {
+    "veil_lift": "{Who} raises both hands to the hem of {pos} veil under {pos} chin, about to lift it.",
+    "look_at_sleeve": "{Who} holds {pos} left forearm up in front of {pos} body and looks down at the sleeve.",
+    "reach_to_forearm": "{Who} bends forward and lays {pos} hand on the other person's forearm."}
 
 FIX = {"clothes colour": "{Who}'s clothes keep exactly the colours of the character sheet.",
        "arms": "{Who}'s arms hang in their sleeves clear of the body, both sleeves and hands drawn.",
@@ -230,6 +339,9 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     colour_eval(checked)
     wear_eval(checked)
     lit_eval(checked)
+    face_eval(checked)
+    action_eval(checked)
+    hair_eval(checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -258,11 +370,23 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
         for k, fs in f.items():
             who = nm.get(k, "the person")
             w = RD.who_of(cast, k)
+            pm = next((p for p in meta[iid]["people"] if p["key"] == k), {})
+            pos = "her" if (w.get("noun") == "woman") else "his"
+            Who = who[0].upper() + who[1:]
             for x in fs:
                 if x == "outfit":
                     add.append(RD.neck_words(w))
+                elif x == "face":                # the facing the engine frame has, stated
+                    add.append(f"{Who} {RD.facing_words(pm.get('head_to_camera_deg') or 0.0, pos)}, as in the "
+                               f"engine frame; {pos} face is clearly drawn.")
+                elif x == "action":              # the staged start action, stated
+                    act = (rec.get("people", {}).get(k) or {}).get("action")
+                    if act in ACTION_WORDS:
+                        add.append(ACTION_WORDS[act].format(Who=Who, pos=pos))
+                elif x == "hair":
+                    add.append(f"{Who}'s hair is exactly as on the character sheet, the same in every shot.")
                 else:
-                    add.append(FIX[x].format(Who=who[0].upper() + who[1:]))
+                    add.append(FIX[x].format(Who=Who))
         j["prompt"] = j["prompt"] + " " + " ".join(a for a in add if a)
         j["seed"] = int(j["seed"]) + 1000
         j["id"] = iid + "__x"
@@ -308,6 +432,9 @@ def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     colour_eval(checked, retry)
     wear_eval(checked, retry)
     lit_eval(checked, retry)
+    face_eval(checked, retry)
+    action_eval(checked, retry)
+    hair_eval(checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)

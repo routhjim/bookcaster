@@ -106,6 +106,13 @@ def measures(k, s, W, H) -> dict:
         hk, hs = k[sl], s[sl]
         good = hk[hs >= 0.3]
         out[f"{side}_hand"] = (float(good[:, 0].mean()) / W, float(good[:, 1].mean()) / H) if len(good) >= 4 else None
+    # the face as the pose model finds it (accept.py judges a named person's face against the engine's): the nose
+    # and eyes, the face contour's median score, and which way the nose sits between the eyes (the head's turn)
+    out["face_scores"] = [round(float(s[i]), 2) for i in (0, 1, 2)]
+    out["face_contour"] = round(float(np.median(s[23:91])), 2)
+    if out["nose"] and out["l_eye"] and out["r_eye"]:
+        mx = (out["l_eye"][0] + out["r_eye"][0]) / 2
+        out["yaw"] = round((out["nose"][0] - mx) / max(abs(out["l_eye"][0] - out["r_eye"][0]), 1e-3), 2)
     e = [out["l_eye"], out["r_eye"]]
     sh = [out["l_sh"], out["r_sh"]]
     if all(e) and all(sh) and out["chin"]:
@@ -258,7 +265,10 @@ def main():
                             m[n] = m[n] or m2[n]
                         m["hand_scores2"] = m2["hand_scores"]
                 ah = arm_hand(m, p.get("joints2d") or {}, b)
-                q[kk] = dict(ah, neck_ratio=m.get("neck_ratio"), scores=m["scores"], hand_scores=m["hand_scores"])
+                q[kk] = dict(ah, neck_ratio=m.get("neck_ratio"), scores=m["scores"], hand_scores=m["hand_scores"],
+                             face_scores=m["face_scores"], face_contour=m["face_contour"], yaw=m.get("yaw"),
+                             pts={n: m.get(n) for n in ("nose", "l_eye", "r_eye", "chin", "l_wr", "r_wr", "l_el",
+                                                        "r_el", "l_sh", "r_sh", "l_hand", "r_hand")})
             j2 = p.get("joints2d") or {}
             hh = (j2["chin"][1] - j2["head_top"][1]) if "chin" in j2 and "head_top" in j2 else 0.0
             if (judge is not None and p.get("sheet") and (p.get("head_to_camera_deg") or 0) < 100
@@ -273,6 +283,7 @@ def main():
                 a = judge.ask_images([Image.open(p["sheet"]).convert("RGB"), c], OUTFIT_Q, 6, 768).strip().lower()
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
+            q["named"], q["action"] = bool(p.get("named")), p.get("action")
             r["people"][p["key"]] = q
         for p in it["people"]:            # each person's clothes below the chin, redraw and engine (accept.py judges)
             mk = p.get("mask")
@@ -287,6 +298,21 @@ def main():
             r.setdefault("wear", {})[p["key"]] = {"redraw": lab_of(imgs["redraw"], tmp),
                                                  "engine": lab_of(imgs["engine"], tmp) if "engine" in imgs else None}
             Path(tmp).unlink(missing_ok=True)
+            if "chin" in j2 and "head_top" in j2:   # the hair: the person's own pixels above the eye line
+                hh = j2["chin"][1] - j2["head_top"][1]
+                cx = j2["head_top"][0]
+                m = np.asarray(Image.open(mk).convert("L").resize((1152, 640))).copy()
+                keep = np.zeros_like(m)
+                y0, y1 = int(max(0.0, j2["head_top"][1] - 0.15 * hh) * 640), int((j2["head_top"][1] + 0.45 * hh) * 640)
+                x0, x1 = int(max(0.0, cx - 0.55 * hh * 640 / 1152) * 1152), int(min(1.0, cx + 0.55 * hh * 640 / 1152) * 1152)
+                keep[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = m[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+                if (keep > 127).sum() >= 60:
+                    tmp = Path(cfg["out"]).with_suffix("").as_posix() + f"_{it['id']}_{p['key']}_hair.png"
+                    Image.fromarray(keep).save(tmp)
+                    r.setdefault("hair", {})[p["key"]] = {"redraw": lab_of(imgs["redraw"], tmp),
+                                                         "engine": lab_of(imgs["engine"], tmp) if "engine" in imgs
+                                                         else None}
+                    Path(tmp).unlink(missing_ok=True)
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
             r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"] if t.get("mask")}
             if "engine" in imgs:
