@@ -1,4 +1,4 @@
-"""Three inline rules of the fit script (img3d/bl_combo.py), each run as the block of source that holds it, on
+"""Inline rules of the fit script (img3d/bl_combo.py), each run as the block of source that holds it, on
 synthetic figures and without Blender:
 
   - the hands found along the drawing's own arm angle (a skin-coloured garment made the far end of the "skin" a
@@ -7,6 +7,9 @@ synthetic figures and without Blender:
     the tube is capped short of the torso near the shoulder);
   - the collar lift as one ramp over the whole garment from the hip line to the collar, a sleeve following its
     shoulder end.
+
+Also the figure's neck line, searched only near the body's own neck height (long loose hair made the top of the
+head the narrowest slice, and the figure's face stayed on the garment).
 
 A block is found by the words that only it contains; a rule that is moved into a function, renamed or removed fails
 here by name (then test the function instead). The script's globals are plain arrays and small stand-ins."""
@@ -141,6 +144,57 @@ class HandsAlongTheDrawingsAngle(unittest.TestCase):
         LM, _ = self.wrists(90, TAN_C, 90)
         self.assertGreater(LM["palm_l"][0], LM["wrist_l"][0])
         self.assertLess(LM["palm_r"][0], LM["wrist_r"][0])
+
+
+class NeckLineOfTheFigure(unittest.TestCase):
+    """The figure's neck (where it is cut and scaled to the body) is looked for only near where the body's own neck
+    sits as a share of its height: the drawing was made from this body's pose map."""
+    TOP = 1.75
+    JN = {"neck_01": V((0.0, 0.0, 1.49)), "neck_02": V((0.0, 0.0, 1.535))}       # mid-neck at 0.864 of the height
+
+    def width(self, f):
+        """the figure's width at height fraction f: long loose hair round the head, a crown that tapers to a point"""
+        if f < 0.80:
+            return 0.40
+        if f < 0.83:
+            return 0.20
+        if f < 0.87:
+            return 0.11            # the neck, between the hair's strands
+        if f < 0.95:
+            return 0.19            # the head inside its hair
+        return 0.19 - (f - 0.95) / 0.05 * 0.17          # the crown: narrower than the neck at the very top
+
+    def match(self, job=None, scale=1.0):
+        zs = np.arange(0.0, 1.0005, 0.001)
+        co = np.array([[x * scale, 0.0, f * self.TOP * scale] for f in zs
+                       for x in np.linspace(-self.width(f) / 2, self.width(f) / 2, 21)])
+        ns = {"np": np, "match": "neck", "co": co, "zmin": co[:, 2].min(), "zmax": co[:, 2].max(), "top_z": self.TOP,
+              "J": lambda n: self.JN[n], "JOB": job or {}, "REP": {}, "white": np.zeros(len(co), bool)}
+        exec(block(ast.If, 'REP["neck_match"]', "neck_search_below", top_level=True), ns)
+        return ns["REP"]["neck_match"], ns["s"]
+
+    def test_the_crown_is_narrower_than_the_neck_in_this_figure(self):
+        self.assertLess(self.width(0.995), self.width(0.85))               # the trap the window avoids
+
+    def test_the_neck_is_found_in_the_window_round_the_bodys_own(self):
+        rep, s = self.match()
+        self.assertAlmostEqual(rep["expected_frac"], 0.864, delta=0.003)
+        self.assertGreaterEqual(rep["figure_neck_frac"], 0.83)
+        self.assertLess(rep["figure_neck_frac"], 0.87)
+        self.assertLessEqual(rep["window"][1], 0.95)                        # never up into the top of the head
+        self.assertGreaterEqual(rep["window"][0], 0.74)
+        self.assertAlmostEqual(rep["width_frac"], 0.11 / self.TOP, delta=0.005)
+
+    def test_the_figure_is_scaled_to_put_its_neck_at_the_bodys(self):
+        rep, s = self.match(scale=0.6)                                      # a model comes out at any size
+        mid = 0.5 * (self.JN["neck_01"].z + self.JN["neck_02"].z)
+        self.assertAlmostEqual(s * rep["figure_neck_frac"] * self.TOP * 0.6, mid, delta=0.003)
+        self.assertAlmostEqual(s, 1 / 0.6 * mid / (rep["figure_neck_frac"] * self.TOP), delta=0.01)
+
+    def test_the_window_is_the_jobs(self):
+        rep, _ = self.match(job={"neck_search_below": 0.02, "neck_search_above": 0.01})
+        self.assertAlmostEqual(rep["window"][0], rep["expected_frac"] - 0.02, delta=0.002)
+        self.assertAlmostEqual(rep["window"][1], rep["expected_frac"] + 0.01, delta=0.002)
 
 
 class MeasuredSleeveTube(unittest.TestCase):
