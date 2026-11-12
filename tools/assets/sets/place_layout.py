@@ -381,7 +381,8 @@ def fits(ctx: Ctx, cand: dict, placed: dict, fixed_zones: list) -> bool:
     for o in ctx.openings:
         if o["kind"] != "window":
             continue
-        tall = cand["size_m"][2] > o.get("sill_m", 0.0) + hd["window_tall_over_sill_m"]
+        tall = cand["size_m"][2] > o.get("sill_m", 0.0) + hd["window_tall_over_sill_m"] \
+            and cand.get("at_window") != o["id"]     # what the place puts at its window may stand before it
         if tall and not cand.get("wall") and overlap(r, span_rect(o["wall"], o["at_m"], o["width_m"] / 2,
                                                                   hd["window_keepout_m"], ctx.W, ctx.D)):
             return False                            # a tall piece does not stand in front of a window
@@ -598,15 +599,19 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             hw = size[0] / 2
             lo, hi = -(L / 2 - hw - 0.02), (L / 2 - hw - 0.02)
             if at:                                  # at an opening: under a window, in the alcove by a fireplace
-                reach_m = at["width_m"] / 2 + hw + (2 * hw + 0.4 if at["kind"] == "fireplace" else 0.0)
+                span_w = at["width_m"]
+                if at["kind"] == "window" and drape_zones(ctx, at):
+                    span_w = max(span_w, ctx.R["hard"]["window_dressing"]["width_m"])
+                reach_m = span_w / 2 + hw + (2 * hw + 0.4 if at["kind"] == "fireplace" else 0.0)
                 lo, hi = max(lo, at["at_m"] - reach_m), min(hi, at["at_m"] + reach_m)
             k0, k1 = math.ceil(lo / step - 1e-9), math.floor(hi / step + 1e-9)
             for k in range(k0, k1 + 1):
                 u = round(k * step, 3)
                 p = wall_pt(side, u, W, D)
                 off = wg
-                if size[2] <= ctx.R["hard"].get("low_under_window_m", 1.0):
-                    # a low piece at a window stands out from the wall by the drapes' depth, so they hang behind it
+                if size[2] <= ctx.R["hard"].get("low_under_window_m", 1.0) or (at and at["kind"] == "window"):
+                    # a low piece at a window, or any piece the place puts at that window, stands out from the
+                    # wall by the drapes' depth, so they hang behind it
                     for o in ctx.openings:
                         if o["kind"] == "window" and o["wall"] == side and drape_zones(ctx, o):
                             dz = ctx.R["hard"]["window_dressing"]
@@ -614,6 +619,8 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
                                 off = max(off, dz["depth_m"] + wg)
                 c = (p[0] + n[0] * (size[1] / 2 + off), p[1] + n[1] * (size[1] / 2 + off))
                 cand = make(ctx, pid, c, n, {"wall": side, "u": u})
+                if at and at["kind"] == "window":
+                    cand["at_window"] = at["id"]
                 blocked = False
                 for o in ctx.openings:
                     if o["wall"] != side or o["kind"] == "fireplace":

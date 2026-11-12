@@ -380,6 +380,37 @@ def test_the_drape_rule_can_be_turned_off_and_a_window_keeps_room_for_its_drapes
     assert abs(o["at_m"]) + R["hard"]["window_dressing"]["width_m"] / 2 <= L / 2 - 0.1 + 1e-6
 
 
+def test_a_tall_seat_the_place_puts_at_a_window_stands_before_the_drapes_beside_a_desk():
+    s = spec(openings=[op("o1", "window"), op("o2", "fireplace"), op("o3", "door"), op("o4", "door")],
+             pieces=[pc_("p1", "armchair", ["in the chair by the fire"], "opening:o2"),
+                     pc_("p2", "desk", ["at the desk"], "free"),
+                     pc_("p3", "chair", ["in the chair by the window"], "opening:o1"),
+                     pc_("p4", "sofa"), pc_("p5", "side_table"), pc_("p6", "bookcase"), pc_("p7", "rug", against="free")],
+             relations=[rel("p1", "by", "o2"), rel("p3", "by", "o1")],
+             named={"in the chair by the fire": "p1", "at the desk": "p2", "in the chair by the window": "p3",
+                    "the window": "o1", "the door": "o3", "the door on the left": "o4"})
+    records = {"p1": {"asset": "an_armchair", "size_m": [0.85, 0.85, 1.0]},
+               "p2": {"asset": "a_desk", "size_m": [1.4, 0.75, 0.9]},
+               "p3": {"asset": "a_wingback", "size_m": [0.85, 0.85, 1.15]},
+               "p4": {"asset": "a_sofa", "size_m": [2.0, 0.9, 0.75]},
+               "p5": {"asset": "a_side_table", "size_m": [0.6, 0.6, 0.72]},
+               "p6": {"asset": "a_bookcase", "size_m": [1.0, 0.38, 2.0]}}
+    lay = pl.solve_recover(s, records)
+    assert lay["status"] == "ok", (lay["status"], lay["unmet"])
+    n = by_name(lay)
+    win = next(o for o in lay["openings"] if o["kind"] == "window")
+    dr = R["hard"]["window_dressing"]
+    W, D = lay["size_m"][:2]
+    zones = [pl.span_rect(win["wall"], win["at_m"], dr["width_m"] / 2, dr["depth_m"], W, D)]
+    for p in lay["pieces"]:
+        if not p.get("flat") and not p.get("on"):
+            assert not pl.overlap(p["rect"], zones[0]), p["name"]          # nothing in the drapes
+    chair = n["chair"]
+    assert pl.gap(chair["rect"], win.get("rect") or pl.span_rect(win["wall"], win["at_m"], win["width_m"] / 2, 0.05,
+                                                                  W, D)) <= DATA["relations"]["by"]["opening_gap_m"]
+    assert lay["size_m"] == list(DATA["room_kinds"]["sitting_room"]["sizes_m"]["medium"])
+
+
 # ------------------------------------------------------------------ fronts of library records
 def test_a_seat_whose_open_side_is_not_minus_y_is_reported():
     rule = DATA["piece_kinds"]["armchair"]
