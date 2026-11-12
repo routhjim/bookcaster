@@ -4520,6 +4520,22 @@ def talk_pre(clip: Path) -> int:
     return 0
 
 
+def _shift_reading(m: dict) -> tuple:
+    """(confidence, offset) the assembly's shift goes by. A record of the voiced-frames measure keeps the whole-clip
+    reading of the best track beside it ("old": what the measure before it read), and the shift stays on that one
+    (11-12): over the line's voiced frames the confidence reads higher, so SYNC_MIN_CONF (set for whole-clip
+    readings) let weak readings move clips (2 noise-level ones by -7 and -9 frames, of 395 measured) and 7 more
+    moved by a frame; on the whole-clip reading no clip's shift changes. BOOKCASTER_SYNC_SHIFT=voiced takes the
+    voiced-frames reading instead (it must then pass the bar, not SYNC_MIN_CONF)."""
+    o = m.get("old")
+    if SYNC_SHIFT_FROM == "voiced" and m.get("measure") == SYNC_MEASURE:
+        c = m.get("conf")
+        return (c if c is not None and c >= TALK_SYNC_BAR else None), m.get("offset", 0)
+    if isinstance(o, dict) and o.get("conf") is not None:
+        return o["conf"], o.get("offset", 0)
+    return m.get("conf"), m.get("offset", 0)
+
+
 def measured_shift(clip: Path) -> int | None:
     """The frames (24 fps) to show a talk clip earlier (+) or later (-) so its lips meet its voice: SyncNet's
     measured offset when it is confident and current, else None."""
@@ -4529,11 +4545,14 @@ def measured_shift(clip: Path) -> int | None:
         st = clip.stat()
     except (OSError, ValueError):
         return None
-    if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}" or m.get("conf") is None or m["conf"] < SYNC_MIN_CONF:
+    if m.get("sig") != f"{st.st_size}:{st.st_mtime_ns}":
         return None
-    if abs(m["offset"]) >= SYNC_VSHIFT - 1:     # at the edge of the search: the real offset may lie beyond it, or
-        return None                             # the match is degenerate (10-28: "Farintosh," read -15 of 15)
-    sh = round(m["offset"] * FPS / 25)          # SyncNet counts 25 fps frames; + = the picture lags the sound
+    conf, off = _shift_reading(m)
+    if conf is None or off is None or conf < SYNC_MIN_CONF:
+        return None
+    if abs(off) >= SYNC_VSHIFT - SYNC_LOCK_EDGE:    # at the edge of the search: the real offset may lie beyond it,
+        return None                                 # or the match is degenerate (10-28: one read -15 of 15)
+    sh = round(off * FPS / 25)                      # SyncNet counts 25 fps frames; + = the picture lags the sound
     return max(-SYNC_MAX_SHIFT, min(SYNC_MAX_SHIFT, sh))
 
 
@@ -4581,9 +4600,32 @@ def _job_speaker_box(L: Path, name: str) -> list | None:
     return None
 
 
-SYNC_LOCK_EDGE = 2              # a best offset this close to the search edge (|offset| >= SYNC_VSHIFT - this) is no lock
+SYNC_MEASURE = 2                # the measure a sync record was made by (records without it: the whole-clip measure)
+SYNC_LOCK_EDGE = 1              # a best offset at the search edge (|offset| >= SYNC_VSHIFT - this: 14, 15) is no lock -
+#                                 the same edge the assembly's shift has always refused; 13 is shifted (clamped to 12)
 SYNC_MIN_VOICED = 10            # fewer voiced windows than this: the whole clip is scored, as before
+SYNC_ROWS_SURE = int(os.environ.get("BOOKCASTER_SYNC_ROWS_SURE", "37"))
+#                                 a voiced span shorter than this many windows is too few independent samples to trust
+#                                 alone (windows overlap 4 frames in 5): its reading counts only when its offset agrees
+#                                 with the whole clip's. 37 = the smallest floor at which no noise-level reading among
+#                                 the 395 measured clips (11-12) stands: the longest such span was 36 windows (3.5 at
+#                                 -7 where the whole clip read 2.5 at 0). The wrong-voice test (sync_null_check.py)
+#                                 is what confirms or moves it
+SYNC_AGREE = 2                  # ...within this many frames
+SYNC_BAND = tuple(int(x) for x in os.environ.get("BOOKCASTER_SYNC_BAND", "-8,4").split(","))
+#                                 the offsets a voiced-frames reading is believed at. Every clip that passes the bar
+#                                 (304 of 395) reads -5..+1; the band is that with 3 frames each side (the agreement
+#                                 tolerance and one more). Outside it the whole-clip reading decides, as before the
+#                                 voiced-frames measure - so a strong, steady offset further out still passes and is
+#                                 shifted, and a weak one (4.9 at -9 over 34 windows) does not
 SYNC_ENERGY_VOICED = 0.08       # no voice cut to read: a 40 ms window is voiced above this share of the clip's peak
+SYNC_SHIFT_FROM = os.environ.get("BOOKCASTER_SYNC_SHIFT", "whole")      # whole | voiced (_shift_reading)
+SYNC_REMEASURE = os.environ.get("BOOKCASTER_SYNC_REMEASURE", "0") == "1"
+#                                 BOOKCASTER_SYNC_REMEASURE=1: measure again every talk clip whose record was made by
+#                                 the whole-clip measure (each costs a SyncNet run on the iGPU, rewrites the clip's
+#                                 .sync.json, and a line's join is stitched again when a piece's shift moves). Off
+#                                 (the default): a record of the old measure is used as it is; only new or changed
+#                                 clips are measured, by the voiced-frames measure
 
 
 def voiced_frames(src, n: int, shift: float, fps: int = 25) -> list:
@@ -4614,40 +4656,104 @@ def energy_frames(a, sr: int, n: int, share: float = SYNC_ENERGY_VOICED, fps: in
     return [bool(peak and x > max(share * peak, 1e-9)) for x in r] + [False] * (n - m)
 
 
+def _curve(d) -> tuple:
+    """(offset, raw confidence) of a block of per-window distances: the mean curve's minimum and how far under the
+    curve's median it lies, as run_syncnet computes them."""
+    import numpy as np
+    m = d.mean(0)
+    i = int(m.argmin())
+    return (m.shape[0] - 1) // 2 - i, float(np.median(m) - m[i])
+
+
 def sync_score(dists, rows_voiced=None, vshift: int = SYNC_VSHIFT) -> dict:
     """SyncNet's reading of one face track from its per-window distances (rows: 5-frame windows; columns: the
     offsets -vshift..+vshift), as run_syncnet computes it (confidence = the median of the mean-distance curve minus
-    its minimum), over the voiced windows only when there are enough of them: the silent frames of a short line in
-    a longer clip compare a moving or smiling mouth with silence and pulled in-sync clips under the bar (11-12: a
-    line voiced in 43% of its clip read 2.7 over the clip, 5.3 over its voice). A best offset at or near the edge of
-    the search is no lock: the bar then sees 0."""
+    its minimum), over the voiced windows only: the silent frames of a short line in a longer clip compare a moving
+    or smiling mouth with silence and pulled in-sync clips under the bar (11-12: a line voiced in 43% of its clip
+    read 2.7 over the clip, 5.3 over its voice).
+    The voiced reading is believed when it is not at the search edge, lies in SYNC_BAND, and - over a span shorter
+    than SYNC_ROWS_SURE windows - agrees with the whole clip's offset within SYNC_AGREE frames (a few windows of an
+    unsynced face read 5+ by chance: 16% of 10-window stretches, none of 30+). Otherwise the whole-clip reading
+    stands, as before the voiced measure ("basis": voiced | whole, "why" says which rule sent it back). A best
+    offset at the edge of the search is no lock: the bar then sees 0. Nothing to score: conf None."""
     import numpy as np
-    d = np.asarray(dists, dtype=float)
-    on = np.asarray(rows_voiced if rows_voiced is not None else [True] * len(d), dtype=bool)[: len(d)]
-    used = d[on] if on.sum() >= SYNC_MIN_VOICED else d
-    m = used.mean(0)
-    i = int(m.argmin())
-    off = vshift - i
-    raw = float(np.median(m) - m[i])
-    lock = abs(off) < vshift - SYNC_LOCK_EDGE
-    return {"offset": off, "conf_raw": round(raw, 3), "conf": round(raw if lock else 0.0, 3), "lock": lock,
-            "voiced_rows": int(on.sum()), "rows": int(len(d)), "all_rows": bool(on.sum() < SYNC_MIN_VOICED)}
+    try:
+        d = np.asarray(dists, dtype=float)
+    except (TypeError, ValueError):
+        d = np.zeros((0, 0))
+    if d.ndim != 2 or not d.shape[0] or d.shape[1] != 2 * vshift + 1 or not np.isfinite(d).all():
+        return {"offset": 0, "conf_raw": None, "conf": None, "lock": False, "voiced_rows": 0, "rows": 0,
+                "all_rows": True, "basis": "none", "why": "no distances to score (none, misshapen or not finite)"}
+    on = np.zeros(len(d), dtype=bool)
+    if rows_voiced is None:
+        on[:] = True
+    else:
+        rv = np.asarray(list(rows_voiced), dtype=bool)[: len(d)]      # (a shorter list: the rest are not voiced)
+        on[: len(rv)] = rv
+    nv = int(on.sum())
+    edge = vshift - SYNC_LOCK_EDGE
+    w_off, w_raw = _curve(d)
+    out = {"voiced_rows": nv, "rows": int(len(d)), "all_rows": nv < SYNC_MIN_VOICED,
+           "whole": {"offset": w_off, "conf": round(w_raw, 3)}}
+    why = None
+    if nv < SYNC_MIN_VOICED:
+        why = "too few voiced windows"
+    else:
+        v_off, v_raw = _curve(d[on])
+        out["voiced"] = {"offset": v_off, "conf": round(v_raw, 3)}
+        if abs(v_off) >= edge:
+            why = "the voiced reading is at the search edge"
+        elif not SYNC_BAND[0] <= v_off <= SYNC_BAND[1]:
+            why = "the voiced reading is outside the believed offsets"
+        elif nv < SYNC_ROWS_SURE and abs(v_off - w_off) > SYNC_AGREE:
+            why = "a short voiced span whose offset the whole clip does not confirm"
+    off, raw = (w_off, w_raw) if why else (v_off, v_raw)
+    lock = abs(off) < edge
+    out.update(offset=off, conf_raw=round(raw, 3), conf=round(raw if lock else 0.0, 3), lock=lock,
+               basis="whole" if why else "voiced")
+    if why:
+        out["why"] = why
+    return out
 
 
-def speaker_track(bboxes: list, width: float) -> int | None:
-    """Which face track is the speaker's, inside the speaker's zone (the plan's speaker box the clip was cropped to):
-    the layout draws the speaker in their own box nearest the viewer, the others further back and smaller, so the
-    largest face whose centre is in the zone and not on its cut edge (a listener's face sliced by the crop); with
-    none such, the largest. bboxes: per track, its boxes [x0, y0, x1, y1] in the zone's pixels."""
+def speaker_track(bboxes: list, width: float, at: float | None = None) -> int | None:
+    """Which face track is the speaker's, inside the speaker's zone (the plan's speaker box the clip was cropped to).
+    Faces cut by the zone's edge (a listener's face sliced by the crop) are left out when any other is there. Of the
+    rest: with `at` (where the speaker's face is in the zone, 0-1 across it - a clip made from a supplied key says
+    where its people stand) the track nearest that place; without it the track nearest the zone's middle (the zone
+    is the speaker's own box, so they are drawn about its middle; the largest face is whoever stands nearest the
+    viewer, which need not be the speaker - 11-12). Ties: the larger. bboxes: per track, its boxes
+    [x0, y0, x1, y1] in the zone's pixels."""
     import numpy as np
-    if not bboxes:
+    if not bboxes or not width:
         return None
-    med = [np.median(np.asarray(b, dtype=float), 0) for b in bboxes]
+    med = [np.median(np.asarray(b, dtype=float).reshape(-1, 4), 0) for b in bboxes]
     area = [float((m[2] - m[0]) * (m[3] - m[1])) for m in med]
+    cx = [float((m[0] + m[2]) / 2) for m in med]
     edge = 0.05 * width
-    inner = [k for k, m in enumerate(med) if edge <= (m[0] + m[2]) / 2 <= width - edge and m[0] > 0 and m[2] < width]
+    inner = [k for k, m in enumerate(med) if edge <= cx[k] <= width - edge and m[0] > 0 and m[2] < width]
     pool = inner or list(range(len(med)))
-    return max(pool, key=lambda k: area[k])
+    want = (0.5 if at is None else min(1.0, max(0.0, float(at)))) * width
+    return min(pool, key=lambda k: (round(abs(cx[k] - want) / width, 2), -area[k]))
+
+
+def _job_speaker_at(L: Path, name: str, bx) -> float | None:
+    """Where a clip's job says its speaker's face is, across the speaker's zone (0-1): the job's optional
+    "speaker_x" (0-1 across the whole picture; a flow that knows where its key's people stand writes it)."""
+    for j in (L / "out" / f"{name}.json", L / "out" / f"{name}_c0.json"):
+        try:
+            x = json.loads(j.read_text()).get("speaker_x")
+        except (OSError, ValueError):
+            continue
+        if x is None:
+            return None
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return None
+        x0, x1 = (bx[0], bx[2]) if bx else (0.0, 1.0)
+        return min(1.0, max(0.0, (x - x0) / max(1e-6, x1 - x0)))
+    return None
 
 
 def _clip_voiced(L: Path, name: str, clip: Path, n: int) -> tuple:
@@ -4692,26 +4798,72 @@ def _syncnet_run(clip: Path, bx, work: Path, ref: str, env: dict) -> str:
     return r.stdout + r.stderr
 
 
-def sync_read(work: Path, ref: str, voiced: list, width: float) -> dict:
+def sync_read(work: Path, ref: str, voiced: list, width: float, at: float | None = None) -> dict:
     """The reading of one SyncNet run: the speaker's track (speaker_track) scored over the voiced windows
-    (sync_score); with the old reading beside it (the best track over the whole clip) for comparison."""
+    (sync_score); with the old reading beside it (the best track over the whole clip: the assembly's shift goes by
+    it, _shift_reading). A window is SyncNet's row i of a track = the track's frames i..i+4, so it is voiced when
+    its middle frame (the track's frame i, + 2) is. Anything that cannot be read (no run, a broken or mismatched
+    pickle) is "not measured" with the reason, never an exception: this runs in the as-they-land thread."""
     import pickle
+    none = {"conf": None, "offset": 0, "lock": False, "faces": 0}
     pw = work / "pywork" / ref
     try:
-        tracks = pickle.load(open(pw / "tracks.pckl", "rb"))
-        dists = pickle.load(open(pw / "activesd.pckl", "rb"))
-    except (OSError, EOFError, pickle.UnpicklingError):
-        return {"conf": None, "offset": 0, "lock": False, "faces": 0}
-    if not tracks or not dists:
-        return {"conf": None, "offset": 0, "lock": False, "faces": 0}
-    k = speaker_track([t["track"]["bbox"] for t in tracks], width)
-    fr = tracks[k]["track"]["frame"]
-    rows = [0 <= int(f) + 2 < len(voiced) and voiced[int(f) + 2] for f in list(fr)[: len(dists[k])]]
-    out = dict(sync_score(dists[k], rows), track=k, faces=len(tracks))
-    olds = [sync_score(d) for d in dists]
-    best = max(range(len(olds)), key=lambda i: olds[i]["conf_raw"])
-    out["old"] = {"conf": olds[best]["conf_raw"], "offset": olds[best]["offset"], "track": best}
-    return out
+        with open(pw / "tracks.pckl", "rb") as fh:
+            tracks = pickle.load(fh)
+        with open(pw / "activesd.pckl", "rb") as fh:
+            dists = pickle.load(fh)
+    except Exception as e:      # noqa: BLE001 - whatever the files hold (a pickle of another numpy, a cut file...)
+        return dict(none, why=f"not measured: SyncNet's output could not be read ({type(e).__name__})")
+    try:
+        if not tracks or not len(dists):
+            return dict(none, why="not measured: no face track")
+        n = min(len(tracks), len(dists))                   # (one more of either: read the pairs there are)
+        k = speaker_track([tracks[i]["track"]["bbox"] for i in range(n)], width, at)
+        fr = list(tracks[k]["track"]["frame"])[: len(dists[k])]
+        rows = [0 <= int(f) + 2 < len(voiced) and bool(voiced[int(f) + 2]) for f in fr]
+        out = dict(sync_score(dists[k], rows), track=k, faces=n)
+        olds = [sync_score(dists[i]) for i in range(n)]
+        scored = [i for i in range(n) if olds[i].get("whole")]      # (a track with nothing to score has none)
+        if scored:
+            best = max(scored, key=lambda i: olds[i]["whole"]["conf"])
+            out["old"] = {"conf": olds[best]["whole"]["conf"], "offset": olds[best]["whole"]["offset"], "track": best}
+        return out
+    except Exception as e:      # noqa: BLE001 - tracks and distances that do not fit each other
+        return dict(none, why=f"not measured: SyncNet's tracks and distances do not fit ({type(e).__name__})")
+
+
+def _sync_record(sig: str, bx, rd: dict, voiced: list, how: str) -> dict:
+    """The record kept beside a talk clip (<name>.sync.json): finite numbers or null, never NaN (a strict JSON
+    reader refuses it), with the reason when there is no reading."""
+    def num(x):
+        return x if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None
+    lock = bool(rd.get("lock")) and num(rd.get("conf")) is not None
+    old = rd.get("old") if isinstance(rd.get("old"), dict) and num(rd["old"].get("conf")) is not None else None
+    rec = {"sig": sig, "measure": SYNC_MEASURE, "offset": (num(rd.get("offset")) or 0) if lock else 0,
+           "conf": num(rd.get("conf")), "box": bx, "lock": lock, "conf_raw": num(rd.get("conf_raw")),
+           "offset_raw": num(rd.get("offset")), "faces": rd.get("faces", 0), "track": rd.get("track"),
+           "basis": rd.get("basis"), "voiced_rows": rd.get("voiced_rows"), "rows": rd.get("rows"),
+           "voiced_from": how, "voiced_share": round(sum(map(bool, voiced)) / max(1, len(voiced)), 3), "old": old}
+    for k in ("voiced", "whole"):
+        if isinstance(rd.get(k), dict):
+            rec[k] = {a: num(b) for a, b in rd[k].items()}
+    why = rd.get("why") or (None if rec["conf"] is not None else "not measured")
+    if why:
+        rec["why"] = why
+    return rec
+
+
+def _sync_current(m: dict, sig: str, bx) -> bool:
+    """Whether a clip's sync record stands: made of this clip in this zone, and by the present measure - or by the
+    whole-clip measure before it, which is used as it is unless BOOKCASTER_SYNC_REMEASURE=1 asks for every such
+    clip to be measured again (11-12: without the option the first run of any chapter after the change measured all
+    its talk clips again, 400 across the books, and rewrote their records unasked). A record of the first
+    voiced-frames version ("lock" but no "measure") is measured again."""
+    if m.get("sig") != sig or not (m.get("box") == bx or (bx is None and "box" not in m)):
+        return False
+    if m.get("measure") == SYNC_MEASURE:
+        return True
+    return "lock" not in m and not SYNC_REMEASURE
 
 
 def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = False) -> None:
@@ -4733,10 +4885,9 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
         sig = f"{st.st_size}:{st.st_mtime_ns}"
         bx = _job_speaker_box(L, n)
         try:                    # measured again when the clip or its zone changed (E29: a reading from before the
-            m = json.loads(f.read_text())       # zone was kept with it is measured once more in its own zone)
-            if m.get("sig") == sig and (m.get("box") == bx or (bx is None and "box" not in m)) and "lock" in m:
+            if _sync_current(json.loads(f.read_text()), sig, bx):   # zone was kept with it is measured once more
                 continue
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             pass
         out = _syncnet_run(c, bx, work, n, env)
         try:
@@ -4745,19 +4896,17 @@ def _sync_offsets(book: Path, L: Path, names: list, log=print, quiet: bool = Fal
         except ValueError:
             n25 = 0
         voiced, how = _clip_voiced(L, n, c, n25) if n25 else ([], "none")
-        rd = sync_read(work, n, voiced, W * ((bx[2] - bx[0]) if bx else 1.0))
+        rd = sync_read(work, n, voiced, W * ((bx[2] - bx[0]) if bx else 1.0), _job_speaker_at(L, n, bx))
         if rd.get("conf") is None:      # no tracks or distances left to read: run_syncnet's own printout, as before
             offs = [int(x) for x in re.findall(r"AV offset:\s*(-?\d+)", out)]
             confs = [float(x) for x in re.findall(r"Confidence:\s*([\d.]+)", out)]
             if confs and len(confs) == len(offs):
                 i = max(range(len(confs)), key=confs.__getitem__)
                 lk = abs(offs[i]) < SYNC_VSHIFT - SYNC_LOCK_EDGE
-                rd.update(offset=offs[i], conf_raw=confs[i], conf=confs[i] if lk else 0.0, lock=lk, faces=len(confs))
-        f.write_text(json.dumps({"sig": sig, "offset": rd.get("offset", 0) if rd.get("lock") else 0,
-                                 "conf": rd.get("conf"), "box": bx, "lock": rd.get("lock", False),
-                                 "conf_raw": rd.get("conf_raw"), "offset_raw": rd.get("offset"),
-                                 "faces": rd.get("faces", 0), "track": rd.get("track"), "voiced_from": how,
-                                 "voiced_share": round(sum(voiced) / max(1, len(voiced)), 3), "old": rd.get("old")}))
+                rd.update(offset=offs[i], conf_raw=confs[i], conf=confs[i] if lk else 0.0, lock=lk, faces=len(confs),
+                          basis="whole", old={"conf": confs[i], "offset": offs[i], "track": i},
+                          why="SyncNet's printout (its tracks and distances were not readable)")
+        f.write_text(json.dumps(_sync_record(sig, bx, rd, voiced, how), allow_nan=False))
         done += 1
         shifted += bool(sync_shift(c))
     if done and not quiet:

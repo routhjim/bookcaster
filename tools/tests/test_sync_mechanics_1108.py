@@ -55,9 +55,8 @@ c.with_suffix(".sync.json").write_text(json.dumps({"sig": f"{c.stat().st_size}:{
 ran.clear(); S._sync_offsets(Path("."), d, ["talk-1_s0"], log=lambda m: None)
 check("a reading from before zones were recorded, of a shot with a zone: measured once more", bool(ran), ran)
 (d / "out" / "talk-1_s0.json").write_text(json.dumps({}))
-# (a reading of the voiced-frames measure, 11-12: it records "lock"; one from before it is measured once more)
 c.with_suffix(".sync.json").write_text(json.dumps({"sig": f"{c.stat().st_size}:{c.stat().st_mtime_ns}", "offset": 0,
-                                                   "conf": 7.0, "lock": True}))
+                                                   "conf": 7.0}))
 ran.clear(); S._sync_offsets(Path("."), d, ["talk-1_s0"], log=lambda m: None)
 check("...but a close-up's (no zone) is kept", not any("run_syncnet.py" in str(x) for x in ran), ran)
 

@@ -1,9 +1,15 @@
 """11-12: the lip-sync reading of a talk clip, on synthetic data (no SyncNet, no audio or clips).
 1. Voiced frames only: a short line in a longer clip is scored over the frames where its voice is, read from the
    line's voice cut (the other voices and the narration are digital zero there); an energy cut is the fallback.
-2. A best offset at or near the edge of SyncNet's search is no lock: the bar sees 0.
-3. The speaker's track: the largest face inside the speaker's zone, not a listener's face cut by the zone's edge,
-   and not whichever track scores best.
+2. A best offset at the edge of SyncNet's search (the edge the assembly's shift refuses) is no lock: the bar sees 0.
+3. The speaker's track: the face where the speaker is in their zone (told, else about its middle), not a listener's
+   face cut by the zone's edge, not the largest, and not whichever track scores best.
+4. A short voiced span is believed only when the whole clip confirms its offset, and any voiced reading only inside
+   the believed offsets; otherwise the whole-clip reading stands (a few windows of an unsynced face read high by
+   chance).
+5. The assembly's shift goes by the whole-clip reading, as before the voiced measure.
+6. A record of the whole-clip measure is used as it is unless BOOKCASTER_SYNC_REMEASURE=1.
+7. Nothing unreadable raises or writes NaN: it is "not measured" with the reason.
    python3 tools/tests/test_sync_voiced_1112.py"""
 import sys
 from pathlib import Path
@@ -60,23 +66,141 @@ r_few = S.sync_score(dists(few, -2, -2), few)
 check("too few voiced windows: the whole clip is scored", r_few["all_rows"] and r_few["rows"] == 96, r_few)
 
 # --- 2. no lock at the search edge ----------------------------------------------------------------------------------
+E = V - S.SYNC_LOCK_EDGE
 edge = S.sync_score(dists([True] * 80, voiced_off=V))
 check("a best offset at the edge of the search is no lock", not edge["lock"] and edge["conf"] == 0.0, edge)
 check("...its raw confidence is kept for the record", edge["conf_raw"] > 0, edge)
-near = S.sync_score(dists([True] * 80, voiced_off=-(V - S.SYNC_LOCK_EDGE)))
-check("near the edge too", not near["lock"], near)
-ok = S.sync_score(dists([True] * 80, voiced_off=-(V - S.SYNC_LOCK_EDGE - 1)))
-check("inside it, the reading stands", ok["lock"] and ok["conf"] == ok["conf_raw"] > 0, ok)
+near = S.sync_score(dists([True] * 80, voiced_off=-E))
+check("the frame inside the edge too (the assembly's shift refuses both)", not near["lock"], near)
+check("the measure's edge is the assembly's", S.SYNC_LOCK_EDGE == 1)
+ok = S.sync_score(dists([True] * 80, voiced_off=-(E - 1), depth=8.0))
+check("a strong, steady offset one frame inside it stands (the assembly shifts it, clamped)",
+      ok["lock"] and ok["conf"] == ok["conf_raw"] > S.TALK_SYNC_BAR and ok["offset"] == -(E - 1), ok)
+check("...read over the whole clip, since it is outside the believed offsets of a voiced reading",
+      ok["basis"] == "whole" and not S.SYNC_BAND[0] <= ok["offset"] <= S.SYNC_BAND[1], ok)
 
 # --- 3. the speaker's track -----------------------------------------------------------------------------------------
 w = 691.0                                                               # a zone 0.6 of a 1152 px frame
-listener = [[230, 200, 350, 335]] * 30                                  # further back, smaller
-speaker = [[460, 150, 680, 370]] * 30                                   # nearest the viewer, larger
-check("the largest face in the zone is the speaker's", S.speaker_track([listener, speaker], w) == 1)
+listener = [[60, 200, 180, 335]] * 30                                   # further back, smaller, toward the zone's side
+speaker = [[300, 150, 520, 370]] * 30                                   # about the zone's middle
+check("the face about the zone's middle is the speaker's", S.speaker_track([listener, speaker], w) == 1)
+big_near = [[40, 80, 330, 400]] * 30                                    # a listener nearer the viewer: the largest
+check("...not the largest face (a listener nearer the viewer)", S.speaker_track([big_near, speaker], w) == 1)
+check("told where the speaker is, the face there - even off the middle",
+      S.speaker_track([speaker, listener], w, at=0.17) == 1 and S.speaker_track([speaker, listener], w, at=0.6) == 0)
 sliced = [[-40, 100, 120, 400]] * 30                                    # a big face cut by the zone's edge
 check("a face cut by the zone's edge is not taken for the speaker", S.speaker_track([sliced, listener], w) == 1)
+check("...not even when it is where the speaker was said to be", S.speaker_track([sliced, listener], w, at=0.05) == 1)
 check("one face: it", S.speaker_track([listener], w) == 0)
 check("no face: none", S.speaker_track([], w) is None)
+
+# --- 4. short spans and the believed offsets ------------------------------------------------------------------------
+F = S.SYNC_ROWS_SURE
+def clip(n_voiced, voiced_off, whole_off, n_silent=70, depth_silent=4.0):
+    rows = [True] * n_voiced + [False] * n_silent
+    d = dists(rows, voiced_off=voiced_off, silent_off=whole_off, depth=4.0)
+    return d, rows
+d, rows = clip(F - 5, voiced_off=-7, whole_off=0)                       # the 11-12 noise case: 3.5 at -7, clip at 0
+r = S.sync_score(d, rows)
+check("a short voiced span the whole clip does not confirm: the whole-clip reading stands",
+      r["basis"] == "whole" and r["offset"] == 0 and "why" in r, r)
+check("...the voiced reading is kept beside it", r["voiced"]["offset"] == -7 and r["whole"]["offset"] == 0, r)
+d, rows = clip(F - 5, voiced_off=-3, whole_off=-2)
+r = S.sync_score(d, rows)
+check("a short span the whole clip confirms (within SYNC_AGREE): the voiced reading counts",
+      r["basis"] == "voiced" and r["offset"] == -3 and "why" not in r, r)
+d, rows = clip(F + 5, voiced_off=-3, whole_off=6)
+r = S.sync_score(d, rows)
+check("a long enough span needs no confirmation", r["basis"] == "voiced" and r["offset"] == -3, r)
+lo, hi = S.SYNC_BAND
+d, rows = clip(F + 30, voiced_off=lo - 1, whole_off=lo - 1, n_silent=20)
+d[np.array(rows) == False] += rng.normal(0, 3.0, (rows.count(False), 2 * V + 1))
+r = S.sync_score(d, rows)
+check("a voiced reading outside the believed offsets: the whole-clip reading decides",
+      r["basis"] == "whole" and r["conf"] == r["whole"]["conf"] < r["voiced"]["conf"], r)
+check("the believed offsets hold every offset passing clips read (-5..+1), with room", lo <= -5 - 2 and hi >= 1 + 2,
+      (lo, hi))
+d, rows = clip(F + 20, voiced_off=V, whole_off=-3)                      # voiced at the edge, the clip locked at -3
+r = S.sync_score(d, rows)
+check("a voiced reading at the edge falls back to the clip's own lock, not to nothing",
+      r["basis"] == "whole" and r["lock"] and r["offset"] == -3, r)
+check("the floor is a setting", isinstance(F, int) and F >= 30)
+
+# --- 5. the shift goes by the whole-clip reading --------------------------------------------------------------------
+import json, tempfile
+tmp = Path(tempfile.mkdtemp())
+def rec_shift(rec):
+    c = tmp / "c.mp4"; c.write_bytes(b"x" * 7)
+    st = c.stat()
+    c.with_suffix(".sync.json").write_text(json.dumps(dict(rec, sig=f"{st.st_size}:{st.st_mtime_ns}")))
+    return S.measured_shift(c)
+new = {"measure": S.SYNC_MEASURE, "lock": True, "conf": 4.9, "offset": -9, "old": {"conf": 1.9, "offset": -9}}
+check("a weak whole-clip reading moves nothing, whatever the voiced one reads", rec_shift(new) is None)
+new = {"measure": S.SYNC_MEASURE, "lock": True, "conf": 7.5, "offset": -2, "old": {"conf": 5.8, "offset": -3}}
+check("a confident one shifts by the whole-clip offset, as before", rec_shift(new) == round(-3 * S.FPS / 25))
+new = {"measure": S.SYNC_MEASURE, "lock": False, "conf": 0.0, "offset": 0, "old": {"conf": 4.0, "offset": -3}}
+check("a voiced reading at the edge does not take a clip's shift away", rec_shift(new) == round(-3 * S.FPS / 25))
+check("a record of the old measure shifts as it always did", rec_shift({"conf": 6.0, "offset": -4}) ==
+      round(-4 * S.FPS / 25) and rec_shift({"conf": 2.9, "offset": -4}) is None)
+check("at the search edge: no shift", rec_shift({"conf": 6.0, "offset": V - 1}) is None)
+check("13 of 15 is shifted, clamped", rec_shift({"conf": 6.0, "offset": 13}) == S.SYNC_MAX_SHIFT)
+check("no reading: no shift", rec_shift({"measure": S.SYNC_MEASURE, "conf": None, "offset": 0, "old": None}) is None)
+S.SYNC_SHIFT_FROM = "voiced"
+new = {"measure": S.SYNC_MEASURE, "lock": True, "conf": 7.5, "offset": -2, "old": {"conf": 2.6, "offset": -3}}
+check("asked to, the voiced reading shifts - when it passes the bar", rec_shift(new) == round(-2 * S.FPS / 25))
+check("...and not under it", rec_shift(dict(new, conf=4.9)) is None)
+S.SYNC_SHIFT_FROM = "whole"
+
+# --- 6. old records stand unless asked ------------------------------------------------------------------------------
+sig = "7:1"
+check("a record of the whole-clip measure is used as it is", S._sync_current({"sig": sig, "conf": 6.0, "offset": -2},
+                                                                              sig, None))
+S.SYNC_REMEASURE = True
+check("...and measured again when asked", not S._sync_current({"sig": sig, "conf": 6.0, "offset": -2}, sig, None))
+S.SYNC_REMEASURE = False
+check("a record of this measure stands", S._sync_current({"sig": sig, "measure": S.SYNC_MEASURE, "conf": 6.0}, sig, None))
+check("one of the first voiced version is measured again", not S._sync_current({"sig": sig, "lock": True}, sig, None))
+check("a changed clip is measured", not S._sync_current({"sig": "8:1", "measure": S.SYNC_MEASURE}, sig, None))
+check("a changed zone is measured", not S._sync_current({"sig": sig, "measure": S.SYNC_MEASURE, "box": [0, 0, .5, 1]},
+                                                         sig, [0.4, 0, 1, 1]))
+
+# --- 7. nothing unreadable raises or writes NaN ---------------------------------------------------------------------
+import pickle
+none = S.sync_score(np.zeros((0, 2 * V + 1)))
+check("no windows: no reading, with the reason", none["conf"] is None and none["why"], none)
+check("distances that are not finite: no reading", S.sync_score(np.full((20, 2 * V + 1), np.nan))["conf"] is None)
+check("a misshapen block: no reading", S.sync_score(np.zeros((20, 7)))["conf"] is None)
+short = S.sync_score(dists([True] * 60, -2), [True] * 10)              # a voiced list shorter than the windows
+check("a voiced list shorter than the windows: the rest are not voiced", short["voiced_rows"] == 10, short)
+rec = S._sync_record(sig, None, {"conf": float("nan"), "offset": 3, "lock": True, "conf_raw": float("inf"),
+                                 "old": {"conf": float("nan"), "offset": 0}}, [True, False], "cut")
+txt = json.dumps(rec, allow_nan=False)
+check("a record never holds NaN: null and the reason", rec["conf"] is None and rec["conf_raw"] is None and
+      rec["old"] is None and not rec["lock"] and rec["offset"] == 0 and rec["why"] and "NaN" not in txt, rec)
+good = S._sync_record(sig, None, S.sync_score(dists([True] * 80, -2), [True] * 80), [True] * 84, "cut")
+check("a reading's record carries the measure it was made by", good["measure"] == S.SYNC_MEASURE and good["lock"]
+      and good["offset"] == -2 and good["basis"] == "voiced", good)
+work = tmp / "w"; pw = work / "pywork" / "r"; pw.mkdir(parents=True)
+check("no SyncNet output: not measured", S.sync_read(work, "r", [], 100.0)["conf"] is None)
+(pw / "tracks.pckl").write_bytes(b"not a pickle"); (pw / "activesd.pckl").write_bytes(b"")
+r = S.sync_read(work, "r", [], 100.0)
+check("a broken pickle: not measured, with the reason, no exception", r["conf"] is None and "not measured" in r["why"], r)
+tr = [{"track": {"bbox": np.array([[40, 10, 60, 30]] * 84), "frame": np.arange(84)}},
+      {"track": {"bbox": np.array([[5, 10, 15, 20]] * 84), "frame": np.arange(84)}}]
+voiced = [False] * 12 + [True] * 50 + [False] * 30
+d0 = dists([10 <= i < 60 for i in range(80)], -2)                        # rows voiced where their middle frame is
+pickle.dump(tr, open(pw / "tracks.pckl", "wb")); pickle.dump([d0], open(pw / "activesd.pckl", "wb"))
+r = S.sync_read(work, "r", voiced, 100.0)
+check("more tracks than distances: the pairs there are, no exception", r["conf"] is not None and r["faces"] == 1, r)
+check("a window is voiced when its middle frame is (row i = frames i..i+4)", r["voiced_rows"] == 50, r)
+pickle.dump([d0, dists([True] * 80, 0, depth=8.0)], open(pw / "activesd.pckl", "wb"))
+r = S.sync_read(work, "r", voiced, 100.0)
+check("the speaker's track is read by where it is, not by which scores best", r["track"] == 0 and r["offset"] == -2, r)
+check("...the best track over the whole clip is kept beside it for the shift", r["old"]["track"] == 1 and
+      r["old"]["offset"] == 0, r)
+pickle.dump([{"track": {"bbox": [[1, 2, 3]], "frame": [0]}}], open(pw / "tracks.pckl", "wb"))
+r = S.sync_read(work, "r", voiced, 100.0)
+check("tracks and distances that do not fit: not measured, no exception", r["conf"] is None and r["why"], r)
 
 print({"fails": fails})
 sys.exit(1 if fails else 0)
