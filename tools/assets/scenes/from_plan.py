@@ -313,6 +313,10 @@ def main():
     set_id = answers.get("set", set_id)
     set_dir = library / "set" / set_id
     things = setfacts.things(set_dir)
+    # a set built from a place spec maps every plan phrase to its item (place_build.py); a phrase found there is
+    # that item, no name matching
+    np_path = set_dir / "named_places.json"
+    set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
     room = json.loads((set_dir / "spec.json").read_text())["size_m"]
     seats = seating.seats(library, set_dir)
     for n, s_ in seats.items():
@@ -396,8 +400,12 @@ def main():
                                      named, [f"{v['pose']} {v['at']}" for kk, v in state.items() if kk != k]))
             ans = answers.get(qid)
             thing, rel = thing_for(p.get("at", ""), things, {nm: kk for nm, kk in names.items() if kk != k})
+            stated = set_named.get(p.get("at") or "")
             if ans:
                 thing = next((t for t in things if t["name"] == ans.get("thing")), thing)
+            elif stated:
+                thing = next((t for t in things if t["name"] == stated), thing)
+                f["defaults"].append(f"{k}: place from the set's named places ({stated})")
             else:
                 f["defaults"].append(f"{k}: place by name match ({(thing or {}).get('name') or rel})")
             entry = {"at": p.get("at"), "pose": p.get("pose"), "facing_words": p.get("facing")}
@@ -405,7 +413,8 @@ def main():
                 anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
                 taken = {v.get("seat") for kk, v in state.items() if kk != k}
                 cands = [s_ for s_ in seats.values() if s_["name"] not in taken]
-                seat = min(cands, key=lambda s_: math.dist(s_["pos"], anchor[:2])) if cands else None
+                own = [s_ for s_ in cands if thing and s_["name"] == thing.get("name")]   # the named thing is a seat
+                seat = own[0] if own else min(cands, key=lambda s_: math.dist(s_["pos"], anchor[:2])) if cands else None
                 entry.update(seat=seat["name"] if seat else None, position=list(seat["pos"]) if seat else anchor[:2])
             else:
                 if rel and rel in state:
