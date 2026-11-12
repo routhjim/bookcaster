@@ -1024,7 +1024,7 @@ def main():
                 give_up(c)
                 continue
             cands, stage = [], None
-            if t["same"] < TRY_SAME:         # 1: another camera of the same kind
+            if t["same"] < (TRY_SAME if spk else MAX_TRIES):   # 1: another camera of the same kind (no speaker: all)
                 if (face_fail or c.get("ots")) and spk:
                     cc = candidates(c, shots[n_], spk, subjects, res, room, line, est_side, tried[n_])
                     good = [q for q in cc if not framing_why(q, c["kind"], spk, lis, bool(c.get("ots")),
