@@ -231,7 +231,8 @@ def plan(spec: dict, library: Path) -> dict:
             spec["characters"][k] = place(c, S[n], fitd)
             pr = spec["characters"][k]["body_pose"]["params"]
             if pr.get("hands") == "lap":
-                pr["steps"] = lap_steps(pr["seat_z_m"]) + list(pr.get("steps") or [])
+                if not pr.get("action"):     # a start action has the hands (the lap steps ran after it, 11-12)
+                    pr["steps"] = lap_steps(pr["seat_z_m"]) + list(pr.get("steps") or [])
                 pr.pop("hands")
             spec["characters"][k]["_seat"]["fit"] = fitd
             if n != (c["seat"] if c["seat"] is not True else n):
