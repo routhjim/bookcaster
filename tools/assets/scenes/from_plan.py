@@ -375,6 +375,13 @@ def main():
             if prev and prev["at"] == p.get("at") and prev["pose"] == p.get("pose"):
                 prev["facing_words"] = p.get("facing")
                 continue
+            start = (sh.get("pose") or {}).get(p["name"])
+            if (prev and sh.get("kind") == "action" and start and start != p.get("pose")
+                    and (start == "sitting") == (prev["pose"] == "sitting")):
+                # an action key shows the action's start: the plan's start posture is the person's current one (the
+                # people list gave the end: "stands up from the armchair" staged standing beside it, 11-12)
+                prev["facing_words"] = p.get("facing")
+                continue
             qid = f"place:{sid}:{k}"
             questions.append(q_place(qid, f"{p.get('pose')} {p.get('at')}, facing {p.get('facing')}",
                                      named, [f"{v['pose']} {v['at']}" for kk, v in state.items() if kk != k]))
