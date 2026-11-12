@@ -449,7 +449,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             elif not ots and not in_picture(f):
                 why.append("the listener is not in view")
     for k in show or []:                     # a person the director names: in the picture (any of them), no more
-        if k in facts and not in_picture(facts[k]):
+        hs = head_share(cam, subjects[k]["measured"], res) if k in subjects else None
+        if k in facts and (not in_picture(facts[k]) or (hs is not None and hs < SLIVER)):
             why.append(f"{k} (named for the shot) is not in the picture")
     sk = opts.get("subject")                 # the plan's shot class: a close is a close
     if kind == "close" and sk in subjects and head_h(cam, subjects[sk]["measured"], res) < MIN_FACE_H["close"]:
@@ -489,6 +490,12 @@ SLIVER = 0.35                # a face with less than this share of its width ins
 
 def face_sliver(cam, m, res) -> float | None:
     """The share of a face's width inside the frame when it is a sliver (some in, under SLIVER), else None."""
+    sh = head_share(cam, m, res)
+    return sh if sh is not None and 0.0 < sh < SLIVER else None
+
+
+def head_share(cam, m, res) -> float | None:
+    """The share of a head inside the frame (width and height, the smaller), whichever way it faces."""
     f = unit2(m.get("head_fwd_xy", [0, -1]))
     e = m["eye_xy"]
     pl = framing.project(cam, [e[0] - f[1] * 0.09, e[1] + f[0] * 0.09, m["eye_z"]], res)
@@ -503,7 +510,7 @@ def face_sliver(cam, m, res) -> float | None:
     chin = framing.project(cam, [e[0], e[1], m["chin_z"]], res)
     if top and chin and chin[1] > top[1]:      # cut at the top or bottom too
         share = min(share, max(0.0, min(1.0, chin[1]) - max(0.0, top[1])) / (chin[1] - top[1]))
-    return share if 0.0 < share < SLIVER else None
+    return share
 
 
 LOOK_MAX_DEG = 75.0           # a listener's head turns this far toward the speaker; the chest takes the rest
