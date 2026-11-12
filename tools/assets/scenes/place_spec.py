@@ -16,6 +16,11 @@ Schema place_spec/1 (lists in place_kinds.json):
   "named_places": {plan phrase: piece or opening id}}
 The model only judges what the text gives; sizes, positions and facings are code's (the layout), defaults of the
 room kind are data.
+
+An EXTENSION of the director's set sheet (tools/shot_flow.py SET_ASK / place_sheets on main: {"room", "fixtures",
+"crowd"} in shots/scenes/set_<place>.json, read by the keyframe prompts and the hero picture): the same one call
+answers those three fields as before plus the place_spec/1 fields, so the sheet's readers see no change; the sheet
+written is {"k": <prompt key>, "sheet": {room, fixtures, crowd, ...place_spec/1}}.
 """
 from __future__ import annotations
 
@@ -76,7 +81,11 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         "Place phrases the shots use (each must be answered by one piece or opening in named_places, verbatim):\n"
         + "\n".join(f"- {p}" for p in phr) + "\n"
         "Write only a JSON object of this shape:\n"
-        '{"schema": "place_spec/1", "place": <the place name>, "kind": <one of ROOM_KINDS>, '
+        '{"room": <two sentences: the FIXED things of this place and where each stands; never a person, nothing the '
+        'story\'s people carry; no weather or sky; nothing seen outside it>, '
+        '"fixtures": [<2 to 5 short names of things built into this place a viewer must see in every wide picture>], '
+        '"crowd": <the unnamed people always there, or "" when none>, '
+        '"schema": "place_spec/1", "place": <the place name>, "kind": <one of ROOM_KINDS>, '
         '"period": <one of PERIODS or "not stated">, "size": <one of SIZES>, '
         '"openings": [{"id": "o1", "kind": <window|door|fireplace>, "wall": <north|south|east|west|not stated>, '
         '"words": <the text\'s words for it or "">}], '
@@ -95,6 +104,14 @@ def validate(spec, phr: list) -> list:
     if not isinstance(spec, dict):
         return ["the answer is not a JSON object"]
     f = []
+    # the set sheet's own fields (shot_flow.place_sheets: room, fixtures, crowd), which the keyframes read as now
+    if not str(spec.get("room") or "").strip():
+        f.append('"room" (two sentences on the fixed things and where each stands) is missing')
+    fx = spec.get("fixtures")
+    if not (isinstance(fx, list) and 2 <= len(fx) <= 5 and all(isinstance(x, str) for x in fx)):
+        f.append('"fixtures" must be a list of 2 to 5 short names')
+    if not isinstance(spec.get("crowd", ""), str):
+        f.append('"crowd" must be a string ("" when none)')
     for key, lst in (("kind", KINDS["ROOM_KINDS"]), ("size", KINDS["SIZES"])):
         if spec.get(key) not in lst:
             f.append(f'"{key}" must be one of: {", ".join(lst)}')

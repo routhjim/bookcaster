@@ -193,3 +193,21 @@ to run it in the shared editor instead of a private one:
    `/Game/Sets/<id>/L_<id>`; asset jobs expect the stage level).
 Until then sets build in their own project copy (`SETS_UE_PROJECT`), so they never write the chain's project
 while its resident editor lives.
+
+## A room laid out from a place spec (`place_layout.py`)
+
+```
+python tools/assets/sets/place_layout.py PLACE_SPEC.json [RECORDS.json] [--seed N] [--out LAYOUT.json]
+```
+
+`place_layout.solve(spec, records)` takes a validated place spec (`place_spec/1`: kind, size class, openings,
+pieces with kind / against, relations, named places) and the matched library record per piece id
+(`{"asset", "size_m"}`; a piece without one takes its kind's default size and is listed for generation) and
+returns the room's size, each opening's wall and span, and a position and facing for every piece, in the frame
+above. `to_set_spec` gives the walls with their windows and doors, a chimney breast per fireplace, and the
+fixtures / props in the placement shape of this file (materials, lights and cameras are not laid out);
+`named_places` maps each plan phrase to a set item name (the kind, numbered on repeats) with a standing point;
+`check_layout` reports overlaps, blocked doors and named places without a clear path. Rules of a kind of room or
+piece (sizes, default openings, wall or free, clear floor, companions) are data in `room_kinds.json`. The answer
+is `ok`, or the best layout found with `unmet` naming each constraint that could not be met. Rectangular rooms
+only; nothing is hung on walls and only lamps and ornaments stand on other pieces.
