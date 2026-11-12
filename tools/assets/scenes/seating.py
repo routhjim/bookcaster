@@ -151,6 +151,15 @@ def check(measured: dict, seat: dict, fitd: dict, place_x: float) -> dict:
             "error_m": [round(e, 3) for e in err]}
 
 
+def same_mesh(library: Path, a: str | None, b: str | None) -> bool:
+    """Two prop ids for the same mesh: equal, or one a recolour of the other ("variant_of" in its record)."""
+    if not a or not b:
+        return False
+    base = lambda i: json.loads(p.read_text()).get("variant_of") or i if (p := library / "prop" / i / "asset.json").exists() \
+        else i
+    return a == b or base(a) == base(b)
+
+
 def seated_variant(library: Path, base: str, seat: dict) -> str | None:
     """The library character settled for this seat: among "<base>_seated_*", the one whose record names the seat's
     asset ("seat_asset"), else whose settled seat height ("seat_z_m", else "seat N m" in its note) is nearest the
@@ -164,7 +173,7 @@ def seated_variant(library: Path, base: str, seat: dict) -> str | None:
         if not p.exists():
             continue
         cj = json.loads(p.read_text())
-        if (cj.get("seat_asset") or (cj.get("stance") or {}).get("seat_asset")) == seat.get("asset"):
+        if same_mesh(library, cj.get("seat_asset") or (cj.get("stance") or {}).get("seat_asset"), seat.get("asset")):
             return d.name
         z = cj.get("seat_z_m")
         if z is None:
