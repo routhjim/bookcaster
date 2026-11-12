@@ -176,6 +176,9 @@ def body_points(m):
     elbows, hands, hips, knees, feet); a plain-mesh figure has only the head and its pelvis and feet."""
     e = m["eye_xy"]
     pts = {"head_top": [e[0], e[1], m["head_top_z"]], "eyes": [e[0], e[1], m["eye_z"]], "chin": [e[0], e[1], m["chin_z"]]}
+    f = unit2(m.get("head_fwd_xy", [0, -1]))          # the head's sides: a face half in the frame is cut
+    pts["head_l"] = [e[0] - f[1] * 0.1, e[1] + f[0] * 0.1, m["eye_z"]]
+    pts["head_r"] = [e[0] + f[1] * 0.1, e[1] - f[0] * 0.1, m["eye_z"]]
     j = m.get("joints") or {}
     for k in ("upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r", "hand_l", "hand_r", "thigh_l", "thigh_r",
               "calf_l", "calf_r", "foot_l", "foot_r"):
@@ -199,7 +202,7 @@ def frame_facts(cam, m, res):
     cut = bool(side_in) and (left or right) or top
     near_sh = [k for k in ("upperarm_l", "upperarm_r") if inside.get(k)]
     return {"head_in": inside["eyes"] and inside["chin"], "in_frac": round(sum(inside.values()) / len(inside), 2),
-            "head_any": any(inside[k] for k in ("head_top", "eyes", "chin")),
+            "head_any": any(inside[k] for k in ("head_top", "eyes", "chin", "head_l", "head_r")),
             "cut": cut, "any_in": any(inside.values()), "shoulder_in": bool(near_sh),
             "cut_edges": [n for n, b in (("left", left and bool(side_in)), ("right", right and bool(side_in)),
                                          ("top", top)) if b]}
@@ -352,7 +355,10 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         if k in facts and not facts[k]["head_in"]:
             why.append(f"{k} (named for the shot) is not in view")
     for k, f in facts.items():
-        if f["cut"] and not (ots and k == listener) and kind != "close":
+        # a face cut by the frame's edge is always a miss (any shot kind): the run rejects it if no camera clears it
+        if f["cut"] and f["head_any"] and not turned_away(cam, subjects[k]["measured"]) and k != speaker:
+            why.append(f"PARTIAL FACE: {k}'s face cut by the frame's {'/'.join(f['cut_edges'])} edge")
+        elif f["cut"] and not (ots and k == listener) and kind != "close":
             why.append(f"{k} cut by the frame's {'/'.join(f['cut_edges'])} edge")
     return why, facts
 
@@ -715,8 +721,11 @@ def main():
             for c in fails:                  # only a speaker's unseen face rejects; a framing miss is reported
                 chk = shots[c["name"]]["speaker_check"]
                 face = [w for w in chk["why"] if w not in chk.get("framing", [])]
+                partial = [w for w in chk.get("framing", []) if w.startswith("PARTIAL FACE")]
                 if face:
                     shots[c["name"]]["reject"] = "speaker's face not shown: " + "; ".join(face)
+                elif partial:
+                    shots[c["name"]]["reject"] = "; ".join(partial)
                 else:
                     shots[c["name"]]["framing_miss"] = chk["framing"]
             break
