@@ -163,7 +163,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
-    ap.add_argument("--until", default=None, choices=["face"], help="stop after this step")
+    ap.add_argument("--until", default=None, choices=["face"], help="stop after this step (face: after the conform)")
+    ap.add_argument("--no-conform", action="store_true", help="no landmark conform of the picked face")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
@@ -239,6 +240,75 @@ def main():
             (W / "face_pick.json").write_text(json.dumps(json.loads((W / "choice.json").read_text())["scores"]
                                                          .get("preset_compare"), indent=1))
         ch = json.loads((W / "choice.json").read_text())
+    # ---------------------------------------------------------------- conform: the picked face to the drawing
+    # the earlier likeness method: the drawn head redrawn as a bald photographic front view (Qwen-Image-Edit), a
+    # 3D head from it (image-to-3D), and the MetaHuman's face conformed to that head with 2D tracking of the same
+    # picture (char_fit.py, face only: the body stays). Then the same composite comparison once more: the conformed
+    # face against the unconformed pick, the drawing in the middle, both orders; the conform is kept only if it
+    # wins both
+    conf_p = W / "conform.json"
+    if not a.mh and not a.no_conform and not done("choose", conf_p):
+        @timed("conform")
+        def _():
+            cd = W / "conform"
+            cd.mkdir(exist_ok=True)
+            bald = cd / "bald_front.png"
+            jobs = [{"id": "bald_front", "seed": 7, "path": str(bald), "size": [768, 768],
+                     "images": [str(W / "sheet_head.png")],
+                     "prompt": "Draw the person from Picture 1 as a photorealistic studio photograph of their bare "
+                               "head and neck only: the same face, the same proportions and features, completely "
+                               "bald with a smooth scalp and no hair, no beard or moustache, a neutral relaxed "
+                               "expression, mouth closed, eyes open. No clothes, the neck ends at its base. Plain "
+                               "light grey seamless background, soft even diffuse light, sharp focus, the whole head "
+                               "in frame and centred, seen straight from the front, nothing else in the picture."}]
+            jp = cd / "edit_jobs.json"
+            jp.write_text(json.dumps(jobs, indent=1))
+            p = line(["--line-cmd", "image", "edit", "--id", f"cast_{tag}_bald", "--", "bash", "-c",
+                      f"cd {REPO} && bash {CARD} 05 {GUIDES_PY} -I tools/assets/qwen_edit.py {jp}"], W / "conform_edit.log")
+            if p.returncode or not bald.exists():
+                raise RuntimeError(f"bald front view failed: {p.stdout[-600:]}")
+            head = cd / "head.png"
+            subprocess.run([HY_PY, "-I", str(ASSETS / "characters" / "head_target.py"), "prep", str(bald), str(head),
+                            "--box", "0,0,768,768"], check=True, capture_output=True)
+            glb_h = cd / "head.glb"
+            p = line(["--line-cmd", "image", "shape", "--id", f"cast_{tag}_head3d", "--", "bash", "-c",
+                      f"cd {REPO} && bash {CARD} 05 {HY_PY} -I tools/blockout_shape.py {head} {glb_h} --seed 0 "
+                      f"--faces 80000"], W / "conform_head.log")
+            if p.returncode or not glb_h.exists():
+                raise RuntimeError(f"head mesh failed: {p.stdout[-600:]}")
+            tgt = cd / "target.json"
+            subprocess.run([HY_PY, "-I", str(ASSETS / "characters" / "head_target.py"), "target", str(glb_h),
+                            str(head), str(tgt)], check=True, capture_output=True)
+            from PIL import Image as _Im
+            bgra = cd / "bald_front.bgra"
+            bgra.write_bytes(_Im.open(bald).convert("RGBA").tobytes("raw", "BGRA"))
+            fit = {"target": str(tgt), "track": [str(bgra), 768, 768], "mode": "face"}
+            ch_ = json.loads((W / "choice.json").read_text())
+            pdir = W / "ue" / "faces"
+            pdir.mkdir(parents=True, exist_ok=True)
+            spec_ = {"name": f"MHC_CONF_{tag}", "folder": "/Game/Char/Cand", "base": ch_["base"], "grooms": ch_["grooms"],
+                     "clear_slots": ch_["clear_slots"], "params": ch_["params"], "body": ch_["body"], "fit": fit}
+            plain = dict(spec_, name=f"MHC_PICK_{tag}")
+            plain.pop("fit")
+            ue_job(W, "conform", str(ASSETS / "characters" / "char_render.py"), {
+                "map": "/Engine/Maps/Templates/Template_Default", "out": str(pdir), "warm_frames": 120,
+                "settle_frames": 30, "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5,
+                "make": [spec_, plain],
+                "characters": {"conformed": {"path": f"/Game/Char/Cand/MHC_CONF_{tag}"},
+                               "unconformed": {"path": f"/Game/Char/Cand/MHC_PICK_{tag}"}},
+                "shots": [{"name": "conformed", "char": "conformed", "frame": "close", "az": 0},
+                          {"name": "unconformed", "char": "unconformed", "frame": "close", "az": 0}]}, 2400)
+            res = cd / "versus.json"
+            p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_conform_check", "--", "bash", CARD, "05",
+                      HY_PY, "-I", str(ASSETS / "characters" / "face_pick.py"), str(W / "choice.json"), "--portraits",
+                      str(pdir), "--versus", "conformed", "unconformed", "--result", str(res), "--vl-python", QWEN_PY],
+                     W / "conform_check.log")
+            if p.returncode or not res.exists():
+                raise RuntimeError(f"conform check failed: {p.stdout[-600:]}")
+            wins = json.loads(res.read_text())["wins"]
+            keep = wins.get("conformed", 0) >= 2
+            conf_p.write_text(json.dumps({"fit": fit, "wins": wins, "keep": keep}, indent=1))
+            CH["conform"] = {"wins": wins, "keep": keep}
     if a.until == "face":
         save()
         log(f"stopped after the face: {ch['base']} {json.dumps((ch.get('scores') or {}).get('preset_compare'))}")
@@ -255,8 +325,10 @@ def main():
             os.environ.setdefault("MH_EXTRA_ARGS", "-NoMetaHumanAccountPortalLoginFallback")
             r = ue_job(W, "mh", str(ASSETS / "characters" / "char_render.py"), {
                 "out": str(W / "ue" / "mh"),
-                "make": [{"name": mh_name, "base": ch["base"], "grooms": ch["grooms"], "clear_slots": ch["clear_slots"],
-                          "params": ch["params"], "body": ch["body"]}],
+                "make": [dict({"name": mh_name, "base": ch["base"], "grooms": ch["grooms"], "clear_slots": ch["clear_slots"],
+                               "params": ch["params"], "body": ch["body"]},
+                              **({"fit": json.loads(conf_p.read_text())["fit"]}
+                                 if conf_p.exists() and json.loads(conf_p.read_text()).get("keep") else {}))],
                 "cloud": {"path": f"/Game/Char/{mh_name}", "build_path": "/Game/MetaHumans"},
                 "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
                 "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)

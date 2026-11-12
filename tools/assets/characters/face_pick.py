@@ -6,6 +6,9 @@ photo B on the right, asked which photo is closer in age, leanness and features;
 candidate (the shape ranking's order).
 
     python -I face_pick.py CHOICE.json --portraits DIR [--vl-python PY]
+    python -I face_pick.py CHOICE.json --portraits DIR --versus A B --result R.json
+        the same comparison of two portraits only (a conformed face against the unconformed pick); writes the wins
+        to R.json and leaves CHOICE.json as it is
 
 DIR holds <preset>.png for each name in choice["scores"]["preset_pool"]; the drawing is sheet_head.png beside
 CHOICE.json. Writes choice["base"] and choice["scores"]["preset_compare"].
@@ -40,12 +43,15 @@ def main():
     ap.add_argument("choice")
     ap.add_argument("--portraits", required=True)
     ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()))
+    ap.add_argument("--versus", nargs=2, default=None)
+    ap.add_argument("--result", default=None)
     a = ap.parse_args()
     cp = Path(a.choice)
     ch = json.loads(cp.read_text())
-    pool = [n for n in ch["scores"]["preset_pool"] if (Path(a.portraits) / f"{n}.png").exists()]
+    names = a.versus or ch["scores"]["preset_pool"]
+    pool = [n for n in names if (Path(a.portraits) / f"{n}.png").exists()]
     drawing = Image.open(cp.with_name("sheet_head.png")).convert("RGB")
-    pd = cp.with_name("pairs")
+    pd = cp.with_name("pairs_versus" if a.versus else "pairs")
     pd.mkdir(exist_ok=True)
     try:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
@@ -86,6 +92,10 @@ def main():
         if not answers:
             raise SystemExit(f"vision model gave no answers: {vl.stderr[-800:]}")
     order = {n: i for i, n in enumerate(pool)}
+    if a.versus:
+        Path(a.result).write_text(json.dumps({"pool": pool, "wins": wins, "answers": answers}, indent=1))
+        print(json.dumps({"wins": wins}))
+        return
     ch["base"] = max(pool, key=lambda n: (wins[n], -order[n]))
     ch["scores"]["preset_compare"] = {"pool": pool, "wins": wins, "answers": answers}
     cp.write_text(json.dumps(ch, indent=1))
