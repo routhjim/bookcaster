@@ -96,7 +96,9 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         f"ROOM_KINDS: {', '.join(k['ROOM_KINDS'])}\nPERIODS: {', '.join(k['PERIODS'])}\nSIZES: {', '.join(k['SIZES'])}\n"
         f"PIECE_KINDS: {', '.join(k['PIECE_KINDS'])}\nRELATIONS: {', '.join(k['RELATIONS'])}\n"
         "Include every piece a place phrase or shot line names, and the usual furnishing of such a room. Relations "
-        "only where the text states them. Write the JSON only, nothing else.")
+        "only where the text states them. A named_places value is always a piece or opening id, never \"not stated\": "
+        "when a phrase names a thing whose position the text does not give, list that thing as an opening or piece "
+        "anyway and write \"not stated\" only in its wall or against field. Write the JSON only, nothing else.")
 
 
 def validate(spec, phr: list) -> list:
@@ -150,8 +152,19 @@ def validate(spec, phr: list) -> list:
         if ph not in np:
             f.append(f'the place phrase "{ph}" is missing from named_places')
         elif np[ph] not in ids:
-            f.append(f'named_places["{ph}"] is {np[ph]!r}, not a known piece or opening id')
+            f.append(f'named_places["{ph}"] is {np[ph]!r}, not a known piece or opening id: list the thing this '
+                     'phrase names as an opening or piece (its position may be "not stated") and map the phrase to its id')
     return f
+
+
+def usual_missing(spec: dict) -> list:
+    """The usual pieces of the spec's room kind that it does not have (the layout helper's dressing list)."""
+    sys.path.insert(0, str(HERE.parent / "sets"))
+    try:
+        import place_layout as L
+        return L.missing_dressing(spec)
+    except (KeyError, ImportError, OSError, ValueError):
+        return []
 
 
 def ask(url: str, text: str, cache: Path) -> str:
@@ -183,14 +196,22 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     phr = phrases(plan, ids, names)
     acts = [plan[s][0].get("action") or "" for s in ids if plan[s][0].get("action")]
     base = prompt(place, phr, acts, passage(timeline, plan, ids, all_ids))
-    text, spec, faults, asks = base, None, ["no answer"], 0
-    while faults and asks < MAX_ASKS:
+    text, spec, faults, asks, advised = base, None, ["no answer"], 0, False
+    while asks < MAX_ASKS:
         asks += 1
         spec = parse(ask(url, text, cache))
         faults = validate(spec, phr)
-        if faults:                               # the director re-ask: the same prompt, the faults in plain words
-            text = (base + "\n\nYour previous answer had these faults; write the whole JSON again with them fixed:\n"
-                    + "\n".join(f"- {x}" for x in faults))
+        usual = [] if advised or not isinstance(spec, dict) else usual_missing(spec)
+        if not faults and not usual:
+            break
+        # the director re-ask: the same prompt, the faults in plain words; once, the room kind's usual pieces it left out
+        text = base + "\n\nYour previous answer:\n" + json.dumps(spec) + "\n"
+        if faults:
+            text += "It had these faults; write the whole JSON again with them fixed:\n" + "\n".join(f"- {x}" for x in faults) + "\n"
+        if usual:
+            advised = True
+            text += ("A room of this kind usually also has: " + ", ".join(usual) + ". Add those that suit this place "
+                     "(as pieces with a look and against, no phrases needed) and write the whole JSON again.\n")
     out = dict(spec or {}, _prompt_sha=hashlib.sha256(base.encode()).hexdigest()[:16], _asks=asks,
                _phrases=phr, _shots=ids)
     if faults:
