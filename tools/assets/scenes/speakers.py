@@ -353,15 +353,19 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         why.append("over the shoulder of a listener seated in a high-backed chair (the chair back fills the frame)")
     # every head in a talk shot is smaller than the speaker's; a person turned away is a modest share of the frame
     # with the head inside it (a recognisable outline, not a dark mass merged with the frame edge)
-    sh_spk = head_h(cam, subjects[speaker]["measured"], res) if speaker else 0.0
-    keep = {speaker, opts.get("subject")}
+    # With no speaker the person the shot's line is about leads the same way (11-12: "she gives a start" with her
+    # small at the side and a man's back in the middle - the video gave the start to the man, in all three takes).
+    lead = speaker or (opts.get("line_subject") if opts.get("line_subject") in subjects else None)
+    role = "speaker" if speaker else "person the shot is about"
+    sh_spk = head_h(cam, subjects[lead]["measured"], res) if lead else 0.0
+    keep = {lead, opts.get("subject")}
     for k, v in subjects.items():
-        if k == speaker or not facts[k]["any_in"]:
+        if k == lead or not facts[k]["any_in"]:
             continue
         h = head_h(cam, v["measured"], res)
-        if speaker and facts[k]["head_any"] and h > sh_spk * 1.02:
-            why.append(f"{k}'s head ({h:.3f}) is bigger than the speaker's ({sh_spk:.3f})")
-        if speaker and k not in keep and turned_away(cam, v["measured"]):
+        if lead and facts[k]["head_any"] and h > sh_spk * 1.02:
+            why.append(f"{k}'s head ({h:.3f}) is bigger than the {role}'s ({sh_spk:.3f})")
+        if lead and k not in keep and turned_away(cam, v["measured"]):
             # a foreground back so large it takes the speaker's shot (a back alone is a staging choice: 11-12)
             ma = (facts[k].get("mask") or {}).get("area")
             if ma is None:                   # no still yet (a candidate camera): the area from the body only orders
@@ -941,7 +945,7 @@ def cam_opts(spec, c):
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
-    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [], "covered": covered,
+    return {"seated": seated, "subject": c.get("subject"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
             "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
             "seat_xy": {k: v["position"] for k, v in spec["characters"].items()
                         if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)},
