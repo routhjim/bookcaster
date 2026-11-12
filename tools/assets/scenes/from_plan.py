@@ -363,6 +363,31 @@ def main():
         cur_sig = sig
         cur.append((cam, json.loads(json.dumps(state))))
         pe = sh.get("pose_end") or {}
+        # where a move ends, from the plan itself: a person whose posture changes over an action shot is placed, for
+        # the shots that list nobody until then, where the plan next lists them (the plan's own later fact)
+        if "--no-lookahead" not in a and sh.get("kind") == "action":
+            for p in sh.get("people") or []:
+                nm, k = p["name"], names.get(p["name"])
+                if not k or pe.get(nm) in (None, p.get("pose")):
+                    continue
+                nxt = next((q for sid2 in ids[n:] for q in plan[sid2][0].get("people") or [] if q["name"] == nm), None)
+                if nxt and nxt.get("pose") == pe.get(nm):
+                    thing, rel = thing_for(nxt.get("at", ""), things, {})
+                    if thing:
+                        if apply_place(k, {"thing": thing["name"] if thing["name"] not in seats else thing["name"],
+                                           "sitting": nxt.get("pose") == "sitting", "side": "front", "distance": "near"},
+                                       "plan"):
+                            if nxt.get("pose") == "sitting" and thing["name"] not in seats:
+                                anchor = thing["center"][:2]
+                                taken = {v.get("seat") for kk, v in state.items() if kk != k}
+                                cands = [s_ for s_ in seats.values() if s_["name"] not in taken]
+                                if cands:
+                                    seat = min(cands, key=lambda s_: math.dist(s_["pos"], anchor))
+                                    state[k].update(seat=seat["name"], position=list(seat["pos"]))
+                            state[k]["pose"] = nxt.get("pose")
+                            state[k]["at"] = nxt.get("at")
+                            f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends where the plan next "
+                                                                                    f"lists them: {nxt.get('at')}")
         for nm, th in ((sp.get("move_end") or {}).get(sid) or {}).items():     # where a move during this shot ends
             if nm in names:
                 k = names[nm]
