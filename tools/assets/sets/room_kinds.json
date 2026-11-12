@@ -1,0 +1,573 @@
+{
+ "version": 1,
+ "about": "Data for place_layout.py: room kinds (sizes, default openings, usual dressing) and piece kinds (how a piece stands in a room, its default size when no library record is matched yet, and the set item name it gets). Judgment about one place comes from its place spec; this file holds only what is true of every place of a kind.",
+ "walkway_m": 0.6,
+ "wall_gap_m": 0.02,
+ "piece_gap_m": 0.05,
+ "grid_m": 0.1,
+ "free_grid_m": 0.2,
+ "opening_margin_m": 0.3,
+ "relations": {
+  "by": {
+   "gap_m": 1.2,
+   "opening_gap_m": 1.5
+  },
+  "near": {
+   "gap_m": 2.0,
+   "opening_gap_m": 2.2
+  },
+  "beside": {
+   "gap_m": 0.5
+  },
+  "facing": {
+   "angle_deg": 50
+  },
+  "in_front_of": {
+   "gap_m": 1.5,
+   "side_m": 0.3
+  },
+  "behind": {
+   "gap_m": 1.5,
+   "side_m": 0.3
+  },
+  "between": {
+   "off_m": 0.75,
+   "t": [
+    0.15,
+    0.85
+   ]
+  }
+ },
+ "openings": {
+  "window": {
+   "width_m": 1.3,
+   "sill_m": 0.8,
+   "head_m": 2.7,
+   "stand_m": 0.6
+  },
+  "door": {
+   "width_m": 0.95,
+   "sill_m": 0.0,
+   "head_m": 2.15,
+   "corner_m": 0.25,
+   "stand_m": 0.5
+  },
+  "fireplace": {
+   "width_m": 1.7,
+   "breast_side_m": 0.12,
+   "breast_depth_m": 0.4,
+   "hearth_depth_m": 0.9,
+   "stand_m": 1.2,
+   "default_asset": "fireplace_surround_01",
+   "size_m": [
+    1.66,
+    0.86,
+    1.25
+   ],
+   "front_clear_m": 0.7
+  }
+ },
+ "piece_kinds": {
+  "bed": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    2.0,
+    1.1
+   ],
+   "side_clear_m": 0.5,
+   "avoid": [
+    {
+     "near": "door",
+     "weight": 1.0
+    }
+   ],
+   "support": "lie"
+  },
+  "wardrobe": {
+   "place": "wall",
+   "size_m": [
+    1.2,
+    0.6,
+    2.0
+   ],
+   "front_clear_m": 0.6,
+   "avoid": [
+    {
+     "near": "window",
+     "weight": 0.5
+    }
+   ]
+  },
+  "chest_of_drawers": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    0.5,
+    1.0
+   ],
+   "front_clear_m": 0.5
+  },
+  "washstand": {
+   "place": "wall",
+   "size_m": [
+    0.8,
+    0.5,
+    0.9
+   ],
+   "front_clear_m": 0.5
+  },
+  "dressing_table": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    0.5,
+    0.8
+   ],
+   "front_clear_m": 0.6,
+   "under_window": true,
+   "prefer": [
+    {
+     "near": "window",
+     "weight": 0.5
+    }
+   ]
+  },
+  "bedside_table": {
+   "place": "wall",
+   "size_m": [
+    0.45,
+    0.4,
+    0.6
+   ],
+   "prefer_beside": "bed"
+  },
+  "desk": {
+   "place": "wall",
+   "size_m": [
+    1.4,
+    0.75,
+    0.8
+   ],
+   "front_clear_m": 0.7,
+   "under_window": true,
+   "prefer": [
+    {
+     "near": "window",
+     "weight": 1.0
+    }
+   ]
+  },
+  "writing_desk": {
+   "place": "wall",
+   "size_m": [
+    1.2,
+    0.65,
+    0.8
+   ],
+   "set_name": "desk",
+   "front_clear_m": 0.7,
+   "under_window": true,
+   "prefer": [
+    {
+     "near": "window",
+     "weight": 1.0
+    }
+   ]
+  },
+  "bureau": {
+   "place": "wall",
+   "size_m": [
+    0.9,
+    0.5,
+    1.1
+   ],
+   "front_clear_m": 0.7
+  },
+  "bookcase": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    0.38,
+    2.0
+   ],
+   "front_clear_m": 0.4
+  },
+  "cabinet": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    0.45,
+    1.8
+   ],
+   "front_clear_m": 0.4
+  },
+  "sideboard": {
+   "place": "wall",
+   "size_m": [
+    1.5,
+    0.5,
+    0.9
+   ],
+   "front_clear_m": 0.5
+  },
+  "sofa": {
+   "place": "wall",
+   "size_m": [
+    2.0,
+    0.9,
+    0.85
+   ],
+   "seat": true,
+   "front_clear_m": 0.5,
+   "support": "seat"
+  },
+  "bench": {
+   "place": "wall",
+   "size_m": [
+    1.2,
+    0.4,
+    0.5
+   ],
+   "seat": true,
+   "front_clear_m": 0.4,
+   "support": "seat"
+  },
+  "armchair": {
+   "place": "free",
+   "size_m": [
+    0.85,
+    0.85,
+    1.0
+   ],
+   "seat": true,
+   "front_clear_m": 0.5,
+   "face": "focal",
+   "focal_distance_m": [
+    0.9,
+    2.4
+   ],
+   "support": "seat",
+   "focal_side_m": [
+    0.9,
+    1.9
+   ]
+  },
+  "wingback_armchair": {
+   "place": "free",
+   "size_m": [
+    0.8,
+    0.85,
+    1.1
+   ],
+   "set_name": "armchair",
+   "seat": true,
+   "front_clear_m": 0.5,
+   "face": "focal",
+   "focal_distance_m": [
+    0.9,
+    2.4
+   ],
+   "support": "seat",
+   "focal_side_m": [
+    0.9,
+    1.9
+   ]
+  },
+  "desk_chair": {
+   "place": "free",
+   "size_m": [
+    0.5,
+    0.5,
+    0.95
+   ],
+   "seat": true,
+   "front_clear_m": 0.0,
+   "face": "partner",
+   "prefer_beside": "desk",
+   "support": "seat"
+  },
+  "chair": {
+   "place": "free",
+   "size_m": [
+    0.5,
+    0.5,
+    0.95
+   ],
+   "seat": true,
+   "front_clear_m": 0.4,
+   "face": "partner",
+   "support": "seat"
+  },
+  "stool": {
+   "place": "free",
+   "size_m": [
+    0.4,
+    0.4,
+    0.45
+   ],
+   "seat": true,
+   "front_clear_m": 0.3,
+   "support": "seat"
+  },
+  "side_table": {
+   "place": "free",
+   "size_m": [
+    0.5,
+    0.5,
+    0.7
+   ],
+   "prefer_beside": "seat"
+  },
+  "table": {
+   "place": "free",
+   "size_m": [
+    1.2,
+    0.8,
+    0.75
+   ],
+   "all_round_clear_m": 0.5
+  },
+  "rug": {
+   "place": "floor",
+   "size_m": [
+    2.4,
+    1.7,
+    0.01
+   ],
+   "flat": true
+  },
+  "lamp": {
+   "place": "on",
+   "size_m": [
+    0.2,
+    0.2,
+    0.5
+   ]
+  },
+  "ornament": {
+   "place": "on",
+   "size_m": [
+    0.2,
+    0.2,
+    0.3
+   ]
+  },
+  "fireplace": {
+   "place": "fireplace",
+   "size_m": [
+    1.66,
+    0.86,
+    1.25
+   ]
+  }
+ },
+ "room_kinds": {
+  "sitting_room": {
+   "sizes_m": {
+    "small": [
+     4.2,
+     4.6,
+     3.0
+    ],
+    "medium": [
+     5.2,
+     5.6,
+     3.2
+    ],
+    "large": [
+     6.5,
+     7.5,
+     3.4
+    ]
+   },
+   "openings": [
+    {
+     "kind": "fireplace",
+     "wall": "north"
+    },
+    {
+     "kind": "window",
+     "wall": "west"
+    },
+    {
+     "kind": "door",
+     "wall": "east"
+    }
+   ],
+   "outer_walls": [
+    "west"
+   ],
+   "focal": "fireplace",
+   "dressing": [
+    "armchair",
+    "sofa",
+    "side_table",
+    "bookcase",
+    "rug"
+   ]
+  },
+  "bedroom": {
+   "sizes_m": {
+    "small": [
+     3.2,
+     3.8,
+     2.8
+    ],
+    "medium": [
+     4.0,
+     4.6,
+     3.0
+    ],
+    "large": [
+     5.0,
+     5.6,
+     3.2
+    ]
+   },
+   "openings": [
+    {
+     "kind": "window",
+     "wall": "west"
+    },
+    {
+     "kind": "door",
+     "wall": "south"
+    }
+   ],
+   "outer_walls": [
+    "west"
+   ],
+   "focal": "window",
+   "dressing": [
+    "bed",
+    "bedside_table",
+    "wardrobe",
+    "chest_of_drawers",
+    "chair",
+    "rug"
+   ]
+  },
+  "study": {
+   "sizes_m": {
+    "small": [
+     3.0,
+     3.6,
+     2.8
+    ],
+    "medium": [
+     3.8,
+     4.4,
+     3.0
+    ],
+    "large": [
+     4.8,
+     5.4,
+     3.2
+    ]
+   },
+   "openings": [
+    {
+     "kind": "window",
+     "wall": "west"
+    },
+    {
+     "kind": "door",
+     "wall": "east"
+    }
+   ],
+   "outer_walls": [
+    "west"
+   ],
+   "focal": "window",
+   "dressing": [
+    "desk",
+    "chair",
+    "bookcase",
+    "armchair",
+    "rug"
+   ]
+  },
+  "kitchen": {
+   "sizes_m": {
+    "small": [
+     3.2,
+     3.8,
+     2.8
+    ],
+    "medium": [
+     4.2,
+     4.8,
+     3.0
+    ],
+    "large": [
+     5.4,
+     6.0,
+     3.2
+    ]
+   },
+   "openings": [
+    {
+     "kind": "fireplace",
+     "wall": "north"
+    },
+    {
+     "kind": "window",
+     "wall": "west"
+    },
+    {
+     "kind": "door",
+     "wall": "south"
+    }
+   ],
+   "outer_walls": [
+    "west"
+   ],
+   "focal": "fireplace",
+   "dressing": [
+    "table",
+    "chair",
+    "sideboard",
+    "cabinet"
+   ]
+  },
+  "hall": {
+   "sizes_m": {
+    "small": [
+     2.2,
+     4.5,
+     3.0
+    ],
+    "medium": [
+     2.8,
+     6.0,
+     3.2
+    ],
+    "large": [
+     3.6,
+     8.0,
+     3.4
+    ]
+   },
+   "openings": [
+    {
+     "kind": "door",
+     "wall": "south"
+    },
+    {
+     "kind": "door",
+     "wall": "north"
+    }
+   ],
+   "outer_walls": [
+    "south"
+   ],
+   "focal": "door",
+   "dressing": [
+    "bench",
+    "side_table",
+    "rug"
+   ]
+  }
+ }
+}
