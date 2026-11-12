@@ -171,12 +171,40 @@ co = np.array([v.co[:] for v in me.vertices])
 zmin, zmax = co[:, 2].min(), co[:, 2].max()
 s = top_z / (zmax - zmin)
 co = (co - [0, 0, zmin]) * s
-band = (co[:, 2] > 0.52 * top_z) & (co[:, 2] < 0.58 * top_z)
-co[:, 0] += J("pelvis")[0] - float(np.median(co[band, 0]))
 bv = np.array([v.co[:] for v in body.evaluated_get(bpy.context.evaluated_depsgraph_get()).data.vertices])
-cz = (co[:, 2] > J("spine_03")[2]) & (co[:, 2] < J("spine_05")[2]) & (np.abs(co[:, 0] - J("spine_05")[0]) < 0.08)
-bz = (bv[:, 2] > J("spine_03")[2]) & (bv[:, 2] < J("spine_05")[2]) & (np.abs(bv[:, 0] - J("spine_05")[0]) < 0.08)
-co[:, 1] += float(np.median(bv[bz, 1])) - float(np.median(co[cz, 1]))
+# placed by the neutral figure itself (light, unsaturated), not the whole drawing: an open-fronted layer around it
+# put the whole figure's middle off the body (the cloak landed at the right front, 11-12). Its neck and shoulders go
+# on this body's, its chest centred front to back on the body's chest.
+_sat = (col.max(1) - col.min(1)) / np.maximum(col.max(1), 1e-3)
+man0 = (_sat < 0.15) & (col.mean(1) > 0.45)
+REP["figure_light_verts"] = int(man0.sum())
+if man0.sum() > 200:
+    mz = co[man0]
+    mtop = float(mz[:, 2].max())
+    s2 = top_z / mtop                                  # the figure's head top on the body's
+    co *= s2
+    mz = co[man0]
+    # the neck: the narrowest slice of the figure between 0.78 and 0.9 of its height
+    zs_ = np.linspace(0.78 * top_z, 0.9 * top_z, 25)
+    wid = [np.ptp(mz[np.abs(mz[:, 2] - z) < 0.01, 0]) if (np.abs(mz[:, 2] - z) < 0.01).sum() > 10 else 9 for z in zs_]
+    zn = float(zs_[int(np.argmin(wid))])
+    sl = mz[np.abs(mz[:, 2] - zn) < 0.01]
+    nk = J("neck_01")
+    co[:, 0] += nk[0] - float(np.median(sl[:, 0]))
+    co[:, 2] += 0.5 * (J("neck_01")[2] + J("neck_02")[2]) - zn
+    mz = co[man0]
+    cz = (mz[:, 2] > J("spine_03")[2]) & (mz[:, 2] < J("spine_05")[2])
+    bz = (bv[:, 2] > J("spine_03")[2]) & (bv[:, 2] < J("spine_05")[2]) & (np.abs(bv[:, 0] - J("spine_05")[0]) < 0.12)
+    if cz.sum() > 20:
+        co[:, 1] += float(np.median(bv[bz, 1])) - float(np.median(mz[cz, 1]))
+    REP["aligned_on"] = {"figure_verts": int(man0.sum()), "neck_z": round(zn, 3)}
+    s = s * s2
+else:
+    band = (co[:, 2] > 0.52 * top_z) & (co[:, 2] < 0.58 * top_z)
+    co[:, 0] += J("pelvis")[0] - float(np.median(co[band, 0]))
+    cz = (co[:, 2] > J("spine_03")[2]) & (co[:, 2] < J("spine_05")[2]) & (np.abs(co[:, 0] - J("spine_05")[0]) < 0.08)
+    bz = (bv[:, 2] > J("spine_03")[2]) & (bv[:, 2] < J("spine_05")[2]) & (np.abs(bv[:, 0] - J("spine_05")[0]) < 0.08)
+    co[:, 1] += float(np.median(bv[bz, 1])) - float(np.median(co[cz, 1]))
 REP["scale"] = round(float(s), 4)
 
 # ------------------------------------------------------------------ 2. the mannequin out
@@ -343,6 +371,30 @@ bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
 fig.parent = arm
 am = fig.modifiers.new("Armature", "ARMATURE")
 am.object = arm
+if JOB.get("drawing_png"):
+    # the layer's colour from its drawing: the 3D model's texture came out grey for a dark blue cloak (11-12); the
+    # texture is scaled per channel so the layer's median colour is the drawing's (the layer's pixels: not the
+    # background, not the light unsaturated figure)
+    _di = bpy.data.images.load(JOB["drawing_png"])
+    _w, _h = _di.size
+    _px = np.empty(_w * _h * 4, np.float32)
+    _di.pixels.foreach_get(_px)
+    d_ = _px.reshape(_h, _w, 4)[..., :3]
+    bgc = np.median(np.concatenate([d_[0], d_[-1], d_[:, 0], d_[:, -1]]), 0)
+    fgm = np.linalg.norm(d_ - bgc, axis=2) > 0.12
+    sat_ = (d_.max(2) - d_.min(2)) / np.maximum(d_.max(2), 1e-3)
+    lay = fgm & ~((sat_ < 0.15) & (d_.mean(2) > 0.45))
+    want = np.median(d_[lay], 0) if lay.sum() > 500 else None
+    kept_col = np.median(col[~drop], 0)
+    if want is not None:
+        k_ = np.clip(want / np.maximum(kept_col, 1e-3), 0.2, 5.0)
+        pxs = np.empty(len(img.pixels), np.float32)
+        img.pixels.foreach_get(pxs)
+        pxs = pxs.reshape(-1, 4)
+        pxs[:, :3] = np.clip(pxs[:, :3] * k_, 0, 1)
+        img.pixels.foreach_set(pxs.ravel())
+        REP["colour_from_drawing"] = {"drawing": [round(float(x), 3) for x in want],
+                                      "mesh": [round(float(x), 3) for x in kept_col], "gain": [round(float(x), 3) for x in k_]}
 img.filepath_raw = os.path.join(OUT, "textures", "T_outfit_BaseColor.png")
 img.file_format = "PNG"
 img.save()
