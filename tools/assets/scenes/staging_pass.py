@@ -275,6 +275,15 @@ def main():
     for (nm, ps), sids in by.items():
         if len(sids) < 2:
             continue
+        acts = [x for x in sids if plan[x][0].get("kind") == "action"]   # only an action shot states an action
+        if len(acts) == 1:
+            keep = acts[0]
+            res["_action_owner"][f"{nm}: {ps}"] = keep
+            for x in sids:
+                if x != keep:
+                    res["pose"][x][nm] = "none"
+            continue
+        sids = acts or sids
         opts = [f"shot {i + 1}" for i in range(len(sids))]
         lines = "\n".join(f"shot {i + 1}: {plan[x][0].get('action') or plan[x][0].get('picture') or ''}"
                           for i, x in enumerate(sids))
@@ -284,7 +293,7 @@ def main():
         got = ask.choose(own_q, opts)
         keep = sids[opts.index(got)] if got in opts else None
         res["_action_owner"][f"{nm}: {ps}"] = keep
-        for x in sids:
+        for x in [y for (n2, p2), ys in by.items() if (n2, p2) == (nm, ps) for y in ys]:
             if x != keep:
                 res["pose"][x][nm] = "none"
     res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
