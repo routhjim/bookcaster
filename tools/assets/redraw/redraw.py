@@ -168,8 +168,44 @@ def scene_wear(sd: Path) -> dict:
         return {}
     j = json.loads(jp.read_text())
     j = j.get("job", j)
-    return {k: {"wear_add": v.get("wear_add"), "face_covered": bool(v.get("face_covered"))}
-            for k, v in (j.get("characters") or {}).items() if v.get("wear_add") or v.get("face_covered")}
+    return {k: {"wear_add": v.get("wear_add"), "face_covered": bool(v.get("face_covered")), "id": v.get("id")}
+            for k, v in (j.get("characters") or {}).items()}
+
+
+LOOK_FACTS = ("hair_colour", "hair_worn", "facial_hair")
+
+
+def entry_facts(fig: str | None) -> dict:
+    """A built figure's look facts from its library entry ("facts": hair colour, how it is worn, facial hair,
+    missing layers), the character builder's own record of what the figure has; a stance or wardrobe variant
+    without its own takes its base entry's (the longest id prefix that has them)."""
+    if not fig:
+        return {}
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import config as C
+    parts = fig.split("_")
+    for n in range(len(parts), 1, -1):
+        p = Path(C.LIBRARY) / "character" / "_".join(parts[:n]) / "character.json"
+        if p.exists():
+            f = json.loads(p.read_text()).get("facts")
+            if f:
+                return f
+    return {}
+
+
+def look_words(f: dict, pos: str) -> tuple:
+    """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names)."""
+    miss = [k for k in LOOK_FACTS if not f.get(k)]
+    w = []
+    if f.get("hair_colour"):
+        w.append(f"{f['hair_colour']} hair" + (f" {f['hair_worn']}" if f.get("hair_worn") else ""))
+    if f.get("facial_hair") and f["facial_hair"] != "none":
+        w.append(f["facial_hair"])
+    elif f.get("facial_hair") == "none":
+        w.append("clean-shaven")
+    for m in f.get("missing_layers") or []:
+        w.append(m)
+    return "; ".join(w), miss
 
 
 def kind_of(cam: str, shot: dict) -> str:
@@ -532,6 +568,13 @@ def main():
                 for k, wv in scene_wear(sd).items():       # this scene's wardrobe on top of the cast's
                     if k in cast:
                         c2 = dict(cast[k])
+                        # hair, facial hair, missing layers: the built figure's own facts (library entry), never
+                        # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
+                        lw_, miss = look_words(entry_facts(wv.get("id")), "her" if c2.get("noun") == "woman" else "his")
+                        if lw_:
+                            c2["wear"] = c2.get("wear", "") + "; " + lw_
+                        if miss:
+                            print(f"{sd.name} {k} ({wv.get('id')}): no entry facts for {', '.join(miss)}")
                         if wv.get("wear_add"):
                             c2["wear"] = c2.get("wear", "") + "; " + wv["wear_add"]
                         if wv.get("face_covered"):
