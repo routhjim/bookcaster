@@ -88,15 +88,10 @@ def test_the_redraws_face_check_is_asked_for_the_speaker_only(tmp_path):
     assert _redraw_run(tmp_path, {"speaker": "a"}) == {"a": True, "b": False}
 
 
-@pytest.mark.xfail(strict=True, reason="decided 11-12: the person a shot is about is treated like a speaker; the staging "
-                                       "checks her face (subject_face_why) but the redraw's face check still asks for "
-                                       "the speaker only, so a redraw that turns her away is not caught")
 def test_the_redraws_face_check_also_covers_whom_a_shot_without_a_speaker_is_about(tmp_path):
     assert _redraw_run(tmp_path, {"speaker": None, "line_subject": "b"}) == {"a": False, "b": True}
 
 
-@pytest.mark.xfail(strict=True, reason="clear_walks hands every move camera the same path_blocked_by list: a later "
-                                       "walk's blocker appears in an earlier walk's shot facts")
 def test_each_walks_shot_facts_list_only_its_own_blockers(tmp_path, monkeypatch):
     lib = S.make_library(tmp_path, [{"name": "armchair", "position": [1.6, 1.2], "seat": True},
                                     {"name": "sofa", "position": [-1.6, -1.6], "size": [1.6, 0.8, 0.9], "seat": True}])

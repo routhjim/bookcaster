@@ -858,6 +858,7 @@ def clear_walks(spec, seat_names=()):
                 out["moved"][mv] = [list(m["position"]), list(best)]
                 m["position"] = list(best)
         start = m["position"]
+        blocked_here = []
         for o, v in ch.items():
             if o == mv or seg_dist(v["position"], start, end) >= PATH_CLEAR_M:
                 continue
@@ -870,13 +871,14 @@ def clear_walks(spec, seat_names=()):
                 v["position"] = list(q)
             else:
                 out["blocked"].append(o)
+                blocked_here.append(o)
         words = t["words"]
         out["shot_facts"][c["name"]] = {
             "moves": {"who": mv, "to": t["name"], "to_words": words,
                       "posture_end": "sitting" if t["name"] in seat_names else "standing"},
             "fixed": {o: ("sitting" if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)
                           else "standing") for o, v in ch.items() if o != mv},
-            "path_blocked_by": out["blocked"]}
+            "path_blocked_by": list(blocked_here)}
     return out
 
 
@@ -1243,11 +1245,10 @@ def main():
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
-    for c in spec["cameras"]:                # the first wide (or the first camera) sets the side of the line
-        if line and c.get("position") and (c["kind"] in ("wide", "full") or est_side is None):
-            est_side = side(line, c["position"]) or est_side
-            if c["kind"] in ("wide", "full"):
-                break
+    for c in spec["cameras"]:                # a wide sets the side of the line; with none, the first camera that
+        if line and c.get("position") and c["kind"] in ("wide", "full"):     # passes does (in the rounds below):
+            est_side = side(line, c["position"]) or est_side                 # a failing first camera set it and
+            break                                                            # refused a good one "across the line"
     # first pass: over-the-shoulder cameras from the spec's marks (eye height assumed until measured)
     auto_ots = set()
     for c in spec["cameras"]:
@@ -1444,6 +1445,13 @@ def main():
                     shutil.copy(sh["path"], tries_dir / f"{c['name']}_r{rnd}.png")
                 except OSError:
                     pass
+        if line and est_side is None:        # the side of the line from the first camera that passed
+            for c in spec["cameras"]:
+                sh_ = shots.get(c["name"]) or {}
+                if (sh_.get("speaker_check") or {}).get("ok") and side(line, sh_["camera"]["position"]):
+                    est_side = side(line, sh_["camera"]["position"])
+                    report["established_side"] = est_side
+                    break
         spec["_area_scale"] = area_scale([shots[n] for n in todo], subjects, res, spec.get("_area_scale"))
         report["rounds"].append({"round": rnd, "rendered": todo, "failed": [c["name"] for c in fails],
                                  "area_scale": spec["_area_scale"]})

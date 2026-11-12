@@ -220,9 +220,6 @@ def test_a_shot_naming_two_people_keeps_both_in_the_picture(tmp_path, monkeypatc
     assert staged["positions"] == {"a": [-1.23, 0.61], "b": [1.21, 0.63]}
 
 
-@pytest.mark.xfail(strict=True, raises=ZeroDivisionError,
-                   reason="framing.project divides by zero for a camera straight above or below its aim; the search "
-                          "for a shot without a speaker offers such a camera when the people's middle lies on its grid")
 def test_a_camera_search_point_directly_over_its_aim_does_not_crash(tmp_path, monkeypatch):
     spec = {"line": ["a", "b"],
             "characters": {"a": _char([-1.2, 0.6]), "b": _char([1.2, 0.6])},      # their middle is a grid point
