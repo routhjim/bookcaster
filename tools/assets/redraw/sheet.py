@@ -1,7 +1,7 @@
 """Contact sheets for the redraw test (GPU resize; Pillow only draws the labels and boxes and writes the file).
 
     python -I tools/assets/redraw/sheet.py SPEC.json
-    SPEC: {"out": "/abs/sheet.jpg", "cols": 4, "tile_w": 384,
+    SPEC: {"out": "/abs/sheet.jpg", "cols": 4, "tile_w": 384, "title": "optional line(s) across the top",
            "tiles": [{"image": "/abs/a.png", "label": "text", "boxes": [[x0, y0, x1, y1, "label", "#rrggbb"], ...]}]}
 A tile with "image": null is left blank (its label still shows). Device: cuda only.
 """
@@ -30,11 +30,15 @@ def make(spec: dict, dev) -> str:
     lab = 30
     tiles = spec["tiles"]
     rows = (len(tiles) + cols - 1) // cols
-    W, H = cols * tw + (cols - 1) * 4, rows * (th + lab) + (rows - 1) * 4
+    title = [x for x in str(spec.get("title") or "").split("\n") if x]
+    top = 14 * len(title) + (8 if title else 0)
+    W, H = cols * tw + (cols - 1) * 4, top + rows * (th + lab) + (rows - 1) * 4
     canvas = Image.new("RGB", (W, H), (18, 18, 18))
     d = ImageDraw.Draw(canvas)
+    for k, line in enumerate(title):
+        d.text((4, 4 + 14 * k), line, fill=(255, 212, 0))
     for i, t in enumerate(tiles):
-        x, y = (i % cols) * (tw + 4), (i // cols) * (th + lab + 4)
+        x, y = (i % cols) * (tw + 4), top + (i // cols) * (th + lab + 4)
         if t.get("image") and Path(t["image"]).exists():
             canvas.paste(Image.fromarray(load_resized(t["image"], tw, th, dev)), (x, y + lab))
         for b in t.get("boxes", []):
