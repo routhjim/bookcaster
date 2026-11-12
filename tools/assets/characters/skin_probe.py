@@ -76,6 +76,9 @@ def main():
     ap.add_argument("--max-frac", type=float, default=MAX_FRAC)
     ap.add_argument("--out")
     ap.add_argument("--prefix", default="", help="only shots whose name starts with this")
+    ap.add_argument("--neck-half", type=float, default=None,
+                    help="half the left-out column as a share of the shoulder span: the garment's measured neck "
+                         "opening (bl_combo neck_opening) plus a margin; used for a base or open neckline")
     ap.add_argument("--neckline", default=None, choices=["chin", "base", "open"],
                     help="the garment's neckline fact: at the base of the neck or lower, the left-out column is the "
                          "neckline's width (the collarbones in it are skin by design)")
@@ -85,6 +88,8 @@ def main():
     # a neckline at the base of the neck or lower leaves the collarbones bare by design: the left-out column is that
     # neckline's width; the shoulders beyond it are still measured
     nh = {"base": 0.32, "open": 0.42}.get(a.neckline, NECK_HALF)
+    if a.neck_half is not None and a.neckline in ("base", "open"):
+        nh = a.neck_half          # the opening measured on this figure (plus a margin), not a fixed share
     rows = [probe_shot(s, a.max_frac, nh) for s in shots]
     res = {"ok": bool(rows) and all(x.get("ok") is not False for x in rows), "max_frac": a.max_frac, "shots": rows}
     if a.out:

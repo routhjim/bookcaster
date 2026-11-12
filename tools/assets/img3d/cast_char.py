@@ -1006,7 +1006,10 @@ def main():
                 "shots": shots}, 1200)
             p = subprocess.run([sys.executable, str(ASSETS / "characters" / "skin_probe.py"),
                                 str(W / "ue" / "skin_flat" / "result.json"), "--out", str(skin_p)]
-                               + (["--neckline", neckline_now()] if neckline_now() else []),
+                               + (["--neckline", neckline_now()] if neckline_now() else [])
+                               + (["--neck-half", str(round(_op["half_width_of_span"] + NECK_MARGIN, 3))]
+                                  if (_op := json.loads((combo / "report.json").read_text()).get("neck_opening"))
+                                  else []),
                                capture_output=True, text=True)
             CH["skin_probe"] = json.loads(skin_p.read_text())
             if p.returncode:
@@ -1047,6 +1050,9 @@ def groom_words(hair, beard=None, moustache=None):
         fh.append(" ".join(x for x in ({"L": "long", "M": "", "S": "short"}.get(ln, ""), _re.sub(r"(?<!^)([A-Z])", r" \1", st or "").lower(), "beard") if x))
     return worn, (" and ".join(fh) if fh else "none")
 
+
+# the skin probe's left-out column for an open or base neckline: the measured opening plus this share of the span
+NECK_MARGIN = 0.04
 
 LAYER_QUESTION = ("In the middle is a character sheet of a person. On the left (A) and on the right (B) are two "
                   "drawings of the outer garment alone, shown on a display figure. Which drawing, A or B, shows that "

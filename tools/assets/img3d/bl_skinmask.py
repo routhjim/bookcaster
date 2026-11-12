@@ -88,12 +88,17 @@ def build(HEAD, fig, J, JOB, REP, out_png):
     # neck, left a notch of hidden skin above its edge that showed as a hole)
     neck_zone = hide & ~shoulder & (np.linalg.norm(H[:, :2] - nk[:2], axis=1) < side_x)
     kept_edge = 0
+    # a collar standing off the neck shows the neck down into the gap as deep as the gap is wide (seen from 45 degrees
+    # above, background showed through where that skin was hidden, 11-12): the test height is the larger of MARGIN
+    # and the gap to the cloth outside the vertex
     for i in np.nonzero(neck_zone)[0]:
-        o = H[i] + np.array([0.0, 0.0, margin])
-        d = np.array([o[0] - nk[0], o[1] - nk[1], 0.0])
+        d = np.array([H[i][0] - nk[0], H[i][1] - nk[1], 0.0])
         if np.linalg.norm(d) < 1e-4:
             continue
         d /= np.linalg.norm(d)
+        h0 = bvh.ray_cast(Vector(H[i] + d * 0.001), Vector(d), float(C.get("collar_reach_m", 0.10)))
+        gap = float(h0[3]) if h0[0] is not None else 0.0
+        o = H[i] + np.array([0.0, 0.0, max(margin, gap)])
         if bvh.ray_cast(Vector(o), Vector(d), float(C.get("collar_reach_m", 0.10)))[0] is None:
             hide[i] = False
             kept_edge += 1

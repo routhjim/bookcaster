@@ -785,8 +785,22 @@ if HOLE_MAX > 0:
         ks = [i for i, lp in enumerate(loops) if _is_kind(lp)]
         if ks:
             _open_ids.add(max(ks, key=lambda i: _lens[i]))
+            if _kind == "neck":
+                # the neck opening's width (the skin probe leaves the opening out: skin in it is the neck and
+                # chest by design), as a share of the shoulder span between the upper arms' heads
+                _nl = max(ks, key=lambda i: _lens[i])
+                _nx = np.array([v.co.x for e in loops[_nl] for v in e.verts])
+                _span = abs(float(J("upperarm_l").x - J("upperarm_r").x))
+                _hw = float(np.max(np.abs(_nx - _nk[0])))
+                REP["neck_opening"] = {"half_width_m": round(_hw, 3), "shoulder_span_m": round(_span, 3),
+                                       "half_width_of_span": round(_hw / max(_span, 1e-3), 3)}
     small = [lp for i, lp in enumerate(loops) if len(lp) >= 3 and _lens[i] < HOLE_MAX and i not in _open_ids
              and (not _opening(lp) or _lens[i] < float(JOB.get("tear_max_m", 0.25)))]
+    REP["open_loops_left"] = sorted([round(_lens[i], 2) for i, lp in enumerate(loops)
+                                     if len(lp) >= 3 and lp not in small and i not in _open_ids], reverse=True)[:12]
+    REP["open_loops_left_near_neck"] = sorted([round(_lens[i], 2) for i, lp in enumerate(loops)
+                                               if len(lp) >= 3 and lp not in small and i not in _open_ids
+                                               and _opening(lp)], reverse=True)[:12]
     vuv = {}
     for lp in small:
         for e in lp:
