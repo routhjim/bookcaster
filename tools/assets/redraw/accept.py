@@ -135,9 +135,8 @@ def face_seen(q: dict) -> bool:
 
 
 def face_eval(*results: dict) -> None:
-    """Every person the director names (and the speaker, the listener) readable in the redraw where the engine
-    still shows their face: the face found by the pose model in the redraw, turned the same way as in the engine
-    (the readable check on the engine passed a key whose redraw turned her to the fire, 11-12)."""
+    """The speaker readable in the redraw where the engine still shows their face: the face found by the pose model
+    in the redraw, turned the same way as in the engine."""
     for res in results:
         for rec in res.values():
             for k, v in rec.get("people", {}).items():
@@ -308,7 +307,9 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
         rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
         spec = json.loads(rounds[-1].read_text()) if rounds else {}
         cam = next((c for c in spec.get("cameras") or [] if c["name"] == m["cam"]), {})
-        named = set(cam.get("show") or []) | {x for x in (cam.get("speaker"), cam.get("listener")) if x}
+        # the face check is for the speaker only: people who are not speaking may be partly hidden, in profile or
+        # seen from behind (11-12, the user: "Sherlock is just behind Watson", the clip was fine)
+        named = {cam["speaker"]} if cam.get("speaker") else set()
         acts = {k: ((v.get("body_pose") or {}).get("params") or {}).get("action") for k, v in
                 (spec.get("characters") or {}).items()}
         ppl = []

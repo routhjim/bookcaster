@@ -360,14 +360,13 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         h = head_h(cam, v["measured"], res)
         if speaker and facts[k]["head_any"] and h > sh_spk * 1.02:
             why.append(f"{k}'s head ({h:.3f}) is bigger than the speaker's ({sh_spk:.3f})")
-        if k not in keep and turned_away(cam, v["measured"]):
+        if speaker and k not in keep and turned_away(cam, v["measured"]):
+            # a foreground back so large it takes the speaker's shot (a back alone is a staging choice: 11-12)
             ma = (facts[k].get("mask") or {}).get("area")
             if ma is None:                   # no still yet (a candidate camera): the area from the body only orders
                 continue                     # candidates (area_excess); the render's own mask decides (11-11)
             if ma > FG_AREA:
                 why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
-            elif ma is not None and ma > 0.02 and not facts[k]["head_in"]:
-                why.append(f"{k}, turned away, is a body without its head in the frame")
     for q3 in opts.get("points") or []:      # a move's start, path and end place: all inside the one frame
         q = framing.project(cam, q3, res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
@@ -397,9 +396,9 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             why.append(f"{k}'s {jn} (the action) is not in the frame")
         elif shot is not None and not joint_seen(shot, k, q):
             why.append(f"{k}'s {jn} (the action) is hidden")
-    # the whole head and its headroom inside the frame: the speaker in any talk camera, and every person the shot
-    # names (a quiet shot's standing man had his head cut at the top in camera after camera, 11-12)
-    for hk in ([speaker] if speaker else []) + [k for k in (show or []) if k != speaker and k in subjects]:
+    # the speaker's whole head and its headroom inside any talk camera (the speaker only: people who are not
+    # speaking may be partly hidden, in profile, seen from behind or cut by the frame; that is how a room looks)
+    for hk in ([speaker] if speaker else []):
         hm = subjects[hk]["measured"]
         hf = unit2(hm.get("head_fwd_xy", [0, -1]))
         he = hm["eye_xy"]
@@ -436,23 +435,11 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                     why.append(f"the listener's head is in the middle of the frame ({le[0]:.2f}), not at its side")
                 if se and not 0.25 < se[0] < 0.75:
                     why.append(f"the speaker's face is at the frame's side ({se[0]:.2f})")
-            elif not ots and (not f["head_in"] or (ma is not None and ma < LISTENER_AREA["two"])):
+            elif not ots and not in_picture(f):
                 why.append("the listener is not in view")
-    for k in show or []:
-        if k in facts and not facts[k]["head_in"]:
-            why.append(f"{k} (named for the shot) is not in view")
-        elif k in subjects and not (ots and k == listener) and not (opts.get("mover") and k != opts["mover"]):
-            # named people are readable: their faces seen (in a move shot the mover's; the others in view only)
-            m = subjects[k]["measured"]
-            if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > READ_DEG:
-                why.append(f"{k} (named for the shot) faces away from the camera")
-            elif shot is not None:
-                fv = face_seen(dict(shot, camera=cam), k, m, res, k in (opts.get("covered") or ()))
-                if fv is not None and fv < READ_FACE:
-                    why.append(f"{k} (named for the shot): face {fv:.0%} visible")
-            elif blocked(cam["position"], [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]],
-                         [v["measured"] for kk, v in subjects.items() if kk != k]):
-                why.append(f"{k} (named for the shot) is hidden behind someone")
+    for k in show or []:                     # a person the director names: in the picture (any of them), no more
+        if k in facts and not in_picture(facts[k]):
+            why.append(f"{k} (named for the shot) is not in the picture")
     sk = opts.get("subject")                 # the plan's shot class: a close is a close
     if kind == "close" and sk in subjects and head_h(cam, subjects[sk]["measured"], res) < MIN_FACE_H["close"]:
         why.append(f"{sk}'s face {head_h(cam, subjects[sk]['measured'], res):.3f} of the frame: not a close")
@@ -465,15 +452,43 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             if xs and not (min(xs) > 1.10 or max(xs) < -0.10 or (min(xs) > 0.05 and max(xs) < 0.95)):
                 why.append(f"{k} near the edge of a single")
     for k, f in facts.items():
-        # a face cut by the frame's edge is always a miss (any shot kind): the run rejects it if no camera clears it
+        # a face cut by the frame's edge to a sliver (a person who is not speaking may be cut otherwise); the
+        # speaker's own cut is the speaker's head rule above, and the body cut in a talk shot here
         em = subjects[k]["measured"]
-        ep = framing.project(cam, [em["eye_xy"][0], em["eye_xy"][1], em["eye_z"]], res)
-        near_edge = bool(ep) and -0.08 < ep[0] < 1.08 and -0.05 < ep[1] < 1.0      # the head at or just past an edge
-        if f["cut"] and (f["head_any"] or near_edge) and not turned_away(cam, em) and k != speaker:
-            why.append(f"PARTIAL FACE: {k}'s face cut by the frame's {'/'.join(f['cut_edges'])} edge")
-        elif f["cut"] and not (ots and k == listener) and kind != "close":
+        sl = face_sliver(cam, em, res)
+        if k != speaker and sl and not turned_away(cam, em):
+            why.append(f"PARTIAL FACE: {k}'s face cut by the frame's edge to a sliver ({sl:.0%} of it in)")
+        elif k == speaker and f["cut"] and kind != "close":
             why.append(f"{k} cut by the frame's {'/'.join(f['cut_edges'])} edge")
     return why, facts
+
+
+def in_picture(f: dict) -> bool:
+    """Any of the person is in the picture: on the still, their own visible pixels; before it, any body point."""
+    ma = (f.get("mask") or {}).get("area")
+    return (ma >= 0.002) if ma is not None else bool(f.get("any_in"))
+
+
+SLIVER = 0.35                # a face with less than this share of its width inside the frame (and some of it in)
+
+
+def face_sliver(cam, m, res) -> float | None:
+    """The share of a face's width inside the frame when it is a sliver (some in, under SLIVER), else None."""
+    f = unit2(m.get("head_fwd_xy", [0, -1]))
+    e = m["eye_xy"]
+    pl = framing.project(cam, [e[0] - f[1] * 0.09, e[1] + f[0] * 0.09, m["eye_z"]], res)
+    pr = framing.project(cam, [e[0] + f[1] * 0.09, e[1] - f[0] * 0.09, m["eye_z"]], res)
+    pe = framing.project(cam, [e[0], e[1], m["eye_z"]], res)
+    if not (pl and pr and pe) or not (-0.2 < pe[1] < 1.2):
+        return None
+    x0, x1 = min(pl[0], pr[0]), max(pl[0], pr[0])
+    w = max(x1 - x0, 1e-4)
+    share = max(0.0, min(1.0, x1) - max(0.0, x0)) / w
+    top = framing.project(cam, [e[0], e[1], m["head_top_z"]], res)
+    chin = framing.project(cam, [e[0], e[1], m["chin_z"]], res)
+    if top and chin and chin[1] > top[1]:      # cut at the top or bottom too
+        share = min(share, max(0.0, min(1.0, chin[1]) - max(0.0, top[1])) / (chin[1] - top[1]))
+    return share if 0.0 < share < SLIVER else None
 
 
 LOOK_MAX_DEG = 75.0           # a listener's head turns this far toward the speaker; the chest takes the rest
