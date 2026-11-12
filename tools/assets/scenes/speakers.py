@@ -502,7 +502,25 @@ def look_at(spec, speaker):
     return spec
 
 
-ACTION_HANDS_M = {"veil_lift": 0.22}     # an action's start: both hands this near the chin (measured)
+ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.45, any)}   # an action's start: the hands this
+                                                                             # near the chin (both / either), measured
+
+
+def assets_action_steps(spec):
+    """Start actions the assets' pose solver writes without a measured body (characters/poses_extra): the look
+    at a sleeve (one forearm lifted, turned up, the head down on it), put first in the person's pose steps."""
+    tools = os.environ.get("SCENES_CHAR_TOOLS")
+    if not tools:
+        return
+    sys.path.insert(0, tools)
+    import poses_extra
+    for k, c in spec["characters"].items():
+        pr = (c.get("body_pose") or {}).get("params") or {}
+        if pr.get("action") == "look_at_sleeve" and not pr.get("_action_steps"):
+            got = poses_extra.look_at_sleeve("l", pr.get("seat_z_m"))
+            pr["steps"] = got["steps"] + list(pr.get("steps") or [])
+            pr["_action_steps"] = len(got["steps"])
+            c["look"] = False                # the head is on the sleeve, not on the speaker
 REACH_M = 0.12               # a reach's hand this near the top of the other person's forearm (measured)
 SLEEVE_R_M, PALM_HALF_M, PALM_LEN_M = 0.05, 0.015, 0.09
 
@@ -571,9 +589,10 @@ def staged_facts(spec, subjects):
                 bad.append(f"action '{act}': hands not measured")
             else:
                 chin = [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]]
-                d = max(math.dist(j[h][:3], chin) for h in ("hand_l", "hand_r"))
-                if d > ACTION_HANDS_M[act]:
-                    bad.append(f"action '{act}': hands {d:.2f} m from the chin")
+                lim, how = ACTION_HANDS_M[act]
+                ds = [math.dist(j[h][:3], chin) for h in ("hand_l", "hand_r")]
+                if not how(d <= lim for d in ds):
+                    bad.append(f"action '{act}': hands {min(ds):.2f}-{max(ds):.2f} m from the chin")
         out[k] = bad
     return out
 
@@ -1001,6 +1020,7 @@ def main():
     if keep:
         apply_marks(spec, keep, relook, relook)
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
+    assets_action_steps(spec)
     for c in spec["cameras"]:
         c["_points"] = move_points(spec, c)
         c["_landmark"] = landmark(spec, c)
