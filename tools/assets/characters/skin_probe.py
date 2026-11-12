@@ -2,7 +2,8 @@
 
 Each probed shot has a normal still and the same still with the face mesh left out of the main pass. The pixels that
 differ are where the head mesh is seen. Counted in the shoulder region: below the base of the neck (neck_01 plus
-NECK_DROP of the shoulder span) down to the chest (spine_04), across the shoulder span plus a quarter each side.
+NECK_DROP of the shoulder span) down to the chest (spine_04), across the shoulder span plus a quarter each side,
+less a column the neck's width round its axis (skin in an open collar is the neck, by design).
 A pixel counts when it is seen head mesh AND skin-coloured (the face's own chroma, from the cheeks of the same still,
 which a flat white light leaves as it is). ok when every shot's count is under MAX_FRAC of the region.
 
@@ -18,6 +19,7 @@ import numpy as np
 from PIL import Image
 
 NECK_DROP = 0.12
+NECK_HALF = 0.2          # of the shoulder span: half the neck column left out
 MAX_FRAC = 0.002
 
 
@@ -39,6 +41,10 @@ def probe_shot(sh, max_frac=MAX_FRAC):
     y1 = J["spine_04"][1]
     reg = np.zeros((H, W), bool)
     reg[int(max(y0, 0)):int(min(max(y1, y0 + 1), H)), int(max(x0, 0)):int(min(x1, W))] = True
+    # the shoulders, not the neck: a column the neck's width round its axis is left out (the neck seen in an open
+    # collar or a V of the coat is skin by design; a lifted collar standing off the neck showed it, 11-11)
+    nx = J["neck_01"][0]
+    reg[:, int(max(nx - NECK_HALF * span, 0)):int(min(nx + NECK_HALF * span, W))] = False
     # the face's own chroma: head-mesh pixels above the neck that are not dark (hair) - cheeks, forehead, chin
     face = seen.copy()
     face[int(max(J["neck_01"][1] - 0.2 * span, 0)):] = False
