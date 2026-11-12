@@ -211,6 +211,43 @@ def thing_mask(t: dict, cam: dict, d: torch.Tensor, n: int = 24) -> torch.Tensor
     return m
 
 
+def lit_mask(t: dict, cam: dict, d: torch.Tensor) -> torch.Tensor:
+    """Where a lit thing's own light source is what the camera sees: points around its light (FLAME_R_M: a grate's
+    fire, a lamp's flame) splatted where the engine depth lies on them or just behind (the glow inside the grate)."""
+    h, w = d.shape
+    r = FLAME_R_M.get("fire" if t.get("fire") else "lamp", 0.04)
+    lp = t["light_pos"]
+    lin = torch.linspace(-1, 1, 15, device=d.device)
+    gx, gy, gz = torch.meshgrid(lin, lin, lin, indexing="ij")
+    P = torch.stack([lp[0] + r * gx, lp[1] + r * gy, lp[2] + r * 0.6 * gz], -1).reshape(-1, 3)
+    pos = torch.tensor(cam["position"], device=d.device, dtype=torch.float32)
+    f = torch.tensor([cam["target"][i] - cam["position"][i] for i in range(3)], device=d.device)
+    f = f / f.norm()
+    up = torch.tensor([0.0, 0.0, 1.0], device=d.device)
+    rr = torch.linalg.cross(f, up)
+    rr = rr / rr.norm()
+    u = torch.linalg.cross(rr, f)
+    v = P - pos
+    z = v @ f
+    keep = z > 0.05
+    v, z = v[keep], z[keep]
+    sw, sh_ = framing.SENSOR_W, framing.sensor_h((w, h))
+    uu = 0.5 + cam["focal_mm"] * (v @ rr) / z / sw
+    vv = 0.5 - cam["focal_mm"] * (v @ u) / z / sh_
+    ins = (uu >= 0) & (uu < 1) & (vv >= 0) & (vv < 1)
+    uu, vv, z = uu[ins], vv[ins], z[ins]
+    m = torch.zeros((h, w), dtype=torch.bool, device=d.device)
+    if not len(z):
+        return m
+    xi, yi = (uu * w).long().clamp(0, w - 1), (vv * h).long().clamp(0, h - 1)
+    dm = d[yi, xi]
+    seen = dm >= z * 100.0 - (6.0 + 0.04 * z * 100.0)              # nothing nearer than the source covers it
+    m[yi[seen], xi[seen]] = True
+    k = max(3, int(round(min(w, h) * 0.015)) | 1)
+    m = F.max_pool2d(m.float()[None, None], k, 1, k // 2)[0, 0] > 0.5
+    return m
+
+
 # OpenPose 18-point body (COCO order) and its usual colours: the ControlNet Union reads left and right from them
 OP_COLORS = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0],
              [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255],
@@ -416,6 +453,13 @@ def one_scene(sd: Path, dev, things=None, day=None):
                 pm |= torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
             by = {t["name"]: t for t in things}
             for st in truth["shots"][cam]["things"]:
+                t = by.get(st["name"])
+                if t and t.get("lit") and t.get("light_pos"):      # the lit source itself (flame, grate): any sliver
+                    lm = lit_mask(t, sh["camera"], d) & ~pm
+                    if int(lm.sum()) > 0.0003 * w * h:
+                        save(lm.float() * 255, g / f"{cam}_lit_{st['name']}.png")
+                        st["lit_mask"] = str(g / f"{cam}_lit_{st['name']}.png")
+                        st["lit_area"] = round(float(lm.float().mean()), 5)
                 if st.get("large") and st["name"] in by:
                     tm = thing_mask(by[st["name"]], sh["camera"], d) & ~pm
                     if int(tm.sum()) > 0.003 * w * h:

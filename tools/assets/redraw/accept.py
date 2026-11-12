@@ -72,6 +72,9 @@ def item_fails(rec: dict) -> dict:
     for n, ok in (rec.get("things_ok") or {}).items():
         if ok is False:
             f.setdefault("set", []).append(f"colour {n}")
+    for n, ok in (rec.get("lit_ok") or {}).items():
+        if ok is False:
+            f.setdefault("set", []).append(f"lit {n}")
     for k, ok in (rec.get("wear_ok") or {}).items():
         if ok is False:
             f.setdefault(k, []).append("clothes colour")
@@ -82,6 +85,22 @@ def item_fails(rec: dict) -> dict:
 # follow each shot's light (the same gold chair reads L 4, chroma 10 in the window's shade and L 20, chroma 21 by
 # the fire); the gold chair reads hue 65-71 in every shot that keeps it gold, drawn as red leather 45-55: 10 deg
 LAB_HUE, LAB_MIN_C = 10.0, 10.0
+
+
+LIT_L, LIT_B = 0.55, 0.45    # a lit source in the redraw: at least this share of the engine's lightness and warmth
+
+
+def lit_eval(*results: dict) -> None:
+    """Every lit source the engine shows (even a sliver) is bright and warm in the redraw inside its own mask,
+    relative to the engine still: a fire drawn dark in one key and burning in the next (11-11)."""
+    for res in results:
+        for rec in res.values():
+            ok = {}
+            for n, v in (rec.get("lit") or {}).items():
+                r, e = v.get("redraw"), v.get("engine")
+                if r and e and e["L"] > 15:
+                    ok[n] = r["L"] >= LIT_L * e["L"] and r["b"] >= LIT_B * max(e["b"], 0.0)
+            rec["lit_ok"] = ok
 
 
 WEAR_L = 12.0            # a person's clothes: lightness above the engine's in the same mask, v their usual
@@ -165,8 +184,11 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
         things = [{"name": t["name"], "mask": t["mask"], "words": t["words"], "place": t.get("place")}
                   for t in truth.get("things") or [] if t.get("mask")]
+        lit = [{"name": t["name"], "lit_mask": t["lit_mask"], "words": t["words"]}
+               for t in truth.get("things") or [] if t.get("lit_mask")]
         items.append({"id": iid, "redraw": path, "engine": m["still"],
-                      "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl, "things": things})
+                      "depth": str(sd / "guides" / f"{m['cam']}_depth.png"), "people": ppl, "things": things,
+                      "lit": lit})
     out_p.write_text(json.dumps({"out": str(out_p.with_suffix("")) + "_result.json", "pose_model": pose_model,
                                  "judge": True, "items": items}, indent=1))
     print(out_p, len(items))
@@ -184,6 +206,7 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
     neck_eval(checked)
     colour_eval(checked)
     wear_eval(checked)
+    lit_eval(checked)
     jobs = {json.loads(ln)["id"]: json.loads(ln) for ln in (out / "image_jobs.jsonl").read_text().splitlines() if ln.strip()}
     meta = json.loads((out / "meta.json").read_text())
     cast = run.get("cast") or {}
@@ -201,7 +224,11 @@ def cmd_retry(run: dict, checked: dict, out_jobs: Path):
                                                  / "truth.json").read_text())["shots"][meta[iid]["cam"]].get("things") or []}
         for x in f.pop("set", []):
             t = tw.get(x.split(" ", 1)[1])
-            if t:
+            if t and x.startswith("lit "):
+                add.append(f"{t['words'].split(' with ')[0].split(' (')[0].capitalize()} is lit: "
+                           + ("the fire in its grate burns brightly with real flames and glowing coals, as in Picture 1."
+                              if t.get("fire") else "its flame burns, as in Picture 1."))
+            elif t:
                 add.append(f"{t['words'].split(' (')[0].capitalize()} {('(' + t['words'].split(' (', 1)[1]) if ' (' in t['words'] else ''}"
                            f"{', ' + t['place'] if t.get('place') else ''} keeps exactly the colour and shape of its "
                            f"reference picture.")
@@ -257,6 +284,7 @@ def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     neck_eval(checked, retry)
     colour_eval(checked, retry)
     wear_eval(checked, retry)
+    lit_eval(checked, retry)
     acc = {}
     for iid, rec in checked.items():
         f0 = item_fails(rec)

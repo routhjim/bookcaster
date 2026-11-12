@@ -270,7 +270,11 @@ def main():
                                                  "engine": lab_of(imgs["engine"], tmp) if "engine" in imgs else None}
             Path(tmp).unlink(missing_ok=True)
         if it.get("things"):              # each large piece's colour inside its engine mask (accept.py judges)
-            r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"]}
+            r["things"] = {t["name"]: lab_of(imgs["redraw"], t["mask"]) for t in it["things"] if t.get("mask")}
+        if it.get("lit"):                 # each lit source's light, redraw and engine, inside its own mask
+            r["lit"] = {t["name"]: {"redraw": lab_of(imgs["redraw"], t["lit_mask"]),
+                                    "engine": lab_of(imgs["engine"], t["lit_mask"]) if "engine" in imgs else None}
+                        for t in it["lit"]}
         out[it["id"]] = r
         print(json.dumps({"id": it["id"], "people": {k: {"arms": (v["redraw"]["arms_found"], v["redraw"]["arms_shown"]),
                                                           "hands": (v["redraw"]["hands_found"], v["redraw"]["hands_shown"]),
