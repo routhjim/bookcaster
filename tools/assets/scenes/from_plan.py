@@ -332,6 +332,7 @@ def main():
         for nm, w in (sp.get("worn_start") or {}).items():
             if nm in names and w not in NOTS:
                 worn[names[nm]] = w
+    away = {}                                    # people out of the room: their last state, for their return
     for n, sid in enumerate(ids, 1):
         sh = plan[sid][0]
         sp = sp or {}
@@ -342,8 +343,12 @@ def main():
             inroom = {names[x] for x in ir if x in names}
             for k in list(state):
                 if k not in inroom:
-                    state.pop(k)
+                    away[k] = state.pop(k)
                     used.append(f"{k} left the room")
+            for k in sorted(inroom):                         # back in the room: at the place they left from
+                if k not in state and k in away:
+                    state[k] = away.pop(k)
+                    used.append(f"{k} is back in the room")
         f = {"id": sid, "kind": sh.get("kind"), "framing": sh.get("framing"), "speaker": sh.get("speaker"),
              "listener": sh.get("listener"), "people_listed": [p["name"] for p in sh.get("people") or []],
              "tight": sh.get("tight"), "defaults": [], "missing": []}
