@@ -1484,8 +1484,9 @@ def main():
             t = tries[n_]
             chk = shots[n_]["speaker_check"]
             face_fail = [w for w in chk["why"] if w not in chk.get("framing", [])]
-            spk = c.get("speaker") or (c.get("line_subject") if any("(the shot is about" in w for w in chk["why"])
-                                         else None)
+            # the person the shot is about is searched for as a speaker in every try (only on the tries that
+            # failed for their face, the search fell back to cameras behind her on the others, 11-12)
+            spk = c.get("speaker") or (c.get("line_subject") if c.get("line_subject") in subjects else None)
             lis = listener_of(c, keys, spk)
             if t["n"] >= MAX_TRIES:
                 give_up(c)
