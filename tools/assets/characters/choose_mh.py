@@ -5,7 +5,9 @@
 The sheet is the story's character sheet (a head-and-shoulders portrait on the left half, the full figure on the
 right half, plain paper). Measured on it:
   - gender and age band (CLIP zero-shot over the head crop);
-  - preset: the shipped preset whose thumbnail head is most alike in shape (DINOv2 cosine of GREYSCALE head crops,
+  - preset: compared by the vision model two at a time against the drawn head (age, leanness, features; each pair in
+    both orders, most wins kept) among the candidates the facts leave (gender, the stated or measured age), the
+    candidates ranked first by thumbnail head shape (DINOv2 cosine of GREYSCALE head crops,
     so the presets' tinted thumbnails and the drawing's colours do not count), among presets of the measured gender,
     weighted by agreement of the CLIP age band;
   - hair, beard, moustache and eyebrows, hair colour and build: one question per case to the vision model
@@ -70,6 +72,7 @@ def main():
     ap.add_argument("--thumbs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--look", default="")
+    ap.add_argument("--compare", type=int, default=5, help="candidate presets the vision model compares pairwise")
     ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()),
                     help="a Python with the vision model's packages (tools/vl_judge.py)")
     a = ap.parse_args()
@@ -256,6 +259,48 @@ def main():
     # the neck: the length of the drawn neck is not measured; keep it at the doctor-like 6.5-7 cm the redraws read
     # as natural (a long-limbed slim preset otherwise came out with a ~10 cm neck)
     body["Neck Length"] = 6.8 if gender == "man" else 6.4
+    # the preset: the facts above narrow the candidates (gender; the stated age when the text gives one, else the
+    # picture's); then the vision model compares faces two at a time against the drawn head, each pair asked in both
+    # orders, and the candidate with the most wins is kept (a greyscale shape similarity alone picked a young,
+    # round-cheeked face for a lean older man, 11-11)
+    m_age = re.search(r"\b(?:about|around|aged?)\s+(\d{2})\b", a.look or "")
+    age_t = float(m_age.group(1)) if m_age else age
+    sc["age_used"] = age_t
+    pool = sorted((n for n in names if pg[n] == gender),
+                  key=lambda n: sims[n] - 0.004 * abs(pa[n] - age_t), reverse=True)
+    pool = [n for n in pool if abs(pa[n] - age_t) <= 15][:a.compare] or pool[:a.compare]
+    cdir = Path(a.out).with_name("candidates")
+    cdir.mkdir(exist_ok=True)
+    for n in pool:
+        crops[n].save(cdir / f"{n}.png")
+    qs = []
+    for i, x in enumerate(pool):
+        for y in pool[i + 1:]:
+            for first, second in ((x, y), (y, x)):
+                qs.append({"id": f"{first}|{second}", "images": [str(head_p), str(cdir / f"{first}.png"),
+                                                                 str(cdir / f"{second}.png")],
+                           "max_new_tokens": 4, "max_side": 512,
+                           "ask": {"pick": "The first picture is a drawn portrait. The second and third pictures are "
+                                           "photos of two different people. Which of the two photos is closer to the "
+                                           "person in the drawing in age, in how lean or full the face is, and in the "
+                                           "shape of the features? Answer second or third."}})
+    wins = {n: 0 for n in pool}
+    if len(pool) > 1:
+        vl = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
+                            input="".join(json.dumps(q) + "\n" for q in qs), capture_output=True, text=True)
+        for ln in vl.stdout.splitlines():
+            if not ln.startswith("{"):
+                continue
+            r_ = json.loads(ln)
+            first, second = r_["id"].split("|")
+            v = (r_["answers"].get("pick") or "").strip().lower()
+            if v.startswith("second"):
+                wins[first] += 1
+            elif v.startswith("third"):
+                wins[second] += 1
+    order = {n: i for i, n in enumerate(pool)}
+    base = max(pool, key=lambda n: (wins[n], -order[n]))
+    sc["preset_compare"] = {"pool": pool, "wins": wins, "pairs": len(qs)}
     out = {"base": base, "gender": gender, "grooms": grooms, "clear_slots": clear, "params": params,
            "body": {k: round(float(v), 1) for k, v in body.items()}, "scores": sc}
     Path(a.out).write_text(json.dumps(out, indent=1))

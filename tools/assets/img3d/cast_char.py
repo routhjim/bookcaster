@@ -163,6 +163,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
+    ap.add_argument("--fit-base", default=None,
+                    help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
                     " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
     ap.add_argument("--mh-fbx", default=None)
@@ -325,6 +327,17 @@ def main():
             else:
                 coat_skirt = (m["thigh_run_w_frac"] or 0) > 0.17
                 job.update(sleeve_radius_m=0.15, skirt_pelvis=1.0 if coat_skirt else 0.6)
+            if a.fit_base:
+                # a rebuild of an accepted character: that build's fit settings are kept (the rules above measured a
+                # coat skirt and no collar lift on a figure whose accepted fit had both); the skin rules stay
+                base_j = json.loads(Path(a.fit_base).read_text())
+                keep = {k: job[k] for k in ("body_fbx", "head_fbx", "figure_glb", "out", "head_push_r_m", "skin_mask",
+                                            "liner")}
+                job.clear()
+                job.update(base_j)
+                job.update(keep)
+                CH["fit_base"] = {"from": Path(a.fit_base).name,
+                                  "kept": sorted(k for k in base_j if k not in ("body_fbx", "head_fbx", "figure_glb", "out"))}
             # collars and cravats are the generated ones (no constructed pieces)
             CH["combo"] = {"measured": m, "job": {k: v for k, v in job.items() if not k.endswith(("fbx", "glb"))}}
             jp = W / "combo_job.json"
@@ -551,8 +564,9 @@ def main():
         @timed("check")
         def _():
             # the check scene itself measures the arms (the scene tool's guides, arm_gap.py at its wide camera): a
-            # forearm not separated in >= 8 of 10 rows on a side raises the abduction 4 deg and the scene is run again
-            for _round in range(3):
+            # forearm not separated in >= 8 of 10 rows on a side raises the abduction 2 deg (the smallest that passes:
+            # more reads as arms held out) and the scene is run again
+            for _round in range(5):
                 cj3 = json.loads((lib / "character.json").read_text())
                 spec = {"id": f"check_{tag}", "set": a.set, "guides": True, "characters": {"a": {
                     "id": a.id, "position": [0.3, 0.8], "facing": [0.3464, -0.9381], "body_pose": {
@@ -580,8 +594,8 @@ def main():
                 CH.setdefault("check_arms", []).append({"abduct_deg": (CH.get("arms") or {}).get("abduct_deg"), "wide": sep})
                 if all(v >= 8 for v in sep.values()):
                     break
-                ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 4
-                if ab > 20:
+                ab = int((CH.get("arms") or {}).get("abduct_deg", 8)) + 2
+                if ab > 16:
                     break
                 CH.setdefault("arms", {})["abduct_deg"] = ab
                 cj3["relaxed_arm_steps"] = arm_steps(ab)
