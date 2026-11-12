@@ -207,10 +207,10 @@ def record_kinds(rec, K=None, table=None):
     by_words = set()
     for part in [str(t) for t in rec.get("tags", [])] + [first]:      # each tag alone: no match across two tags
         by_words |= {k for _, _, k in _find(_tokens(part), table, K)}
-    if not by_id:
-        return sorted(by_words)
     # the id names the piece; its tags may only narrow that (an id "bed" with a tag "single bed")
-    return sorted(by_id | {k for k in by_words if any(satisfies(k, i, K) for i in by_id)})
+    ks = by_id | {k for k in by_words if any(satisfies(k, i, K) for i in by_id)} if by_id else by_words
+    # only the most specific kinds stay: a wing-back is not also listed as a plain chair
+    return sorted(k for k in ks if not any(o != k and satisfies(o, k, K) for o in ks))
 
 
 def _lab_of_words(tokens):
