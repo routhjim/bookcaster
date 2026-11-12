@@ -252,6 +252,23 @@ def head_h(cam, m, res):
     return (chin[1] - top[1]) if top and chin else 0.0
 
 
+def est_area(cam, m, res):
+    """A person's share of the frame from the measured body alone (before a still exists): the clipped box over
+    the head, shoulders (0.3 m out from the head's line) and feet, 90 % filled (a long coat or skirt fills it)."""
+    e, p = m["eye_xy"], m["pelvis_xy"]
+    f = unit2(m.get("head_fwd_xy", [0, -1]))
+    r = [f[1], -f[0]]
+    pts = [[e[0], e[1], m["head_top_z"]], [p[0], p[1], m["feet_z"]],
+           [e[0] + r[0] * 0.3, e[1] + r[1] * 0.3, m["chin_z"] - 0.1], [e[0] - r[0] * 0.3, e[1] - r[1] * 0.3, m["chin_z"] - 0.1]]
+    pr = [framing.project(cam, q, res) for q in pts]
+    pr = [q for q in pr if q]
+    if len(pr) < 2:
+        return 0.0
+    x0, x1 = max(0.0, min(q[0] for q in pr)), min(1.0, max(q[0] for q in pr))
+    y0, y1 = max(0.0, min(q[1] for q in pr)), min(1.0, max(q[1] for q in pr))
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0) * 0.9
+
+
 def turned_away(cam, m):
     return plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > 100
 
@@ -290,7 +307,9 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             why.append(f"{k}'s head ({h:.3f}) is bigger than the speaker's ({sh_spk:.3f})")
         if k not in keep and turned_away(cam, v["measured"]):
             ma = (facts[k].get("mask") or {}).get("area")
-            if ma is not None and ma > FG_AREA:
+            if ma is None:                   # no still yet (a candidate camera): the area from the body
+                ma = est_area(cam, v["measured"], res)
+            if ma > FG_AREA:
                 why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
             elif ma is not None and ma > 0.02 and not facts[k]["head_in"]:
                 why.append(f"{k}, turned away, is a body without its head in the frame")
