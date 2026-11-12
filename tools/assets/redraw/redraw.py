@@ -564,6 +564,13 @@ def light_words(set_dir: str | None) -> str:
             f"furniture, the walls away from the light falling into darkness.")
 
 
+def blocked_still(run: dict, out: Path, scene: str, cam: str, still: str) -> str:
+    """The picture the draw starts from: the engine still, or with "blocked_stills": true its colour-blocked copy
+    (detail.py block: each large piece pulled toward its own base colour) when one was made. Off by default."""
+    p = out / "detail" / "blocked" / f"{scene}__{cam}.png"
+    return str(p) if run.get("blocked_stills") and p.exists() else still
+
+
 def main():
     run = json.loads(Path(sys.argv[1]).read_text())
     out = Path(run["out"])
@@ -659,7 +666,8 @@ def main():
                          + [crops[t["name"]] for t in sorted(sh.get("things") or [], key=lambda t: -t.get("mask_area", 0))
                             if t["name"] in crops and t.get("mask")][:run.get("max_piece_refs", 2)],
                          "loras": loras,
-                         "init": {"image": sh["still"], "strength": st}, "_meta": dict(base, strength=st, seed=seed)}
+                         "init": {"image": blocked_still(run, out, sd.name, cam, sh["still"]), "strength": st},
+                         "_meta": dict(base, strength=st, seed=seed)}
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
