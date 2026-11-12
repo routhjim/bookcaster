@@ -377,6 +377,14 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         if d[0] * lm["front"][0] + d[1] * lm["front"][1] < 0.3 * math.hypot(*d):
             why.append(f"the end place's {lm['name']} is seen from its side or back")
     mv = opts.get("mover")
+    ep = opts.get("end_place")
+    if mv and ep and mv in subjects:         # the end place as prominent as the other people, the mover nearest it
+        top = framing.project(cam, [ep["center"][0], ep["center"][1], ep["top"]], res)
+        bot = framing.project(cam, [ep["center"][0], ep["center"][1], 0.0], res)
+        eh = (bot[1] - top[1]) if top and bot else 0.0
+        oth = [head_h(cam, v["measured"], res) * 7.5 * 0.55 for k, v in subjects.items() if k != mv and facts[k]["any_in"]]
+        if oth and eh < min(oth) * 0.8:
+            why.append(f"the end place is small in the frame ({eh:.2f} of its height)")
     if mv and mv in subjects:                # the mover's face readable at the move's start
         mm = subjects[mv]["measured"]
         if plan_angle(mm["head_fwd_xy"], mm["eye_xy"], cam["position"]) > 80 or not facts[mv]["head_in"]:
@@ -694,6 +702,67 @@ def apply_marks(spec, moves, speaker, relook):
         look_at(spec, relook)
 
 
+PATH_CLEAR_M = 0.45          # a walk's straight floor path: nobody else's mark within this of it (a body's width)
+
+
+def end_thing(spec, c):
+    sys.path.insert(0, str(HERE.parent / "redraw"))
+    import setfacts
+    return next((x for x in setfacts.things(Path(C.LIBRARY) / "set" / spec["set"]) if x["name"] == c.get("move_to")),
+                None)
+
+
+def seg_dist(p, a, b):
+    d = [b[0] - a[0], b[1] - a[1]]
+    L2 = d[0] * d[0] + d[1] * d[1] or 1e-9
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / L2))
+    return math.dist(p, [a[0] + d[0] * t, a[1] + d[1] * t])
+
+
+def clear_walks(spec, seat_names=()):
+    """Move shots, as mechanics from the scene's facts, before anything renders: the mover starts on the allowed
+    mark nearest the end place (when her start is a region, not a stated spot), and the straight floor path from
+    there to the end place is clear: a vague-place person on it takes their nearest allowed mark off it (a move the
+    shot's action needs); a person with an exact place on it is reported, as no camera can fix it. In a walk staged
+    with the two men between her and the chair, the video had her sink to the floor beside them (11-12).
+    Returns {"moved": {key: [from, to]}, "blocked": [keys], "shot_facts": {camera: {...}}}."""
+    ch = spec["characters"]
+    out = {"moved": {}, "blocked": [], "shot_facts": {}}
+    for c in spec["cameras"]:
+        mv, t = c.get("mover"), end_thing(spec, c)
+        if mv not in ch or not t:
+            continue
+        end = t["center"][:2]
+        m = ch[mv]
+        if m.get("marks"):
+            best = min(m["marks"], key=lambda q: math.dist(q, end))
+            if math.dist(best, m["position"]) > 0.05 and not any(
+                    math.dist(best, ch[o]["position"]) < MARK_CLEAR_M for o in ch if o != mv):
+                out["moved"][mv] = [list(m["position"]), list(best)]
+                m["position"] = list(best)
+        start = m["position"]
+        for o, v in ch.items():
+            if o == mv or seg_dist(v["position"], start, end) >= PATH_CLEAR_M:
+                continue
+            seated = any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)
+            offs = [q for q in (v.get("marks") or []) if seg_dist(q, start, end) >= PATH_CLEAR_M and not any(
+                math.dist(q, ch[x]["position"]) < MARK_CLEAR_M for x in ch if x != o)]
+            if offs and not seated:
+                q = min(offs, key=lambda q: math.dist(q, v["position"]))
+                out["moved"][o] = [list(v["position"]), list(q)]
+                v["position"] = list(q)
+            else:
+                out["blocked"].append(o)
+        words = t["words"]
+        out["shot_facts"][c["name"]] = {
+            "moves": {"who": mv, "to": t["name"], "to_words": words,
+                      "posture_end": "sitting" if t["name"] in seat_names else "standing"},
+            "fixed": {o: ("sitting" if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)
+                          else "standing") for o, v in ch.items() if o != mv},
+            "path_blocked_by": out["blocked"]}
+    return out
+
+
 def move_points(spec, c):
     """A move shot ("mover": key, "move_to": set item name): the mover's start (head and feet), the end place and
     the path between, as set-frame points the key's one frame must hold (the camera then need not move: framed on
@@ -741,7 +810,7 @@ def cam_opts(spec, c):
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
     return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or [], "covered": covered,
-            "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"),
+            "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
             "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
 
 
@@ -1023,9 +1092,16 @@ def main():
         apply_marks(spec, keep, relook, relook)
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     assets_action_steps(spec)
+    walks = clear_walks(spec, set(seat_plan.get("seats") or {}))   # before any render: clear floor paths for walks
+    if walks["moved"] and relook:            # heads re-aimed at the speaker from the new places
+        for k in list(spec["characters"]):
+            spec["characters"][k] = unlook(spec["characters"][k])
+        look_at(spec, relook)
     for c in spec["cameras"]:
         c["_points"] = move_points(spec, c)
         c["_landmark"] = landmark(spec, c)
+        t = end_thing(spec, c) if c.get("mover") else None
+        c["_end_place"] = {"center": t["center"], "top": t["center"][2] + t["half"][2]} if t else None
     spec["_prev_cam"] = (json.loads(Path(a.prev).read_text()).get("camera") if a.prev and Path(a.prev).exists()
                          else None)
     keys = spec.get("line") or list(spec["characters"])[:2]
@@ -1046,7 +1122,9 @@ def main():
             c.update(ots_camera(guess(c["speaker"]), guess(c["ots"]), est_side, line))
             c["kind"] = c.get("kind", "medium")
     report = {"scene": spec["id"], "line": keys, "established_side": est_side, "rounds": [], "shots": {},
-              "seating": {}, "marks": {}}
+              "seating": {}, "marks": {}, "walks": walks}
+    if walks["moved"] or walks["blocked"]:
+        log(f"walks: moved {walks['moved']} blocked {walks['blocked']}")
     todo = [c["name"] for c in spec["cameras"]]
     tried = {c["name"]: [] for c in spec["cameras"]}
     tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "wide": 0, "n": 0} for c in spec["cameras"]}
@@ -1366,7 +1444,8 @@ def main():
     last = {s_["name"]: s_ for s_ in master["shots"]}.get(spec["cameras"][-1]["name"]) or {}
     (odir / "staged.json").write_text(json.dumps({"positions": {k: v["position"] for k, v in
                                                                 spec["characters"].items()},
-                                                  "camera": (last.get("camera") or {}).get("position")}, indent=1))
+                                                  "camera": (last.get("camera") or {}).get("position"),
+                                                  "shot_facts": walks["shot_facts"]}, indent=1))
     report["seconds"] = round(time.time() - t0, 1)
     (odir / "speakers.json").write_text(json.dumps(report, indent=1))
     for n, s in report["shots"].items():
