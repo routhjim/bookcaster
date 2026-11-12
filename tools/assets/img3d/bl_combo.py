@@ -591,7 +591,17 @@ if HOLE_MAX > 0:
                         stack.append(e2)
         loops.append(loop)
     uvl = bm.loops.layers.uv.active
-    small = [lp for lp in loops if len(lp) >= 3 and sum(e.calc_length() for e in lp) < HOLE_MAX]
+    # never the garment's own openings: the neck (round the neck's axis, above the collarbones) and the cuffs and
+    # hems are openings, not holes (a filled neck opening became a disc that the head push blew into a shroud)
+    _nk = np.array(J("neck_01"))
+    _wr = [np.array(LM[f"wrist_{s_}"]) for s_ in ("l", "r") if f"wrist_{s_}" in LM]
+
+    def _opening(lp):
+        c_ = np.mean([np.array(v.co[:]) for e in lp for v in e.verts], axis=0)
+        if c_[2] > J("clavicle_l").z - 0.06 and np.linalg.norm(c_[:2] - _nk[:2]) < 0.14:
+            return True
+        return any(np.linalg.norm(c_ - w_) < 0.15 for w_ in _wr) or c_[2] < 0.15
+    small = [lp for lp in loops if len(lp) >= 3 and sum(e.calc_length() for e in lp) < HOLE_MAX and not _opening(lp)]
     vuv = {}
     for lp in small:
         for e in lp:
@@ -898,6 +908,61 @@ disp = np.zeros_like(fco)
 zfeet = float(JOB.get("push_above_m", 0.14))          # shoes stay as drawn (the body's feet are bigger)
 # HEAD_PUSH_R: only cloth within this distance of the neck's axis is pushed out of the head mesh (the head mesh's
 # shoulder skin reaches under a puffed shoulder; pushing there raised the shoulders into points)
+# the collar's girth: where the MetaHuman's neck is thicker than the generated collar, pushing each vertex out of the
+# head mesh blew the collar and cravat into a shroud. Instead, per 1 cm of height between the shoulder line and the
+# chin, the neck's own radius (head mesh points round the axis, largest per direction) against the innermost cloth's
+# radius there; all cloth round the neck moves out by that difference as one radial offset (every layer together,
+# full up to 8 cm outside the inner layer, fading over the next 6 cm), so the collar keeps its shape. The per-vertex
+# head push then acts only away from the neck.
+NECK_RADIAL = bool(JOB.get("neck_radial_fit", False)) and not STATUE and HEAD is not None
+if not STATUE and HEAD is not None:
+    _P = fco + disp
+    _nk = np.array(J("neck_01"))
+    _hv = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    _rr = np.linalg.norm(_P[:, :2] - _nk[:2], axis=1)
+    _ang = np.arctan2(_P[:, 1] - _nk[1], _P[:, 0] - _nk[0])
+    _sec = ((_ang + math.pi) / (2 * math.pi) * 16).astype(int) % 16
+    _ha = np.arctan2(_hv[:, 1] - _nk[1], _hv[:, 0] - _nk[0])
+    _hs = ((_ha + math.pi) / (2 * math.pi) * 16).astype(int) % 16
+    _hr = np.linalg.norm(_hv[:, :2] - _nk[:2], axis=1)
+    z0n, z1n = float(J("clavicle_l").z) + 0.01, float(J("neck_02").z) + 0.02
+    zgrid = np.arange(z0n, z1n + 0.01, 0.01)
+    off = np.zeros((len(zgrid), 16))
+    rin_g = np.full((len(zgrid), 16), np.nan)
+    for zi, z in enumerate(zgrid):
+        cm_ = (np.abs(_P[:, 2] - z) < 0.006) & (_rr < 0.15)
+        hm_ = (np.abs(_hv[:, 2] - z) < 0.006) & (_hr < 0.11)
+        for k_ in range(16):
+            c_ = cm_ & (_sec == k_)
+            h_ = hm_ & (_hs == k_)
+            if c_.sum() > 3 and h_.sum() > 3:
+                rin = float(np.quantile(_rr[c_], 0.03))
+                rneed = float(_hr[h_].max()) + float(JOB.get("neck_ease_m", 0.006))
+                rin_g[zi, k_] = rin
+                off[zi, k_] = max(rneed - rin, 0.0)
+    # smooth the offsets round the neck and up it (one smooth field)
+    for _ in range(3):
+        off = 0.5 * off + 0.25 * (np.roll(off, 1, 1) + np.roll(off, -1, 1))
+    zi_ = np.clip(np.round((_P[:, 2] - z0n) / 0.01).astype(int), 0, len(zgrid) - 1)
+    in_band = (_P[:, 2] > z0n - 0.04) & (_P[:, 2] < z1n + 0.03) & (_rr < 0.22)
+    o_ = off[zi_, _sec]
+    rin_v = np.nan_to_num(rin_g[zi_, _sec], nan=0.06)
+    wr_ = np.clip((rin_v + 0.14 - _rr) / 0.06, 0, 1)
+    wz_ = np.clip((_P[:, 2] - (z0n - 0.04)) / 0.04, 0, 1)
+    dr = o_ * wr_ * wz_ * in_band
+    radial = np.zeros_like(_P)
+    radial[:, :2] = (_P[:, :2] - _nk[:2]) / np.maximum(_rr, 1e-6)[:, None]
+    if NECK_RADIAL:
+        disp = disp + radial * dr[:, None]
+    # measured for the character build: the collar's inner girth at the neck's upper joint against the neck's own
+    _zi = int(np.argmin(np.abs(zgrid - float(J("neck_02").z) + 0.01)))
+    _ri = rin_g[_zi][~np.isnan(rin_g[_zi])]
+    REP["collar_inner_girth_cm"] = round(float(2 * math.pi * np.median(_ri)) * 100, 1) if len(_ri) else None
+    _hn = (np.abs(_hv[:, 2] - zgrid[_zi]) < 0.006) & (_hr < 0.11)
+    REP["neck_girth_cm"] = round(float(2 * math.pi * np.median(_hr[_hn])) * 100, 1) if _hn.sum() > 10 else None
+    REP["neck_radial_fit"] = {"max_offset_cm": round(float(off.max()) * 100, 1),
+                              "median_offset_cm": round(float(np.median(off[off > 0])) * 100, 1) if (off > 0).any() else 0.0,
+                              "verts": int((dr > 1e-4).sum())}
 HEAD_PUSH_R = float(JOB.get("head_push_r_m", 9.0))
 _nax = np.array(J("neck_01"))[:2]
 for i, p in enumerate(fco):
@@ -905,6 +970,8 @@ for i, p in enumerate(fco):
         continue
     # full push within HEAD_PUSH_R of the neck's axis, fading to none over the next 5 cm (a hard edge left a ridge)
     _wr = float(np.clip((HEAD_PUSH_R + 0.05 - np.linalg.norm(p[:2] - _nax)) / 0.05, 0, 1))
+    if NECK_RADIAL and p[2] > float(J("clavicle_l").z) - 0.03 and np.linalg.norm(p[:2] - _nax) < 0.16:
+        continue                       # the neck's cloth was fitted by the radial offset above
     if _wr <= 0:
         continue
     for bvh in bvhs:
@@ -1066,6 +1133,8 @@ if DSM > 0 and not STATUE:
         for i in range(len(fco)):
             if np.linalg.norm(fco[i, :2] - _nax) > HEAD_PUSH_R + 0.05:
                 continue
+            if NECK_RADIAL and fco[i, 2] > float(J("clavicle_l").z) - 0.03 and np.linalg.norm(fco[i, :2] - _nax) < 0.16:
+                continue
             q = Vector(fco[i] + disp[i])
             loc, nrm, _, dist = hb_.find_nearest(q, 0.05)
             if loc is None:
@@ -1080,7 +1149,8 @@ if DSM > 0 and not STATUE:
 # cloth round the neck against the head mesh's chin; the collar-and-cravat region above the shoulder line is lifted
 # by one smooth displacement (full at the top, nothing at the shoulder line, fading out away from the neck) so its
 # top sits COLLAR_UNDER_CHIN under the chin. REP["bare_neck_cm"] is what remains.
-if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
+COLLAR_LIFT = bool(JOB.get("collar_lift", False))
+if not STATUE and HEAD is not None:
     P_ = fco + disp
     nc_ = np.array(J("neck_01"))
     hv_ = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
@@ -1109,7 +1179,8 @@ if not STATUE and HEAD is not None and JOB.get("collar_lift", True):
     inner_w = np.clip((rmin_[sec_] + 0.035 - rr_) / 0.02, 0, 1) * (rr_ < 0.15)
     REP["collar_height"]["inner_layer_verts"] = int((inner_w > 0.5).sum())
     BARE_MAX = float(JOB.get("bare_neck_max_m", 0.02))
-    if top0 is not None and (chin_ - top0) <= BARE_MAX:
+    REP["bare_neck_measured_cm"] = round((chin_ - top0) * 100, 1) if top0 is not None else None
+    if top0 is not None and ((chin_ - top0) <= BARE_MAX or not COLLAR_LIFT):
         REP["bare_neck_cm"] = round((chin_ - top0) * 100, 1)       # already under the limit: nothing is moved
         top0 = None
     if top0 is not None:

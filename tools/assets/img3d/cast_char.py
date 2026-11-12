@@ -310,19 +310,15 @@ def main():
             m = legs_apart(drawing)
             lk = a.look.lower()
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
-                   "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03}
+                   "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
+                   "head_push_r_m": 0.08, "collar_lift": False, "liner": False}
             if m["long_skirt"]:
                 job.update(sleeve_radius_m=0.20, skirt_pelvis=1.0, turn_legs=False, shoe_top_m=0.0, skirt_min_z_m=-1.0,
-                           long_skirt=True, sleeve_slim_k=0.35, shoulder_gap_m=0.012,
-                           collar_build={"style": "stand", "cravat": False, "plate": False, "cuffs": {"width_m": 0.03},
-                                         "visible_neck_frac": 0.10, "white_top_m": 0.012, "open_deg": 0})
+                           long_skirt=True)
             else:
                 coat_skirt = (m["thigh_run_w_frac"] or 0) > 0.17
                 job.update(sleeve_radius_m=0.15, skirt_pelvis=1.0 if coat_skirt else 0.6)
-                neck = "tie" if " tie" in lk else ("bow" if ("cravat" in lk or "collar" in lk) else None)
-                if neck:
-                    job["collar_build"] = {"style": "wing" if neck == "bow" else "stand", "neckwear": neck,
-                                           "visible_neck_frac": 0.03 if neck == "bow" else 0.05}
+            # collars and cravats are the generated ones (no constructed pieces)
             CH["combo"] = {"measured": m, "job": {k: v for k, v in job.items() if not k.endswith(("fbx", "glb"))}}
             jp = W / "combo_job.json"
             jp.write_text(json.dumps(job, indent=1))
@@ -331,6 +327,44 @@ def main():
                       str(jp)], W / "combo.log")
             if p.returncode or not (combo / "outfit.fbx").exists():
                 raise RuntimeError(f"combo failed: {p.stdout[-800:]}")
+    # ---------------------------------------------------------------- the body fits the clothes at the neck
+    # the fit measures the bare neck (chin to the generated collar's front top) and both girths (the collar's inner
+    # one, the MetaHuman's neck); where the collar sits low or tight, the MetaHuman's neck is changed to meet it
+    # (Neck Length shorter by the bare neck over 1.5 cm, never under 4.5 cm; Neck girth to the collar's inner girth
+    # less 1 cm), the MetaHuman rebuilt and the fit run once more. Moving the cloth instead bunched collars.
+    neck_p = W / "neck_fit.json"
+    if (combo / "report.json").exists() and not neck_p.exists() and not a.mh:
+        rep = json.loads((combo / "report.json").read_text())
+        bare, gi, gn = rep.get("bare_neck_measured_cm"), rep.get("collar_inner_girth_cm"), rep.get("neck_girth_cm")
+        body0 = ch.get("body") or {}
+        newb = {}
+        if bare is not None and bare > 2.0:
+            newb["Neck Length"] = round(max(4.5, float(body0.get("Neck Length", 7.0)) - (bare - 1.5)), 1)
+        if gi and gn and gn > gi - 1.0:
+            newb["Neck"] = round(max(30.0, gi - 1.0), 1)
+        nf = {"measured": {"bare_neck_cm": bare, "collar_inner_girth_cm": gi, "neck_girth_cm": gn}, "set": newb}
+        if newb:
+            @timed("neck_fit")
+            def _():
+                r = ue_job(W, "neck_constraints", str(ASSETS / "characters" / "char_constraints.py"),
+                           {"path": f"/Game/Char/{mh_name}", "body": newb}, 600)
+                nf["engine"] = r
+                ue_job(W, "mh_rebuild", str(ASSETS / "characters" / "char_render.py"), {
+                    "out": str(W / "ue" / "mh_rebuild"),
+                    "cloud": {"path": f"/Game/Char/{mh_name}", "build_path": "/Game/MetaHumans"},
+                    "characters": {"a": {"path": f"/Game/Char/{mh_name}"}},
+                    "export_geometry": {"key": "a", "folder": f"/Game/Char/Geo_{tag}", "fbx_dir": str(fbx)}}, 2400)
+                jp = W / "combo_job.json"
+                p = line(["--line-cmd", "igpu", "combo", "--id", f"cast_{tag}_combo2", "--", "flock", "/tmp/gpu-igpu.lock",
+                          BLENDER, "-b", "--factory-startup", "-t", "0", "--python", str(HERE / "bl_combo.py"), "--",
+                          str(jp)], W / "combo2.log")
+                if p.returncode:
+                    raise RuntimeError("refit after the neck change failed")
+                rep2 = json.loads((combo / "report.json").read_text())
+                nf["after"] = {k: rep2.get(k) for k in ("bare_neck_measured_cm", "collar_inner_girth_cm", "neck_girth_cm")}
+        neck_p.write_text(json.dumps(nf, indent=1))
+        CH["neck_fit"] = nf
+        save()
     # ---------------------------------------------------------------- import + library entry
     lib = Path(C.LIBRARY) / "character" / a.id
     if not done("import", lib / "character.json"):
