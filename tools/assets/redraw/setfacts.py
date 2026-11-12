@@ -119,6 +119,12 @@ def things(set_dir) -> list:
             t["lit"] = True
             t["light_pos"] = list(p)
             t["fire"] = any(w in (t["name"] + " " + (t["asset"] or "")).lower() for w in FIRE)
+            if not t["fire"]:
+                # a flame-sized source (a candle, a lamp's flame) is too small for the redraw to hold: its lit mask
+                # was 0.07-0.14 % of the frame and the engine's own brightest tenth there L 30-37 (the fire's 85);
+                # drawn unlit in two keys of five (11-11). It is named as a thing, not in the lit list.
+                t["lit"] = False
+                t["small_light"] = True
     # where each piece of furniture stands in the room, by the room's landmarks (the fire, the windows), the same
     # words in every shot: two armchairs named only by their looks swapped looks between shots (11-11)
     marks = [t for t in out if t.get("fire") or t["kind"] == "window"]
