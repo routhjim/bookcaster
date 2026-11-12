@@ -185,7 +185,9 @@ def main():
     ask = Asker(url, cache, reps)
     res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}}
     state = {}                                    # name -> place words, carried from the plan's own facts
-    worn_now = {}                                 # name -> worn state, carried
+    worn_now = {}                                 # name -> worn state at the scene's start
+    claims = {}                                   # name -> [(shot, worn when that shot ends)], raw
+    worn_at = lambda nm: (claims.get(nm) or [(None, worn_now.get(nm, NOT))])[-1][1]
     t0 = time.time()
     at = audio_times(timeline, es, ids)
     for n, sid in enumerate(ids):
@@ -232,23 +234,27 @@ def main():
                                               "number from this list:\n" + "\n".join(nums), keys), keys)
                     if end != NOT:
                         res["move_end"].setdefault(sid, {})[nm] = things[keys.index(end)]["name"]
-                w = ask.choose(q_choose(own, st + f"; {nm} wears: {worn_now.get(nm, NOT)}",
+                w = ask.choose(q_choose(own, st + f"; {nm} wears: {worn_at(nm)}",
                                         q + f"What is {nm} wearing when this shot ends, among these choices?",
                                         var[nm]), var[nm])
-                if w != NOT and w != worn_now.get(nm):
-                    res["worn_end"].setdefault(sid, {})[nm] = w
-                    worn_now[nm] = w
+                if w != NOT:
+                    claims.setdefault(nm, []).append((sid, w))
                 ps = ask.choose(q_choose(psg, st, q + f"Which pose from this list fits {nm} at the START of this "
                                                       "shot?", POSES + ["none"]), POSES + ["none"])
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
-    # two shots claiming the same change: the later action shot that shows it wins, the earlier is "not stated"
-    for nm in names:
-        claims = [(sid, w[nm]) for sid, w in res["worn_end"].items() if nm in w]
-        for (s1, v1), (s2, v2) in zip(claims, claims[1:]):
-            if v1 == v2 and plan[s2][0].get("kind") == "action":
-                res["worn_end"][s1].pop(nm)
-    res["worn_end"] = {k: v for k, v in res["worn_end"].items() if v}
+    # a change is taken once: of the shots in a row that claim the same new state, the last action shot (the one that
+    # shows it) wins and the earlier claims are "not stated"
+    for nm, cl in claims.items():
+        cur, run = worn_now.get(nm), []
+        for sid, w in cl + [(None, None)]:
+            if run and w != run[-1][1]:
+                pick = next((x for x in reversed(run) if plan[x[0]][0].get("kind") == "action"), run[-1])
+                res["worn_end"].setdefault(pick[0], {})[nm] = pick[1]
+                cur, run = pick[1], []
+            if w is not None and w != cur:
+                run.append((sid, w))
+    res["_worn_claims"] = claims
     res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
     print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))
