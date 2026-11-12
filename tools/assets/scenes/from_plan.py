@@ -366,6 +366,15 @@ def main():
             f["missing"].append("pose for the action's start; what the key must show")
         questions.append(q_worn(f"worn:{sid}", sh, [p["name"] for p in sh.get("people") or []]))
         placed_now = []
+        if n == 1:                               # the scene's start: people the passage has already in the place
+            for nm, th in ((sp or {}).get("present_at_start") or {}).items():
+                k = names.get(nm)
+                if not k or k in state or th in NOTS or any(q["name"] == nm for q in sh.get("people") or []):
+                    continue
+                if apply_place(k, {"thing": th, "sitting": th in seats, "side": "front", "distance": "near"}, "pass"):
+                    state[k]["pose"] = "sitting" if th in seats else "standing"
+                    state[k].setdefault("facing_words", None)
+                    used.append(f"{k} is already in the place when the scene opens ({th}, the passage)")
         for p in sh.get("people") or []:
             k = names.get(p["name"])
             if not k:

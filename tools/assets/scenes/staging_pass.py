@@ -219,6 +219,20 @@ def main():
                                                             "these choices?", var[nm]), var[nm])
                 if res["worn_start"][nm] != NOT:
                     worn_now[nm] = res["worn_start"][nm]
+            # who is already in the place when the scene opens, and where the passage puts them (closed questions
+            # over the cast and the set's numbered places): a person the passage has there is present from the
+            # scene's first shot even when the plan's lists leave them out ("a lady ... who had been sitting in
+            # the window, rose as we entered": the plan first listed her a shot later, 11-12)
+            nums = [f"place {i + 1}: {o.split(' (', 1)[1].rstrip(')')}" for i, o in enumerate(place_opts)]
+            keys = [f"place {i + 1}" for i in range(len(place_opts))]
+            for nm in names:
+                there = ask.choose(q_choose(psg, st, f"When this scene opens in this place, is {nm} already there, "
+                                                     "before anyone else comes in?", ["yes", "no"]), ["yes", "no"])
+                if there != "yes":
+                    continue
+                where = ask.choose(q_choose(psg, st, f"Where does the passage put {nm} when the scene opens? Choose the "
+                                                     "place's number from this list:\n" + "\n".join(nums), keys), keys)
+                res.setdefault("present_at_start", {})[nm] = things[keys.index(where)]["name"] if where in keys else NOT
         # presence is like the worn state: a person stays in the room until this shot's OWN span says they go out
         # (and stays out until it says they come in); not being mentioned is not leaving (asked "who is in the
         # room", the model dropped a man not named in a shot's lines, 11-12)
