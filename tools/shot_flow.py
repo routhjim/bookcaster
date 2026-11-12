@@ -238,6 +238,30 @@ WRITTEN = re.compile(r"\b(title card|titles?|typography|lettering|letters? readi
                      r"inscription|caption)\b", re.I)          # 10-27: the title card came out "Foeckled Band"
 # 10-27: "camera pushes in" got past the rules
 CAMERA = re.compile(r"\b(camera|zoom\w*|dolly|close-?up|push(?:es|ing)? in|pull(?:s|ing)? back to)\b", re.I)
+# 11-11: the fixed state of the room the supplied keys were staged in (supplied_keys(facts=)): its light, what is lit
+# and each large piece with its look and place, one fact a line. "" = none (every flow run): the prompts as before.
+SCENE_FACTS = ""
+
+
+def with_facts(prompt: str, s: dict, words: str = "") -> str:
+    """A clip's words with the scene's fixed state (SCENE_FACTS) as the room's state for the whole clip (11-11 user,
+    on the first supplied-key clips: a fire lit in one shot was out in the next, a chair changed colour, and a walk
+    whose key did not show where it ends moved the camera and made up room), and the camera held on the opening
+    picture's framing unless the director's own words for the shot (its action, or `words`: a chain line) ask for a
+    camera move. Unchanged without facts."""
+    if not SCENE_FACTS:
+        return prompt
+    hold = "" if CAMERA.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
+        else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
+    return (f"{prompt.rstrip()} The room keeps its fixed state through the whole clip, as in the opening picture: "
+            f"{SCENE_FACTS}{hold}")
+
+
+def _chain_words(st: dict, text: str) -> str:
+    """A chain line as its clips are made of it (with_facts on the chain's line)."""
+    return with_facts(text, {}, text)
+
+
 # a planner place that is no place ("Title Card": the Speckled Band's first minute was 17 shots of a dark background)
 NO_PLACE = re.compile(r"\b(title|card|credits?|caption|intro\w*)\b", re.I)
 SPEAKS = re.compile(r"\b(speak\w*|spoke|talk\w*|says?|said|lips|mouth\w*|tell\w*|explain\w*|recount\w*)\b", re.I)
@@ -3669,7 +3693,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             drv = L / "audio" / f"{mid}_drv.wav"        # what LTX hears; the clip keeps `pad` (TALK_DRIVE_AF)
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(pad), "-af", drive_af(pitch.get(e.get("speaker"))),
                             str(drv)], check=True)
-            p_ = _talk_prompt(R, cx, e, s.get("place") or "", s)
+            p_ = with_facts(_talk_prompt(R, cx, e, s.get("place") or "", s), s)
             emb = f"t_{mid}_{MF._h(p_)}"
             enc_dev += [{"name": emb, "prompt": p_}, {"name": emb + "__neg", "prompt": neg}]
             for k, (st, nn) in enumerate(e["chunks"]):
@@ -3693,12 +3717,13 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 _chain_state(L, s, key)
                 chains.append(s["id"])
         elif s["kind"] == "action":
-            act = _offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) + STILL_CROWD * bool(s.get("crowd"))
+            act = with_facts(_offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) +
+                             STILL_CROWD * bool(s.get("crowd")), s)
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
             enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             hd = None
             if s.get("who") and not s.get("crowd"):      # the narrowed prompt, encoded now for a retake on the loaded model
-                hp = _held(cx, s)
+                hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"xh_{s['id']}_{MF._h(hp + MF.FIGHT_NEG)}", "prompt": hp}
                 enc_dev += [{"name": hd["emb"], "prompt": hp}, {"name": hd["emb"] + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             for t, seed in enumerate(TAKES + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -3710,11 +3735,12 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
+            p_ = with_facts(p_, s)
             emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
             enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
             hd = None
             if s.get("who") and not s.get("crowd"):
-                hp = _held(cx, s)
+                hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"qh_{s['id']}_{MF._h(hp)}", "prompt": hp}
                 enc_dev.append({"name": hd["emb"], "prompt": hp})
             for t, seed in enumerate((QUIET_SEED,) + ((RETAKE,) if s["id"] in (retake or ()) else ())):
@@ -3756,6 +3782,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     for sid in chains:                  # every chain line's words, known in advance: encoded with the rest
         st = json.loads((L / "chains" / f"{sid}.json").read_text())
         for t_ in ([] if st["done"] else dict.fromkeys(st["lines"])):
+            t_ = _chain_words(st, t_)
             e_ = _chain_emb(sid, t_)
             enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
@@ -3811,6 +3838,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                     st = json.loads((L / "chains" / f"{sid}.json").read_text())
                     if not st["done"]:
                         for t_ in st["lines"]:
+                            t_ = _chain_words(st, t_)
                             e_ = _chain_emb(sid, t_)
                             enc_c += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
                 if enc_c:
@@ -4143,7 +4171,7 @@ def _chain_save(L: Path, st: dict) -> None:
 def _chain_jobs(st: dict, k: int) -> list:
     """The CHAIN_TAKES jobs of line k (1-based) at its current version: line 1 from the key, the others from the
     pick before (its last frame at full strength, overlap 1, no seam re-renders); first in the runner's queue."""
-    sid, v, text = st["id"], st["ver"][k - 1], st["lines"][k - 1]
+    sid, v, text = st["id"], st["ver"][k - 1], _chain_words(st, st["lines"][k - 1])
     out = []
     for i, sd_ in enumerate(CHAIN_SEEDS):
         j = {"name": _chain_take(sid, k, v, i), "emb": _chain_emb(sid, text), "prompt": text, "width": W, "height": H,
@@ -5408,18 +5436,23 @@ def _clips(book, stem, es, shots, log, op: Path | None = None) -> None:
 
 
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
-                  review: str = "agent") -> list:
+                  review: str = "agent", facts: Path | None = None) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model, put beside today's clips): `plan` is a saved plan (plan_*.json, as run() writes it), used
     as it is - nothing planned, drawn or judged before the render; `keys` a folder of <shot id>.png at the clip
     size. Each key becomes its shot's key.png, newer than any clip of it, so the flow's own redo takes it: a clip
     from an older key is made again, a chain starts again from its line 1. Then the render as run() does it (same
-    jobs, prompts, voice cuts, flags, judges and review cards); no assembly. -> the shots' clips."""
-    global REVIEW
+    jobs, prompts, voice cuts, flags, judges and review cards); no assembly. facts: the fixed state of the scene the
+    keys were staged in, one fact a line: every clip's words carry it (with_facts). -> the shots' clips."""
+    global REVIEW, SCENE_FACTS
     from PIL import Image
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
     REVIEW = review
+    if facts:
+        fl = [re.sub(r"^\s*[-*]\s*", "", x).strip() for x in Path(facts).read_text().splitlines()]
+        SCENE_FACTS = " ".join(dict.fromkeys(x if x.endswith(".") else x + "." for x in fl if x))
+        log(f"scene facts from {facts}: {SCENE_FACTS}")
     by = json.loads(Path(plan).read_text())
     es = by.pop("_es")
     for k in [k for k in by if k.startswith("_")]:
@@ -5450,6 +5483,8 @@ if __name__ == "__main__":
     ap.add_argument("--keys", type=Path, required=True, help="a folder of <shot id>.png")
     ap.add_argument("--shots", required=True, help="shot ids, comma-separated")
     ap.add_argument("--review", choices=["off", "agent", "user"], default="agent")
+    ap.add_argument("--facts", type=Path, default=None, help="the keys' scene facts, one a line (with_facts)")
     a = ap.parse_args()
-    for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review):
+    for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
+                           facts=a.facts):
         print("clip:", c, "" if c.exists() else "(not made)")
