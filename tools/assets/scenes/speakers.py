@@ -388,8 +388,10 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             why.append(f"{k}'s {jn} (the action) is not in the frame")
         elif shot is not None and not joint_seen(shot, k, q):
             why.append(f"{k}'s {jn} (the action) is hidden")
-    if speaker:                              # the speaker's whole head and headroom inside any talk camera
-        hm = subjects[speaker]["measured"]
+    # the whole head and its headroom inside the frame: the speaker in any talk camera, and every person the shot
+    # names (a quiet shot's standing man had his head cut at the top in camera after camera, 11-12)
+    for hk in ([speaker] if speaker else []) + [k for k in (show or []) if k != speaker and k in subjects]:
+        hm = subjects[hk]["measured"]
         hf = unit2(hm.get("head_fwd_xy", [0, -1]))
         he = hm["eye_xy"]
         pts = [[he[0], he[1], hm["head_top_z"] + HEAD_HAIR_M], [he[0], he[1], hm["chin_z"]]] + \
@@ -398,7 +400,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         room_top = HEADROOM.get(kind, 0.03)
         if not all(pr) or pr[0][1] < room_top or pr[1][1] > 0.98 or min(q[0] for q in pr) < 0.02 \
                 or max(q[0] for q in pr) > 0.98:
-            why.append("the speaker's head or its headroom is outside the frame")
+            why.append(f"{'the speaker' if hk == speaker else hk}'s head or its headroom is outside the frame")
     if speaker and kind != "close":
         m = subjects[speaker]["measured"]
         top = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], res)
