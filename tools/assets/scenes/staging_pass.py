@@ -41,7 +41,11 @@ import setfacts  # noqa: E402
 
 # what a person is doing as the shot starts (the posture, sitting or standing, is the plan's own): asked with
 # postures in the same list, the model answered "seated" for a shot whose action starts lifting a veil (11-12)
-POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm", "look"]
+POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm"]
+# gaze is not a pose: the listener/speaker rule sets it. Plain words for each, for the owner question
+POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gesture_point": "points at something",
+              "veil_lift": "lifts a veil", "look_at_sleeve": "looks down at a sleeve",
+              "reach_to_forearm": "lays a hand on another person's forearm"}
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
 SEED = 7
@@ -240,9 +244,10 @@ def main():
                                         var[nm]), var[nm])
                 if w != NOT:
                     claims.setdefault(nm, []).append((sid, w))
-                ps = ask.choose(q_choose(psg, st, q + f"{nm} is {p.get('pose') or 'in the shot'}. Which of these "
-                                                      f"does {nm} begin to do as this shot starts? Answer none if "
-                                                      "nothing on the list.", POSES + ["none"]), POSES + ["none"])
+                # from the shot's OWN span only (as the worn state): a later shot's action is not claimed early
+                ps = ask.choose(q_choose(own, st, q + f"{nm} is {p.get('pose') or 'in the shot'}. Most shots begin "
+                                                      f"with no special action. Which of these does {nm} begin to do "
+                                                      "as this shot starts?", ["none"] + POSES), ["none"] + POSES)
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
     # a change is taken once: of the shots in a row that claim the same new state, the first action shot (the one
@@ -259,6 +264,29 @@ def main():
             if w is not None and w != cur:
                 run.append((sid, w))
     res["_worn_claims"] = claims
+    # an action is one shot's stated action: when several shots answer the same action for the same person, the
+    # shot whose plan line states it owns it (a closed question over those shots' own action lines), the rest none
+    by = {}
+    for sid, pp in res["pose"].items():
+        for nm, ps in pp.items():
+            if ps in POSES:
+                by.setdefault((nm, ps), []).append(sid)
+    res["_action_owner"] = {}
+    for (nm, ps), sids in by.items():
+        if len(sids) < 2:
+            continue
+        opts = [f"shot {i + 1}" for i in range(len(sids))]
+        lines = "\n".join(f"shot {i + 1}: {plan[x][0].get('action') or plan[x][0].get('picture') or ''}"
+                          for i, x in enumerate(sids))
+        own_q = (HEAD + "The film's shots, each with its own action line:\n" + lines + "\nQuestion: In which shot "
+                 f"does {nm} {POSE_WORDS[ps]}, as that shot's own action line states?\nAnswer with exactly one of "
+                 "these, nothing else: " + "; ".join(opts + [NOT]))
+        got = ask.choose(own_q, opts)
+        keep = sids[opts.index(got)] if got in opts else None
+        res["_action_owner"][f"{nm}: {ps}"] = keep
+        for x in sids:
+            if x != keep:
+                res["pose"][x][nm] = "none"
     res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
     print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))

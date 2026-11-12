@@ -238,7 +238,25 @@ VARIANT = {"usual": None}
 
 
 STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
-ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm", "look")
+ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm")
+
+
+def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: list) -> str | None:
+    """Why a start action contradicts the staged scene's facts (None: it fits): a standing action for a person
+    sitting, a hand on the mantel away from the fireplace, a veil lifted that is not down, a reach with nobody
+    seated in the shot to reach."""
+    sitting = v.get("pose") == "sitting"
+    if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") and sitting:
+        return f"{k} is sitting"
+    if pz == "stand_hand_on_mantel":
+        fire = [t for t in things if t.get("fire")]
+        if not fire or min(math.dist(v["position"], t["center"][:2]) - max(t["half"][:2]) for t in fire) > 0.6:
+            return f"{k} is not at the fireplace"
+    if pz == "veil_lift" and worn != "veiled":
+        return f"{k}'s veil is not down ({worn or 'no veil'})"
+    if pz == "reach_to_forearm" and not any(kk != k and vv.get("pose") == "sitting" for kk, vv in st.items()):
+        return "nobody in the shot sits to be reached"
+    return None
 
 
 def reach_place(tgt: dict, his: list, things: list, room: list, gap: float = 0.5) -> tuple:
@@ -498,6 +516,11 @@ def main():
             if lk in st:
                 c["look_at"] = lk
             pz = (cam0.get("_poses") or {}).get(k)
+            bad = action_misfit(pz, k, v, st, w, things) if pz in ACTION_NAMES else None
+            if bad:                                          # dropped by the scene's own facts, reported
+                for c_, _ in g:
+                    facts[c_["plan_id"]].setdefault("pass", {}).setdefault("dropped", []).append(f"{k} {pz}: {bad}")
+                pz = None
             if pz in ACTION_NAMES:                           # what they begin to do as the shot starts
                 c["_pose_choice"] = pz
                 if pz in STAND_ACTIONS and v["pose"] != "sitting":
