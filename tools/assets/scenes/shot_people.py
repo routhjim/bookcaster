@@ -44,7 +44,8 @@ def people(scene: Path, cam: str, looks: dict, cast: dict) -> dict:
                     "area": round(v["area"], 4), "seen": "front" if deg < 60 else "side" if deg < 115 else "back",
                     "box": v.get("box")})
     vis.sort(key=lambda p: ((p["box"] or [0, 0, 0, 0])[0] + (p["box"] or [0, 0, 0, 0])[2]) / 2)
-    out = {"camera": cam, "visible": [{x: p[x] for x in ("name", "look", "seen", "area")} for p in vis],
+    out = {"camera": cam, "visible": [dict({x: p[x] for x in ("name", "look", "seen", "area")}, **box_of(p["box"]))
+                                      for p in vis],
            "count": len(vis), "move": None}
     st = scene / "staged.json"
     sf = (json.loads(st.read_text()).get("shot_facts") or {}).get(cam) if st.exists() else None
@@ -54,6 +55,15 @@ def people(scene: Path, cam: str, looks: dict, cast: dict) -> dict:
                        "to": m["to_words"], "ends": m["posture_end"],
                        "fixed": {look_phrase(looks.get(key_name.get(k, ""), "")) or k: p for k, p in sf["fixed"].items()}}
     return out
+
+
+def box_of(b) -> dict:
+    """The person's visible body in the key as [left, top, right, bottom], 0-1 of the picture (the engine mask's
+    bounds, head included), or nothing when the scene has no box for them."""
+    if not b or len(b) != 4:
+        return {}
+    l, t, r, bt = (max(0.0, min(1.0, float(v))) for v in b)
+    return {"box": [round(l, 4), round(t, 4), round(r, 4), round(bt, 4)]} if l < r and t < bt else {}
 
 
 def lines(f: dict) -> str:
