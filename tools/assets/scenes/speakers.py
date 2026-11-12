@@ -474,6 +474,18 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             xs = [q[0] for q in pr if q and q[1] < 1.0]
             if xs and not (min(xs) > 1.10 or max(xs) < -0.10 or (min(xs) > 0.05 and max(xs) < 0.95)):
                 why.append(f"{k} near the edge of a single")
+    if not speaker and shot is not None:     # no one speaks: the people are the picture, not its two edges
+        xs = []
+        for k, f in facts.items():
+            if not in_picture(f):
+                continue
+            em = subjects[k]["measured"]
+            q = framing.project(cam, [em["eye_xy"][0], em["eye_xy"][1], em["eye_z"]], res)
+            if q:
+                xs.append(q[0])
+        if len(xs) >= 2 and not any(MIDDLE[0] <= x <= MIDDLE[1] for x in xs):
+            why.append("nobody in the middle of the frame: the people are at its sides ("
+                       + ", ".join(f"{x:.2f}" for x in sorted(xs)) + ")")
     for k, f in facts.items():
         # a face cut by the frame's edge to a sliver (a person who is not speaking may be cut otherwise); the
         # speaker's own cut is the speaker's head rule above, and the body cut in a talk shot here
@@ -523,6 +535,7 @@ def in_picture(f: dict) -> bool:
     return bool(head) and ((ma >= 0.002) if ma is not None else bool(f.get("any_in")))
 
 
+MIDDLE = (0.25, 0.75)        # a shot with no speaker and two or more people: some head across this middle half
 MOVER_AREA = 0.01            # the mover's own visible share of the frame at least
 SLIVER = 0.35                # a face with less than this share of its width inside the frame (and some of it in)
 
