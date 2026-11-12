@@ -440,7 +440,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     for k in show or []:
         if k in facts and not facts[k]["head_in"]:
             why.append(f"{k} (named for the shot) is not in view")
-        elif k in subjects and not (ots and k == listener):      # named people are readable: their faces seen
+        elif k in subjects and not (ots and k == listener) and not (opts.get("mover") and k != opts["mover"]):
+            # named people are readable: their faces seen (in a move shot the mover's; the others in view only)
             m = subjects[k]["measured"]
             if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > READ_DEG:
                 why.append(f"{k} (named for the shot) faces away from the camera")
