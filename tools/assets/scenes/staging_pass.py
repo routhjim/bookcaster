@@ -13,7 +13,8 @@ answer set built from data, "not stated" always among the options (code then kee
   pose        action shots, each listed person: one of the pose list, or "none"
   camera      talk shots: one of the camera kinds
 Each question carries the smallest passage span that covers the shot (the chapter's timeline from the shot before
-to the end of this one) and the carried state before it. Temperature 0 and a fixed seed; each question is asked
+to the end of this one) and the carried state before it; a change of worn state is asked from the shot's OWN span
+only (its start to the next shot's start), and when two shots claim the same change the later action shot wins. Temperature 0 and a fixed seed; each question is asked
 --repeats times and an answer is kept only when every repeat gives it, else "not stated". Answers are cached on disk
 keyed by the prompt and the repeat (a new --cache directory is a cold run).
 Output: {"in_room": {shot: [names]}, "move_end": {shot: {name: thing}}, "worn_start": {name: variant},
@@ -184,6 +185,7 @@ def main():
     ask = Asker(url, cache, reps)
     res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}}
     state = {}                                    # name -> place words, carried from the plan's own facts
+    worn_now = {}                                 # name -> worn state, carried
     t0 = time.time()
     at = audio_times(timeline, es, ids)
     for n, sid in enumerate(ids):
@@ -195,6 +197,10 @@ def main():
         while len(psg) < 300 and hi - lo < 60:   # a span too short to say anything: widen it a little each side
             lo, hi = lo - 3.0, hi + 3.0
             psg = span(timeline, lo, hi)
+        # the shot's OWN span (from its start to the next shot's start, never overlapping a neighbour): a change
+        # of what someone wears is taken only from here, so a change a later shot shows is not claimed early
+        own_lo, own_hi = at[sid] - 0.5, (at[ids[n + 1]] if n + 1 < len(ids) else at[sid] + 8.0) - 0.5
+        own = span(timeline, own_lo, own_hi) or NOT
         for p in sh.get("people") or []:
             state[p["name"]] = f"{p.get('pose')} {p.get('at')}"
         st = "; ".join(f"{k}: {v}" for k, v in state.items()) or NOT
@@ -202,6 +208,8 @@ def main():
             for nm in names:
                 res["worn_start"][nm] = ask.choose(q_choose(psg, st, f"What is {nm} wearing at this moment, among "
                                                             "these choices?", var[nm]), var[nm])
+                if res["worn_start"][nm] != NOT:
+                    worn_now[nm] = res["worn_start"][nm]
         if not sh.get("people"):
             res["in_room"][sid] = ask.subset(q_subset(psg, st, "Which of these people are in the room at this "
                                                       "moment (shown or not)?", names), names)
@@ -224,14 +232,23 @@ def main():
                                               "number from this list:\n" + "\n".join(nums), keys), keys)
                     if end != NOT:
                         res["move_end"].setdefault(sid, {})[nm] = things[keys.index(end)]["name"]
-                w = ask.choose(q_choose(psg, st, q + f"What is {nm} wearing when this shot ends, among these "
-                                                     "choices?", var[nm]), var[nm])
-                if w != NOT:
+                w = ask.choose(q_choose(own, st + f"; {nm} wears: {worn_now.get(nm, NOT)}",
+                                        q + f"What is {nm} wearing when this shot ends, among these choices?",
+                                        var[nm]), var[nm])
+                if w != NOT and w != worn_now.get(nm):
                     res["worn_end"].setdefault(sid, {})[nm] = w
+                    worn_now[nm] = w
                 ps = ask.choose(q_choose(psg, st, q + f"Which pose from this list fits {nm} at the START of this "
                                                       "shot?", POSES + ["none"]), POSES + ["none"])
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
+    # two shots claiming the same change: the later action shot that shows it wins, the earlier is "not stated"
+    for nm in names:
+        claims = [(sid, w[nm]) for sid, w in res["worn_end"].items() if nm in w]
+        for (s1, v1), (s2, v2) in zip(claims, claims[1:]):
+            if v1 == v2 and plan[s2][0].get("kind") == "action":
+                res["worn_end"][s1].pop(nm)
+    res["worn_end"] = {k: v for k, v in res["worn_end"].items() if v}
     res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
     print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))
