@@ -59,17 +59,19 @@ def main():
     except OSError:
         font = ImageFont.load_default()
     faces = {n: head_crop(Image.open(Path(a.portraits) / f"{n}.png").convert("RGB")) for n in pool}
-    keep_n = int(ch["scores"].get("compare_keep", 5))
-    age_t = ch["scores"].get("age_used")
-    if not a.versus and age_t and len(pool) > keep_n:
-        # the stated age narrows the candidates first: the vision model's age of each rendered face, the keep_n
-        # nearest to it go on to the comparison (ties to the shape ranking's order)
-        aq = []
+    keep_n = int(ch["scores"].get("compare_keep", 7))
+    age_t = None
+    if not a.versus and len(pool) > keep_n:
+        # the drawn face's age narrows the candidates first: the same vision model, the same question, asked of the
+        # sheet's portrait and of each rendered face (one scale); the keep_n nearest go on to the comparison (ties to
+        # the shape ranking's order). The age the text states is kept for the record only.
+        aq = [{"id": "__drawing__", "image": str(cp.with_name("sheet_head.png")), "max_new_tokens": 4,
+               "ask": {"age": "About how old is the person in this picture? Answer with a number only."}}]
         for n in pool:
             fp_ = pd / f"age_{n}.png"
             faces[n].save(fp_)
             aq.append({"id": n, "image": str(fp_), "max_new_tokens": 4,
-                       "ask": {"age": "About how old is the person in this photo? Answer with a number only."}})
+                       "ask": {"age": "About how old is the person in this picture? Answer with a number only."}})
         va = subprocess.run([a.vl_python, "-I", str(Path(__file__).resolve().parents[2] / "vl_judge.py")],
                             input="".join(json.dumps(q) + "\n" for q in aq), capture_output=True, text=True)
         ages = {}
@@ -79,6 +81,8 @@ def main():
                 m = re.search(r"\d+", r["answers"].get("age") or "")
                 if m:
                     ages[r["id"]] = int(m.group())
+        age_t = ages.pop("__drawing__", None) or ch["scores"].get("age_used") or 40
+        ch["scores"]["drawing_age"] = age_t
         order0 = {n: i for i, n in enumerate(pool)}
         pool = sorted(pool, key=lambda n: (abs(ages.get(n, 999) - float(age_t)), order0[n]))[:keep_n]
         ch["scores"]["render_ages"] = ages

@@ -184,7 +184,8 @@ def main():
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
     ap.add_argument("--until", default=None, choices=["face"], help="stop after this step (face: after the conform)")
-    ap.add_argument("--no-conform", action="store_true", help="no landmark conform of the picked face")
+    ap.add_argument("--conform", action="store_true",
+                    help="conform the picked face to the drawing (about 9 min; kept only if it wins the comparison)")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
@@ -283,7 +284,7 @@ def main():
     # face against the unconformed pick, the drawing in the middle, both orders; the conform is kept only if it
     # wins both
     conf_p = W / "conform.json"
-    if not a.mh and not a.no_conform and not done("choose", conf_p):
+    if not a.mh and a.conform and not done("choose", conf_p):
         @timed("conform")
         def _():
             cd = W / "conform"

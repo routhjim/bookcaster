@@ -72,7 +72,7 @@ def main():
     ap.add_argument("--thumbs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--look", default="")
-    ap.add_argument("--compare", type=int, default=5, help="candidate presets for the comparison (face_pick.py)")
+    ap.add_argument("--compare", type=int, default=7, help="candidate presets for the comparison (face_pick.py)")
     ap.add_argument("--vl-python", default=str(Path("~/tts-ab/.venv-qwenimage/bin/python").expanduser()),
                     help="a Python with the vision model's packages (tools/vl_judge.py)")
     a = ap.parse_args()
