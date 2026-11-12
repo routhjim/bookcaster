@@ -225,12 +225,42 @@ def mask_facts(shot, key, nx=72, ny=40):
             "right": edge([(0.998, v) for v in rows]), "top": edge([(u, 0.002) for u in cols])}
 
 
+def joint_seen(shot, key, q):
+    """Is the person's own surface what the camera sees at a projected joint (within 4 px)."""
+    g = shot.get("guides") or {}
+    if not (g.get("depth") and g.get(f"depth_{key}")):
+        return True
+    sc, sp = Exr(g["depth"]), Exr(g[f"depth_{key}"])
+    for du in (-0.004, 0.0, 0.004):
+        for dv in (-0.006, 0.0, 0.006):
+            ds, dp = sc.at(q[0] + du, q[1] + dv), sp.at(q[0] + du, q[1] + dv)
+            if ds is not None and dp is not None and dp < 5e4 and abs(dp - ds) <= max(3.0, 0.015 * ds):
+                return True
+    return False
+
+
 LISTENER_AREA = {"two": 0.01, "ots": 0.03}      # a listener's visible share of the frame
 
 
-def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=None):
+FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
+SEATED = ("sit", "seat")
+
+
+def head_h(cam, m, res):
+    top = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], res)
+    chin = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["chin_z"]], res)
+    return (chin[1] - top[1]) if top and chin else 0.0
+
+
+def turned_away(cam, m):
+    return plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > 100
+
+
+def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=None, opts=None):
     """The framing rules' failures for one camera (empty: it passes), from the measured people; with a rendered
-    shot, its own depth passes decide edge cuts and whether the listener is really seen."""
+    shot, its own depth passes decide edge cuts and whether the listener is really seen.
+    opts: {"seated": {keys seated}, "subject": key, "joints": [[key, joint], ...] that must be in view}."""
+    opts = opts or {}
     why = []
     facts = {k: frame_facts(cam, v["measured"], res) for k, v in subjects.items()}
     if shot is not None:
@@ -245,6 +275,32 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             f["cut_edges"] = [e for e in ("left", "right", "top") if mf[e]]
             if mf["area"] < LISTENER_AREA["two"] * 0.3:
                 f["head_in"] = f["head_any"] = f["shoulder_in"] = False      # hidden (behind a chair, a person)
+    seated_lis = bool(listener) and listener in (opts.get("seated") or ())
+    if seated_lis and ots:
+        why.append("over the shoulder of a listener seated in a high-backed chair (the chair back fills the frame)")
+    # every head in a talk shot is smaller than the speaker's; a person turned away is a modest share of the frame
+    # with the head inside it (a recognisable outline, not a dark mass merged with the frame edge)
+    sh_spk = head_h(cam, subjects[speaker]["measured"], res) if speaker else 0.0
+    keep = {speaker, opts.get("subject")}
+    for k, v in subjects.items():
+        if k == speaker or not facts[k]["any_in"]:
+            continue
+        h = head_h(cam, v["measured"], res)
+        if speaker and facts[k]["head_any"] and h > sh_spk * 1.02:
+            why.append(f"{k}'s head ({h:.3f}) is bigger than the speaker's ({sh_spk:.3f})")
+        if k not in keep and turned_away(cam, v["measured"]):
+            ma = (facts[k].get("mask") or {}).get("area")
+            if ma is not None and ma > FG_AREA:
+                why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
+            elif ma is not None and ma > 0.02 and not facts[k]["head_in"]:
+                why.append(f"{k}, turned away, is a body without its head in the frame")
+    for k, jn in opts.get("joints") or []:
+        j = ((subjects.get(k) or {}).get("measured") or {}).get("joints") or {}
+        q = framing.project(cam, j[jn], res) if jn in j else None
+        if not q or not (0.05 < q[0] < 0.95 and 0.05 < q[1] < 0.95):
+            why.append(f"{k}'s {jn} (the action) is not in the frame")
+        elif shot is not None and not joint_seen(shot, k, q):
+            why.append(f"{k}'s {jn} (the action) is hidden")
     if speaker and kind != "close":
         m = subjects[speaker]["measured"]
         top = framing.project(cam, [m["eye_xy"][0], m["eye_xy"][1], m["head_top_z"]], res)
@@ -258,7 +314,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             lc = framing.project(cam, [lm["eye_xy"][0], lm["eye_xy"][1], lm["chin_z"]], res)
             if lt and lc and (lc[1] - lt[1]) > fh * 1.05 and facts[listener]["any_in"]:
                 why.append(f"the listener's head ({lc[1] - lt[1]:.3f}) is bigger than the speaker's ({fh:.3f})")
-        if listener:
+        if listener and not seated_lis:     # a seated listener may be left out: a clean single of the speaker
             f = facts[listener]
             ma = (f.get("mask") or {}).get("area")
             if ots and (not (f["shoulder_in"] or f["head_any"]) or (ma is not None and ma < LISTENER_AREA["ots"])):
@@ -282,6 +338,52 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     return why, facts
 
 
+LOOK_MAX_DEG = 75.0           # a listener's head turns this far toward the speaker; the chest takes the rest
+
+
+def look_at(spec, speaker):
+    """People who listen face the speaker, head and eyes (a character with "look": false keeps its own): each
+    listener's head and neck turned from the body's facing toward the speaker's head, up or down to it, as pose
+    steps (about z: toward the character's right is positive; about x: up). Before this, a listener in a talk shot
+    looked wherever the body pointed, often at the camera (11-11)."""
+    ch = spec["characters"]
+    if speaker not in ch:
+        return spec
+    sp = ch[speaker]
+    eye_z = lambda c: 1.15 if any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED) else 1.6
+    for k, c in ch.items():
+        if k == speaker or c.get("asset") or c.get("look") is False:
+            continue
+        f = unit2(c.get("facing", [0, -1]))
+        d = [sp["position"][0] - c["position"][0], sp["position"][1] - c["position"][1]]
+        dist = math.hypot(*d) or 1.0
+        right = [f[1], -f[0]]
+        yaw = math.degrees(math.atan2(d[0] * right[0] + d[1] * right[1], d[0] * f[0] + d[1] * f[1]))
+        chest = max(0.0, abs(yaw) - LOOK_MAX_DEG) * (1 if yaw > 0 else -1)
+        yaw -= chest
+        pitch = math.degrees(math.atan2(eye_z(sp) - eye_z(c), dist))
+        bp = dict(c.get("body_pose") or {"pose": "stand", "params": {}})
+        pr = dict(bp.get("params") or {})
+        if bp.get("pose") == "stand_relaxed":
+            pr["head_deg"] = 0.0
+            pr["head_tilt"] = 0.0
+        steps = [["rot", "spine_03", [0, 0, 1], chest]] if chest else []
+        steps += [["rot", "neck_01", [0, 0, 1], round(yaw * 0.4, 2)], ["rot", "head", [0, 0, 1], round(yaw * 0.6, 2)],
+                  ["rot", "neck_01", [1, 0, 0], round(pitch * 0.4, 2)], ["rot", "head", [1, 0, 0], round(pitch * 0.6, 2)]]
+        pr["steps"] = list(pr.get("steps") or []) + steps
+        bp["params"] = pr
+        ch[k] = dict(c, body_pose=bp, _look={"at": speaker, "yaw": round(yaw + chest, 1), "pitch": round(pitch, 1)})
+    return spec
+
+
+def cam_opts(spec, c):
+    """The framing rules' per-camera facts: who sits (no shots over a seated listener's chair back), the camera's
+    subject, and the action's joints that must be seen ("show_joints": [[key, joint], ...])."""
+    seated = {k for k, v in spec["characters"].items()
+              if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
+    return {"seated": seated, "subject": c.get("subject"), "joints": c.get("show_joints") or []}
+
+
 def listener_of(c, spec_line, speaker):
     if c.get("ots"):
         return c["ots"]
@@ -292,7 +394,7 @@ def listener_of(c, spec_line, speaker):
     return None
 
 
-def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried):
+def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried, opts=None):
     """Placed cameras that keep the speaker and the listener (or the named people) in view, each checked by the
     framing rules: a two-shot aimed between their faces nearer the speaker, or an over-the-shoulder from behind the
     listener aimed at the speaker (when two people face each other no lens holds both faces). Returns
@@ -306,7 +408,17 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
     w = [0.6, 0.4] if spk and lis else [1.0 / len(ms)] * len(ms)
     aims = {"two": [sum(wi * m["eye_xy"][0] for wi, m in zip(w, ms)), sum(wi * m["eye_xy"][1] for wi, m in zip(w, ms)),
                     sum(wi * (m["eye_z"] - 0.12) for wi, m in zip(w, ms))]}
-    if spk and lis:
+    opts = opts or {}
+    seated_lis = bool(lis) and lis in (opts.get("seated") or ())
+    if spk and seated_lis:                   # a clean single of the speaker (never over a high chair's back)
+        sm = ms[0]
+        aims["single"] = [sm["eye_xy"][0], sm["eye_xy"][1], sm["eye_z"] - 0.15]
+    if opts.get("joints"):                   # the action's joints in the middle of the aim
+        pts = [subjects[k]["measured"]["joints"][j] for k, j in opts["joints"]
+               if j in (subjects[k]["measured"].get("joints") or {})]
+        if pts:
+            aims["action"] = [sum(p_[i] for p_ in pts + [aims["two"]]) / (len(pts) + 1) for i in range(3)]
+    if spk and lis and not seated_lis:
         sm, lm = ms[0], ms[1]
         aims["ots"] = [sm["eye_xy"][0] * 0.85 + lm["eye_xy"][0] * 0.15, sm["eye_xy"][1] * 0.85 + lm["eye_xy"][1] * 0.15,
                        sm["eye_z"] - 0.1]
@@ -329,7 +441,8 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                         continue
                     for f in (28, 35, 40, 50):
                         q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
-                        why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res)
+                        why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
+                                             opts=opts)
                         if not why:
                             out.append((math.dist(p, cam0["position"]) + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5), q, mode))
                             break
@@ -346,9 +459,9 @@ COVER_CM = 6.0               # a veil over the face: the face counts as shown th
 
 
 def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None, ots=False, show=None,
-               covered=False):
+               covered=False, opts=None):
     if not speaker:                          # a shot without a speaker: only the framing rules
-        why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res, shot)
+        why, facts = framing_why(shot["camera"], kind, None, None, False, show, subjects, res, shot, opts)
         return {"speaker": None, "ok": not why, "why": why, "framing": why, "frame_facts": facts}
     m = subjects[speaker]["measured"]
     cam = shot["camera"]
@@ -385,7 +498,7 @@ def check_shot(shot, speaker, subjects, res, kind, line, est_side, listener=None
         why.append(f"face {out['face_h']:.3f} of the frame height")
     if est_side and kind not in ("wide", "full") and out["side"] and out["side"] != est_side:
         why.append("across the line")
-    fw, facts = framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot)
+    fw, facts = framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot, opts)
     out["framing"] = fw
     out["frame_facts"] = facts
     why += fw
@@ -477,6 +590,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("spec")
     ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--no-split", action="store_true", help="stage all cameras in one scene (no per-speaker looks)")
     a = ap.parse_args()
     t0 = time.time()
     spec = json.loads(Path(a.spec).read_text())
@@ -485,6 +599,22 @@ def main():
     room = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())["size_m"]
     res = spec.get("res", [1152, 640])
     spec["guides"] = True
+    # listeners face the speaker: one staging per speaker (a quiet group keeps its poses); several groups run as
+    # their own scenes "<id>_<speaker>" / "<id>_q", each with its listeners' heads turned
+    groups = {}
+    for c in spec["cameras"]:
+        groups.setdefault(c.get("speaker"), []).append(c)
+    if len(groups) > 1 and not a.no_split:
+        rc = 0
+        for spk, cams in groups.items():
+            sub = dict(spec, id=f"{spec['id']}_{spk or 'q'}", cameras=cams)
+            sp_path = odir.parent / f"{sub['id']}.spec.json"
+            sp_path.write_text(json.dumps(sub, indent=1))
+            log(f"group {sub['id']}: {[c['name'] for c in cams]}")
+            rc |= subprocess.run([sys.executable, __file__, str(sp_path), "--rounds", str(a.rounds), "--no-split"]).returncode
+        return rc
+    if len(groups) == 1 and list(groups)[0]:
+        look_at(spec, list(groups)[0])
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
@@ -545,7 +675,8 @@ def main():
             lis = listener_of(c, keys, c.get("speaker"))
             chk = check_shot(sh, c.get("speaker"), subjects, res, c["kind"], line, est_side, lis, bool(c.get("ots")),
                              c.get("show"),
-                             bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")))
+                             bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")),
+                             cam_opts(spec, c))
             sh["speaker_check"] = chk
             report["shots"].setdefault(c["name"], {"history": []})
             report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"]))
@@ -573,13 +704,13 @@ def main():
                 cands = candidates(c, shots[c["name"]], c["speaker"], subjects, res, room, line, est_side,
                                    tried[c["name"]])
                 good = [q for q in cands if not framing_why(q, c["kind"], c["speaker"], lis, bool(c.get("ots")),
-                                                            c.get("show"), subjects, res)[0]]
+                                                            c.get("show"), subjects, res, opts=cam_opts(spec, c))[0]]
                 cands = good or (cands if face_fail else [])
             if not cands and chk.get("framing"):
                 tc = two_shot_candidates(c, shots[c["name"]], c.get("speaker"), lis, subjects, res, room, line,
-                                         est_side, tried[c["name"]])
+                                         est_side, tried[c["name"]], cam_opts(spec, c))
                 if tc:
-                    if tc[0][1] == "ots":        # framed again over the listener's shoulder, or as a two-shot
+                    if tc[0][1] == "ots":        # framed again over the listener's shoulder, or as a two-shot / single
                         c["ots"] = lis
                     else:
                         c.pop("ots", None)
