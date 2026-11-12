@@ -14,7 +14,7 @@ answer set built from data, "not stated" always among the options (code then kee
   camera      talk shots: one of the camera kinds
 Each question carries the smallest passage span that covers the shot (the chapter's timeline from the shot before
 to the end of this one) and the carried state before it; a change of worn state is asked from the shot's OWN span
-only (its start to the next shot's start), and when two shots claim the same change the later action shot wins. Temperature 0 and a fixed seed; each question is asked
+only (its start to the next shot's start), and of the shots that claim the same change the first action shot wins. Temperature 0 and a fixed seed; each question is asked
 --repeats times and an answer is kept only when every repeat gives it, else "not stated". Answers are cached on disk
 keyed by the prompt and the repeat (a new --cache directory is a cold run).
 Output: {"in_room": {shot: [names]}, "move_end": {shot: {name: thing}}, "worn_start": {name: variant},
@@ -243,13 +243,15 @@ def main():
                                                       "shot?", POSES + ["none"]), POSES + ["none"])
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
-    # a change is taken once: of the shots in a row that claim the same new state, the last action shot (the one that
-    # shows it) wins and the earlier claims are "not stated"
+    # a change is taken once: of the shots in a row that claim the same new state, the first action shot (the one
+    # that shows it) wins and the other claims are "not stated"
     for nm, cl in claims.items():
         cur, run = worn_now.get(nm), []
         for sid, w in cl + [(None, None)]:
             if run and w != run[-1][1]:
-                pick = next((x for x in reversed(run) if plan[x[0]][0].get("kind") == "action"), run[-1])
+                # own spans already keep a later shot's change out of an earlier one; of the shots that then name
+                # the same new state, the first action shot is where it happens, the rest only restate it
+                pick = next((x for x in run if plan[x[0]][0].get("kind") == "action"), run[0])
                 res["worn_end"].setdefault(pick[0], {})[nm] = pick[1]
                 cur, run = pick[1], []
             if w is not None and w != cur:
