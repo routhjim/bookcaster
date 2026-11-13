@@ -573,6 +573,12 @@ def blocked_still(run: dict, out: Path, scene: str, cam: str, still: str) -> str
 
 def main():
     run = json.loads(Path(sys.argv[1]).read_text())
+    # the room in words is the set's own (its builder wrote them from its pieces and its period kit) unless the
+    # run gives its own
+    if run.get("set") and (Path(run["set"]) / "spec.json").exists():
+        ssp = json.loads((Path(run["set"]) / "spec.json").read_text())
+        run.setdefault("set_words", ssp.get("words") or ssp.get("description") or "")
+        run.setdefault("room_surfaces", ssp.get("surfaces_words") or "")
     out = Path(run["out"])
     out.mkdir(parents=True, exist_ok=True)
     seed = int(run.get("seed", 7))

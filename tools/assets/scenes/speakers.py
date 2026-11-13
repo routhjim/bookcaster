@@ -57,6 +57,7 @@ sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
 import framing  # noqa: E402
 import seating  # noqa: E402
+import lying  # noqa: E402
 
 MAX_HEAD_DEG = 45.0
 MIN_FACE_VISIBLE = 0.6
@@ -1249,6 +1250,9 @@ def main():
     if keep:
         apply_marks(spec, keep, relook, relook)
     seat_plan = seating.plan(spec, Path(C.LIBRARY))           # seated people placed from their chairs' seat boxes
+    lie_plan = lying.plan(spec, Path(C.LIBRARY))              # lying people placed from their beds' lie boxes
+    if lie_plan["taken"]:
+        log(f"lying: {lie_plan['taken']}")
     assets_action_steps(spec)
     walks = clear_walks(spec, set(seat_plan.get("seats") or {}))   # before any render: clear floor paths for walks
     aimed = aim_bodies(spec)                 # bodies turned to whom they face, from where everyone now stands

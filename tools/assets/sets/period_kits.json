@@ -317,6 +317,12 @@
     "source_radius_m": 0.04,
     "shadows": true
    }
+  },
+  "words": {
+   "window": "a tall sash window with heavy deep crimson damask drapes and a fringed pelmet",
+   "door": "a panelled door",
+   "fireplace": "a fireplace with a black iron grate",
+   "surfaces": "The walls are papered in a sage-grey stripe above a pale panelled dado, with white woodwork and worn dark floorboards."
   }
  }
 }

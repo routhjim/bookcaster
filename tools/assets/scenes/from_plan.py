@@ -44,6 +44,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "redraw"))
 import config as C  # noqa: E402
 import seating  # noqa: E402
+import lying  # noqa: E402
 import setfacts  # noqa: E402
 
 FRAMING = {"wide": "full", "full": "full", "medium": "medium", "close": "close", "two": "medium",
@@ -323,6 +324,7 @@ def main():
     set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
     room = json.loads((set_dir / "spec.json").read_text())["size_m"]
     seats = seating.seats(library, set_dir)
+    beds = lying.beds(library, set_dir)
     for n, s_ in seats.items():
         s_["name"] = n
     names = {nm: v["key"] for nm, v in cast.items()}
@@ -442,6 +444,14 @@ def main():
                 entry.update(seat=seat["name"] if seat else None, position=list(seat["pos"]) if seat else anchor[:2])
                 if seat and thing and thing.get("name") != seat["name"]:
                     entry["at_thing"] = thing["name"]        # seated AT a thing (a desk, a table): see the cameras
+            elif p.get("pose") == "lying" and beds:
+                # lying: in the bed the place words name, else the nearest one nobody lies in
+                anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
+                taken_b = {v.get("bed") for kk, v in state.items() if kk != k}
+                cands = [b_ for b_ in beds.values() if b_["name"] not in taken_b] or list(beds.values())
+                own = [b_ for b_ in cands if thing and b_["name"] == thing.get("name")]
+                bed = own[0] if own else min(cands, key=lambda b_: math.dist(b_["pos"], anchor[:2]))
+                entry.update(seat=None, bed=bed["name"], position=[round(x, 3) for x in bed["frame"]["centre_xy"]])
             else:
                 if rel and rel in state:
                     tgt = state[rel]["position"]
@@ -618,6 +628,9 @@ def main():
                      "position": v["position"], "facing": v["facing"], "body_pose": json.loads(json.dumps(SEAT_POSE))}
                 if var:
                     c["variant"] = var
+            elif v["pose"] == "lying" and v.get("bed"):
+                c = {"lying_from": cv.get("base") or cv["id"], "bed": v["bed"], "position": v["position"],
+                     "facing": v["facing"], "body_pose": {"pose": "lying", "params": {}}}   # (lying.py: the stance's)
             else:
                 base = cv.get("id") or cv["base"]
                 vid = f"{base}_{var}" if var and (library / "character" / f"{base}_{var}").exists() else base

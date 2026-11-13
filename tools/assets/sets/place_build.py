@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -103,6 +104,30 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     return out
 
 
+def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
+    """What the built room holds, and its surfaces, in words for a picture of it (the redraw's room sentence): each
+    placed thing by its own library record's opening words, each opening and the surfaces by the period kit's."""
+    kw = kit.get("words") or {}
+    kind = (out.get("tags") or ["room"])[0] or "room"
+    held = []
+    for it in (out.get("fixtures") or []) + (out.get("props") or []):
+        if it.get("outside") or it.get("hang"):
+            continue                              # (the window's dressing is in the window's own words)
+        d = re.split(r"[,:;.]", (recs.get(it["asset"]) or {}).get("description") or "", maxsplit=1)[0].strip()
+        d = d or (it.get("name") or "").replace("_", " ")
+        if out.get("style") and d.lower().startswith(out["style"].lower() + " "):
+            d = d[len(out["style"]) + 1:]         # (the period is said once, for the room)
+        d = d[0].lower() + d[1:] if d[:2] != "A " else "a" + d[1:]
+        held.append(d if re.match(r"(a|an|the) ", d) else ("an " if d[:1] in "aeiou" else "a ") + d)
+    for o in lay.get("openings") or []:
+        w = kw.get(o.get("kind"))
+        if w and w not in held:
+            held.append(w)
+    held = list(dict.fromkeys(held))
+    return (f"A {out.get('style') or ''} {kind.replace('_', ' ')}: ".replace("  ", " ").replace("A v", "A V")
+            + "; ".join(held) + ".", kw.get("surfaces") or "")
+
+
 def build(spec: dict, set_id: str, library=None) -> tuple:
     rec, res = records_for(spec, library)
     lay = L.solve_recover(spec, rec)          # solve, then the ladder (never drops a piece the plan names)
@@ -112,6 +137,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
+    out["words"], out["surfaces_words"] = room_words(out, lay, kit, {r["asset_id"]: r for r in P.load_records(library)})
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
              if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}
