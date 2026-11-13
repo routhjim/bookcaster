@@ -547,6 +547,8 @@ def main():
                "line_subject": line_subj, "face_thing": ft, "at_thing": at_thing,
                "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None,
                "shot_kind": sh.get("kind")}
+        if sh.get("setting"):                 # the director's own words for what this shot shows of the place
+            cam["setting"] = sh["setting"]
         if lis:
             cam["listener"] = lis
         if spk and ck == "over_the_shoulder" and lis:

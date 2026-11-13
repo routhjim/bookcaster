@@ -231,6 +231,16 @@ def lora_by_head(lw: float, run: dict, hh: float | None, n: int) -> float:
     return round(lw + (one - lw) * t, 3)
 
 
+def setting_words(sd: Path, cam: str) -> str:
+    """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
+    camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
+
+
 def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
     """Whom each person in the frame is turned toward, from the staged spec ("facing_to"): the redraw kept the
     engine's bodies, but a video model read two men at a window as looking out of it (11-12)."""
@@ -668,6 +678,7 @@ def main():
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
+                         + setting_words(sd, cam)
                          + facing_to_words(sd, ppl, cast),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
