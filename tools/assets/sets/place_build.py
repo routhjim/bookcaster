@@ -172,6 +172,9 @@ CABIN_LOOK = ("the whole cabin as one open model for filming inside it: no glass
               "straight at the seats: ")
 
 
+OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
+
+
 def with_concept(spec: dict, concept: dict) -> dict:
     """The place spec checked against its concept picture's facts (scenes/concept.py). A piece the plan never names
     (no phrase of the plan lands on it) and the picture does not show is dropped: it was a guess. A piece in the
@@ -198,7 +201,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
     for i, sn in enumerate(concept.get("seen") or []):
-        if sn.get("kind") and sn.get("crop") and sn["kind"] not in have:
+        if sn.get("kind") and sn.get("crop") and sn["kind"] not in have and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "look": sn.get("look") or sn["name"], "phrases": [],
                          "against": "not stated", "source": sn["crop"]})
@@ -292,14 +295,27 @@ def with_beds(spec: dict) -> dict:
     K = json.loads((HERE.parent / "places" / "piece_kinds.json").read_text())["kinds"]
     kind = {p["id"]: p["kind"] for p in spec.get("pieces") or []}
     named = spec.get("named_places") or {}
-    need = {}
+    lie = lambda pid: (K.get(kind.get(pid)) or {}).get("needs") == "lie"       # noqa: E731
+    need, move = {}, {}
     for ph in spec.get("_lying_phrases") or []:
         at = named.get(ph)
-        if at in kind and (K.get(kind[at]) or {}).get("needs") != "lie":
-            need.setdefault(at, []).append(ph)
-    if not need:
+        if at in kind and not lie(at):
+            # the spec's own bed for that place, when it wrote one (the phrase among a bed's own), else a new bed
+            own = next((p["id"] for p in spec["pieces"] if lie(p["id"]) and ph in (p.get("phrases") or [])), None)
+            if not own:
+                own = next((named[q] for q in named if named[q] != at and lie(named[q])
+                            and any(q in (p.get("phrases") or []) and ph in (p.get("phrases") or [])
+                                    for p in spec["pieces"] if p["id"] == at)), None)
+            if own:
+                move[ph] = own
+            else:
+                need.setdefault(at, []).append(ph)
+    if not need and not move:
         return spec
     sp = json.loads(json.dumps(spec))
+    sp["named_places"].update(move)
+    if not need:
+        return sp
     look = next((p.get("look") for p in sp["pieces"] if (K.get(p["kind"]) or {}).get("needs") == "lie"), "")
     for n, (at, phs) in enumerate(need.items()):
         bid = f"b{n + 1}"
