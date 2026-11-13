@@ -360,7 +360,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     role = "speaker" if speaker else "person the shot is about"
     sh_spk = head_h(cam, subjects[lead]["measured"], res) if lead else 0.0
     keep = {lead, opts.get("subject")}
-    if lead and not speaker and (not facts[lead]["head_in"] or facts[lead].get("cut")):
+    if lead and not speaker and (not facts[lead]["head_in"] or facts[lead].get("cut")) \
+            and not behind_in_cabin(cam, subjects[lead]["measured"]):
         why.append(f"{lead} (the shot is about {lead}) is cut by the frame's edge")
     for k, v in subjects.items():
         if k == lead or not facts[k]["any_in"]:
@@ -510,11 +511,22 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     return why, facts
 
 
+def behind_in_cabin(cam, m) -> bool:
+    """A camera behind someone seated inside a cabin: the over-the-shoulder view of them at their controls, chosen
+    for it (framing.shot), where the rules for a face turned to the camera do not apply."""
+    if not m.get("inside"):
+        return False
+    f, e, p = m["facing"], m["eye_xy"], cam["position"]
+    return (p[0] - e[0]) * f[0] + (p[1] - e[1]) * f[1] < 0
+
+
 def subject_face_why(shot, k, subjects, res, covered=False) -> list:
     """The face of the person a shot is about, shown as a speaker's is: turned toward the camera and seen on the
     still (a woman whose line it was showed only the back of her head in the foreground, 11-12)."""
     m = subjects[k]["measured"]
     cam = shot["camera"]
+    if behind_in_cabin(cam, m):
+        return []
     if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > MAX_HEAD_DEG + 15:
         return [f"{k}'s face (the shot is about {k}) is turned from the camera"]
     fv = face_seen(shot, k, m, res, covered)

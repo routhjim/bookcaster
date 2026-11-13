@@ -545,7 +545,8 @@ def main():
         at_thing = (state.get(subj) or {}).get("at_thing") if kind != "close" else None
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
                "line_subject": line_subj, "face_thing": ft, "at_thing": at_thing,
-               "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None}
+               "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None,
+               "shot_kind": sh.get("kind")}
         if lis:
             cam["listener"] = lis
         if spk and ck == "over_the_shoulder" and lis:

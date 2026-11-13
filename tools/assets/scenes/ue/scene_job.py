@@ -529,7 +529,10 @@ def run(job):
         for c in job["cameras"]:
             subj = r["subjects"][c["subject"]]["measured"] if c.get("subject") else None
             if c["kind"] in ("close", "medium", "full") and not c.get("position"):
-                cs = framing.shot(subj, c["kind"], c.get("focal_mm", 50), res, c.get("az", 0.0), c.get("el", 0.0),
+                # inside a cabin an action is at the controls: it is seen from behind the shoulder (the cabin's
+                # "full" view), the quiet shots from in front of the face
+                k_ = "full" if (subj or {}).get("inside") and c.get("shot_kind") == "action" else c["kind"]
+                cs = framing.shot(subj, k_, c.get("focal_mm", 50), res, c.get("az", 0.0), c.get("el", 0.0),
                                   c.get("screen_x", 0.5))
             else:
                 tgt = c["target"]
