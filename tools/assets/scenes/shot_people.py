@@ -31,6 +31,26 @@ def look_phrase(look: str) -> str | None:
     return f"the {m.group(1)} in the {w.group(1).strip()}"
 
 
+def heads_out(scene: Path, cam: str) -> set:
+    """The people of this still whose head (head top or chin, the scene's frame check) is outside the frame."""
+    rp = scene / "result.json"
+    out = set()
+    if not rp.exists():
+        return out
+    for sh in json.loads(rp.read_text()).get("shots", []):
+        if sh.get("name") != cam:
+            continue
+        checks = dict(sh.get("others_check") or {})
+        subj = [k for k in (sh.get("truth") or {}) if k not in checks]
+        if subj and sh.get("frame_check"):
+            checks[subj[0]] = sh["frame_check"]
+        for k, fc in checks.items():
+            pts = [fc.get("head_top"), fc.get("chin")]
+            if all(pts) and not all(0.0 <= q[0] <= 1.0 and 0.0 <= q[1] <= 1.0 for q in pts):
+                out.add(k)
+    return out
+
+
 def people(scene: Path, cam: str, looks: dict, cast: dict) -> dict:
     truth = json.loads((scene / "truth.json").read_text())["shots"][cam]
     key_name = {v["key"]: nm for nm, v in cast.items()}
@@ -43,6 +63,13 @@ def people(scene: Path, cam: str, looks: dict, cast: dict) -> dict:
         vis.append({"key": k, "name": nm, "look": look_phrase(looks.get(nm, "")) or nm,
                     "area": round(v["area"], 4), "seen": "front" if deg < 60 else "side" if deg < 115 else "back",
                     "box": v.get("box")})
+    # a person whose head is out of the frame (a shoulder or a back at the picture's edge) is not one of the
+    # picture's people: named to the video model as a person in the picture, they walked in whole (a listener's
+    # back at the left edge became a man standing in the room, 11-13). The redraw leaves them unnamed the same way.
+    out_h = heads_out(scene, cam)
+    kept = [p for p in vis if p["key"] not in out_h]
+    if kept:
+        vis = kept
     vis.sort(key=lambda p: ((p["box"] or [0, 0, 0, 0])[0] + (p["box"] or [0, 0, 0, 0])[2]) / 2)
     out = {"camera": cam, "visible": [dict({x: p[x] for x in ("name", "look", "seen", "area")}, **box_of(p["box"]))
                                       for p in vis],
