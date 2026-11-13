@@ -248,16 +248,16 @@ def view_spec(words: str) -> dict:
 FACE_M = 3.0                     # a wall face's panel: this wide and this high
 
 
-def face_spec(crop: str) -> dict:
+def face_spec(words: str) -> dict:
     """The source spec of a wall's face (models/backdrop_view, no light of its own): the place's own wall surface,
-    drawn flat from the bare stretch of wall its concept picture shows."""
+    drawn flat from the words its concept picture's walls were read into."""
     import hashlib
-    fid = "wall_face_" + hashlib.sha1(Path(crop).read_bytes()).hexdigest()[:6]
+    fid = "wall_face_" + hashlib.sha1(" ".join(re.findall(r"[a-z0-9]+", words.lower())).encode()).hexdigest()[:6]
     return {"id": fid, "class": "prop", "tier": "background", "texture_px": 2048, "placement": "floor",
-            "description": f"The face of a wall, one flat picture {FACE_M:g} x {FACE_M:g} m, drawn from a place's concept "
-                           "picture. Front -Y; origin at the middle of the bottom edge.",
+            "description": f"The face of a wall, one flat picture {FACE_M:g} x {FACE_M:g} m: {words} Front -Y; origin "
+                           "at the middle of the bottom edge.",
             "tags": ["wall", "face", "generated-on-request"], "size_m": [FACE_M, 0.02, FACE_M], "size_tolerance": 0.05,
-            "source": "scripted", "backdrop": {"w": FACE_M, "h": FACE_M, "emit": 0.0}, "source_picture": crop,
+            "source": "scripted", "backdrop": {"w": FACE_M, "h": FACE_M, "emit": 0.0}, "wall_words": words,
             "licence": "CC0 (original script; picture drawn by the local image model)",
             "cameras": [{"name": "front", "position": [0.0, -FACE_M * 1.6, FACE_M / 2], "target": [0.0, 0.0, FACE_M / 2],
                          "focal": 28}]}
@@ -267,10 +267,10 @@ def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
     """The room's walls wear the concept's own wall: its face panels side by side along every wall, a hand's
     breadth inside it, left off where a door, window or fireplace stands (there the period's wall shows)."""
     import config as C
-    crop = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("crop")
-    if not crop or not Path(crop).exists() or not any(w.get("kind") == "wall" for w in out.get("structure") or []):
+    words = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("words")
+    if not words or not any(w.get("kind") == "wall" for w in out.get("structure") or []):
         return
-    fs = face_spec(crop)
+    fs = face_spec(words)
     out["face"] = fs
     if not (Path(library or C.LIBRARY) / "prop" / fs["id"] / "asset.json").exists():
         return

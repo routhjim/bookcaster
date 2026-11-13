@@ -46,6 +46,11 @@ BOX_ASK = ("Locate the {n} in this picture. Answer only with its bounding box as
 KIND_ASK = ("In this picture there is a {n}. Which one of these kinds of thing is it? {kinds}. Answer with exactly one "
             "of those words, or none when it is none of them.")
 PIECE_AREA = 0.02
+WALL_ASK = ("Describe only the surface of the walls in this picture, as a builder would: what it is made of, the size and "
+            "shape of its plates, panels, boards or blocks, how they are joined and fastened, its colour and its wear. "
+            "One sentence. Do not mention furniture, doors, pipes, lights or anything that stands on or against it.")
+CLEAN_ASK = ("Does this picture show anything other than one flat wall surface seen straight on: any furniture, "
+             "cabinet, door, floor, ceiling, pipe, cable or other object? Answer yes or no.")
 BARE = {"walls": "bare stretch of wall with nothing on it or in front of it",
         "floor": "bare stretch of floor with nothing standing on it"}
 
@@ -95,6 +100,7 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds))}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
+    items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
     a = ask(items)
     for p in pieces:
         b = box_of((a.get(f"b:{p['id']}") or {}).get("box"))
@@ -115,6 +121,9 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         b = box_of((a.get(f"w:{k}") or {}).get("box"))
         if b:
             res["bare"][k] = {"box": b, "crop": cut(concept, b, out_dir / f"{tag}_{k}.png", 0.0), "colour": colour(concept, b)}
+    ww = re.sub(r"\s+", " ", str((a.get("w:words") or {}).get("wall") or "")).strip()
+    if ww and "walls" in res["bare"]:
+        res["bare"]["walls"]["words"] = ww
     return res
 
 
@@ -160,8 +169,16 @@ def read(concept: Path, spec: dict, ask) -> dict:
 
 
 def main():
-    concept, spec_p, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     import characters as CH
+    if sys.argv[1] == "--clean":             # concept.py --clean PICTURE: exit 0 when it shows one bare wall only
+        try:
+            r = CH.vl_ask([{"id": "c", "image": sys.argv[2], "max_new_tokens": 4, "ask": {"other": CLEAN_ASK}}])
+        finally:
+            CH.vl_close()
+        ans = str((r.get("c") or {}).get("other") or "").strip().lower()
+        print(json.dumps({"picture": sys.argv[2], "other_things": ans}))
+        sys.exit(0 if ans.startswith("n") else 1)
+    concept, spec_p, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     try:
         spec = json.loads(spec_p.read_text())
         res = read(concept, spec, CH.vl_ask)

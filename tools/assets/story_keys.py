@@ -78,7 +78,7 @@ def slug_of(name: str) -> str:
 
 
 def sh(argv, logf: Path | None = None, env=None, cwd=None) -> int:
-    e = dict(os.environ, ASSETS_LINE_CLIENT=str(HERE / "run_asset.py"), **(env or {}))
+    e = dict(os.environ, ASSETS_LINE_CLIENT=str(HERE / "run_asset.py"), STORY_VENV_PY=str(VENV_PY), **(env or {}))
     if logf:
         with open(logf, "a") as f:
             return subprocess.run([str(a) for a in argv], stdout=f, stderr=subprocess.STDOUT, env=e, cwd=cwd).returncode
