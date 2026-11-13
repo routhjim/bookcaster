@@ -280,6 +280,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
+    if str(spec.get("crowd") or "").strip():                 # the director's crowd of the place: drawn, never built
+        out["crowd"] = spec["crowd"].strip()
     out["words"], out["surfaces_words"] = room_words(out, lay, kit, {r["asset_id"]: r for r in P.load_records(library)})
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]

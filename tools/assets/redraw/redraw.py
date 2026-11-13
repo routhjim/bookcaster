@@ -231,6 +231,15 @@ def lora_by_head(lw: float, run: dict, hh: float | None, n: int) -> float:
     return round(lw + (one - lw) * t, 3)
 
 
+def crowd_words(crowd: str | None, kind: str) -> str:
+    """The place's crowd, as the director's set sheet names it: nobody builds or stages them, the picture fills
+    them in behind the people of the shot (never in a close shot, where there is no background to hold them)."""
+    if not crowd or kind == "close":
+        return ""
+    return (f" Far behind them, small and out of focus, the place's other people go about their business: {crowd.strip().rstrip('.')}."
+            " None of them is near the camera and none has the face of anyone named above.")
+
+
 def setting_words(sd: Path, cam: str) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
@@ -591,6 +600,7 @@ def main():
         ssp = json.loads((Path(run["set"]) / "spec.json").read_text())
         run.setdefault("set_words", ssp.get("words") or ssp.get("description") or "")
         run.setdefault("room_surfaces", ssp.get("surfaces_words") or "")
+        run.setdefault("crowd", ssp.get("crowd") or "")
     out = Path(run["out"])
     out.mkdir(parents=True, exist_ok=True)
     seed = int(run.get("seed", 7))
@@ -680,7 +690,7 @@ def main():
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
-                         + setting_words(sd, cam)
+                         + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
                          + facing_to_words(sd, ppl, cast),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
