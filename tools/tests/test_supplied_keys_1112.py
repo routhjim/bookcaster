@@ -165,6 +165,13 @@ k = make_keys([TALK["id"]], {TALK["id"]: vis(A, B, boxes=[[0.1, 0.1, 0.4, 0.9], 
 ok, msg = raises(lambda: S.supplied_keys(b, STEM, make_plan([TALK], ES), k, [TALK["id"]], log=log, key_people_=True),
                  "box")
 check("a box that is not left < right in 0-1 stops the run", ok, msg)
+EMPTY = {"id": "quiet-000300_s0", "kind": "quiet", "who": [], "dur": 3.0, "action": "Leaves blow across a lawn."}
+k = make_keys([QUIET["id"]], {QUIET["id"]: []})
+bad, ppl, _ = S.check_supplied(b, [EMPTY], k, None, (), True)
+check("a key of a place with nobody in it, for a shot the plan gives nobody, is taken with an empty list",
+      not bad and ppl.get(EMPTY["id"]) == ([], {}), (bad, ppl))
+bad, ppl, _ = S.check_supplied(b, [QUIET], k, None, (), True)
+check("an empty list for a shot the plan gives people stops the run", len(bad) == 1 and "the plan lists" in bad[0], bad)
 k = make_keys([QUIET["id"]])
 ok, msg = raises(lambda: S.supplied_keys(b, STEM, make_plan([QUIET], ES), k, [QUIET["id"]], log=log,
                                          quiet_seeds=("7", "x")), "seeds")

@@ -6292,8 +6292,10 @@ def check_supplied(book: Path, shots: list, keys: Path, facts: Path | None, quie
         except (ValueError, RuntimeError, AttributeError, TypeError) as x:
             bad.append(f"{f}: {x}")
             continue
-        if not vis:
-            bad.append(f"{f}: no \"visible\" people (a key without people has no facts to give)")
+        # a picture of a place with nobody in it says so with an empty list, where the plan lists nobody either
+        # (a cutaway to a house front could be given neither with facts nor without, 11-12)
+        if not vis and (s.get("who") or s.get("others")):
+            bad.append(f"{f}: no \"visible\" people, and the plan lists {(s.get('who') or []) + (s.get('others') or [])}")
             continue
         ppl[s["id"]] = (vis, bx)
     return bad, ppl, seeds
