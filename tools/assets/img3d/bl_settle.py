@@ -378,7 +378,9 @@ for it in range(int(JOB.get("iters", 40))):
 REP["times"]["relax"] = round(time.time() - t, 2)
 # the whole garment, not only the loose set: nothing of it under the floor
 REP["cloth_min_z_m"] = round(float(X[_cloth, 2].min()), 3)
-REP["cloth_under_floor"] = int((X[_cloth, 2] < FLOOR_Z - 0.02).sum())
+# (4 cm: a trouser cuff or a sole's edge a couple of centimetres into the floor on a low seat is not cloth through
+# the floor; the gate is for a skirt or coat hanging 10 cm under it)
+REP["cloth_under_floor"] = int((X[_cloth, 2] < FLOOR_Z - 0.04).sum())
 if JOB.get("lie"):
     # lying: no cloth through the mattress (the posed outfit's back lies on it); the skin slot is the body's own
     _cl = np.ones(nv, bool)

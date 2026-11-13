@@ -146,7 +146,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
         rc = recs.get(it["asset"]) or {}
         d = re.split(r"[,:;.]", rc.get("description") or "", maxsplit=1)[0].strip()
         if rc.get("piece_kind") and rc.get("look"):          # a piece made on request: its kind and its own look
-            d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look']})"
+            d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look'].replace(CABIN_LOOK, '')})"   # (not how it was drawn)
         d = d or (it.get("name") or "").replace("_", " ")
         if out.get("style") and d.lower().startswith(out["style"].lower() + " "):
             d = d[len(out["style"]) + 1:]         # (the period is said once, for the room)
@@ -161,8 +161,9 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
             + "; ".join(held) + ".", kw.get("surfaces") or "")
 
 
-CABIN_LOOK = ("the whole inside of this cabin as one open model, its roof and near side taken off so the seats and "
-              "controls can be seen and reached: ")
+CABIN_LOOK = ("the whole cabin as one open model for filming inside it: no glass in its canopy frame, and the nose "
+              "cut away just ahead of the instrument panel, so that from in front and above one looks over the panel "
+              "straight at the seats: ")
 
 
 def with_concept(spec: dict, concept: dict) -> dict:

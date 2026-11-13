@@ -26,6 +26,7 @@ import config as C  # noqa: E402
 import pieces as P  # noqa: E402
 
 REFS = C.LIBRARY / "_refs"
+SEAT_W_M = 0.56                         # the width between a seat's sides that an adult takes
 CHAIN_WAIT_S = 2400                     # the bake and import chain is detached: the record is waited for this long
 MEASURE = {"sit": [sys.executable, str(HERE.parent / "scenes" / "seatbox.py")],
            "seat": [sys.executable, str(HERE.parent / "scenes" / "seatbox.py")],
@@ -83,6 +84,27 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
             log(f"{aid}: {need} box rc={r.returncode}")
             if r.returncode:
                 return {"asset_id": aid, "ok": False, "why": f"no {need} box could be measured on it"}
+    # a piece people sit INSIDE is sized by its seat, not by its kind's box (a cabin made to a fixed height came
+    # out with a seat 0.3 m wide, the pilot taller than the whole cockpit): made again at the scale that gives the
+    # measured seat a person's width, once
+    seat = json.loads(record(aid, library).read_text()).get("seat") or {}
+    if seat.get("inside") and seat.get("width_m") and not req.get("_resized"):
+        k = max(1.0, min(2.5, SEAT_W_M / float(seat["width_m"])))
+        if k > 1.1:
+            spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]])
+            sp.write_text(json.dumps(spec, indent=1))
+            import shutil
+            shutil.rmtree(library / "prop" / aid, ignore_errors=True)
+            log(f"{aid}: its seat is {seat['width_m']} m wide; made again {k:.2f} times the size")
+            r = run(argv)
+            t_end = time.time() + CHAIN_WAIT_S
+            while not record(aid, library) and time.time() < t_end:
+                time.sleep(10)
+            if not record(aid, library):
+                return {"asset_id": aid, "ok": False, "why": "no library record after the resize"}
+            for need in req.get("needs") or []:
+                if need in MEASURE:
+                    run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
     # the record says which kind of piece it was made as and with what look (the lookup reads both)
     rp = record(aid, library)
     rec = json.loads(rp.read_text())
