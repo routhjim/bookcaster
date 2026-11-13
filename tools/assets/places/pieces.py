@@ -375,6 +375,13 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
             row.update(status="unresolved", reason=f"kind {p.get('kind')!r} is not in PIECE_KINDS")
         else:
             hits = lookup(p, records, K, threshold, allow_scripted)
+            if p.get("source"):
+                # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
+                # the asset already made from that same picture serves, never a near match by words
+                want = generation_request(p, K)["asset_id"]
+                hits = [h for h in hits if h["asset_id"] == want] or \
+                    [{"asset_id": want, "score": 1.0, "why": "made from this piece's own picture", "others": []}
+                     for r in records if r["asset_id"] == want][:1]
             if hits:
                 row.update(status="library", asset_id=hits[0]["asset_id"], score=hits[0]["score"],
                            why=hits[0]["why"], others=[{"asset_id": h["asset_id"], "score": h["score"]}

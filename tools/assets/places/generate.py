@@ -116,6 +116,29 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
         for need in req.get("needs") or []:
             if need in MEASURE:
                 run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+    # a bunk is sized by the room over its lower tier: made again, once, at the scale that lets a person sit there
+    sup_ = next((x for x in json.loads(record(aid, library).read_text()).get("supports") or []
+                 if x.get("posture") == "lying"), None)
+    if sup_ and sup_.get("headroom_m") and sup_["headroom_m"] < SIT_ROOM_M and not req.get("_tiered"):
+        k = min(2.0, SIT_ROOM_M / float(sup_["headroom_m"]))
+        spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]])
+        sp.write_text(json.dumps(spec, indent=1))
+        import shutil
+        shutil.rmtree(library / "prop" / aid, ignore_errors=True)
+        log(f"{aid}: {sup_['headroom_m']} m over its lower tier; made again {k:.2f} times the size")
+        run(argv)
+        t_end = time.time() + CHAIN_WAIT_S
+        while not record(aid, library) and time.time() < t_end:
+            time.sleep(10)
+        if not record(aid, library):
+            return {"asset_id": aid, "ok": False, "why": "no library record after the resize"}
+        rp1 = record(aid, library)
+        rec1 = json.loads(rp1.read_text())
+        rec1.update({k_: rec0[k_] for k_ in ("piece_kind", "look", "seats_abreast") if k_ in rec0})
+        rp1.write_text(json.dumps(rec1, indent=1))
+        for need in req.get("needs") or []:
+            if need in MEASURE:
+                run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
     rp_ = record(aid, library)
     rec_ = json.loads(rp_.read_text())
     es = edge_seats(rec_)
@@ -131,6 +154,7 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
     return {"asset_id": aid, "ok": True, "why": "made"}
 
 
+SIT_ROOM_M = 0.95                       # the room a person needs over a bunk's lower tier to sit on its edge
 EDGE_DEPTH_M = 0.5                      # how far in from a bed's edge a sitter's back plane is taken
 PLACE_W_M = 0.6                         # the width one person takes on a bed's edge
 

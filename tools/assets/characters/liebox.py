@@ -53,7 +53,42 @@ def glb_points(path: Path) -> np.ndarray:
     return np.stack([g[:, 0], -g[:, 2], g[:, 1]], 1)        # glTF y-up -> asset x, y, z (front -y)
 
 
-def lie_box(P: np.ndarray) -> dict:
+TIER_GAP_M = 0.35         # two lying surfaces one above the other stand at least this far apart
+
+
+def tiers(P: np.ndarray) -> list:
+    """The heights of the bed's lying surfaces, lowest first: the levels at which the middle of its footprint holds
+    most of its vertices (a mattress top is a broad level sheet of them; one for a bed, two for a bunk)."""
+    x, y, z = P[:, 0], P[:, 1], P[:, 2]
+    mx, my = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
+    mid = (np.abs(x - mx) < (x.max() - x.min()) * 0.3) & (np.abs(y - my) < (y.max() - y.min()) * 0.3)
+    zs = z[mid]
+    if len(zs) < 50:
+        return []
+    hist, edges = np.histogram(zs, bins=np.arange(zs.min(), zs.max() + 0.04, 0.02))
+    out = []
+    for i in np.argsort(hist)[::-1]:
+        if hist[i] < 0.3 * hist.max():
+            break
+        zc = float(edges[i] + 0.01)
+        if all(abs(zc - t) >= TIER_GAP_M for t in out):
+            out.append(zc)
+    return sorted(out)
+
+
+def lie_box(P: np.ndarray, whole: bool = True) -> dict:
+    # a bunk: the lying surface people use is the lowest one, measured with what stands over it taken away
+    tz = tiers(P) if whole else []
+    if len(tz) >= 2:
+        # (its extent is the tier's above it, which the mesh shows whole; the lower one is half hidden in the
+        # shape model's mesh and measured a patch 0.6 m long)
+        low = lie_box(P, False)
+        up_z = low["box"]["top_z_m"]
+        low["box"]["top_z_m"] = low["cover_z_m"] = round(tz[0], 3)
+        if low.get("pillow_z_m") is not None:
+            low["pillow_z_m"] = round(tz[0] + (low["pillow_z_m"] - up_z), 3)
+        low.update(tiers=len(tz), headroom_m=round(tz[1] - tz[0], 3))
+        return low
     x, y, z = P[:, 0], P[:, 1], P[:, 2]
     x0, y0 = x.min(), y.min()
     ix = ((x - x0) / CELL).astype(int)
@@ -83,6 +118,10 @@ def lie_box(P: np.ndarray) -> dict:
     ok[np.isnan(top)] = False
     # the connected run of surface cells round the middle
     seen = np.zeros_like(ok)
+    if not ok[cx, cy] and ok.any():          # (the middle cell holds no surface vertex: the nearest that does)
+        ii, kk_ = np.nonzero(ok)
+        j_ = int(np.argmin((ii - cx) ** 2 + (kk_ - cy) ** 2))
+        cx, cy = int(ii[j_]), int(kk_[j_])
     stack = [(cx, cy)] if ok[cx, cy] else []
     while stack:
         i, k = stack.pop()

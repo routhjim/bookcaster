@@ -76,7 +76,8 @@ def test_places_come_from_the_plans_words(lib, tmp_path, monkeypatch):
     assert "marks" not in ch["b"]                                                    # a seat is an exact place
     desk = [-1.6, -1.6]
     assert 0.5 <= math.dist(ch["a"]["position"], desk) <= 1.7
-    assert math.dist(ch["c"]["position"], ch["a"]["position"]) <= 1.0                # "beside" him
+    assert 1.1 <= math.dist(ch["c"]["position"], ch["a"]["position"]) <= 1.3         # "beside" him: near, and a
+    # camera can still show one face past the other's head (the standing gap, from_plan.PERSON_GAP_M)
     assert specs[0]["set"] == "room_x"
 
 
