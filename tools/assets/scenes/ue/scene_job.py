@@ -110,6 +110,11 @@ def measure(key, body, face, spec, head_top_off):
     J = {n: sock(body, n) for n in POSE_JOINTS if body.does_socket_exist(n)}
     J.update({n: sock(face, n) for n in EYES})
     out["joints"] = {n: [round(c, 4) for c in to_set(v)] for n, v in J.items()}
+    # the trunk's own bones as the engine turned them (what cloth bound to one bone alone rides on)
+    out["bone_rot"] = {}
+    for n in ("pelvis", "spine_03"):
+        r_ = body.get_socket_rotation(n)
+        out["bone_rot"][n] = [round(r_.roll, 2), round(r_.pitch, 2), round(r_.yaw, 2)]
     return out
 
 
@@ -521,6 +526,16 @@ def run(job):
             a, body, face = comps(key)
             subj = measure(key, body, face, spec, head_off[key])
             r["subjects"][key]["measured"] = subj
+            fb = {}                                  # where each piece that follows the body really is (set frame)
+            for f_ in [a] + list(CR.S.get("followers", {}).get(id(a), [])):
+                for c_ in f_.get_components_by_class(unreal.SkeletalMeshComponent):
+                    m_ = c_.get_skinned_asset()
+                    if m_ is None:
+                        continue
+                    o_, e_ = unreal.SystemLibrary.get_component_bounds(c_)[:2]
+                    fb[m_.get_name()] = {"centre": [round(v, 3) for v in to_set(o_)],
+                                         "half_m": [round(e_.x / 100, 3), round(e_.y / 100, 3), round(e_.z / 100, 3)]}
+            r["subjects"][key]["piece_bounds"] = fb
             r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items() if k != "_anim"}
         # a lying person (the spec's "_lie": the bed's head and foot points) is read by the cameras from the bed's
         # side nearer whoever is with them

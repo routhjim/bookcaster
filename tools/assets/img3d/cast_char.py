@@ -1278,7 +1278,11 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     if p.returncode:
         raise RuntimeError(f"lie settle {bed} {variant} failed")
     sr = json.loads((W / f"lying_{bed}_{variant}" / "settle.json").read_text())
-    key = "".join(ch for ch in f"{bed}{variant}".upper() if ch.isalnum())[:14]
+    # the bed and the variant both in the name, whatever its length (cut at 14 characters the variant fell off a
+    # long bed id: the flat and the propped stance were one engine asset, and the last built was worn by both)
+    import hashlib
+    key = ("".join(ch for ch in bed.upper() if ch.isalnum())[:8] + hashlib.sha1(bed.encode()).hexdigest()[:4].upper()
+           + variant[:1].upper())
     dest = f"/Game/Char/Outfit{tag}L{key}"
     ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
         "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),

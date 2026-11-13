@@ -118,7 +118,13 @@ bpy.context.view_layer.update()
 # lying: the pose turns the whole body over at the pelvis (cast_char.lie_pose), so the pelvis takes the trunk's
 # direction, hips to neck, before anything else (without it the pelvis stayed upright here and only the spine and
 # the legs were bent down: cloth that rides the pelvis alone stood at a right angle to the body in the engine)
-if JOB.get("lie") and "neck_01" in JT:
+# (the direction is read from the legs, knees to hips: the lying pose turns nothing between the pelvis and the knees,
+# so they lie as the pelvis lies. Read from the hips to the neck it took a propped chest's 30 degrees with it, and
+# the bed's cover, bound to the pelvis, stood up at the foot end by that angle in every picture)
+if JOB.get("lie") and "calf_l" in JT and "calf_r" in JT:
+    turn("pelvis", (head("thigh_l") + head("thigh_r")) / 2 - (head("calf_l") + head("calf_r")) / 2,
+         mid_t - (JT["calf_l"] + JT["calf_r"]) / 2)
+elif JOB.get("lie") and "neck_01" in JT:
     turn("pelvis", head("neck_01") - (head("thigh_l") + head("thigh_r")) / 2, JT["neck_01"] - mid_t)
 turn("pelvis", head("thigh_l") - head("thigh_r"), JT["thigh_l"] - JT["thigh_r"])
 # spine: the chain from the pelvis bends toward the posed neck (spread over spine_01..05)
