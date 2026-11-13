@@ -190,6 +190,11 @@ def with_concept(spec: dict, concept: dict) -> dict:
         if c.get("crop"):                    # its own part of the concept picture: the drawing it is shaped from
             p["source"] = c["crop"]
         kept.append(p)
+    for p in kept:                           # a bed added for a place people lie in is the picture's bed again
+        if not p.get("source"):
+            twin = next((q for q in kept if q["kind"] == p["kind"] and q.get("source")), None)
+            if twin and p["id"] not in chk:
+                p.update(source=twin["source"], look=twin.get("look") or p.get("look"))
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
     for i, sn in enumerate(concept.get("seen") or []):
@@ -280,6 +285,34 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
     out["view"] = view_spec(words)
 
 
+def with_beds(spec: dict) -> dict:
+    """Every place of the plan where someone lies has a bed. A lying phrase that lands on a piece nobody can lie on
+    (an alcove written as its curtain) gets a bed of its own beside that piece, the phrase moved onto it, and the
+    room the next size up for it (grandfather was laid in the family's one bunk, three and four to a bed)."""
+    K = json.loads((HERE.parent / "places" / "piece_kinds.json").read_text())["kinds"]
+    kind = {p["id"]: p["kind"] for p in spec.get("pieces") or []}
+    named = spec.get("named_places") or {}
+    need = {}
+    for ph in spec.get("_lying_phrases") or []:
+        at = named.get(ph)
+        if at in kind and (K.get(kind[at]) or {}).get("needs") != "lie":
+            need.setdefault(at, []).append(ph)
+    if not need:
+        return spec
+    sp = json.loads(json.dumps(spec))
+    look = next((p.get("look") for p in sp["pieces"] if (K.get(p["kind"]) or {}).get("needs") == "lie"), "")
+    for n, (at, phs) in enumerate(need.items()):
+        bid = f"b{n + 1}"
+        sp["pieces"].append({"id": bid, "kind": "bed", "look": look, "against": "wall", "phrases": phs})
+        sp.setdefault("relations", []).append({"a": bid, "rel": "beside", "b": at})
+        for ph in phs:
+            sp["named_places"][ph] = bid
+    sizes = json.loads((HERE.parent / "scenes" / "place_kinds.json").read_text())["SIZES"]
+    if sp.get("size") in sizes[:-1]:
+        sp["size"] = sizes[sizes.index(sp["size"]) + 1]
+    return sp
+
+
 CROWD_M2 = 20.0                  # floor per bystander: a crowd is a few figures far off, never a full room
 CROWD_MAX = 6
 
@@ -353,6 +386,7 @@ def main():
     a = sys.argv[1:]
     spec = json.loads(Path(a[0]).read_text())
     spec = spec.get("sheet", spec)
+    spec = with_beds(spec)
     if "--concept" in a:
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
     spec = with_crowd(spec)

@@ -188,7 +188,15 @@ class Story:
         rc = llm(f"spec_{self.places[place]['slug']}", d / "spec.log", [[
             PY, HERE / "scenes" / "place_spec.py", self.plan_p, d / "shots.txt", self.timeline, place,
             d / "place_spec.json", "--cache", d / "cache"]])
-        return (d / "place_spec.json").exists() and rc in (0, 1)        # (1: written with faults, reported there)
+        if not (d / "place_spec.json").exists() or rc not in (0, 1):    # (1: written with faults, reported there)
+            return False
+        # where the plan has people lying, by its own place phrases (the set builder gives each such place a bed)
+        lying = list(dict.fromkeys(str(p.get("at")) for i in self.shots_of(place) for p in self.plan[i][0].get("people") or []
+                                   if p.get("at") and ("ly" in str(p.get("pose")) or "lie" in str(p.get("pose")))))
+        sp = json.loads((d / "place_spec.json").read_text())
+        sp["_lying_phrases"] = lying
+        (d / "place_spec.json").write_text(json.dumps(sp, indent=1))
+        return True
 
     def step_concept(self, place):
         d = self.d(place)
