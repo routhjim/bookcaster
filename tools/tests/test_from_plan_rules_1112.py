@@ -289,16 +289,22 @@ def test_a_reach_places_the_reacher_beside_the_seated_person(lib, tmp_path, monk
 
 def test_presence_changes_only_on_a_stated_exit_and_entrance(lib, tmp_path, monkeypatch):
     talk = shot("talk", [], speaker=A, listener=B)
-    shots = {"quiet-1": OPEN, "talk-2": talk, "talk-3": talk, "talk-4": talk}
+    shots = {"quiet-1": OPEN, "talk-2": talk, "talk-3": talk, "talk-4": talk, "talk-5": talk}
     specs, facts = run(tmp_path, monkeypatch, shots)
     for sid in shots:                                                  # not being mentioned is not leaving
         assert set(facts[sid]["staged"]) == {"a", "b", "c"}
-    pass_ = {"exits": {"talk-3": [C_]}, "enters": {"talk-4": [C_]}}
+    pass_ = {"exits": {"talk-3": [C_]}, "enters": {"talk-5": [C_]}}
     specs, facts = run(tmp_path, monkeypatch, shots, pass_=pass_)
     assert set(facts["talk-2"]["staged"]) == {"a", "b", "c"}
-    assert set(facts["talk-3"]["staged"]) == {"a", "b"}
-    assert set(facts["talk-4"]["staged"]) == {"a", "b", "c"}
-    assert facts["talk-4"]["staged"]["c"]["position"] == facts["talk-2"]["staged"]["c"]["position"]   # back where he left
+    assert set(facts["talk-3"]["staged"]) == {"a", "b", "c"}           # he goes out during it: its opening has him
+    assert set(facts["talk-4"]["staged"]) == {"a", "b"}
+    assert set(facts["talk-5"]["staged"]) == {"a", "b", "c"}
+    assert facts["talk-5"]["staged"]["c"]["position"] == facts["talk-2"]["staged"]["c"]["position"]   # back where he left
+    # the plan's own list does not bring back someone the passage sent out
+    listed = shot("quiet", [person(C_, "standing", "near the desk", "")])
+    specs, facts = run(tmp_path, monkeypatch, {"quiet-1": OPEN, "talk-2": talk, "quiet-3": listed},
+                       pass_={"exits": {"quiet-1": [C_]}})
+    assert "c" not in facts["talk-2"]["staged"] and "c" not in facts["quiet-3"]["staged"]
 
 
 def test_a_person_the_passage_has_already_there_is_present_from_the_first_shot(lib, tmp_path, monkeypatch):

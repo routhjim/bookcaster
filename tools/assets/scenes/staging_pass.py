@@ -243,13 +243,23 @@ def main():
                 res.setdefault("present_at_start", {})[nm] = things[keys.index(where)]["name"] if where in keys else NOT
         # presence is like the worn state: a person stays in the room until this shot's OWN span says they go out
         # (and stays out until it says they come in); not being mentioned is not leaving (asked "who is in the
-        # room", the model dropped a man not named in a shot's lines, 11-12)
+        # room", the model dropped a man not named in a shot's lines, 11-12). What a speaker tells of is not the
+        # scene: a woman telling how she ran from her room that night was sent out of the room she told it in
         here = [nm for nm in names if nm not in gone]
-        out_ = ask.subset(q_subset(own, st, "Which of these people go out of the room during this passage (the "
-                                             "passage says so)? Answer none if nobody leaves.", here), here) if here else []
-        back = ask.subset(q_subset(own, st, "Which of these people come into the room during this passage (the "
-                                            "passage says so)? Answer none if nobody comes in.", sorted(gone)),
+        out_ = ask.subset(q_subset(own, st, "Which of these people go out of the room during this passage, in "
+                                             "the scene's own present (the passage shows them leave now; what "
+                                             "someone tells of or remembers from another time or place is not the "
+                                             "scene's present)? Answer none if nobody leaves.", here), here) if here else []
+        back = ask.subset(q_subset(own, st, "Which of these people come into the room during this passage, in "
+                                            "the scene's own present (the passage shows them come in now; what "
+                                            "someone tells of or remembers from another time or place is not the "
+                                            "scene's present)? Answer none if nobody comes in.", sorted(gone)),
                           sorted(gone)) if gone else []
+        # someone whose own line is still to come in this scene has not gone: the audio has them speak here later
+        # (a man told to go, who answers that he will go when he has had his say, was sent out before he said it)
+        if isinstance(out_, list):
+            later = {(es.get(x) or {}).get("speaker") or plan[x][0].get("speaker") for x in ids[n + 1:]}
+            out_ = [x for x in out_ if x not in later]
         if isinstance(out_, list) and out_:
             res.setdefault("exits", {})[sid] = out_
             gone.update(out_)

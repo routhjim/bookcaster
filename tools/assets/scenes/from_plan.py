@@ -353,7 +353,8 @@ def main():
         # presence: a person leaves only on an exit the passage states in this shot's own span, and comes back on a
         # stated entrance, at the place they left from; a pass without exit answers (only "who is in the room")
         # takes nobody out (not being mentioned is not leaving, 11-12)
-        for x in (sp.get("exits") or {}).get(sid) or []:
+        # (someone who goes out during a shot is in that shot's opening picture, and gone from the next shot's)
+        for x in (sp.get("exits") or {}).get(ids[n - 2] if n > 1 else None) or []:
             if x in names and names[x] in state:
                 away[names[x]] = state.pop(names[x])
                 used.append(f"{names[x]} goes out of the room")
@@ -387,6 +388,12 @@ def main():
             k = names.get(p["name"])
             if not k:
                 f["missing"].append(f"library figure for a person ({p['name'][:1]}.)")
+                continue
+            # a person the passage sent out stays out until it brings them back, whatever the plan's list says
+            # (the plan kept a woman by the fire through the scene after she had left; the pass never sends out
+            # someone who still has a line to speak in the scene)
+            if k in away:
+                used.append(f"{k} is listed by the plan but has gone out (the passage)")
                 continue
             prev = state.get(k)
             if prev and prev["at"] == p.get("at") and prev["pose"] == p.get("pose"):
