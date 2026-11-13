@@ -46,11 +46,42 @@ def _facing_angle(f):
     return math.atan2(f[1], f[0])
 
 
+LIE_EL_DEG = 30.0                                  # a lying person is seen from above their side, never level
+LIE_FRAME_H_M = {"close": 0.6, "medium": 1.05}     # frame height: head and shoulders; head to the hips
+
+
+def lay(subject, lie, toward=None):
+    """A lying person's measured block as the camera reads it. The body lies along the bed, the face up: the side
+    the camera comes from (the block's "facing" and the head's forward in plan) is the bed's side nearer `toward`
+    (whoever is with them, else the room's middle), square to the body; "lying" keeps the body's own axis (head
+    to foot) and length. The heights stay the measured ones (they are the bed's, not a standing person's)."""
+    hx, hy = lie["head_xy"]
+    ax = _unit([lie["foot_xy"][0] - hx, lie["foot_xy"][1] - hy, 0.0])
+    side = [-ax[1], ax[0]]
+    ref = toward or [0.0, 0.0]
+    if (ref[0] - hx) * side[0] + (ref[1] - hy) * side[1] < 0:
+        side = [-side[0], -side[1]]
+    return dict(subject, facing=side, head_fwd_xy=side,
+                lying={"axis": [ax[0], ax[1]], "length_m": round(math.dist(lie["head_xy"], lie["foot_xy"]), 3)})
+
+
 def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5):
     """Camera {position, target, focal_mm, distance_m, frame_h_m} for a close / medium / full shot of a subject."""
     head_h = subject["head_top_z"] - subject["chin_z"]
     eye = subject["eye_z"]
-    if kind == "close":
+    if subject.get("lying") and kind in ("close", "medium", "full"):
+        # lying: the frame is sized in metres along the bed (a head's height in z says nothing here), aimed at the
+        # head, the chest or the body's middle, from above the bed's side
+        ex, cx, px = subject["eye_xy"], subject["chest_xy"], subject["pelvis_xy"]
+        if kind == "close":
+            fh, xy = LIE_FRAME_H_M["close"], ex
+        elif kind == "medium":
+            fh, xy = LIE_FRAME_H_M["medium"], [(ex[0] + cx[0]) / 2, (ex[1] + cx[1]) / 2]
+        else:
+            fh, xy = subject["lying"]["length_m"] * (1 + 2 * FULL_MARGIN) * res[1] / res[0] * 1.3, px
+        cz = subject["waist_z"]
+        el = max(el, LIE_EL_DEG)
+    elif kind == "close":
         fh = CLOSE_HEADS * head_h
         cz = eye - fh * (0.5 - CLOSE_EYE_LINE)
         xy = subject["eye_xy"]

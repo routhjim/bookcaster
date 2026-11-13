@@ -125,6 +125,8 @@ def resolve(spec, cams_wanted=None):
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
                       "body_pose": bpose, "face_pose": c.get("face_pose")}
+        if c.get("_lie"):               # lying in a bed (lying.py): the bed's head and foot points, for the cameras
+            chars[key]["_lie"] = c["_lie"]
         bp_deps = cj.get("bp_deps", [])
     set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
     proj = proj or set_proj

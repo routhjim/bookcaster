@@ -510,6 +510,14 @@ def run(job):
             subj = measure(key, body, face, spec, head_off[key])
             r["subjects"][key]["measured"] = subj
             r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items() if k != "_anim"}
+        # a lying person (the spec's "_lie": the bed's head and foot points) is read by the cameras from the bed's
+        # side nearer whoever is with them
+        for key, spec in job["characters"].items():
+            if spec.get("_lie"):
+                oth = [v["measured"]["pelvis_xy"] for k, v in r["subjects"].items()
+                       if k != key and k in job["characters"] and not job["characters"][k].get("_lie")]
+                r["subjects"][key]["measured"] = framing.lay(r["subjects"][key]["measured"], spec["_lie"],
+                                                             oth[0] if oth else None)
         for key, f in (job.get("figures") or {}).items():
             r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)
