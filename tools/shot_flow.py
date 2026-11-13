@@ -167,10 +167,14 @@ Rules:
 - WHEN: nothing of an event (an arrival, a light, a sound, a change) is in any shot before the second its sentence
   starts.
 - "place": where the shot is, one of the passage's places. "framing": "wide", "medium" or "close".
-- "people": everyone in the OPENING picture, left to right, only from the passage's names, each with "name", "side"
+- "people": everyone in the OPENING picture, left to right, only from the passage's names (someone the passage puts
+  in the place who is not among its names is left out of "people": no named person ever stands in for them, and
+  nobody is shown in a place the passage gives to someone else), each with "name", "side"
   ("left", "centre" or "right"), "pose" (standing, sitting, lying, kneeling or crouching: as the passage says, someone
   leaning back in a chair is sitting), "at" (where on the set: "in the armchair by the fire", "at the writing desk",
-  "in bed"), "facing" (toward whom or what) and "holds" (what is in their hands, or ""). [] for a thing alone.
+  "in bed"; where the passage itself says where someone is, "at" is that place in the passage's own words, and two
+  people the passage puts in different parts of the place are never given the same one), "facing" (toward whom or
+  what) and "holds" (what is in their hands, or ""). [] for a thing alone.
 - "setting": one sentence for the rest of the OPENING picture: the things and light the shot needs, every object the
   action will use, set up for the action's first moment (his hand already at the drawer; a thing the action takes out
   is in sight or in an open drawer). Never a person's position or posture here (they are in "people"), nothing in mid-action, never
@@ -2825,7 +2829,7 @@ The people of the book: {people}
 THE CHAPTER, each line [seconds from its start] who: the words:
 {text}
 
-Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the people there, also the silent ones"],
+Reply with JSON only: {{"scenes": [{{"start": 0.0, "place": "...", "who": ["the people there, also the silent ones, each by their own name: someone the chapter gives no name is written in the chapter's own words for them, never under another person's name"],
 "what": "one sentence: what happens in the scene", "cutaways": [{{"place": "...", "teller": "the one who tells of it",
 "from": <the second the telling starts>, "to": <the second it ends>}}],
 "opens": "how things stand as it opens, for a painter: what each one holds, postures, the time of day and the
