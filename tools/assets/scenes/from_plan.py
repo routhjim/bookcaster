@@ -160,6 +160,10 @@ def thing_for(at: str, things: list, names: dict) -> tuple:
     return None, None
 
 
+PERSON_GAP_M = 1.1        # standing people keep this between them (at 0.7 m, nose to nose, one camera in four could
+                          # show a face past the other's head; at 1.1 m, four in six: measured on a failed pair)
+
+
 def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12) -> list:
     """Every allowed mark for a place given only as a relation or a region ("beside him", "near the desk"): free
     floor points within the place's reach, best first (free_mark's order); the camera rules choose among them."""
@@ -169,7 +173,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
         r = r10 / 10
         for a in range(0, 360, 20):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or any(math.dist(p, o) < 0.55 for o in others):
+            if abs(p[0]) > W or abs(p[1]) > D or any(math.dist(p, o) < PERSON_GAP_M for o in others):
                 continue
             if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
                    and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
@@ -198,7 +202,7 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
             if abs(p[0]) > W or abs(p[1]) > D:
                 continue
-            if any(math.dist(p, o) < 0.55 for o in others):
+            if any(math.dist(p, o) < PERSON_GAP_M for o in others):
                 continue
             if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
                    and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
