@@ -118,6 +118,12 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             dx, dy, dz = kit["lights"]["fire_offset_m"]
             lights.append(dict(kit["lights"]["fire"], position=[round(f["position"][0] - fx * dy, 3),
                                                               round(f["position"][1] - fy * dy, 3), dz]))
+    # a piece people sit inside (a cabin) is lit inside: the room's light does not reach under its roof (the pilot
+    # in his cockpit was staged in the dark)
+    for it in fixtures + props:
+        if (it.get("name") or "").startswith("vehicle_cabin"):
+            lights.append(dict(kit["lights"]["lamp"], lumens=kit["lights"]["lamp"]["lumens"] * 3, shadows=False,
+                               position=[it["position"][0], it["position"][1], 1.6]))
     for pr in props:
         if "lamp" in (pr.get("asset") or "") or (pr.get("name") or "").startswith("lamp"):
             lights.append(dict(kit["lights"]["lamp"], position=[pr["position"][0], pr["position"][1],
@@ -190,7 +196,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
         sp.update(kind="cockpit", openings=[], relations=[], pieces=[{
             "id": "p1", "kind": "vehicle_cabin", "look": CABIN_LOOK + ", ".join(dict.fromkeys(seen)),
             "phrases": [ph for p in spec.get("pieces") or [] for ph in p.get("phrases") or []], "against": "free",
-            "source": concept.get("concept")}])
+            "source": concept.get("concept"), "seats_abreast": int(concept.get("seats_abreast") or 1)}])
         sp["named_places"] = {ph: "p1" for ph in spec.get("named_places") or {}}
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words")}
     return sp

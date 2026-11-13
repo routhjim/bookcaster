@@ -314,6 +314,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             "tags": sorted({kind, *([d["parent"]] if d.get("parent") else []), "generated-on-request"}),
             "tier": "mid", "size_m": d["size_m"], "size_tolerance": 0.35, "placement": d["placement"],
             "source": "generated", "piece_kind": kind, "look": look}
+    if piece.get("seats_abreast"):
+        spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
     steps = [
         {"step": "draw", "what": "the reference set (a 2x2 turnaround sheet cut into four views) from the look line",

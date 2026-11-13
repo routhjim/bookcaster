@@ -119,13 +119,14 @@ def front_of(P: np.ndarray) -> list:
     return best[1]
 
 
-def cabin_seat_box(P: np.ndarray) -> dict:
+def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
     """The seats INSIDE an enclosure (a cockpit, a cab, a carriage): a chair's measure reads the top of the centre
     line, which in a cabin is its roof or canopy. Here a seat is a level patch with headroom above it (no geometry
-    for 0.55 m), walled in on both sides within 0.45 m, with the cabin rising on one end only; of such patches the
-    low ones are the seats (a console between them stands higher). The sitter faces the cabin's tall end (its
-    controls and windscreen), not away from a back as on a chair. -> the seat block, in the seat's frame (front -y),
-    with "front_asset" the facing in the asset's frame (the largest seat is the one measured)."""
+    for 0.55 m), walled in on both sides within 0.45 m, with the cabin rising on one end only: together they are the
+    cabin's interior. It is split side to side into as many lanes as the cabin has seats abreast (the record's
+    "seats_abreast", read from the place's concept picture), and the first lane's low level is its seat. The sitter
+    faces the cabin's tall end (its controls and windscreen), not away from a back as on a chair. -> the seat block,
+    in the seat's frame (front -y), with "front_asset" the facing in the asset's frame."""
     import collections
     x, y, z = P[:, 0], P[:, 1], P[:, 2]
     C = 0.04
@@ -155,45 +156,33 @@ def cabin_seat_box(P: np.ndarray) -> dict:
         bm = has(i - 1, i + 2, j - R, j - 2, zc + 0.3, zc + 1.0)
         if bp != bm:
             cand[(i, j)] = 1 if bp else -1
-    seen, patches = set(), []
-    for k in cand:
-        if k in seen:
-            continue
-        st, comp = [k], []
-        while st:
-            c = st.pop()
-            if c in seen or c not in cand:
-                continue
-            seen.add(c)
-            comp.append(c)
-            st += [(c[0] + 1, c[1]), (c[0] - 1, c[1]), (c[0], c[1] + 1), (c[0], c[1] - 1)]
-        if len(comp) >= 20:
-            ci = np.array(comp)
-            patches.append({"n": len(comp), "x": [x0 + (ci[:, 0].min() - 1) * C, x0 + (ci[:, 0].max() + 2) * C],
-                            "y": [y0 + ci[:, 1].min() * C, y0 + (ci[:, 1].max() + 1) * C],
-                            "z": float(np.median([surf[c] for c in comp])),
-                            "tall": float(np.mean([cand[c] for c in comp]))})
-    if not patches:
+    if not cand:
         raise SystemExit("no seat found inside the cabin")
-    low = min(p["z"] for p in patches)
-    seats = sorted((p for p in patches if p["z"] <= low + 0.15), key=lambda p: -p["n"])
-    f = 1.0 if np.mean([p["tall"] for p in seats]) > 0 else -1.0        # the sitter faces the cabin's tall end
-    sx = -f                                                             # asset -> seat frame (front -y): turn by f
-    main = seats[0]
-    xs = sorted([sx * main["x"][0], sx * main["x"][1]])
-    ys = sorted([-f * main["y"][0], -f * main["y"][1]])
-    return {"seat_z_m": round(main["z"], 3), "front_y_m": round(ys[0], 3), "back_y_m": round(ys[1], 3),
-            "inner_x_m": [round(xs[0], 3), round(xs[1], 3)], "arm_z_m": None, "width_m": round(xs[1] - xs[0], 3),
-            "depth_m": round(ys[1] - ys[0], 3),
-            "places": [round((xs[0] + xs[1]) / 2, 3)],      # (the one measured seat: its own inner faces above)
-            "front_asset": [0.0, f], "inside": True}
+    ks = np.array(list(cand))
+    f = 1.0 if np.mean(list(cand.values())) > 0 else -1.0             # the sitter faces the cabin's tall end
+    xl, xr = x0 + ks[:, 0].min() * C, x0 + (ks[:, 0].max() + 1) * C     # the walled interior, side to side
+    lane_w = (xr - xl) / max(1, seats)
+    # the first lane from the asset's -x side is measured; its seat is its low level surface
+    lane = [k for k in cand if xl <= x0 + (k[0] + 0.5) * C < xl + lane_w]
+    zs = np.array([surf[k] for k in lane])
+    seat_z = float(np.percentile(zs, 30))
+    on = np.array([k for k in lane if abs(surf[k] - seat_z) < 0.12])
+    ya, yb = y0 + on[:, 1].min() * C, y0 + (on[:, 1].max() + 1) * C
+    sx = -f                                                             # asset -> seat frame (front -y)
+    xs = sorted([sx * xl, sx * (xl + lane_w)])
+    ys = sorted([-f * ya, -f * yb])
+    xs, ys, lane_w = [float(v) for v in xs], [float(v) for v in ys], float(lane_w)
+    return {"seat_z_m": round(seat_z, 3), "front_y_m": round(ys[0], 3), "back_y_m": round(ys[1], 3),
+            "inner_x_m": [round(xs[0], 3), round(xs[1], 3)], "arm_z_m": None, "width_m": round(lane_w, 3),
+            "depth_m": round(ys[1] - ys[0], 3), "places": [round((xs[0] + xs[1]) / 2, 3)],
+            "front_asset": [0.0, f], "inside": True, "seats_abreast": int(seats)}
 
 
 def for_asset(asset_dir: Path) -> dict:
     aj = json.loads((asset_dir / "asset.json").read_text())
     P = glb_points(asset_dir / aj["export"]["glb"])
     if aj.get("piece_kind") == "vehicle_cabin" or "vehicle_cabin" in (aj.get("tags") or []):
-        return cabin_seat_box(P)
+        return cabin_seat_box(P, int(aj.get("seats_abreast") or 1))
     f = front_of(P)
     # turn the points so the front is -y, measure there, keep the mesh's own front with the box
     yaw = np.arctan2(f[1], f[0]) - np.arctan2(-1.0, 0.0)

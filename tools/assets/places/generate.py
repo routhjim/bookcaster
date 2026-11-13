@@ -78,6 +78,12 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
         time.sleep(10)
     if not record(aid, library):
         return {"asset_id": aid, "ok": False, "why": "no library record after the bake and import chain"}
+    rp0 = record(aid, library)                      # what it was made as, before anything is measured on it
+    rec0 = json.loads(rp0.read_text())
+    rec0.update(piece_kind=req["kind"], look=req.get("look", ""))
+    if steps["spec"]["spec"].get("seats_abreast"):
+        rec0["seats_abreast"] = steps["spec"]["spec"]["seats_abreast"]
+    rp0.write_text(json.dumps(rec0, indent=1))
     for need in req.get("needs") or []:
         if need in MEASURE:
             r = run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
@@ -102,6 +108,10 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
                 time.sleep(10)
             if not record(aid, library):
                 return {"asset_id": aid, "ok": False, "why": "no library record after the resize"}
+            rp1 = record(aid, library)
+            rec1 = json.loads(rp1.read_text())
+            rec1.update({k: rec0[k] for k in ("piece_kind", "look", "seats_abreast") if k in rec0})
+            rp1.write_text(json.dumps(rec1, indent=1))
             for need in req.get("needs") or []:
                 if need in MEASURE:
                     run(MEASURE[need] + [str(library / "prop" / aid), "--write"])

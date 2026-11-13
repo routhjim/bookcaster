@@ -54,6 +54,8 @@ def read(concept: Path, spec: dict, ask) -> dict:
             "there": f"Is there a {name} in this picture? Answer yes or no.",
             "look": f"If there is a {name} in this picture, say in a few words what it is made of and its colour; "
                     "if there is none, answer none."}})
+    items.append({"id": "seats", "image": str(concept), "max_new_tokens": 4, "ask": {
+        "abreast": "How many seats for people are side by side in this picture? Answer with one number."}})
     a = ask(items)
     sp = re.sub(r"[^a-z]", "", str((a.get("space") or {}).get("space") or "").lower())
     space = next((k for k in ("cockpit", "outdoors", "room") if k in sp), "room")
@@ -72,7 +74,9 @@ def read(concept: Path, spec: dict, ask) -> dict:
         lk = re.sub(r"\s+", " ", str(r.get("look") or "")).strip().rstrip(".")
         sc[p["id"]] = {"in_picture": yes, "look": lk if yes and lk.lower() != "none" else ""}
     words = "; ".join(f"the {k}: {v[0].lower() + v[1:]}" for k, v in surf.items() if k != "light" and v)
-    return {"concept": str(concept), "space": space, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
+    m_ = re.search(r"\d+", str((a.get("seats") or {}).get("abreast") or ""))
+    abreast = max(1, min(4, int(m_.group(0)))) if m_ else 1
+    return {"concept": str(concept), "space": space, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
             "light": surf["light"], "seen": seen[:10], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")
             + (f" The light: {surf['light'][0].lower() + surf['light'][1:]}." if surf["light"] else "")}
