@@ -74,7 +74,10 @@ def stance(library: Path, base: str, bed: dict, propped: bool = False) -> str | 
     return next((w for w in want if (library / "character" / w / "character.json").exists()), None)
 
 
-def place(c: dict, bed: dict, cj: dict) -> dict:
+LIE_W_M = 0.55            # the width one lying person takes
+
+
+def place(c: dict, bed: dict, cj: dict, across: float = 0.0) -> dict:
     """The character spec as the lying stance on the bed: its position so that the stance's head lies on the
     pillow's centre, facing head to foot, the stance's own recorded pose."""
     fr = bed["frame"]
@@ -83,33 +86,42 @@ def place(c: dict, bed: dict, cj: dict) -> dict:
     hx, hy = (cj.get("lie") or {}).get("head_m", [0.0, 0.0, 0.0])[:2]
     out = {k: v for k, v in c.items() if k not in ("lying_from", "bed", "propped", "marks", "facing_to")}
     out["id"] = cj["id"]
-    out["position"] = [round(fr["head_xy"][0] - hx * lft[0] - hy * f_[0], 3),
-                       round(fr["head_xy"][1] - hx * lft[1] - hy * f_[1], 3)]
+    out["position"] = [round(fr["head_xy"][0] - (hx - across) * lft[0] - hy * f_[0], 3),
+                       round(fr["head_xy"][1] - (hx - across) * lft[1] - hy * f_[1], 3)]
     out["facing"] = [round(f_[0], 4), round(f_[1], 4)]
     out["body_pose"] = json.loads(json.dumps(cj["body_pose"]))
-    out["_lie"] = {"bed": bed["name"], "head_xy": [round(x, 3) for x in fr["head_xy"]],
-                   "foot_xy": [round(x, 3) for x in fr["foot_xy"]], "top_z_m": bed["sup"]["box"]["top_z_m"]}
+    sh_ = [across * lft[0], across * lft[1]]               # (across: this person's place across a shared bed)
+    out["_lie"] = {"bed": bed["name"], "head_xy": [round(fr["head_xy"][i] + sh_[i], 3) for i in (0, 1)],
+                   "foot_xy": [round(fr["foot_xy"][i] + sh_[i], 3) for i in (0, 1)],
+                   "top_z_m": bed["sup"]["box"]["top_z_m"]}
     return out
 
 
 def plan(spec: dict, library: Path) -> dict:
-    """Lay every character that names a bed ("lying_from" and "bed"). Returns {key: bed name}; edits spec."""
+    """Lay every character that names a bed ("lying_from" and "bed"). A bed takes as many as lie side by side
+    across its lie box (LIE_W_M each), spread evenly across it. Returns {key: bed name}; edits spec."""
     B = beds(library, library / "set" / spec["set"])
-    taken = {}
+    room = {n: max(1, int((b["sup"]["box"]["x_m"][1] - b["sup"]["box"]["x_m"][0] + 0.05) // LIE_W_M)) for n, b in B.items()}
+    taken, cjs = {}, {}
     for k, c in list(spec["characters"].items()):
         if not c.get("lying_from"):
             continue
         order = sorted(B, key=lambda n: (n != c.get("bed"), math.dist(B[n]["pos"], (c.get("position") or [0, 0])[:2])))
         for n in order:
-            if n in taken.values():
+            if list(taken.values()).count(n) >= room[n]:
                 continue
             vid = stance(library, c["lying_from"], B[n], bool(c.get("propped")))
             if not vid:
                 continue
-            cj = json.loads((library / "character" / vid / "character.json").read_text())
-            spec["characters"][k] = place(c, B[n], cj)
+            cjs[k] = json.loads((library / "character" / vid / "character.json").read_text())
             taken[k] = n
             break
         else:
             raise SystemExit(f"{k}: no bed in the set has a lying stance of {c['lying_from']}")
+    for n in set(taken.values()):
+        ks = [k for k in taken if taken[k] == n]
+        w = B[n]["sup"]["box"]["x_m"][1] - B[n]["sup"]["box"]["x_m"][0]
+        step = min(LIE_W_M, w / len(ks))
+        for j, k in enumerate(ks):
+            spec["characters"][k] = place(spec["characters"][k], B[n], cjs[k], (j - (len(ks) - 1) / 2) * step)
     return {"taken": taken, "beds": B}

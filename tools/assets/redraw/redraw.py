@@ -638,7 +638,9 @@ def main():
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
                         # one fixed wording from the entry's facts in every key (the text is the fact; the hair check
                         # holds the keys together against the person's median and re-draws outliers)
-                        lw_, miss = look_words(entry_facts(wv.get("id")), "her" if c2.get("noun") == "woman" else "his")
+                        # (a stand-in figure's hair is not this person's: their own sheet and words say theirs)
+                        lw_, miss = ("", []) if c2.get("stand_in") else look_words(
+                            entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his")
                         if lw_:
                             c2["wear"] = c2.get("wear", "") + "; " + lw_
                         if miss:

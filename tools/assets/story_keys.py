@@ -221,51 +221,68 @@ class Story:
             return False
         return sh([PY, HERE / "sets" / "build_set.py", self.set_dir(place) / "spec.json"], d / "build_set.log") == 0
 
+    def _cast_cmd(self, name):
+        fid, pr = self.figure_id(name), self.person(name)
+        w = self.work / "cast" / pr["slug"]
+        w.mkdir(parents=True, exist_ok=True)
+        return fid, w, [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
+                        "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
+                        "--scene-tool", HERE / "scenes"]
+
+    def _built(self, name) -> bool:
+        return name in self.cast and (C.LIBRARY / "character" / self.cast[name] / "character.json").exists()
+
     def step_cast(self, place):
         """Each person's figure (made once for the book), then their seated and lying stances for this set."""
         d = self.d(place)
-        poses = {n: set() for n in self.people_of(place)}
+        people = self.people_of(place)
+        poses = {n: set() for n in people}
         for i in self.shots_of(place):
             for p in self.plan[i][0].get("people") or []:
                 if p["name"] in poses:
                     poses[p["name"]].add(str(p.get("pose") or ""))
-        ok = True
-        ok_people = set(self.people_of(place))
-        for name in self.people_of(place):
-            fid, pr = self.figure_id(name), self.person(name)
-            w = self.work / "cast" / pr["slug"]
-            w.mkdir(parents=True, exist_ok=True)
-            base = [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
-                    "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
-                    "--scene-tool", HERE / "scenes"]
-            if (w / "FAILED").exists() and not (C.LIBRARY / "character" / fid / "character.json").exists():
-                log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'}); staged without them")
-                ok_people.discard(name)
+        for name in people:                                   # the figures
+            fid, w, base = self._cast_cmd(name)
+            if self._built(name):
                 continue
-            if not (C.LIBRARY / "character" / fid / "character.json").exists():
-                rc = sh(base + ["--until", "seats"], w / "run.log")
-                if rc and not (C.LIBRARY / "character" / fid / "character.json").exists():
-                    rc = sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")     # (a new round of drawings)
-                if not (C.LIBRARY / "character" / fid / "character.json").exists():
-                    log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}; staged without them")
-                    (w / "FAILED").write_text(time.strftime("%F %T"))      # (a build is long: not tried again unasked)
-                    ok_people.discard(name)
-                    continue
+            if (w / "FAILED").exists():
+                log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'})")
+                continue
+            if sh(base + ["--until", "seats"], w / "run.log") and not self._built(name):
+                sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")          # (a new round of drawings)
+            if not self._built(name):
+                log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}")
+                (w / "FAILED").write_text(time.strftime("%F %T"))      # (a build is long: not tried again unasked)
+        # someone whose own figure could not be built is staged with a stand-in: the built figure of another of
+        # the book's people of the same sex (this place's first), at their own height (scenes/stature.py); the
+        # redraw draws them from their own sheet and words, so only the pose and the place are the stand-in's
+        fem = lambda n: self.person(n)["noun"] in ("woman", "girl")                  # noqa: E731
+        built = sorted((n for n in self.cast if self._built(n)), key=lambda m: m not in people)
+        out, need = {}, {}
+        for k, n in enumerate(people):
+            own = n if self._built(n) else next((m for m in built if fem(m) == fem(n)), None)
+            if not own:
+                log(f"{place}: {n} has no figure and no stand-in; staged without them")
+                continue
+            out[n] = {"key": "abcdefgh"[k], "id": self.cast[own], **({"stand_in": own} if own != n else {})}
+            need.setdefault(own, set()).update(poses[n])
+            if own != n:
+                log(f"{place}: {n} is staged with {own}'s figure as a stand-in")
+        for own, ps in need.items():                         # the stances this set asks of each figure
+            fid, w, base = self._cast_cmd(own)
             lie = []
-            if any("ly" in q or "lie" in q for q in poses[name]):           # lying stances on this set's own beds
+            if any("ly" in q or "lie" in q for q in ps):                    # lying stances on this set's own beds
                 sys.path.insert(0, str(HERE / "scenes"))
                 import lying
                 beds = sorted({b["asset"] for b in lying.beds(C.LIBRARY, self.set_dir(place)).values()})
                 lie = ["--lie", "--lie-beds"] + beds if beds else []
-            if any("sit" in q or "seat" in q for q in poses[name]) or lie:
+            if any("sit" in q or "seat" in q for q in ps) or lie:
                 rc = sh(base + ["--from", "seats", "--set", self.places[place]["set"]] + lie,
                         w / f"stances_{self.places[place]['slug']}.log")
                 if rc:
-                    log(f"{place}: {name}'s stances for this set did not all build (rc {rc})")
-        (d / "cast.json").write_text(json.dumps(
-            {n: {"key": "abcdefgh"[k], "id": self.cast[n]} for k, n in enumerate(self.people_of(place))
-             if n in ok_people}, indent=1))
-        return ok
+                    log(f"{place}: {own}'s stances for this set did not all build (rc {rc})")
+        (d / "cast.json").write_text(json.dumps(out, indent=1))
+        return bool(out)
 
     def step_pass(self, place):
         d = self.d(place)
@@ -303,7 +320,8 @@ class Story:
         cast = json.loads((d / "cast.json").read_text())
         ss = json.loads((self.set_dir(place) / "spec.json").read_text())
         style = (self.book / "art_style.txt")
-        run = dict(REDRAW, cast={v["key"]: self.person(n)["words"] for n, v in cast.items()},
+        run = dict(REDRAW, cast={v["key"]: dict(self.person(n)["words"], **({"stand_in": True} if v.get("stand_in") else {}))
+                                 for n, v in cast.items()},
                    scenes=sorted(os.path.dirname(p) for p in glob.glob(str(d / "seq" / "*" / "result.json"))),
                    set=str(self.set_dir(place)), out=str(out),
                    extra_refs=[ss["concept"]] if ss.get("concept") else [],
