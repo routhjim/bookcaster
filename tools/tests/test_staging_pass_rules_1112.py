@@ -248,3 +248,20 @@ def test_subset_takes_the_names_given_and_none_is_empty():
 def test_a_span_is_the_timelines_lines_between_two_times():
     s = P.span(TIMELINE, 20.0, 30.0)
     assert "raises her veil" in s and "crossed the room" not in s and "veil raised" not in s
+
+
+def test_a_shot_is_placed_in_the_audio_by_its_own_line_never_by_a_short_line_elsewhere():
+    """A shot whose words begin inside a long speech has no line of its own to be found by: it sits by the shots
+    around it, not at a short line later in the chapter that its opening letters happen to begin with."""
+    tl = [{"t": 10.0, "text": "I shall hear the whole of it from the start."},
+          {"t": 14.0, "text": "The house was old and the land was gone. Nothing was left of it but the walls."},
+          {"t": 26.0, "text": "No."},
+          {"t": 900.0, "text": "I shall hear the whole of it from the start."}]
+    es = {"talk-1": {"t": 20.0, "words": "I shall hear the whole of it from the start."},
+          "talk-2": {"t": 24.0, "words": "The house was old and the land was gone."},
+          "talk-3": {"t": 28.0, "words": "Nothing was left of it but the walls."},
+          "talk-4": {"t": 36.0, "words": "No."}}
+    at = P.audio_times(tl, es, list(es))
+    assert at["talk-1"] == 10.0 and at["talk-2"] == 14.0
+    assert at["talk-3"] == pytest.approx(14.0 + (26.0 - 14.0) * 4 / 12)      # between its neighbours' own lines
+    assert at["talk-4"] == 26.0                                             # a short line is found whole

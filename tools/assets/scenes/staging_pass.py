@@ -64,11 +64,19 @@ def audio_times(timeline: list, es: dict, ids: list) -> dict:
     anchors = []
     for sid in ids:
         e = es.get(sid, {})
-        w = lt(e.get("words") or e.get("line"))[:30]
+        wf = lt(e.get("words") or e.get("line"))
+        w = wf[:30]
         if not w:
             continue
-        seg = next((x for x in timeline if lt(x.get("text"))[:30] and (lt(x["text"]).startswith(w[:20]) or
-                                                                      w.startswith(lt(x["text"])[:20]))), None)
+        # a line found by its opening: the whole of a short line, or a long enough opening of both (a two-letter
+        # line of the chapter matched the opening of any shot's words and sent the shot there, 11-12); and the
+        # chapter runs forward, so the first such line at or after the last one found
+        def hit(x):
+            t = lt(x.get("text"))
+            return bool(t) and (t == wf or (min(len(t), len(w)) >= 12 and (t.startswith(w[:20])
+                                                                           or w.startswith(t[:20]))))
+        last = anchors[-1][1] if anchors else float("-inf")
+        seg = next((x for x in timeline if x.get("t", 0) >= last and hit(x)), None)
         if seg:
             anchors.append((e.get("t", 0.0), seg["t"]))
     anchors.sort()
