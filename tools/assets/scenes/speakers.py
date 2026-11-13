@@ -385,6 +385,11 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
                 why.append(f"the {lm['name']} (what the shot turns toward) is out of the frame")
                 break
+    at_ = opts.get("at_thing")               # what the subject sits at: its top is in the frame, from any side
+    if at_:
+        q = framing.project(cam, [at_["center"][0], at_["center"][1], at_["top"]], res)
+        if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
+            why.append(f"the {at_['name']} (where the subject sits) is out of the frame")
     if lm:                                   # the end place's landmark seen from its front, not from behind it
         d = [cam["position"][0] - lm["center"][0], cam["position"][1] - lm["center"][1]]
         if d[0] * lm["front"][0] + d[1] * lm["front"][1] < 0.3 * math.hypot(*d):
@@ -948,7 +953,8 @@ def cam_opts(spec, c):
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
     return {"seated": seated, "subject": c.get("subject"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
-            "landmark": c.get("_landmark"), "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
+            "landmark": c.get("_landmark"), "at_thing": c.get("_at_thing"),
+            "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
             "seat_xy": {k: v["position"] for k, v in spec["characters"].items()
                         if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)},
             "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
@@ -962,7 +968,7 @@ def listener_of(c, spec_line, speaker):
     if c.get("listener"):
         return c["listener"]
     if speaker and spec_line and speaker in spec_line:
-        return [k for k in spec_line if k != speaker][0]
+        return next((k for k in spec_line if k != speaker), None)     # (alone in the scene: nobody listens)
     return None
 
 
@@ -1256,6 +1262,7 @@ def main():
         c["_points"] = move_points(spec, c)
         c["_landmark"] = landmark(spec, c) or (landmark(spec, {"move_landmark": c["face_thing"]})
                                                if c.get("face_thing") else None)
+        c["_at_thing"] = landmark(spec, {"move_landmark": c["at_thing"]}) if c.get("at_thing") else None
         t = end_thing(spec, c) if c.get("mover") else None
         c["_end_place"] = ({"center": t["center"], "top": t["center"][2] + t["half"][2],
                             "similar": [x["center"] for x in similar_seats(spec, t)]} if t else None)

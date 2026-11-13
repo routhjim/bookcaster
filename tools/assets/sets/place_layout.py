@@ -265,6 +265,9 @@ class Ctx:
         """(how the piece stands: wall / free / floor / on, the opening it stands at or None)."""
         ag = self.pieces[pid].get("against")
         place = self.rule(pid).get("place") or ("on" if self.pieces[pid]["kind"] in SURFACE_KINDS else "free")
+        if place == "wall" and self.pieces[pid]["kind"] in self.R.get("desk_kinds", ()) and \
+                pid in set((self.spec.get("named_places") or {}).values()):
+            place = "free"       # a desk the plan seats someone at: off the wall, the camera's floor across it
         if isinstance(ag, str) and ag.startswith("opening:") and ag.split(":", 1)[1] in self.by_id:
             return "wall", self.by_id[ag.split(":", 1)[1]]
         if ag in ("wall", "free") and place in ("wall", "free"):

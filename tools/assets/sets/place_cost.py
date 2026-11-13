@@ -234,6 +234,7 @@ def persons(ctx, placed: dict, R: dict, stand_point) -> list:
         if i in seen:
             continue
         host, pos, facing, z, own = None, None, None, cam["face_z_m"]["standing"], None
+        at_desk = False
         if i in placed and not placed[i].get("flat"):
             host = placed[i]
             if host.get("on"):
@@ -244,8 +245,14 @@ def persons(ctx, placed: dict, R: dict, stand_point) -> list:
                           and q["kind"] in R["groups"]["seating"]["exclude_kinds"]
                           and rgap(q["rect"], host["rect"]) <= 0.35]
                 if chairs:
+                    # (a desk the text puts at a wall or a window keeps the old reading: the sitter turns from it)
+                    at_desk = ctx.mode(host["id"])[0] != "wall"
                     host = min(chairs, key=lambda q: (rgap(q["rect"], host["rect"]), q["id"]))
-            if host.get("seat") and host["kind"] in R["groups"]["seating"]["exclude_kinds"]:
+            if at_desk and host.get("seat"):
+                # the plan names the desk as the person's place: they sit at it, facing it, as the staging seats
+                # them; the camera's pocket is across the desk (a desk against a wall leaves none: 11-12)
+                pos, facing, z, own = host["c"], host["facing"], cam["face_z_m"]["seated"], host["id"]
+            elif host.get("seat") and host["kind"] in R["groups"]["seating"]["exclude_kinds"]:
                 # on a desk chair or a stool a person turns to whoever they talk to, away from the desk
                 pos, facing, z, own = host["c"], None, cam["face_z_m"]["seated"], host["id"]
             elif host.get("seat"):

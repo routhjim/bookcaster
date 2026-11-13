@@ -185,6 +185,7 @@ def load_records(library=None):
         recs.append({"asset_id": aid, "tags": list(d.get("tags", [])),
                      "description": d.get("description", ""), "size_m": d.get("size_m"),
                      "seat": d.get("seat"), "lie": d.get("lie"), "variant_of": d.get("variant_of"),
+                     "placement": d.get("placement"),
                      "variant": d.get("variant"), "look": d.get("look", ""),
                      "source": d.get("source", ""), "replaces": d.get("replaces") or spec.get("replaces"),
                      "ok": "not_passed" not in status and "delete" not in status,
@@ -236,6 +237,10 @@ def score_record(piece, rec, K=None, table=None, allow_scripted=False):
     fits = [satisfies(rk, kind, K) for rk in record_kinds(rec, K, table)]
     k = max(fits, default=0.0)
     if k == 0.0 or not rec.get("ok", True) or rec.get("replaced_by"):
+        return None
+    # a thing made to hang on a wall does not stand on a table or the floor (11-12: a drop-dial wall clock stood on
+    # the desk in front of the sitter); the record says how the asset is placed, the kind how the piece is
+    if rec.get("placement") == "wall" and K[kind].get("placement") != "wall":
         return None
     look_toks = [t for t in _tokens(piece.get("look", "")) if t not in _STOP]
     rec_toks = set(_tokens(" ".join([rec.get("description", ""), rec.get("look", ""), rec.get("variant") or ""]

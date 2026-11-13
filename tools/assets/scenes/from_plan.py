@@ -420,6 +420,8 @@ def main():
                 own = [s_ for s_ in cands if thing and s_["name"] == thing.get("name")]   # the named thing is a seat
                 seat = own[0] if own else min(cands, key=lambda s_: math.dist(s_["pos"], anchor[:2])) if cands else None
                 entry.update(seat=seat["name"] if seat else None, position=list(seat["pos"]) if seat else anchor[:2])
+                if seat and thing and thing.get("name") != seat["name"]:
+                    entry["at_thing"] = thing["name"]        # seated AT a thing (a desk, a table): see the cameras
             else:
                 if rel and rel in state:
                     tgt = state[rel]["position"]
@@ -490,8 +492,11 @@ def main():
         # an action shot's subject turning toward a named thing: that thing is in the frame (04:58: he turned to
         # the desk with the desk behind the camera and a round table in view; the video walked him to the table)
         ft = (state.get(line_subj) or {}).get("facing_thing") if sh.get("kind") == "action" and line_subj else None
+        # someone seated at a desk or a table: it is in the frame of any shot wider than a close (11-12: 23 shots of a
+        # man at his desk and no desk in any of them)
+        at_thing = (state.get(subj) or {}).get("at_thing") if kind != "close" else None
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
-               "line_subject": line_subj, "face_thing": ft,
+               "line_subject": line_subj, "face_thing": ft, "at_thing": at_thing,
                "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None}
         if lis:
             cam["listener"] = lis
