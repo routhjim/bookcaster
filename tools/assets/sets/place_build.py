@@ -187,7 +187,16 @@ def with_concept(spec: dict, concept: dict) -> dict:
             continue
         if c.get("look"):
             p["look"] = c["look"]
+        if c.get("crop"):                    # its own part of the concept picture: the drawing it is shaped from
+            p["source"] = c["crop"]
         kept.append(p)
+    # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
+    have = {p["kind"] for p in kept}
+    for i, sn in enumerate(concept.get("seen") or []):
+        if sn.get("kind") and sn.get("crop") and sn["kind"] not in have:
+            have.add(sn["kind"])
+            kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "look": sn.get("look") or sn["name"], "phrases": [],
+                         "against": "not stated", "source": sn["crop"]})
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
@@ -202,7 +211,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
         m = re.match(r"\s*outside\s*:\s*(.+)", str(spec.get("_director_room") or ""), re.I | re.S)
         if m:
             sp["outside"] = m.group(1).strip().rstrip(".")
-    sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words")}
+    sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare")}
     return sp
 
 
@@ -282,6 +291,18 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                **dress(ss, lay, spec, kit))
     if str(spec.get("crowd") or "").strip():                 # the director's crowd of the place: drawn, never built
         out["crowd"] = spec["crowd"].strip()
+    bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
+    if bare and out.get("structure"):
+        mats = json.loads(json.dumps(out["materials"]))
+        used = {"walls": {w.get("material") for w in out["structure"] if w.get("kind") == "wall"}
+                | {(w.get("dado") or {}).get("material") for w in out["structure"] if w.get("kind") == "wall"},
+                "floor": {w.get("material") for w in out["structure"] if w.get("kind") == "floor"}}
+        for k, names in used.items():
+            for n in names - {None}:
+                if bare.get(k, {}).get("colour") and n in mats:
+                    mats[n] = dict(mats[n], color=bare[k]["colour"])
+                    mats[n].pop("color2", None)
+        out["materials"] = mats
     out["words"], out["surfaces_words"] = room_words(out, lay, kit, {r["asset_id"]: r for r in P.load_records(library)})
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]
