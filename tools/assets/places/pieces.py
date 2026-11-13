@@ -186,7 +186,7 @@ def load_records(library=None):
                      "description": d.get("description", ""), "size_m": d.get("size_m"),
                      "seat": d.get("seat"), "lie": d.get("lie"), "variant_of": d.get("variant_of"),
                      "placement": d.get("placement"),
-                     "variant": d.get("variant"), "look": d.get("look", ""),
+                     "variant": d.get("variant"), "look": d.get("look", ""), "piece_kind": d.get("piece_kind"),
                      "source": d.get("source", ""), "replaces": d.get("replaces") or spec.get("replaces"),
                      "ok": "not_passed" not in status and "delete" not in status,
                      "checks": d.get("checks_passed", True) is not False, "used_in_sets": used.get(aid, []),

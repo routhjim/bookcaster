@@ -95,8 +95,19 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             continue                              # (a period whose windows give no daylight: a ship's viewport)
         lights.append(dict(kit["lights"]["window_rect"], position=[round(p[0] + n[0] * 0.1, 3), round(p[1] + n[1] * 0.1, 3), 1.75],
                            toward=[round(p[0] + n[0] * 3.5, 3), round(p[1] + n[1] * 3.5, 3), 1.45]))
-    if kit["lights"].get("ceiling"):            # a room lit from its ceiling (the period's own fitting), centred
-        lights.append(dict(kit["lights"]["ceiling"], position=[0.0, 0.0, round(H - 0.12, 3)]))
+    if kit["lights"].get("ceiling"):
+        # a room lit from its ceiling (the period's own fitting): a grid over the floor, wider apart and stronger
+        # the higher the ceiling (one fitting's light at the floor falls with the square of the height)
+        cl = kit["lights"]["ceiling"]
+        h0 = float(kit["ceiling"].get("height_m") or 2.4)
+        gap = max(3.0, 1.2 * H)
+        nx, ny = max(1, round(W / gap)), max(1, round(D / gap))
+        for i in range(nx):
+            for j in range(ny):
+                lights.append(dict(cl, lumens=round(cl["lumens"] * (H / h0) ** 2),
+                                   radius_m=round(max(cl.get("radius_m", 12), 2.5 * H), 1),
+                                   position=[round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2),
+                                             round(H - 0.12, 3)]))
     if wins and kit["lights"].get("sun"):       # daylight from the first window's side
         n = NORMAL[wins[0]["wall"]]
         lights.insert(0, dict(kit["lights"]["sun"], toward_sun=[round(-n[0] * 0.8 + n[1] * 0.3, 3),
@@ -132,7 +143,10 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
     for it in (out.get("fixtures") or []) + (out.get("props") or []):
         if it.get("outside") or it.get("hang") or any((it.get("name") or "").startswith(k) for k in kw):
             continue                              # (a window's dressing and an opening are in the kit's own words)
-        d = re.split(r"[,:;.]", (recs.get(it["asset"]) or {}).get("description") or "", maxsplit=1)[0].strip()
+        rc = recs.get(it["asset"]) or {}
+        d = re.split(r"[,:;.]", rc.get("description") or "", maxsplit=1)[0].strip()
+        if rc.get("piece_kind") and rc.get("look"):          # a piece made on request: its kind and its own look
+            d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look']})"
         d = d or (it.get("name") or "").replace("_", " ")
         if out.get("style") and d.lower().startswith(out["style"].lower() + " "):
             d = d[len(out["style"]) + 1:]         # (the period is said once, for the room)
@@ -143,7 +157,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
         if w and w not in held:
             held.append(w)
     held = list(dict.fromkeys(held))
-    return (f"A {out.get('style') or ''} {kind.replace('_', ' ')}: ".replace("  ", " ").replace("A v", "A V")
+    return (f"A {(out.get('style') or '').replace('_', ' ')} {kind.replace('_', ' ')}: ".replace("  ", " ").replace("A v", "A V")
             + "; ".join(held) + ".", kw.get("surfaces") or "")
 
 
