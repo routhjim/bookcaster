@@ -2880,6 +2880,25 @@ def scene_notes(book: Path, stem: str, log=print) -> str:
     return "\n".join(out)
 
 
+def _unnamed_there(sc: list, tl: list, chars: list, end: float) -> list:
+    """Scenes that list a cast person whom none of the scene's own lines names or has speaking."""
+    out = []
+    ss = sorted((x for x in sc if isinstance(x, dict)), key=lambda x: float(x.get("start") or 0))
+    for a_, b_ in zip(ss, ss[1:] + [{"start": end}]):
+        t0, t1 = float(a_.get("start") or 0), float(b_.get("start") or end)
+        txt = " ".join(f"{x.get('text') or ''} {x.get('speaker') or ''}" for x in tl if t0 <= float(x["t"]) < t1)
+        for w in a_.get("who") or []:
+            nm = MF._cast_name(w, chars, [])
+            parts = [p_ for p_ in re.findall(r"[A-Za-z]{3,}", nm or "") if p_.lower() not in _TITLE_WORDS]
+            if nm and parts and not any(re.search(rf"\b{re.escape(p_)}\b", txt, re.I) for p_ in parts):
+                out.append(f"the scene from {t0:.0f} s lists {nm}, but none of its lines ({t0:.0f}-{t1:.0f} s) names {nm}")
+    return out
+
+
+BREAKDOWN_CHECKS = "named-there/1"       # the checks an answer goes through (a cached answer is one that passed them)
+_TITLE_WORDS = {"old", "young", "the", "mrs", "miss", "doctor", "sir", "lady", "lord", "captain", "father", "mother"}
+
+
 def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: str, log=print,
               stable: list | None = None) -> list:
     """The chapter's scenes [{"start", "end", "place", "who", "what", "cutaways", "opens"}], by the director over the
@@ -2900,11 +2919,11 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
                              places="; ".join(places) or "(none yet)", people=", ".join(chars), text=text)
     cp = shot_dir(book, stem) / "scenes" / "breakdown.json"
     cp.parent.mkdir(parents=True, exist_ok=True)
-    k = MF._h(q + BREAKDOWN_EFFORT)
+    k = MF._h(q + BREAKDOWN_EFFORT + BREAKDOWN_CHECKS)
     # 10-30: describe_places adds the places a run invented to look.json, which changed this question and re-asked
     # the whole breakdown on the next run (a 4-hour re-plan and re-render): k2 leaves those places out
     k2 = MF._h(q.replace("; ".join(places) or "(none yet)", "; ".join(stable if stable is not None else places)
-                         or "(none yet)", 1) + BREAKDOWN_EFFORT)
+                         or "(none yet)", 1) + BREAKDOWN_EFFORT + BREAKDOWN_CHECKS)
     got = json.loads(cp.read_text()) if cp.exists() else {}
     if got.get("k") == k or (got.get("k2") and got.get("k2") == k2):
         sc = got["scenes"]
@@ -2912,8 +2931,8 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
             cp.write_text(json.dumps(dict(got, k2=k2), indent=1))
     else:
         animate.igpu("strata", log)
-        sc, turn = [], [{"role": "user", "content": q}]
-        for _ in range(3):
+        sc, turn, _n_asked = [], [{"role": "user", "content": q}], False
+        for _ in range(4):
             reply, _c = _converse(BC.LLM_URL, BC.LLM_MODEL, turn, max_tokens=8000 + 16000 * bool(BREAKDOWN_EFFORT),
                                   effort=BREAKDOWN_EFFORT)
             m = re.search(r"\{.*\}", reply or "", re.S)
@@ -2922,6 +2941,19 @@ def breakdown(book: Path, stem: str, tl: list, chars: list, places: list, nar: s
             except ValueError:
                 sc = []
             faults = _breakdown_faults(sc, end)
+            if not faults and not _n_asked:
+                # once: a named person listed in a scene whose lines never name them (the chapter's unnamed father
+                # asleep in an alcove was listed, and then shown, as the one old man of the cast). The director
+                # looks again and decides; the answer to this one question is taken as it comes
+                _n_asked = True
+                faults = _unnamed_there(sc, tl, chars, end)
+                if faults:
+                    turn += [{"role": "assistant", "content": reply or ""},
+                             {"role": "user", "content": "Look again at who is in each scene: " + "; ".join(faults) +
+                              ". Someone the chapter gives no name is never one of the named people. Keep a person "
+                              "listed only where the chapter itself puts that very person; write the whole list again."}]
+                    faults = []
+                    continue
             if not faults:
                 break
             turn += [{"role": "assistant", "content": reply or ""},
