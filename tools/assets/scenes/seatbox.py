@@ -172,6 +172,9 @@ def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
     xs = sorted([sx * xl, sx * (xl + lane_w)])
     ys = sorted([-f * ya, -f * yb])
     xs, ys, lane_w = [float(v) for v in xs], [float(v) for v in ys], float(lane_w)
+    # the interior's rear end is the cabin's sill or bulkhead, not the seat's back: the sitter's back rests a seat
+    # back's thickness ahead of it (measured at the end itself, the pilot sat on the rear sill behind his seat)
+    ys[1] -= 0.30
     return {"seat_z_m": round(seat_z, 3), "front_y_m": round(ys[0], 3), "back_y_m": round(ys[1], 3),
             "inner_x_m": [round(xs[0], 3), round(xs[1], 3)], "arm_z_m": None, "width_m": round(lane_w, 3),
             "depth_m": round(ys[1] - ys[0], 3), "places": [round((xs[0] + xs[1]) / 2, 3)],

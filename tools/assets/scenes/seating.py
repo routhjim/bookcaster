@@ -110,6 +110,8 @@ def place(c: dict, seat: dict, fitd: dict, place_x: float | None = None, nudge=(
     bp["params"] = pr
     out["body_pose"] = bp
     out["_seat"] = {"name": seat.get("name"), "x": x, "nudge": list(nudge)}
+    if b.get("inside"):                       # seated inside an enclosure (a cabin): the cameras work inside it
+        out["_inside"] = True
     return out
 
 

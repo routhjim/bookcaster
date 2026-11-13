@@ -69,6 +69,25 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
     """Camera {position, target, focal_mm, distance_m, frame_h_m} for a close / medium / full shot of a subject."""
     head_h = subject["head_top_z"] - subject["chin_z"]
     eye = subject["eye_z"]
+    if subject.get("inside") and kind in ("close", "medium", "full"):
+        # seated inside a cabin: there is no room to stand back. A close or medium is taken from just in front of
+        # the face with a wide lens (between the sitter and the controls); a full shot from behind the shoulder,
+        # the controls and the windscreen ahead of the sitter in view
+        f = _unit(list(subject["facing"]) + [0.0])
+        ex, ey = subject["eye_xy"]
+        left = [-f[1], f[0]]
+        if kind == "full":
+            pos = [ex - f[0] * 0.9 - left[0] * 0.35, ey - f[1] * 0.9 - left[1] * 0.35, eye + 0.3]
+            tgt = [ex + f[0] * 1.5 + left[0] * 0.2, ey + f[1] * 1.5 + left[1] * 0.2, eye - 0.15]
+            fl = 24
+        else:
+            # (measured from the eyes: 0.45 m from the hips was clear, 0.6 m was inside the instrument panel)
+            d_ = 0.30 if kind == "close" else 0.34
+            pos = [ex + f[0] * d_ + left[0] * 0.05, ey + f[1] * d_ + left[1] * 0.05, eye + 0.03]
+            tgt = [ex - f[0] * 0.1, ey - f[1] * 0.1, eye - 0.03]
+            fl = 16 if kind == "close" else 13
+        return {"position": [round(x, 4) for x in pos], "target": [round(x, 4) for x in tgt], "focal_mm": fl,
+                "distance_m": round(math.dist(pos, tgt), 3), "frame_h_m": 0.6}
     if subject.get("lying") and kind in ("close", "medium", "full"):
         # lying: the frame is sized in metres along the bed (a head's height in z says nothing here), aimed at the
         # head, the chest or the body's middle, from above the bed's side

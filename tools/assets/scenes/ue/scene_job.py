@@ -518,6 +518,9 @@ def run(job):
                        if k != key and k in job["characters"] and not job["characters"][k].get("_lie")]
                 r["subjects"][key]["measured"] = framing.lay(r["subjects"][key]["measured"], spec["_lie"],
                                                              oth[0] if oth else None)
+        for key, spec in job["characters"].items():
+            if spec.get("_inside"):
+                r["subjects"][key]["measured"]["inside"] = True
         for key, f in (job.get("figures") or {}).items():
             r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)
