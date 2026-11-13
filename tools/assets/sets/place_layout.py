@@ -51,8 +51,11 @@ def load_data(path=None) -> dict:
 try:
     SURFACE_KINDS = {k for k, v in json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json")
                                                .read_text())["kinds"].items() if v.get("placement") == "surface"}
+    # a thing a person sits or lies on (the kind's "needs") is not a surface to stand small things on
+    PERSON_KINDS = {k for k, v in json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json")
+                                              .read_text())["kinds"].items() if v.get("needs")}
 except (OSError, KeyError, ValueError):
-    SURFACE_KINDS = set()
+    SURFACE_KINDS = PERSON_KINDS = set()
 
 
 # ------------------------------------------------------------------ geometry
@@ -601,11 +604,16 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             cand["note"] = "larger than the floor"
         return [cand] if fits(ctx, cand, placed, fixed_zones) else []
     if mode == "on":
-        hosts = [placed[o] for o in sorted(ctx.partners.get(pid, ())) if o in placed]
+        # a related piece hosts it when it is a surface; a relation to a bed or a seat is nearness, not a host: the
+        # surface nearest that piece takes it (a clock "near the bed" stood on the bed, 11-12)
+        rel = [placed[o] for o in sorted(ctx.partners.get(pid, ())) if o in placed]
+        hosts = [q for q in rel if not q["seat"] and q["kind"] not in PERSON_KINDS]
         if not hosts:
+            near = lambda q: min((math.dist(q["c"], r["c"]) for r in rel), default=0.0)
             hosts = sorted((q for q in placed.values() if not q["flat"] and not q["seat"] and not q.get("on")
-                            and q["size_m"][2] <= 1.2 and q["kind"] != "fireplace"),
-                           key=lambda q: (q["size_m"][0] * q["size_m"][1], q["name"]))
+                            and q["size_m"][2] <= 1.2 and q["kind"] != "fireplace"
+                            and q["kind"] not in PERSON_KINDS),
+                           key=lambda q: (round(near(q), 2), q["size_m"][0] * q["size_m"][1], q["name"]))
         for hst in hosts:
             # things on one host stand side by side along its width, not through each other
             n_on = sum(1 for q in placed.values() if q.get("on") == hst["name"])

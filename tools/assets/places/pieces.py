@@ -354,6 +354,10 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
     K = K or kinds()
     out = []
     for p in pieces:
+        # a look the spec's writer left open ("not stated", whole or as one clause of the look) says nothing: the
+        # words are not a look to match or to draw (a bedroom found none of the library's beds for "not stated")
+        p = dict(p, look=", ".join(c.strip() for c in (p.get("look") or "").split(",")
+                                   if c.strip() and "not stated" not in c.lower()))
         row = {"id": p.get("id"), "kind": p.get("kind"), "look": p.get("look", "")}
         if p.get("kind") not in K:
             row.update(status="unresolved", reason=f"kind {p.get('kind')!r} is not in PIECE_KINDS")

@@ -92,6 +92,7 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             lights.append(dict(kit["lights"]["lamp"], position=[pr["position"][0], pr["position"][1],
                                                                round((pr.get("on_z_m") or 0.0) + 0.42, 3)]))
     props = [pr for pr in props if pr.get("asset")]   # a piece with no library asset waits for generation (report)
+    fixtures = [f for f in fixtures if f.get("asset")]
     out.update(fixtures=fixtures, props=props, lights=lights)
     cams = []
     for i, (sx, sy) in enumerate(((1, -1), (-1, -1), (1, 1), (-1, 1))):
