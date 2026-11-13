@@ -288,6 +288,10 @@ def _asset_id(kind, look):
     return f"{kind}_gen_{h}_01"
 
 
+NEED_WORDS = {"lie": "(a single tier: one mattress at knee height, open to the ceiling, nothing built above it)",
+              "seat": "(one seat for one person, open at the front)"}
+
+
 def generation_request(piece, K=None, python="python", tools=None, work=None):
     """The dry-run request for a piece the library lacks: {kind, look, size_m, needs} and, under "plan", the jobs
     the existing prop route runs for it, in order. Nothing is started here."""
@@ -301,6 +305,11 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     desc = (f"One single {name}, {look}. The whole object in view, standing on a plain floor, nothing else in the "
             f"picture.") if look else f"One single {name}. The whole object in view, nothing else in the picture."
     needs = [d["needs"]] if d.get("needs") else []
+    # what the kind must afford is said in the drawing's words (a "bunk" came back as two tiers squeezed to a
+    # bed's height, with nowhere a person could be seen lying)
+    if any(n in NEED_WORDS for n in needs):                 # (first: the look's own words follow it)
+        desc = desc.replace(f"One single {name}", f"One single {name} "
+                            + " ".join(NEED_WORDS[n] for n in needs if n in NEED_WORDS), 1)
     spec = {"id": aid, "class": "prop", "description": f"{name}: {look}. Front -Y." if look else f"{name}. Front -Y.",
             "tags": sorted({kind, *([d["parent"]] if d.get("parent") else []), "generated-on-request"}),
             "tier": "mid", "size_m": d["size_m"], "size_tolerance": 0.35, "placement": d["placement"],

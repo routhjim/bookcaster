@@ -13,6 +13,7 @@ the spec's own words.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -40,26 +41,34 @@ def record(aid: str, library: Path) -> Path | None:
     return p if p.exists() else None
 
 
-def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
-    """One request -> {"asset_id", "ok", "why"}; `run` starts a process (tests pass a fake)."""
+def _clear(did: str, aid: str, library: Path) -> None:
+    """A try that failed its gate is taken away whole: the next seed draws and shapes afresh."""
+    import shutil
+    for d in (REFS / did, library / "prop" / did, library / "prop" / aid):
+        shutil.rmtree(d, ignore_errors=True)
+    for f in (C.UE_HOME / "lab" / "img3d_props").glob(f"{did}*"):
+        f.unlink() if f.is_file() else shutil.rmtree(f, ignore_errors=True)
+
+
+def _try(req: dict, library: Path, seed: int, run) -> dict:
     aid, plan = req["asset_id"], req["plan"]
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
-    if record(aid, library):
-        return {"asset_id": aid, "ok": True, "why": "already in the library"}
     pic = REFS / did / "three_quarter.png"
-    for n in range(plan.get("max_redraws", 3)):
-        if pic.exists():
-            break
-        argv = [a.replace("{seed}", str(seed + n)) for a in steps["draw"]["argv"]]
-        r = run(argv)
-        log(f"{did}: drawing seed {seed + n} rc={r.returncode}")
+    if not pic.exists():
+        r = run([a.replace("{seed}", str(seed)) for a in steps["draw"]["argv"]])
+        log(f"{did}: drawing seed {seed} rc={r.returncode}")
     if not pic.exists():
         return {"asset_id": aid, "ok": False, "why": "no drawing with a three-quarter view"}
     sp = library / "prop" / did / "source" / "spec.json"
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(steps["spec"]["spec"], indent=1))
-    r = run(steps["shape"]["argv"])
+    argv = list(steps["shape"]["argv"])
+    omp = os.environ.get("ASSETS_TRELLIS_OMP")          # the line runs the job in its own environment
+    if omp and "--" in argv:
+        i = argv.index("--") + 1
+        argv[i:i] = ["env", f"ASSETS_TRELLIS_OMP={omp}"]
+    r = run(argv)
     log(f"{did}: shape rc={r.returncode}")
     if r.returncode:
         return {"asset_id": aid, "ok": False, "why": f"the shape step failed (rc {r.returncode})"}
@@ -72,6 +81,8 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
         if need in MEASURE:
             r = run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
             log(f"{aid}: {need} box rc={r.returncode}")
+            if r.returncode:
+                return {"asset_id": aid, "ok": False, "why": f"no {need} box could be measured on it"}
     # the record says which kind of piece it was made as and with what look (the lookup reads both)
     rp = record(aid, library)
     rec = json.loads(rp.read_text())
@@ -79,6 +90,22 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     rec.setdefault("look", req.get("look", ""))
     rp.write_text(json.dumps(rec, indent=1))
     return {"asset_id": aid, "ok": True, "why": "made"}
+
+
+def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
+    """One request -> {"asset_id", "ok", "why", "seed"}: drawn, shaped and measured; a try that fails a gate is
+    made again from the next seed's drawing, at most the plan's max_redraws tries. `run` starts a process."""
+    aid, plan = req["asset_id"], req["plan"]
+    if record(aid, library):
+        return {"asset_id": aid, "ok": True, "why": "already in the library"}
+    out = {}
+    for n in range(plan.get("max_redraws", 3)):
+        out = dict(_try(req, library, seed + n, run), seed=seed + n)
+        if out["ok"]:
+            return out
+        log(f"{aid}: {out['why']}; the try is cleared" + ("" if n + 1 >= plan.get("max_redraws", 3) else ", next seed"))
+        _clear(plan["draw_id"], aid, library)
+    return out
 
 
 def main():
