@@ -71,7 +71,8 @@ def things(set_dir) -> list:
     by_name = {}
     for kind in ("fixtures", "props"):
         for f in spec.get(kind, []):
-            if f.get("outside") or "row" in f:      # a backdrop beyond the walls is seen only as the window's view
+            if f.get("outside") or "row" in f or f.get("surface"):   # a backdrop beyond the walls is seen only as the
+                # window's view; a wall's face is the wall, not a thing in the room
                 continue
             sz = _size(lib, f["asset"])
             fc = f.get("facing", [0, -1])

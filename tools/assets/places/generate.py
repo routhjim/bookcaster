@@ -198,6 +198,37 @@ def sight_cut(seat: dict, k: float = 1.0) -> dict:
             "z": [round(z0 * k, 3), round((z0 + 0.75) * k, 3)]}
 
 
+FACE_WORDS = ("The surface of this wall seen straight on, flat and evenly lit, filling the whole picture from edge to "
+              "edge: the same material, the same plates, seams and fastenings, the same colour and wear. Nothing "
+              "stands in front of it: no floor, no ceiling, no door, no furniture, no shadow, no perspective.")
+
+
+def make_face(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
+    """A wall's face panel (sets/place_build.py face_spec): its picture drawn through the line from the concept's
+    own bare stretch of wall, then the scripted panel's asset chain."""
+    aid = spec["id"]
+    if record(aid, library):
+        return {"asset_id": aid, "ok": True, "why": "already in the library"}
+    pic = REFS / aid / "picture.png"
+    ra = [sys.executable, str(HERE.parent / "run_asset.py")]
+    if not pic.exists():
+        r = run(ra + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_face_{aid}", "--", sys.executable,
+                      str(HERE.parent / "refs" / "ref_draw.py"), "picture", aid, "--desc", FACE_WORDS, "--size", "1024",
+                      "1024", "--seed", str(seed), "--sources", spec["source_picture"]])
+        log(f"{aid}: wall face picture rc={r.returncode}")
+    if not pic.exists():
+        return {"asset_id": aid, "ok": False, "why": "no picture of the wall"}
+    sp = library / "prop" / aid / "source" / "spec.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({k: v for k, v in spec.items() if k != "source_picture"}, indent=1))
+    r = run(ra + [str(sp), str(HERE.parent / "models" / "backdrop_view" / "backdrop_view.py"), "--detach"])
+    log(f"{aid}: chain rc={r.returncode}")
+    t_end = time.time() + CHAIN_WAIT_S
+    while not record(aid, library) and time.time() < t_end:
+        time.sleep(10)
+    return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
+
+
 def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     """The backdrop of a place's view outside (sets/place_build.py view_spec): its picture drawn through the line from
     the view's own words, then the scripted panel's asset chain (bake, engine import)."""
@@ -254,6 +285,11 @@ def main():
     if "--dry" in a:
         return 0
     out = [dict(make(p["request"], library, seed), kind=p["kind"]) for p in todo]
+    crop = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("crop")
+    if crop and Path(crop).exists() and not only:        # the place's own wall, as its concept shows it
+        sys.path.insert(0, str(HERE.parent / "sets"))
+        import place_build as PB
+        out.append(dict(make_face(PB.face_spec(crop), library, seed), kind="wall_face"))
     if spec.get("outside") and not only:                 # what lies outside the place: its view's backdrop
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB

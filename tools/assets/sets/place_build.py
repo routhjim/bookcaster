@@ -245,6 +245,57 @@ def view_spec(words: str) -> dict:
             "cameras": [{"name": "front", "position": [0.0, -w * 1.2, h / 2], "target": [0.0, 0.0, h / 2], "focal": 28}]}
 
 
+FACE_M = 3.0                     # a wall face's panel: this wide and this high
+
+
+def face_spec(crop: str) -> dict:
+    """The source spec of a wall's face (models/backdrop_view, no light of its own): the place's own wall surface,
+    drawn flat from the bare stretch of wall its concept picture shows."""
+    import hashlib
+    fid = "wall_face_" + hashlib.sha1(Path(crop).read_bytes()).hexdigest()[:6]
+    return {"id": fid, "class": "prop", "tier": "background", "texture_px": 2048, "placement": "floor",
+            "description": f"The face of a wall, one flat picture {FACE_M:g} x {FACE_M:g} m, drawn from a place's concept "
+                           "picture. Front -Y; origin at the middle of the bottom edge.",
+            "tags": ["wall", "face", "generated-on-request"], "size_m": [FACE_M, 0.02, FACE_M], "size_tolerance": 0.05,
+            "source": "scripted", "backdrop": {"w": FACE_M, "h": FACE_M, "emit": 0.0}, "source_picture": crop,
+            "licence": "CC0 (original script; picture drawn by the local image model)",
+            "cameras": [{"name": "front", "position": [0.0, -FACE_M * 1.6, FACE_M / 2], "target": [0.0, 0.0, FACE_M / 2],
+                         "focal": 28}]}
+
+
+def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
+    """The room's walls wear the concept's own wall: its face panels side by side along every wall, a hand's
+    breadth inside it, left off where a door, window or fireplace stands (there the period's wall shows)."""
+    import config as C
+    crop = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("crop")
+    if not crop or not Path(crop).exists() or not any(w.get("kind") == "wall" for w in out.get("structure") or []):
+        return
+    fs = face_spec(crop)
+    out["face"] = fs
+    if not (Path(library or C.LIBRARY) / "prop" / fs["id"] / "asset.json").exists():
+        return
+    W, D, H = out["size_m"]
+    gaps = {}
+    for o in lay.get("openings") or []:
+        if o.get("wall") and o.get("point"):
+            gaps.setdefault(o["wall"], []).append((o["point"], float(o.get("width_m") or 1.2)))
+    for side, n in NORMAL.items():
+        L_ = W if side in ("north", "south") else D
+        cols = max(1, math.ceil(L_ / FACE_M))
+        for i in range(cols):
+            t = (i + 0.5) * L_ / cols - L_ / 2                       # along the wall
+            if side in ("north", "south"):
+                pos = [t, -n[1] * (D / 2 - 0.015)]
+            else:
+                pos = [-n[0] * (W / 2 - 0.015), t]
+            if any(math.dist(pos, g[0][:2]) < FACE_M / 2 + g[1] / 2 for g in gaps.get(side, [])):
+                continue
+            for r in range(max(1, math.ceil(H / FACE_M))):
+                out["fixtures"].append({"asset": fs["id"], "name": f"wall_face_{side}_{i}_{r}", "hang": True,
+                                        "surface": True, "position": [round(pos[0], 3), round(pos[1], 3), r * FACE_M],
+                                        "facing": [n[0], n[1]]})
+
+
 def cabin_stage(out: dict, spec: dict, library) -> None:
     """A cabin with something outside it is filmed in the open, not in a room: no stage walls, ceiling or floor (they
     were all the canopy showed), the view's backdrop standing beyond its nose, and its light coming from there:
@@ -385,6 +436,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     for it in out["fixtures"] + out["props"]:                    # (how a cabin was drawn is not how it looks)
         if it.get("look"):
             it["look"] = it["look"].replace(CABIN_LOOK, "")
+    wall_faces(out, lay, spec, library)
     cabin_stage(out, spec, library)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]

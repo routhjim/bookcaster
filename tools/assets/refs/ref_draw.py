@@ -420,13 +420,15 @@ def main() -> int:
     a4.add_argument("--desc", required=True)
     a4.add_argument("--size", nargs=2, type=int, default=[1664, 832])
     a4.add_argument("--seed", type=int, default=11)
+    a4.add_argument("--sources", nargs="*", default=[], help="pictures it is drawn from (reference pictures)")
     a = ap.parse_args()
     if a.cmd == "picture":
         dest = OUT / a.asset_id / "picture.png"
         dest.parent.mkdir(parents=True, exist_ok=True)
         d = Drawer()
         try:
-            d.draw({"id": a.asset_id, "prompt": a.desc, "seed": a.seed, "path": str(dest), "size": list(a.size)})
+            d.draw({"id": a.asset_id, "prompt": a.desc, "seed": a.seed, "path": str(dest), "size": list(a.size),
+                    **({"refs": list(a.sources)} if a.sources else {})})
         finally:
             d.close()
         return 0 if dest.exists() else 1
