@@ -452,9 +452,16 @@ def main():
                 cands = [s_ for s_ in seats.values() if s_["name"] not in taken]
                 own = [s_ for s_ in cands if thing and s_["name"] == thing.get("name")]   # the named thing is a seat
                 seat = own[0] if own else min(cands, key=lambda s_: math.dist(s_["pos"], anchor[:2])) if cands else None
-                entry.update(seat=seat["name"] if seat else None, position=list(seat["pos"]) if seat else anchor[:2])
-                if seat and thing and thing.get("name") != seat["name"]:
-                    entry["at_thing"] = thing["name"]        # seated AT a thing (a desk, a table): see the cameras
+                if seat:
+                    entry.update(seat=seat["name"], position=list(seat["pos"]))
+                    if thing and thing.get("name") != seat["name"]:
+                        entry["at_thing"] = thing["name"]    # seated AT a thing (a desk, a table): see the cameras
+                else:
+                    # no seat is free in the place: they stand by it (reported), the scene is not lost for it (two
+                    # sisters "sitting" in a bedroom with one chair stopped every shot of their talk)
+                    others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
+                    entry.update(seat=None, pose="standing", position=free_mark(anchor[:2], others, things, room))
+                    f["defaults"].append(f"{k}: no free seat in the place; standing")
             elif p.get("pose") == "lying" and beds:
                 # lying: in the bed the place words name, else the nearest one nobody lies in
                 anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
