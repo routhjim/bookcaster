@@ -14,7 +14,10 @@
   "cottage_room",
   "cell",
   "attic",
-  "corridor"
+  "corridor",
+  "cabin",
+  "hangar",
+  "cockpit"
  ],
  "PERIODS": [
   "victorian",
@@ -23,7 +26,8 @@
   "early_modern",
   "medieval",
   "modern",
-  "rural_traditional"
+  "rural_traditional",
+  "far_future"
  ],
  "SIZES": [
   "small",
@@ -99,7 +103,13 @@
   "wardrobe",
   "washstand",
   "wingback_armchair",
-  "writing_desk"
+  "writing_desk",
+  "spacecraft",
+  "crate",
+  "console",
+  "locker",
+  "cart",
+  "pilot_seat"
  ],
  "SEATS": [
   "armchair",
@@ -109,7 +119,8 @@
   "dining_chair",
   "sofa",
   "stool",
-  "wingback_armchair"
+  "wingback_armchair",
+  "pilot_seat"
  ],
  "LIE": [
   "bed",

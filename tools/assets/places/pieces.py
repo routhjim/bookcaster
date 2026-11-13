@@ -168,7 +168,7 @@ def load_records(library=None):
                 if a and sp.parent.name not in used.setdefault(a, []):
                     used[a].append(sp.parent.name)
     recs = []
-    for f in sorted(root.glob("*/asset.json")):
+    for f in sorted(root.glob("*/asset.json")) + sorted((root.parent / "vehicle").glob("*/asset.json")):
         try:
             d = json.loads(f.read_text())
         except (OSError, ValueError):

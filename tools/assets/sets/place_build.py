@@ -31,6 +31,16 @@ NORMAL = {"north": (0.0, -1.0), "south": (0.0, 1.0), "east": (-1.0, 0.0), "west"
 
 def records_for(spec: dict, library) -> tuple:
     recs = P.load_records(library)
+    # a piece made for another period does not furnish this one (a ship's cabin was offered mahogany): a record
+    # whose tags or description name a period other than the place's is left out; one that names none serves any
+    periods = set(json.loads((HERE.parent / "scenes" / "place_kinds.json").read_text())["PERIODS"])
+    own = spec.get("period")
+    if own in periods:
+        def named(r):
+            words = {str(t).lower() for t in r.get("tags") or []} | set(
+                re.findall(r"[a-z_]+", (r.get("description") or "").lower().replace("far future", "far_future")))
+            return periods & words
+        recs = [r for r in recs if not named(r) or own in named(r)]
     res = P.resolve(spec.get("pieces") or [], recs)
     by = {r["asset_id"]: r for r in recs}
     rec = {p["id"]: {"asset": p["asset_id"], "size_m": by[p["asset_id"]].get("size_m")}
@@ -81,9 +91,13 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             fixtures.append({"asset": dress_by["street_backdrop"], "name": "street_backdrop" + sfx,
                              "position": [round(p[0] - n[0] * 9.5, 3), round(p[1] - n[1] * 9.5, 3), -6.0],
                              "facing": list(n), "outside": True})
+        if not kit["lights"].get("window_rect"):
+            continue                              # (a period whose windows give no daylight: a ship's viewport)
         lights.append(dict(kit["lights"]["window_rect"], position=[round(p[0] + n[0] * 0.1, 3), round(p[1] + n[1] * 0.1, 3), 1.75],
                            toward=[round(p[0] + n[0] * 3.5, 3), round(p[1] + n[1] * 3.5, 3), 1.45]))
-    if wins:                                    # daylight from the first window's side
+    if kit["lights"].get("ceiling"):            # a room lit from its ceiling (the period's own fitting), centred
+        lights.append(dict(kit["lights"]["ceiling"], position=[0.0, 0.0, round(H - 0.12, 3)]))
+    if wins and kit["lights"].get("sun"):       # daylight from the first window's side
         n = NORMAL[wins[0]["wall"]]
         lights.insert(0, dict(kit["lights"]["sun"], toward_sun=[round(-n[0] * 0.8 + n[1] * 0.3, 3),
                                                                round(-n[1] * 0.8 - n[0] * 0.3, 3), 0.35]))

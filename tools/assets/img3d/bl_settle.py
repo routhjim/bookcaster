@@ -530,6 +530,18 @@ if LIE and LIE.get("cover", True):
     okp = (iu >= 0) & (iu < nu) & (iv >= 0) & (iv < nv_) & (Xc[:, 2] > zt - 0.05)
     obst = np.full((nu, nv_), zt)
     np.maximum.at(obst, (iu[okp], iv[okp]), Xc[okp, 2])
+    # the body under a cover reads as soft mounds, not as its points: the obstacle is widened (each cell takes the
+    # highest within 6 cm) and then smoothed over about 10 cm, so two feet make one rounded rise, not two spikes
+    # (the toes stood up through the bedclothes as horns in every picture from the bed's foot)
+    _r = 3
+    _op = np.pad(obst, _r, mode="edge")
+    _dil = np.max([_op[_r + di:_r + di + nu, _r + dj:_r + dj + nv_] for di in range(-_r, _r + 1)
+                   for dj in range(-_r, _r + 1)], axis=0)
+    for _ in range(3):
+        _bp = np.pad(_dil, 2, mode="edge")
+        _dil = np.mean([_bp[2 + di:2 + di + nu, 2 + dj:2 + dj + nv_] for di in range(-2, 3) for dj in range(-2, 3)],
+                       axis=0)
+    obst = np.maximum(_dil, np.minimum(obst, _dil + 0.03))
     thick = float(LIE.get("cover_clear_m", 0.02))
     floor_h = np.where(obst > zt + 0.005, obst + thick, zt + 0.012)
     # off the box: the cover falls away over the sides and the foot end

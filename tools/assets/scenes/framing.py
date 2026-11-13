@@ -46,8 +46,8 @@ def _facing_angle(f):
     return math.atan2(f[1], f[0])
 
 
-LIE_EL_DEG = 30.0                                  # a lying person is seen from above their side, never level
-LIE_FRAME_H_M = {"close": 0.6, "medium": 1.05}     # frame height: head and shoulders; head to the hips
+LIE_EL_DEG = 18.0                                  # a lying person is seen from above their side, never level
+LIE_FRAME_H_M = {"close": 0.65, "medium": 1.25}     # frame height: head and shoulders; head to the hips
 
 
 def lay(subject, lie, toward=None):

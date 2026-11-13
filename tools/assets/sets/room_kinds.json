@@ -360,6 +360,63 @@
     0.86,
     1.25
    ]
+  },
+  "spacecraft": {
+   "place": "free",
+   "size_m": [
+    8.0,
+    12.0,
+    3.5
+   ],
+   "all_round_clear_m": 1.5
+  },
+  "crate": {
+   "place": "wall",
+   "size_m": [
+    1.0,
+    1.0,
+    0.9
+   ],
+   "front_clear_m": 0.4
+  },
+  "console": {
+   "place": "wall",
+   "size_m": [
+    1.2,
+    0.6,
+    1.1
+   ],
+   "front_clear_m": 0.7
+  },
+  "locker": {
+   "place": "wall",
+   "size_m": [
+    0.9,
+    0.5,
+    1.9
+   ],
+   "front_clear_m": 0.6
+  },
+  "cart": {
+   "place": "free",
+   "size_m": [
+    0.9,
+    0.6,
+    1.0
+   ],
+   "all_round_clear_m": 0.4
+  },
+  "pilot_seat": {
+   "place": "free",
+   "size_m": [
+    0.7,
+    0.9,
+    1.3
+   ],
+   "seat": true,
+   "front_clear_m": 0.3,
+   "face": "focal",
+   "support": "seat"
   }
  },
  "room_kinds": {
@@ -567,6 +624,110 @@
     "bench",
     "side_table",
     "rug"
+   ]
+  },
+  "cabin": {
+   "sizes_m": {
+    "small": [
+     2.8,
+     3.4,
+     2.3
+    ],
+    "medium": [
+     3.4,
+     4.2,
+     2.4
+    ],
+    "large": [
+     4.2,
+     5.2,
+     2.5
+    ]
+   },
+   "openings": [
+    {
+     "kind": "door",
+     "wall": "south"
+    }
+   ],
+   "outer_walls": [],
+   "focal": "door",
+   "dressing": [
+    "bed",
+    "table",
+    "chair",
+    "locker"
+   ]
+  },
+  "hangar": {
+   "sizes_m": {
+    "small": [
+     18.0,
+     24.0,
+     9.0
+    ],
+    "medium": [
+     24.0,
+     36.0,
+     11.0
+    ],
+    "large": [
+     30.0,
+     48.0,
+     14.0
+    ]
+   },
+   "openings": [
+    {
+     "kind": "door",
+     "wall": "south"
+    },
+    {
+     "kind": "window",
+     "wall": "west"
+    }
+   ],
+   "outer_walls": [
+    "west"
+   ],
+   "focal": "door",
+   "dressing": [
+    "spacecraft",
+    "crate",
+    "cart"
+   ]
+  },
+  "cockpit": {
+   "sizes_m": {
+    "small": [
+     1.8,
+     2.4,
+     1.7
+    ],
+    "medium": [
+     2.2,
+     2.8,
+     1.8
+    ],
+    "large": [
+     2.8,
+     3.4,
+     2.0
+    ]
+   },
+   "openings": [
+    {
+     "kind": "window",
+     "wall": "north"
+    }
+   ],
+   "outer_walls": [
+    "north"
+   ],
+   "focal": "window",
+   "dressing": [
+    "pilot_seat",
+    "console"
    ]
   }
  }
