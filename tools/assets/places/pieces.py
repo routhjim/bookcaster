@@ -298,7 +298,7 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     K = K or kinds()
     kind, look = piece["kind"], piece.get("look", "").strip()
     d = K[kind]
-    aid = _asset_id(kind, look)
+    aid = _asset_id(kind, look + (" " + Path(str(piece["source"])).stem if piece.get("source") else ""))
     tools = Path(tools or HERE.parent)
     work = Path(work or (C.UE_HOME / "lab" / "img3d_props"))
     name = kind.replace("_", " ")
@@ -320,7 +320,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
          "station": C.IMAGE_STATION, "kind": "refs",
          "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{aid}", "--",
                          python, str(tools / "refs" / "ref_draw.py"), "draw", aid, "--desc", desc,
-                         "--recipe", "sheet", "--seed", "{seed}"],
+                         "--recipe", "sheet", "--seed", "{seed}"]
+                 + (["--sources", str(piece["source"])] if piece.get("source") else []),   # (the place's concept)
          "gate": "the sheet cuts into four views and each view holds one whole object",
          "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS} drawings"},
         {"step": "spec", "what": "the piece's source spec, which the shape step reads (written when the drawing "

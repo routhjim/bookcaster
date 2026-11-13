@@ -952,6 +952,24 @@
    ],
    "needs": "seat",
    "placement": "floor"
+  },
+  "vehicle_cabin": {
+   "synonyms": [
+    "vehicle cabin",
+    "cockpit",
+    "cockpit module",
+    "driving cab",
+    "carriage interior",
+    "cabin module"
+   ],
+   "parent": null,
+   "size_m": [
+    2.4,
+    3.6,
+    1.9
+   ],
+   "needs": "seat",
+   "placement": "floor"
   }
  }
 }

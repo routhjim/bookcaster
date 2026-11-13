@@ -407,6 +407,7 @@ def main() -> int:
     a1.add_argument("--seed", type=int, default=11)
     a1.add_argument("--also", nargs="*", default=[], help="other ids to link to this set (a modeller's id)")
     a1.add_argument("--out", default="", help="write under this folder instead of REFS_DIR")
+    a1.add_argument("--sources", nargs="*", default=[], help="pictures the object is drawn from (reference pictures)")
     a2 = sub.add_parser("batch")
     a2.add_argument("jobs", help='JSON list of {"id", "desc", "style", "material", "recipe", "seed", "also", '
                                  '"sources", "extras"}')
@@ -420,7 +421,7 @@ def main() -> int:
         return 0
     items = json.loads(Path(a.jobs).read_text()) if a.cmd == "batch" else [
         {"id": a.asset_id, "desc": a.desc, "style": a.style, "material": a.material, "recipe": a.recipe,
-         "seed": a.seed, "also": a.also}]
+         "seed": a.seed, "also": a.also, "sources": a.sources}]
     out_root = Path(a.out) if a.out else None
     d = Drawer()
     failed = 0

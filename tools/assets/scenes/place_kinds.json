@@ -109,7 +109,8 @@
   "console",
   "locker",
   "cart",
-  "pilot_seat"
+  "pilot_seat",
+  "vehicle_cabin"
  ],
  "SEATS": [
   "armchair",
@@ -120,7 +121,8 @@
   "sofa",
   "stool",
   "wingback_armchair",
-  "pilot_seat"
+  "pilot_seat",
+  "vehicle_cabin"
  ],
  "LIE": [
   "bed",

@@ -161,6 +161,40 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
             + "; ".join(held) + ".", kw.get("surfaces") or "")
 
 
+CABIN_LOOK = ("the whole inside of this cabin as one open model, its roof and near side taken off so the seats and "
+              "controls can be seen and reached: ")
+
+
+def with_concept(spec: dict, concept: dict) -> dict:
+    """The place spec checked against its concept picture's facts (scenes/concept.py). A piece the plan never names
+    (no phrase of the plan lands on it) and the picture does not show is dropped: it was a guess. A piece in the
+    picture takes its look there. A place the picture shows as a cockpit (a space people only sit in) is one built
+    thing: a single cabin piece drawn from the concept, on a stage with room for the cameras round it, every phrase
+    of the plan landing on it."""
+    sp = json.loads(json.dumps(spec))
+    chk = concept.get("spec") or {}
+    kept = []
+    for p in sp.get("pieces") or []:
+        c = chk.get(p["id"]) or {}
+        if not p.get("phrases") and not c.get("in_picture"):
+            continue
+        if c.get("look"):
+            p["look"] = c["look"]
+        kept.append(p)
+    sp["pieces"] = kept
+    ids = {p["id"] for p in kept}
+    sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
+    if concept.get("space") == "cockpit":
+        seen = [x["name"] for x in concept.get("seen") or [] if x.get("name") and "view" not in x["name"]]
+        sp.update(kind="cockpit", openings=[], relations=[], pieces=[{
+            "id": "p1", "kind": "vehicle_cabin", "look": CABIN_LOOK + ", ".join(dict.fromkeys(seen)),
+            "phrases": [ph for p in spec.get("pieces") or [] for ph in p.get("phrases") or []], "against": "free",
+            "source": concept.get("concept")}])
+        sp["named_places"] = {ph: "p1" for ph in spec.get("named_places") or {}}
+    sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words")}
+    return sp
+
+
 def build(spec: dict, set_id: str, library=None) -> tuple:
     rec, res = records_for(spec, library)
     lay = L.solve_recover(spec, rec)          # solve, then the ladder (never drops a piece the plan names)
@@ -171,6 +205,9 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
     out["words"], out["surfaces_words"] = room_words(out, lay, kit, {r["asset_id"]: r for r in P.load_records(library)})
+    if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
+        out["surfaces_words"] = spec["_concept"]["surfaces_words"]
+        out["concept"] = spec["_concept"]["concept"]
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
              if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}
@@ -187,6 +224,10 @@ def main():
     a = sys.argv[1:]
     spec = json.loads(Path(a[0]).read_text())
     spec = spec.get("sheet", spec)
+    if "--concept" in a:
+        spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
+    if "--emit" in a:                                  # the spec as it is built (after the concept check)
+        Path(a[a.index("--emit") + 1]).write_text(json.dumps(spec, indent=1))
     lib = Path(a[a.index("--library") + 1]) if "--library" in a else None
     out, named, report = build(spec, a[1], lib)
     print(json.dumps(report, indent=1)[:4000])

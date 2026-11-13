@@ -417,6 +417,19 @@
    "front_clear_m": 0.3,
    "face": "focal",
    "support": "seat"
+  },
+  "vehicle_cabin": {
+   "place": "free",
+   "size_m": [
+    2.4,
+    3.6,
+    1.9
+   ],
+   "seat": true,
+   "front_clear_m": 1.5,
+   "all_round_clear_m": 1.0,
+   "face": "focal",
+   "support": "seat"
   }
  },
  "room_kinds": {
@@ -700,34 +713,26 @@
   "cockpit": {
    "sizes_m": {
     "small": [
-     1.8,
-     2.4,
-     1.7
+     7.0,
+     8.0,
+     4.0
     ],
     "medium": [
-     2.2,
-     2.8,
-     1.8
+     7.0,
+     8.0,
+     4.0
     ],
     "large": [
-     2.8,
-     3.4,
-     2.0
+     9.0,
+     10.0,
+     4.5
     ]
    },
-   "openings": [
-    {
-     "kind": "window",
-     "wall": "north"
-    }
-   ],
-   "outer_walls": [
-    "north"
-   ],
-   "focal": "window",
+   "openings": [],
+   "outer_walls": [],
+   "focal": "door",
    "dressing": [
-    "pilot_seat",
-    "console"
+    "vehicle_cabin"
    ]
   }
  }
