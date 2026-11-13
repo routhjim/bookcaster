@@ -71,7 +71,9 @@ def tiers(P: np.ndarray) -> list:
         if hist[i] < 0.3 * hist.max():
             break
         zc = float(edges[i] + 0.01)
-        if all(abs(zc - t) >= TIER_GAP_M for t in out):
+        # (a level under a sixth of the bed's height is what is stored beneath it, not somewhere to lie: a bunk's
+        # drawers were taken for its lower tier)
+        if zc - z.min() >= (z.max() - z.min()) / 6 and all(abs(zc - t) >= TIER_GAP_M for t in out):
             out.append(zc)
     return sorted(out)
 
@@ -84,10 +86,21 @@ def lie_box(P: np.ndarray, whole: bool = True) -> dict:
         # shape model's mesh and measured a patch 0.6 m long)
         low = lie_box(P, False)
         up_z = low["box"]["top_z_m"]
-        low["box"]["top_z_m"] = low["cover_z_m"] = round(tz[0], 3)
+        # (the mattress fills its frame: the frame's own footprint less its posts, where the upper tier's rails
+        # left only a patch of level surface to measure)
+        x_, y_ = P[:, 0], P[:, 1]
+        low["box"]["x_m"] = [round(float(x_.min()) + 0.06, 3), round(float(x_.max()) - 0.06, 3)]
+        low["box"]["y_m"] = [round(float(y_.min()) + 0.06, 3), round(float(y_.max()) - 0.06, 3)]
+        low["length_m"] = round(low["box"]["y_m"][1] - low["box"]["y_m"][0], 3)
+        low["width_m"] = round(low["box"]["x_m"][1] - low["box"]["x_m"][0], 3)
+        if low.get("pillow_y_m"):
+            hy = low["box"]["y_m"][1] if low["head"] == "+y" else low["box"]["y_m"][0]
+            low["pillow_y_m"] = sorted([round(hy, 3), round(hy - 0.35 if low["head"] == "+y" else hy + 0.35, 3)])
+        lz = tz[-2]                              # the tier under the top one (a level lower still is storage)
+        low["box"]["top_z_m"] = low["cover_z_m"] = round(lz, 3)
         if low.get("pillow_z_m") is not None:
-            low["pillow_z_m"] = round(tz[0] + (low["pillow_z_m"] - up_z), 3)
-        low.update(tiers=len(tz), headroom_m=round(tz[1] - tz[0], 3))
+            low["pillow_z_m"] = round(lz + (low["pillow_z_m"] - up_z), 3)
+        low.update(tiers=2, headroom_m=round(tz[-1] - lz, 3))
         return low
     x, y, z = P[:, 0], P[:, 1], P[:, 2]
     x0, y0 = x.min(), y.min()

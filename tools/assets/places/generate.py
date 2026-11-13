@@ -120,7 +120,7 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
     sup_ = next((x for x in json.loads(record(aid, library).read_text()).get("supports") or []
                  if x.get("posture") == "lying"), None)
     if sup_ and sup_.get("headroom_m") and sup_["headroom_m"] < SIT_ROOM_M and not req.get("_tiered"):
-        k = min(2.0, SIT_ROOM_M / float(sup_["headroom_m"]))
+        k = min(2.0, SIT_ROOM_M / float(sup_["headroom_m"]), BED_MAX_M / max(float(sup_.get("length_m") or 1.0), 0.5))
         spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]])
         sp.write_text(json.dumps(spec, indent=1))
         import shutil
@@ -154,6 +154,7 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
     return {"asset_id": aid, "ok": True, "why": "made"}
 
 
+BED_MAX_M = 2.2                         # no bed is made longer than this
 SIT_ROOM_M = 0.95                       # the room a person needs over a bunk's lower tier to sit on its edge
 EDGE_DEPTH_M = 0.5                      # how far in from a bed's edge a sitter's back plane is taken
 PLACE_W_M = 0.6                         # the width one person takes on a bed's edge
