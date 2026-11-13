@@ -345,6 +345,20 @@ def main():
             if nm in names and w not in NOTS:
                 worn[names[nm]] = w
     away = {}                                    # people out of the room: their last state, for their return
+    # someone who goes out during a shot is in that shot's opening picture and gone from a later one: the first
+    # after it, or after the last shot before the next spoken line whose plan still shows them (the passage after
+    # a line covers the pictures up to the next line: a man was gone from the very shot of his striding out)
+    gone_from = {}
+    for sid_, who_ in ((sp or {}).get("exits") or {}).items():
+        if sid_ not in ids:
+            continue
+        for x in who_:
+            j = k = ids.index(sid_)
+            while k + 1 < len(ids) and plan[ids[k + 1]][0].get("kind") != "talk":
+                k += 1
+                if any(q.get("name") == x for q in plan[ids[k]][0].get("people") or []):
+                    j = k
+            gone_from.setdefault(j + 1, []).append(x)
     for n, sid in enumerate(ids, 1):
         sh = plan[sid][0]
         sp = sp or {}
@@ -353,8 +367,7 @@ def main():
         # presence: a person leaves only on an exit the passage states in this shot's own span, and comes back on a
         # stated entrance, at the place they left from; a pass without exit answers (only "who is in the room")
         # takes nobody out (not being mentioned is not leaving, 11-12)
-        # (someone who goes out during a shot is in that shot's opening picture, and gone from the next shot's)
-        for x in (sp.get("exits") or {}).get(ids[n - 2] if n > 1 else None) or []:
+        for x in gone_from.get(n - 1) or []:
             if x in names and names[x] in state:
                 away[names[x]] = state.pop(names[x])
                 used.append(f"{names[x]} goes out of the room")
