@@ -69,6 +69,23 @@ h = max(zs) - min(zs)
 want_h = float(SPEC.get("height_m") or SPEC["size_m"][2])
 ob.data.transform(Matrix.Scale(want_h / h, 4))
 ob.data.update()
+# a cabin people sit inside is opened where they look out: the shape model closes a canopy with a solid skin, and from
+# the seats nothing outside could be seen; the faces inside the spec's "sight_cut_m" box (asset frame, metres) go
+cut = SPEC.get("sight_cut_m")
+if cut:
+    import bmesh as _bm
+    b_ = _bm.new()
+    b_.from_mesh(ob.data)
+    # (the box is in the finished asset's frame: the middle of its footprint at the origin, standing on z = 0)
+    cs = [v.co for v in b_.verts]
+    off = [(min(c[0] for c in cs) + max(c[0] for c in cs)) / 2, (min(c[1] for c in cs) + max(c[1] for c in cs)) / 2,
+           min(c[2] for c in cs)]
+    gone = [f for f in b_.faces if all(cut[k][0] <= f.calc_center_median()[i] - off[i] <= cut[k][1]
+                                       for i, k in enumerate("xyz"))]
+    _bm.ops.delete(b_, geom=gone, context="FACES")
+    b_.to_mesh(ob.data)
+    b_.free()
+    print(f"[img3d model] sight cut: {len(gone)} faces removed in {cut}")
 # triangle budget
 limit = int(SPEC.get("max_tris") or TIER_TRIS[SPEC.get("tier", "hero")] * 0.98)
 tris = sum(len(p.vertices) - 2 for p in ob.data.polygons)

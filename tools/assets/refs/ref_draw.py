@@ -415,7 +415,21 @@ def main() -> int:
     a3 = sub.add_parser("note")
     a3.add_argument("asset_id")
     a3.add_argument("text")
+    a4 = sub.add_parser("picture", help="one plain picture (a backdrop's view): <id>/picture.png")
+    a4.add_argument("asset_id")
+    a4.add_argument("--desc", required=True)
+    a4.add_argument("--size", nargs=2, type=int, default=[1664, 832])
+    a4.add_argument("--seed", type=int, default=11)
     a = ap.parse_args()
+    if a.cmd == "picture":
+        dest = OUT / a.asset_id / "picture.png"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        d = Drawer()
+        try:
+            d.draw({"id": a.asset_id, "prompt": a.desc, "seed": a.seed, "path": str(dest), "size": list(a.size)})
+        finally:
+            d.close()
+        return 0 if dest.exists() else 1
     if a.cmd == "note":
         set_note(a.asset_id, a.text)
         return 0

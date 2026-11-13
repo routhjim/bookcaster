@@ -198,8 +198,77 @@ def with_concept(spec: dict, concept: dict) -> dict:
             "phrases": [ph for p in spec.get("pieces") or [] for ph in p.get("phrases") or []], "against": "free",
             "source": concept.get("concept"), "seats_abreast": int(concept.get("seats_abreast") or 1)}])
         sp["named_places"] = {ph: "p1" for ph in spec.get("named_places") or {}}
+        # what lies outside the cabin: the director's own line for the place when it is an outside place
+        m = re.match(r"\s*outside\s*:\s*(.+)", str(spec.get("_director_room") or ""), re.I | re.S)
+        if m:
+            sp["outside"] = m.group(1).strip().rstrip(".")
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words")}
     return sp
+
+
+VIEW_SIZE_M = (48.0, 24.0)       # a view's picture: wide enough to fill a canopy from the seats
+VIEW_AHEAD_M = 12.0              # how far beyond the cabin it stands
+VIEW_EMIT = 30.0                 # the picture's own light
+
+
+def view_id(words: str) -> str:
+    import hashlib
+    return "backdrop_view_" + hashlib.sha1(" ".join(re.findall(r"[a-z0-9]+", words.lower())).encode()).hexdigest()[:6]
+
+
+def view_spec(words: str) -> dict:
+    """The source spec of a view's backdrop (models/backdrop_view): one picture of what lies outside, its own light."""
+    w, h = VIEW_SIZE_M
+    return {"id": view_id(words), "class": "prop", "tier": "background", "texture_px": 2048, "placement": "floor",
+            "description": f"Backdrop for the view outside a place: {words}. One flat picture, {w:g} x {h:g} m, giving "
+                           "its own light. Front -Y; origin at the middle of the bottom edge.",
+            "tags": ["backdrop", "view", "generated-on-request"], "size_m": [w, 0.02, h], "size_tolerance": 0.05,
+            "source": "scripted", "backdrop": {"w": w, "h": h, "emit": VIEW_EMIT}, "view_words": words,
+            "licence": "CC0 (original script; picture drawn by the local image model)",
+            "cameras": [{"name": "front", "position": [0.0, -w * 1.2, h / 2], "target": [0.0, 0.0, h / 2], "focal": 28}]}
+
+
+def cabin_stage(out: dict, spec: dict, library) -> None:
+    """A cabin with something outside it is filmed in the open, not in a room: no stage walls, ceiling or floor (they
+    were all the canopy showed), the view's backdrop standing beyond its nose, and its light coming from there:
+    a soft key through the canopy in the view's own colour, and the glow of its instruments on the people in it."""
+    import config as C
+    lib = Path(library or C.LIBRARY)
+    cab = next((f for f in out["fixtures"] + out["props"] if (f.get("name") or "").startswith("vehicle_cabin")), None)
+    words = spec.get("outside")
+    if not cab or not words:
+        return
+    rec = json.loads((lib / "prop" / cab["asset"] / "asset.json").read_text())
+    f = [float(v) for v in cab.get("facing", [0, -1])]     # the builder turns the piece's own front onto its facing
+    x, y = cab["position"][:2]
+    ln, ht = float(rec["size_m"][1]), float(rec["size_m"][2])
+    vid = view_id(words)
+    out["structure"] = []
+    if (lib / "prop" / vid / "asset.json").exists():
+        d = ln / 2 + VIEW_AHEAD_M
+        out["fixtures"].append({"asset": vid, "name": "outside_view", "outside": True, "view_words": words,
+                                "position": [round(x + f[0] * d, 3), round(y + f[1] * d, 3),
+                                             round(ht / 2 - VIEW_SIZE_M[1] / 2, 3)],
+                                "facing": [round(-f[0], 4), round(-f[1], 4)]})
+    # (a made cabin is a closed shell: a light outside its nose lit nobody, so the view's light is set inside it,
+    # ahead of and above the seats, without shadows)
+    key = {"type": "rect", "size_m": [1.2, 0.6], "lumens": 4200, "kelvin": 5200, "radius_m": 8, "shadows": False,
+           "position": [round(x, 3), round(y, 3), round(ht * 0.72, 3)],
+           "toward": [round(x - f[0] * ln * 0.25, 3), round(y - f[1] * ln * 0.25, 3), 1.1]}
+    pic = lib / "_refs" / vid / "picture.png"
+    if pic.exists():                              # the key takes the view's own colour (its brightest tenth)
+        from PIL import Image
+        px = sorted(Image.open(pic).convert("RGB").resize((64, 32)).getdata(), key=sum)[-205:]
+        m = [sum(c[i] for c in px) / len(px) for i in range(3)]
+        k = 255.0 / max(max(m), 1.0)
+        key.pop("kelvin")
+        key["color"] = "#%02x%02x%02x" % tuple(int(min(255, c * k)) for c in m)
+    glow = {"type": "point", "lumens": 420, "kelvin": 6500, "radius_m": 3, "source_radius_m": 0.15, "shadows": False,
+            "position": [round(x - f[0] * ln * 0.08, 3), round(y - f[1] * ln * 0.08, 3), 0.95]}
+    out["lights"] = [{"type": "sky", "intensity": 0.05, "atmosphere": False}, key, glow]
+    out["surfaces_words"] = (f"Outside, seen through the canopy and its windows: {words}. The light comes in from "
+                             "outside, and the instruments glow.")
+    out["view"] = view_spec(words)
 
 
 def build(spec: dict, set_id: str, library=None) -> tuple:
@@ -215,6 +284,10 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]
         out["concept"] = spec["_concept"]["concept"]
+    for it in out["fixtures"] + out["props"]:                    # (how a cabin was drawn is not how it looks)
+        if it.get("look"):
+            it["look"] = it["look"].replace(CABIN_LOOK, "")
+    cabin_stage(out, spec, library)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
              if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}

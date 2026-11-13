@@ -1191,11 +1191,11 @@ def rrect_path(w, h, r, n_corner=6, plane="xz", centre=(0, 0, 0), top_r=None):
     return ded
 
 
-def image_material(path, name, fallback=(0.45, 0.40, 0.30), varnish=0.0):
+def image_material(path, name, fallback=(0.45, 0.40, 0.30), varnish=0.0, emit=0.0):
     """A picture/print surface: the image at `path` mapped by the part's Generated X / Y (so a flat box part shows it
     across its face), with a little paper/varnish noise. Falls back to a plain colour when the file is missing."""
     import os as _os
-    key = ("img", path, name)
+    key = ("img", path, name, emit)
 
     def make():
         k = NK(name)
@@ -1205,6 +1205,8 @@ def image_material(path, name, fallback=(0.45, 0.40, 0.30), varnish=0.0):
             im.image = bpy.data.images.load(path)
             im.extension = "EXTEND"
             k.L.new(tc.outputs["Generated"], im.inputs["Vector"])
+            if emit:                      # a picture that gives its own light (a view of the sky, of space)
+                return k.out((0.0, 0.0, 0.0, 1), 1.0, 0.0, None, emit=im.outputs["Color"], emit_strength=emit)
             col = k.mul_col(im.outputs["Color"], (0.82, 0.80, 0.74, 1))
         else:
             col = fallback

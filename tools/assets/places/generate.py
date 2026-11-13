@@ -94,27 +94,34 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
     # out with a seat 0.3 m wide, the pilot taller than the whole cockpit): made again at the scale that gives the
     # measured seat a person's width, once
     seat = json.loads(record(aid, library).read_text()).get("seat") or {}
-    if seat.get("inside") and seat.get("width_m") and not req.get("_resized"):
+    if seat.get("inside") and seat.get("width_m"):
         k = max(1.0, min(2.5, SEAT_W_M / float(seat["width_m"])))
-        if k > 1.1:
-            spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]])
-            sp.write_text(json.dumps(spec, indent=1))
-            import shutil
-            shutil.rmtree(library / "prop" / aid, ignore_errors=True)
-            log(f"{aid}: its seat is {seat['width_m']} m wide; made again {k:.2f} times the size")
-            r = run(argv)
-            t_end = time.time() + CHAIN_WAIT_S
-            while not record(aid, library) and time.time() < t_end:
-                time.sleep(10)
-            if not record(aid, library):
-                return {"asset_id": aid, "ok": False, "why": "no library record after the resize"}
-            rp1 = record(aid, library)
-            rec1 = json.loads(rp1.read_text())
-            rec1.update({k: rec0[k] for k in ("piece_kind", "look", "seats_abreast") if k in rec0})
-            rp1.write_text(json.dumps(rec1, indent=1))
-            for need in req.get("needs") or []:
-                if need in MEASURE:
-                    run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+        k = k if k > 1.1 else 1.0
+        spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]],
+                    sight_cut_m=sight_cut(seat, k))
+        sp.write_text(json.dumps(spec, indent=1))
+        import shutil
+        shutil.rmtree(library / "prop" / aid, ignore_errors=True)
+        log(f"{aid}: its seat is {seat['width_m']} m wide; made again {k:.2f} times the size, opened ahead of the seats")
+        r = run(argv)
+        t_end = time.time() + CHAIN_WAIT_S
+        while not record(aid, library) and time.time() < t_end:
+            time.sleep(10)
+        if not record(aid, library):
+            return {"asset_id": aid, "ok": False, "why": "no library record after the second making"}
+        rp1 = record(aid, library)
+        rec1 = json.loads(rp1.read_text())
+        rec1.update({k_: rec0[k_] for k_ in ("piece_kind", "look", "seats_abreast") if k_ in rec0})
+        rp1.write_text(json.dumps(rec1, indent=1))
+        for need in req.get("needs") or []:
+            if need in MEASURE:
+                run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+    rp_ = record(aid, library)
+    rec_ = json.loads(rp_.read_text())
+    es = edge_seats(rec_)
+    if es:
+        rec_.update(es)
+        rp_.write_text(json.dumps(rec_, indent=1))
     # the record says which kind of piece it was made as and with what look (the lookup reads both)
     rp = record(aid, library)
     rec = json.loads(rp.read_text())
@@ -122,6 +129,76 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
     rec.setdefault("look", req.get("look", ""))
     rp.write_text(json.dumps(rec, indent=1))
     return {"asset_id": aid, "ok": True, "why": "made"}
+
+
+EDGE_DEPTH_M = 0.5                      # how far in from a bed's edge a sitter's back plane is taken
+PLACE_W_M = 0.6                         # the width one person takes on a bed's edge
+
+
+def edge_seats(rec: dict) -> dict:
+    """A bed is also sat on: its long edges as seats, from its measured lie box (seat frame as scenes/seatbox.py:
+    front -y). "seat" is the edge on the asset's -x side, "seat_other" the +x side; the scene takes the one that
+    faces the room (scenes/seating.py)."""
+    sup = next((x for x in rec.get("supports") or [] if x.get("posture") == "lying"), None)
+    if not sup or rec.get("seat"):
+        return {}
+    (x0, x1), (y0, y1) = sup["box"]["x_m"], sup["box"]["y_m"]
+    z = sup.get("cover_z_m") or sup["box"]["top_z_m"]
+    n = max(1, int((y1 - y0 - 0.5) // PLACE_W_M))                # (the pillow's end is left free)
+
+    def box(front_y, lo, hi, fa):
+        mid = (lo + hi) / 2
+        return {"seat_z_m": round(z, 3), "front_y_m": round(front_y, 3), "back_y_m": round(front_y + EDGE_DEPTH_M, 3),
+                "inner_x_m": [round(lo, 3), round(hi, 3)], "arm_z_m": None, "width_m": round(hi - lo, 3),
+                "depth_m": EDGE_DEPTH_M, "places": [round(mid + (i - (n - 1) / 2) * PLACE_W_M, 3) for i in range(n)],
+                "front_asset": fa, "edge": True, "source": "places/generate.py from the lie box"}
+    return {"seat": box(x0, -y1, -y0, [-1.0, 0.0]), "seat_other": box(-x1, y0, y1, [1.0, 0.0])}
+
+
+EYE_UP_M = 0.78                         # a sitter's eyes above the seat
+
+
+def sight_cut(seat: dict, k: float = 1.0) -> dict:
+    """The box ahead of a cabin's seats that its people look out through (asset frame, metres, at k times the
+    measured size): from the front end of the seats' lane to beyond the nose, across the seats and a little more,
+    from just under eye height up to a standing head's height above it."""
+    import math
+    fa = seat.get("front_asset", [0.0, -1.0])
+    t = math.radians(math.degrees(math.atan2(fa[1], fa[0])) + 90.0)        # the seat frame (front -y) in the asset's
+    half = max(abs(v) for v in seat["inner_x_m"]) + 0.25
+    pts = [(x * math.cos(t) - y * math.sin(t), x * math.sin(t) + y * math.cos(t))
+           for x in (-half, half) for y in (seat["front_y_m"] + 0.1, seat["front_y_m"] - 50.0)]
+    z0 = seat["seat_z_m"] + EYE_UP_M - 0.08
+    return {"x": [round(min(p[0] for p in pts) * k, 3), round(max(p[0] for p in pts) * k, 3)],
+            "y": [round(min(p[1] for p in pts) * k, 3), round(max(p[1] for p in pts) * k, 3)],
+            "z": [round(z0 * k, 3), round((z0 + 0.75) * k, 3)]}
+
+
+def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
+    """The backdrop of a place's view outside (sets/place_build.py view_spec): its picture drawn through the line from
+    the view's own words, then the scripted panel's asset chain (bake, engine import)."""
+    aid, words = spec["id"], spec["view_words"]
+    if record(aid, library):
+        return {"asset_id": aid, "ok": True, "why": "already in the library"}
+    pic = REFS / aid / "picture.png"
+    ra = [sys.executable, str(HERE.parent / "run_asset.py")]
+    if not pic.exists():
+        desc = (f"{words[0].upper() + words[1:]}. A wide open view of it, seen from far off, with nothing in the "
+                "foreground: no window, no frame, no vehicle, no people, no writing.")
+        r = run(ra + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_view_{aid}", "--", sys.executable,
+                      str(HERE.parent / "refs" / "ref_draw.py"), "picture", aid, "--desc", desc, "--seed", str(seed)])
+        log(f"{aid}: view picture rc={r.returncode}")
+    if not pic.exists():
+        return {"asset_id": aid, "ok": False, "why": "no picture of the view"}
+    sp = library / "prop" / aid / "source" / "spec.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({k: v for k, v in spec.items() if k != "view_words"}, indent=1))
+    r = run(ra + [str(sp), str(HERE.parent / "models" / "backdrop_view" / "backdrop_view.py"), "--detach"])
+    log(f"{aid}: chain rc={r.returncode}")
+    t_end = time.time() + CHAIN_WAIT_S
+    while not record(aid, library) and time.time() < t_end:
+        time.sleep(10)
+    return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
 
 
 def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
@@ -153,6 +230,10 @@ def main():
     if "--dry" in a:
         return 0
     out = [dict(make(p["request"], library, seed), kind=p["kind"]) for p in todo]
+    if spec.get("outside") and not only:                 # what lies outside the place: its view's backdrop
+        sys.path.insert(0, str(HERE.parent / "sets"))
+        import place_build as PB
+        out.append(dict(make_view(PB.view_spec(spec["outside"]), library, seed), kind="view"))
     print(json.dumps(out, indent=1))
     return 0 if all(o["ok"] for o in out) else 1
 

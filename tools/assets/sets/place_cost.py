@@ -475,7 +475,7 @@ def front_problems(record: dict, rule: dict, R: dict) -> list:
     out = []
     seat = record.get("seat") or {}
     fa = seat.get("front_asset")
-    if fa:
+    if fa and not seat.get("edge"):
         if -float(fa[1]) < R["front"]["seat_front_cos"]:
             out.append(f"the seat's open side is {list(fa)} in the mesh's own frame, not -Y")
     elif rule.get("seat"):

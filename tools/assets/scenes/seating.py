@@ -64,6 +64,13 @@ def seats(library: Path, set_dir: Path) -> dict:
                     yaw = -built[f["name"]] if f["name"] in built else _ang(fc) + 90.0
                     fa = sb.get("front_asset", [0.0, -1.0])
                     phi = _ang(fa) + 90.0                    # the seat frame (front -y) inside the asset frame
+                    if aj.get("seat_other"):                 # a bed's edge: the side that faces the room
+                        so = aj["seat_other"]
+                        fr = lambda q: _rot([0.0, -1.0], yaw + _ang(q["front_asset"]) + 90.0)   # noqa: E731
+                        to_mid = [-f["position"][0], -f["position"][1]]
+                        if sum(a_ * b_ for a_, b_ in zip(fr(so), to_mid)) > sum(a_ * b_ for a_, b_ in zip(fr(sb), to_mid)):
+                            sb, fa = so, so["front_asset"]
+                            phi = _ang(fa) + 90.0
                     out[f["name"]] = {"pos": f["position"][:2], "asset": f["asset"], "box": sb,
                                       "rot": yaw + phi, "front": _rot([0.0, -1.0], yaw + phi)}
                     break

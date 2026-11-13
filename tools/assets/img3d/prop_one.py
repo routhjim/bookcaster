@@ -77,7 +77,7 @@ def main():
     src = find_asset(a.id)
     spec = json.loads((src / "source" / "spec.json").read_text())
     keep = {k: spec[k] for k in ("class", "description", "tags", "tier", "size_m", "placement", "cameras",
-                                 "camera_preset", "texture_px") if k in spec}
+                                 "camera_preset", "texture_px", "sight_cut_m") if k in spec}
     new = dict(keep, id=f"{a.id}_tr", source="generated", keep_uvs=True, source_glb=str(glb),
                licence="internal: reference drawn by the local image model; shape and texture by TRELLIS.2 (MIT) "
                        "through trellis.cpp (MIT)",
