@@ -189,7 +189,9 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
     fixtures (their footprint + 0.25 m) and other people (0.55 m), inside the room, toward the room's middle."""
     W, D = room[0] / 2 - 0.35, room[1] / 2 - 0.35
     best = None
-    for r10 in range(int(near[0] * 10), int(max(near[1], 3.0) * 10) + 1):     # widened until a point is free
+    # widened until a point is free: as far as the room goes (a thing bigger than the old 3 m reach, a craft in a
+    # hangar, left no free point and everyone sent to it was stood on one fallback spot, 11-13)
+    for r10 in range(int(near[0] * 10), int(max(near[1], 3.0, math.hypot(room[0], room[1])) * 10) + 1):
         r = r10 / 10
         for a in range(0, 360, 10):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
@@ -200,10 +202,12 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
             if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
                    and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
                 continue
-            score = r + 0.3 * math.hypot(*p) / max(W, D)          # nearer the thing, then nearer the middle
+            # nearer the thing, then nearer the middle; and with whoever is already at the place rather than across
+            # it (two men sent to one craft stood on opposite sides of it, the craft between them)
+            score = r + 0.3 * math.hypot(*p) / max(W, D) + 0.15 * min((math.dist(p, o) for o in others), default=0.0)
             if best is None or score < best[0]:
-                best = (score, p)
-        if best:
+                best = (score, p, r)
+        if best and r >= best[2] + 1.0:                           # a metre past the first free ring, then the best
             break
     return [round(best[1][0], 3), round(best[1][1], 3)] if best else [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
 
