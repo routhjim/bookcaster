@@ -115,6 +115,11 @@ mid_r = (head("thigh_l") + head("thigh_r")) / 2
 pb = PB["pelvis"]
 pb.matrix = Matrix.Translation(mid_t - mid_r) @ pb.matrix
 bpy.context.view_layer.update()
+# lying: the pose turns the whole body over at the pelvis (cast_char.lie_pose), so the pelvis takes the trunk's
+# direction, hips to neck, before anything else (without it the pelvis stayed upright here and only the spine and
+# the legs were bent down: cloth that rides the pelvis alone stood at a right angle to the body in the engine)
+if JOB.get("lie") and "neck_01" in JT:
+    turn("pelvis", head("neck_01") - (head("thigh_l") + head("thigh_r")) / 2, JT["neck_01"] - mid_t)
 turn("pelvis", head("thigh_l") - head("thigh_r"), JT["thigh_l"] - JT["thigh_r"])
 # spine: the chain from the pelvis bends toward the posed neck (spread over spine_01..05)
 if "neck_01" in JT:
@@ -560,6 +565,7 @@ if LIE and LIE.get("cover", True):
     cov = bpy.data.objects.new("cover", cm_)
     bpy.context.scene.collection.objects.link(cov)
     cov.parent = arm
+    # bound wholly to the pelvis, which lies here as the engine's pose lays it (the trunk turn above)
     g_ = cov.vertex_groups.new(name="pelvis")
     g_.add(list(range(len(verts))), 1.0, "REPLACE")
     am_ = cov.modifiers.new("Armature", "ARMATURE")

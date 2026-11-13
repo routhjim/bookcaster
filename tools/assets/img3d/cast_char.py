@@ -1275,7 +1275,9 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
             "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "cover.fbx"),
                               "textures": str(W / f"lying_{bed}_{variant}" / "cover_textures"), "dest": dest + "C",
                               "cloth_slots": False}}, 900)
-        cover = f"{dest}C/Outfit/outfit"
+        # (the imported mesh is named after its file: the import's own result says where it is)
+        cover = json.loads((W / "ue" / f"import_cover_{bed}_{variant}" / "result.json").read_text())[
+            "import_outfit"]["outfit"]
     # the lie points in the stance's actor frame (metres): x along the actor's left, y forward, z up
     import math as _m
     f_ = c["facing"]

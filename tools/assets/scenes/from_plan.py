@@ -300,6 +300,13 @@ def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None, la
 def main():
     a = sys.argv[1:]
     plan = json.loads(Path(a[0]).read_text())
+    # who speaks in a talk shot is the audio's own fact (the plan's event): a shot the plan wrote without its
+    # speaker (its over-the-shoulder shots) is still that person's line, and the camera's face rules are theirs
+    # (28 such shots were staged with no speaker: the back of a head filled the frame and hid the one speaking)
+    for e_ in plan.get("_es") or []:
+        for sh_ in plan.get(e_.get("id")) or []:
+            if isinstance(sh_, dict) and sh_.get("kind") == "talk" and not sh_.get("speaker") and e_.get("speaker"):
+                sh_["speaker"] = e_["speaker"]
     ids = [x.strip() for x in Path(a[1]).read_text().splitlines() if x.strip()]
     cast = json.loads(Path(a[2]).read_text())
     out = Path(a[3])
