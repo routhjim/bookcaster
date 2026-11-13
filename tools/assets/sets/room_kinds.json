@@ -430,6 +430,15 @@
    "all_round_clear_m": 1.0,
    "face": "focal",
    "support": "seat"
+  },
+  "bystander": {
+   "place": "free",
+   "size_m": [
+    0.6,
+    0.45,
+    1.75
+   ],
+   "front_clear_m": 0.3
   }
  },
  "room_kinds": {

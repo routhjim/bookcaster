@@ -280,6 +280,32 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
     out["view"] = view_spec(words)
 
 
+CROWD_M2 = 20.0                  # floor per bystander: a crowd is a few figures far off, never a full room
+CROWD_MAX = 6
+
+
+def with_crowd(spec: dict) -> dict:
+    """The director's crowd of the place as a few standing figures: made like any piece (drawn from the crowd's own
+    words, shaped, stood on the free floor), with no rig and no likeness to keep. Nobody of the cast is among them;
+    the keys' pictures fill the rest of the crowd in behind (redraw.py)."""
+    terms = [t.strip() for t in re.split(r",| and ", str(spec.get("crowd") or "")) if t.strip()]
+    rk = json.loads((HERE / "room_kinds.json").read_text())["room_kinds"]
+    size = (rk.get(spec.get("kind")) or {}).get("sizes_m", {}).get(spec.get("size"))
+    n = min(CROWD_MAX, int((size[0] * size[1]) // CROWD_M2)) if terms and size else 0
+    if not n:
+        return spec
+    sp = json.loads(json.dumps(spec))
+    period = str(sp.get("period") or "").replace("_", " ")
+    for i in range(n):
+        t = terms[i % len(terms)]
+        who = "one of them" if i < len(terms) else "another of them, unlike the first"
+        sp.setdefault("pieces", []).append({
+            "id": f"x{i + 1}", "kind": "bystander", "against": "free", "phrases": [],
+            "look": f"the {t} of a {period} place, {who}: a single person standing at ease, the whole figure "
+                    "from head to feet"})
+    return sp
+
+
 def build(spec: dict, set_id: str, library=None) -> tuple:
     rec, res = records_for(spec, library)
     lay = L.solve_recover(spec, rec)          # solve, then the ladder (never drops a piece the plan names)
@@ -329,6 +355,7 @@ def main():
     spec = spec.get("sheet", spec)
     if "--concept" in a:
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
+    spec = with_crowd(spec)
     if "--emit" in a:                                  # the spec as it is built (after the concept check)
         Path(a[a.index("--emit") + 1]).write_text(json.dumps(spec, indent=1))
     lib = Path(a[a.index("--library") + 1]) if "--library" in a else None

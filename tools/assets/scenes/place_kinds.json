@@ -110,7 +110,8 @@
   "locker",
   "cart",
   "pilot_seat",
-  "vehicle_cabin"
+  "vehicle_cabin",
+  "bystander"
  ],
  "SEATS": [
   "armchair",
