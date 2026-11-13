@@ -1087,17 +1087,36 @@ def near_people(subjects, room, step=1):
     W, D, _ = room
     xs = [v["measured"]["pelvis_xy"][0] for v in subjects.values()] or [0.0]
     ys = [v["measured"]["pelvis_xy"][1] for v in subjects.values()] or [0.0]
-    x0, x1 = max(-W / 2, min(xs) - CAMERA_REACH_M), min(W / 2, max(xs) + CAMERA_REACH_M)
-    y0, y1 = max(-D / 2, min(ys) - CAMERA_REACH_M), min(D / 2, max(ys) + CAMERA_REACH_M)
+    wd = wild_m(room)
+    x0, x1 = max(-W / 2 - wd, min(xs) - CAMERA_REACH_M), min(W / 2 + wd, max(xs) + CAMERA_REACH_M)
+    y0, y1 = max(-D / 2 - wd, min(ys) - CAMERA_REACH_M), min(D / 2 + wd, max(ys) + CAMERA_REACH_M)
     if (x1 - x0) * (y1 - y0) > 60.0:           # a wide floor is searched at twice the spacing
         step *= 2
     return (range(int(math.floor(x0 * 10)), int(math.ceil(x1 * 10)) + 1, step),
             range(int(math.floor(y0 * 10)), int(math.ceil(y1 * 10)) + 1, step))
 
 
+WILD_ROOM_M2 = 16.0          # a room with less floor than this cannot back a camera off: its walls are wild
+WILD_M = 2.2                 # how far beyond a wild wall a camera may stand
+WALL_BAND_M = 0.45           # from a wall's inner face to clear of its outer face
+
+
+def wild_m(room) -> float:
+    """How far outside the walls a camera may stand: a film set's small room is shot through a wall taken away for
+    the shot (the engine hides the walls the camera stands beyond: ue/scene_job.py)."""
+    return WILD_M if room[0] * room[1] < WILD_ROOM_M2 else 0.0
+
+
 def in_room(p, room):
     W, D, H = room
-    return abs(p[0]) < W / 2 - ROOM_MARGIN_M and abs(p[1]) < D / 2 - ROOM_MARGIN_M and 0.3 < p[2] < H - 0.2
+    if not 0.3 < p[2] < H - 0.2:
+        return False
+    wd = wild_m(room)
+
+    def ok(v, half):                              # inside, or beyond the wall and clear of it
+        return abs(v) < half - ROOM_MARGIN_M or bool(wd and half + WALL_BAND_M < abs(v) < half + wd)
+    inx, iny = abs(p[0]) < W / 2 - ROOM_MARGIN_M, abs(p[1]) < D / 2 - ROOM_MARGIN_M
+    return ok(p[0], W / 2) and ok(p[1], D / 2) and (inx or iny)          # (beyond one wall, never round a corner)
 
 
 # ------------------------------------------------------------------ the check

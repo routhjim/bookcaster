@@ -148,7 +148,7 @@ def resolve(spec, cams_wanted=None):
                   "exposure_ev100": spec.get("exposure_ev100"), "warm_frames": spec.get("warm_frames", 150),
                   "settle_frames": spec.get("settle_frames", 60), "attach_tol_cm": spec.get("attach_tol_cm", 0.1),
                   "guides": bool(spec.get("guides", False)), "hide": list(spec.get("hide") or []),
-                  "interior": st.get("interior")}
+                  "interior": st.get("interior"), "room": st.get("size_m")}
 
 
 def contact_sheet(shots, out):

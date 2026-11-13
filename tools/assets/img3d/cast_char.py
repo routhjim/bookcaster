@@ -572,7 +572,9 @@ def main():
                     if p.returncode or not out.exists():
                         meshes.append({"file": str(out), "error": p.stdout[-300:]})
                         continue
-                    g = subprocess.run([HY_PY, "-I", str(HERE / "mesh_gate.py"), str(out)], capture_output=True, text=True)
+                    ca_ = child_armpit(a.look)                 # (a child's armpit and elbow sit lower: see there)
+                    g = subprocess.run([HY_PY, "-I", str(HERE / "mesh_gate.py"), str(out), "--min-free", str(ca_),
+                                        "--elbow", str(round(0.68 - (0.70 - ca_), 3))], capture_output=True, text=True)
                     res = json.loads(g.stdout.strip().splitlines()[-1]) if g.stdout.strip() else {"file": str(out)}
                     res["pass"] = g.returncode == 0
                     meshes.append(res)

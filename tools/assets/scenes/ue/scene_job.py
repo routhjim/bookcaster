@@ -565,6 +565,19 @@ def run(job):
         t_r = time.time()
         for c, cs, chk, cam, everyone in cams:
             ts = time.time()
+            # a camera beyond a wall (a small room's wild wall): that wall is hidden for this still and its guides
+            wild = []
+            if job.get("room"):
+                W_, D_ = job["room"][0], job["room"][1]
+                px, py = cs["position"][0], cs["position"][1]
+                sides = [s_ for s_, out_ in (("east", px > W_ / 2), ("west", px < -W_ / 2), ("north", py > D_ / 2),
+                                             ("south", py < -D_ / 2)) if out_]
+                for a_ in act.get_all_level_actors() if sides else []:
+                    fp = str(a_.get_folder_path())
+                    if any(fp == f"Walls/{s_}" or fp.startswith(f"Walls/{s_}/") for s_ in sides) and not a_.is_hidden_ed():
+                        a_.set_is_temporarily_hidden_in_editor(True)
+                        a_.set_actor_hidden_in_game(True)
+                        wild.append(a_)
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()
@@ -604,6 +617,9 @@ def run(job):
                 for key, fa in figs.items():
                     guides[f"depth_{key}"] = os.path.join(g, f"{c['name']}_depth_{key}.exr")
                     yield from guide_capture(cs, res, guides[f"depth_{key}"], [fa])
+            for a_ in wild:
+                a_.set_is_temporarily_hidden_in_editor(False)
+                a_.set_actor_hidden_in_game(False)
             shot = {"name": c["name"], "path": path, "guides": guides, "truth": truth(cs, r["subjects"]), "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):

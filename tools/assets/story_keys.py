@@ -230,6 +230,7 @@ class Story:
                 if p["name"] in poses:
                     poses[p["name"]].add(str(p.get("pose") or ""))
         ok = True
+        ok_people = set(self.people_of(place))
         for name in self.people_of(place):
             fid, pr = self.figure_id(name), self.person(name)
             w = self.work / "cast" / pr["slug"]
@@ -237,13 +238,18 @@ class Story:
             base = [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
                     "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
                     "--scene-tool", HERE / "scenes"]
+            if (w / "FAILED").exists() and not (C.LIBRARY / "character" / fid / "character.json").exists():
+                log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'}); staged without them")
+                ok_people.discard(name)
+                continue
             if not (C.LIBRARY / "character" / fid / "character.json").exists():
                 rc = sh(base + ["--until", "seats"], w / "run.log")
                 if rc and not (C.LIBRARY / "character" / fid / "character.json").exists():
                     rc = sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")     # (a new round of drawings)
                 if not (C.LIBRARY / "character" / fid / "character.json").exists():
-                    log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}")
-                    ok = False
+                    log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}; staged without them")
+                    (w / "FAILED").write_text(time.strftime("%F %T"))      # (a build is long: not tried again unasked)
+                    ok_people.discard(name)
                     continue
             lie = []
             if any("ly" in q or "lie" in q for q in poses[name]):           # lying stances on this set's own beds
@@ -258,7 +264,7 @@ class Story:
                     log(f"{place}: {name}'s stances for this set did not all build (rc {rc})")
         (d / "cast.json").write_text(json.dumps(
             {n: {"key": "abcdefgh"[k], "id": self.cast[n]} for k, n in enumerate(self.people_of(place))
-             if n in self.cast}, indent=1))
+             if n in ok_people}, indent=1))
         return ok
 
     def step_pass(self, place):
