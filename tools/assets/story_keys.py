@@ -359,9 +359,18 @@ class Story:
         for g in sorted((d / "seq").glob("pl_g*/"), key=lambda p: (len(p.name), p.name)):
             if not (g / "spec_round0.json").exists():
                 continue
+            sj = json.loads((g / "speakers.json").read_text()) if (g / "speakers.json").exists() else {}
             for c in json.loads((g / "spec_round0.json").read_text())["cameras"]:
                 if not (g / f"{c['name']}.png").exists():
                     rows.append({"shot": c["plan_id"], "key": False, "why": "not staged"})
+                    continue
+                st = (sj.get("shots") or {}).get(c["name"]) or {}
+                if st and not st.get("ok"):          # a staging that failed its own checks is not a key: it is
+                    for f in (self.keys / f"{c['plan_id']}_s0.png",):      # reported, with what it failed on
+                        f.unlink(missing_ok=True)
+                    rows.append({"shot": c["plan_id"], "key": False,
+                                 "why": "staging failed: " + "; ".join(map(str, ((st.get("history") or [{}])[-1].get("why")
+                                                                                 or st.get("why") or [])))})
                     continue
                 a = next((v for k, v in acc.items() if k.startswith(f"{g.name}__{c['name']}__")), None)
                 rows.append({"shot": c["plan_id"], "key": bool(a), "why": (a or {}).get("fails") or ""})
