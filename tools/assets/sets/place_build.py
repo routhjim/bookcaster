@@ -35,6 +35,11 @@ def records_for(spec: dict, library) -> tuple:
     by = {r["asset_id"]: r for r in recs}
     rec = {p["id"]: {"asset": p["asset_id"], "size_m": by[p["asset_id"]].get("size_m")}
            for p in res["pieces"] if p["status"] == "library"}
+    # a piece still to be generated stands in the room as the library's nearest of its kind until then (reported:
+    # a bedroom was built without its bed because the bed's look matched no record closely enough)
+    for p in res["pieces"]:
+        if p["status"] == "generate" and p.get("nearest"):
+            rec[p["id"]] = {"asset": p["nearest"]["asset_id"], "size_m": by[p["nearest"]["asset_id"]].get("size_m")}
     return rec, res
 
 
@@ -111,8 +116,8 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
     kind = (out.get("tags") or ["room"])[0] or "room"
     held = []
     for it in (out.get("fixtures") or []) + (out.get("props") or []):
-        if it.get("outside") or it.get("hang"):
-            continue                              # (the window's dressing is in the window's own words)
+        if it.get("outside") or it.get("hang") or any((it.get("name") or "").startswith(k) for k in kw):
+            continue                              # (a window's dressing and an opening are in the kit's own words)
         d = re.split(r"[,:;.]", (recs.get(it["asset"]) or {}).get("description") or "", maxsplit=1)[0].strip()
         d = d or (it.get("name") or "").replace("_", " ")
         if out.get("style") and d.lower().startswith(out["style"].lower() + " "):

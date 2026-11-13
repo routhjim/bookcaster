@@ -369,6 +369,9 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                                                        for h in hits[1:4]])
             else:
                 row.update(status="generate", request=generation_request(p, K))
+                near = lookup(p, records, K, 0.0, allow_scripted)     # the nearest of its kind, under the bar
+                if near:
+                    row["nearest"] = {"asset_id": near[0]["asset_id"], "score": near[0]["score"]}
         out.append(row)
     n = lambda s: sum(1 for r in out if r["status"] == s)  # noqa: E731
     return {"pieces": out, "summary": {"found": n("library"), "generate": n("generate"),
