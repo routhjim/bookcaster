@@ -49,7 +49,20 @@ CHECK_SH = Path(os.environ.get("STORY_CHECK_SH", LAB / "redraw5" / "check.sh"))
 POSE_MODEL = Path(os.environ.get("STORY_POSE_MODEL", LAB / "redraw5" / "models" / "rtmw_x_256x192.pt"))
 CARD_SH = HERE / "orbit" / "card.sh"
 GUIDES_PY = Path(os.environ.get("STORY_GUIDES_PY", Path.home() / "tts-ab" / ".venv-hyworld" / "bin" / "python"))
-VENV_PY = Path(os.environ.get("STORY_VENV_PY", HERE.parents[1] / ".venv" / "bin" / "python"))
+
+
+def _venv_py() -> Path:
+    """The pipeline's own interpreter: the checkout's .venv, or the main checkout's when this is a worktree."""
+    if os.environ.get("STORY_VENV_PY"):
+        return Path(os.environ["STORY_VENV_PY"])
+    own = HERE.parents[1] / ".venv" / "bin" / "python"
+    if own.exists():
+        return own
+    r = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--git-common-dir"], capture_output=True, text=True)
+    return Path(r.stdout.strip()).resolve().parent / ".venv" / "bin" / "python"
+
+
+VENV_PY = _venv_py()
 LLM_UP = ("import sys; sys.path.insert(0, '.'); from tts_reader import animate; animate.igpu('strata')")
 REDRAW = {"seed": 7, "method": "image", "strengths": [0.8], "control": {"type": "depth", "scale": 0.8, "end": 1.0},
           "set_facts": True, "mask_people": "tiered", "strength_bg": 0.5, "body_words": True, "light_words": True,
@@ -250,6 +263,7 @@ class Story:
 
     def step_pass(self, place):
         d = self.d(place)
+        (d / "pass.json").unlink(missing_ok=True)
         llm(f"pass_{self.places[place]['slug']}", d / "pass.log", [[
             PY, HERE / "scenes" / "staging_pass.py", self.plan_p, d / "shots.txt", d / "cast.json", self.timeline,
             self.set_dir(place), d / "pass.json", "--cache", d / "cache_pass"]])
@@ -360,7 +374,8 @@ class Story:
         for place in self.places:
             kp = self.d(place) / "keys.json"
             rows = json.loads(kp.read_text()) if kp.exists() else []
-            report[place] = {"shots": len(self.shots_of(place)), "keys": sum(r["key"] for r in rows),
+            have = sum((self.keys / f"{i}_s0.png").exists() for i in self.shots_of(place))      # (the key folder's own)
+            report[place] = {"shots": len(self.shots_of(place)), "keys": have,
                              "missing": [r for r in rows if not r["key"]]}
         (self.work / "report.json").write_text(json.dumps(report, indent=1))
         log("keys: " + "; ".join(f"{p} {v['keys']}/{v['shots']}" for p, v in report.items()))

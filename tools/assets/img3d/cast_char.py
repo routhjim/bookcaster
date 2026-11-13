@@ -53,6 +53,21 @@ OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
 THUMBS = str(C.MH_PRESET_PORTRAITS)      # neutral studio portraits of every shipped preset (config.py)
 HEAD_VOLUME_MAX = 150      # garment vertices allowed in front of the face above the chin (a collar edge, a curl)
+GROWN_AGE = 13             # from this age a figure has a grown person's proportions
+
+
+def age_of(look: str) -> int | None:
+    m_ = __import__("re").search(r"of about (\d+)", look or "")
+    return int(m_.group(1)) if m_ else None
+
+
+def child_armpit(look: str) -> float:
+    """The drawing gate's armpit height (share of the figure's height) for this person: a child's head is a larger
+    share of the height, so the armpit sits lower (every drawing of a seven-year-old failed a grown person's 0.70)."""
+    age = age_of(look)
+    return round(0.70 - 0.006 * max(0, GROWN_AGE - age), 3) if age else 0.70
+
+
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
@@ -538,8 +553,8 @@ def main():
                     raise RuntimeError(f"drawing failed: {p.stdout[-800:]}")
                 passing = []
                 for j in jobs:
-                    g = subprocess.run([sys.executable, str(HERE / "pose_gate.py"), j["path"]], capture_output=True,
-                                       text=True)
+                    g = subprocess.run([sys.executable, str(HERE / "pose_gate.py"), j["path"], "--min-armpit",
+                                        str(child_armpit(a.look))], capture_output=True, text=True)
                     res = json.loads(g.stdout.strip().splitlines()[-1]) if g.stdout.strip() else {"file": j["path"]}
                     res["pass"] = g.returncode == 0
                     tried.append(res)

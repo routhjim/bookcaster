@@ -125,6 +125,8 @@ def resolve(spec, cams_wanted=None):
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
                       "body_pose": bpose, "face_pose": c.get("face_pose")}
+        if c.get("scale"):              # a child (stature.py): scaled, and lifted onto what they sit or lie on
+            chars[key]["scale"] = float(c["scale"])
         if c.get("_inside"):            # seated inside a cabin (seating.py)
             chars[key]["_inside"] = True
         if c.get("_lie"):               # lying in a bed (lying.py): the bed's head and foot points, for the cameras

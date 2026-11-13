@@ -505,6 +505,18 @@ def run(job):
             les.eject_pilot_level_actor()
             act.destroy_actor(mc)
             r["times_s"][f"attach_ticks_pose_{key}"] = n
+        # a child: the whole posed figure scaled about its floor point, then lifted by what the scaling took from
+        # the height of the seat or bed under it (a seated child's feet hang; they do not sink into the seat)
+        for key, spec in job["characters"].items():
+            k_ = float(spec.get("scale") or 1.0)
+            if abs(k_ - 1.0) > 0.01:
+                a = comps(key)[0]
+                under = float((spec.get("_lie") or {}).get("top_z_m")
+                              or ((spec.get("body_pose") or {}).get("params") or {}).get("seat_z_m") or 0.0)
+                a.set_actor_scale3d(unreal.Vector(k_, k_, k_))
+                loc = a.get_actor_location()
+                a.set_actor_location(unreal.Vector(loc.x, loc.y, loc.z + under * (1.0 - k_) * 100.0), False, False)
+        yield from frames(5)
         for key, spec in job["characters"].items():
             a, body, face = comps(key)
             subj = measure(key, body, face, spec, head_off[key])

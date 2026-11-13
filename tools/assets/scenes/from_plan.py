@@ -45,6 +45,7 @@ sys.path.insert(0, str(HERE.parent / "redraw"))
 import config as C  # noqa: E402
 import seating  # noqa: E402
 import lying  # noqa: E402
+import stature  # noqa: E402
 import setfacts  # noqa: E402
 
 FRAMING = {"wide": "full", "full": "full", "medium": "medium", "close": "close", "two": "medium",
@@ -662,6 +663,9 @@ def main():
                     prev = (groups[gi - 2][-1][1].get(k) or {}).get("position") if gi > 1 else None
                     mk = [prev] if prev and any(math.dist(prev, m) < 0.05 for m in v["marks"]) else []
                     c["marks"] = mk + [m for m in v["marks"] if not mk or math.dist(m, mk[0]) >= 0.05]
+            sc_ = stature.scale(look_txt.get(next((n for n, c_ in cast.items() if c_["key"] == k), "")))
+            if sc_ < 1.0:                                    # a child: staged at their age's height (stature.py)
+                c["scale"] = sc_
             lk = (cam0.get("_looks") or {}).get(k)
             if lk in st:
                 c["look_at"] = lk
