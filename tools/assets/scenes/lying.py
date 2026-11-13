@@ -97,18 +97,24 @@ def place(c: dict, bed: dict, cj: dict, across: float = 0.0) -> dict:
     return out
 
 
+CLOSE = 0.8               # people lying close give up a fifth of their width each
+
+
 def plan(spec: dict, library: Path) -> dict:
-    """Lay every character that names a bed ("lying_from" and "bed"). A bed takes as many as lie side by side
-    across its lie box (LIE_W_M each), spread evenly across it. Returns {key: bed name}; edits spec."""
+    """Lay every character that names a bed ("lying_from" and "bed"). A bed takes those who fit across its lie box:
+    LIE_W_M each (a child their height's share of it), a fifth less when they lie close, laid side by side across
+    it in the plan's order. Returns {key: bed name}; edits spec."""
     B = beds(library, library / "set" / spec["set"])
-    room = {n: max(1, int((b["sup"]["box"]["x_m"][1] - b["sup"]["box"]["x_m"][0] + 0.05) // LIE_W_M)) for n, b in B.items()}
+    wid = {n: b["sup"]["box"]["x_m"][1] - b["sup"]["box"]["x_m"][0] for n, b in B.items()}
+    need = lambda k: LIE_W_M * float(spec["characters"][k].get("scale") or 1.0)        # noqa: E731
     taken, cjs = {}, {}
     for k, c in list(spec["characters"].items()):
         if not c.get("lying_from"):
             continue
         order = sorted(B, key=lambda n: (n != c.get("bed"), math.dist(B[n]["pos"], (c.get("position") or [0, 0])[:2])))
         for n in order:
-            if list(taken.values()).count(n) >= room[n]:
+            there = [q for q in taken if taken[q] == n]
+            if there and (sum(map(need, there)) + need(k)) * CLOSE > wid[n] + 0.05:
                 continue
             vid = stance(library, c["lying_from"], B[n], bool(c.get("propped")))
             if not vid:
@@ -117,11 +123,13 @@ def plan(spec: dict, library: Path) -> dict:
             taken[k] = n
             break
         else:
-            raise SystemExit(f"{k}: no bed in the set has a lying stance of {c['lying_from']}")
+            raise SystemExit(f"{k}: no bed in the set has room and a lying stance of {c['lying_from']}")
     for n in set(taken.values()):
         ks = [k for k in taken if taken[k] == n]
-        w = B[n]["sup"]["box"]["x_m"][1] - B[n]["sup"]["box"]["x_m"][0]
-        step = min(LIE_W_M, w / len(ks))
-        for j, k in enumerate(ks):
-            spec["characters"][k] = place(spec["characters"][k], B[n], cjs[k], (j - (len(ks) - 1) / 2) * step)
+        ws = [need(k) for k in ks]
+        f = min(1.0, wid[n] / sum(ws))                       # (closer together when they are more than fit apart)
+        x = -sum(ws) * f / 2
+        for k, w in zip(ks, ws):
+            spec["characters"][k] = place(spec["characters"][k], B[n], cjs[k], x + w * f / 2)
+            x += w * f
     return {"taken": taken, "beds": B}
