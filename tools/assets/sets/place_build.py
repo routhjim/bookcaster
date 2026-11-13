@@ -43,13 +43,16 @@ def records_for(spec: dict, library) -> tuple:
         recs = [r for r in recs if not named(r) or own in named(r)]
     res = P.resolve(spec.get("pieces") or [], recs)
     by = {r["asset_id"]: r for r in recs}
-    rec = {p["id"]: {"asset": p["asset_id"], "size_m": by[p["asset_id"]].get("size_m")}
+    # a piece's room on the floor is its mesh's own measure, where the record has it (a made piece's "size_m" is the
+    # box it was asked for: a bunk made 1.8 m long was laid out as 3 m and found no place in its room)
+    size = lambda r: [round(float(v), 3) for v in (r.get("dims_m") or r.get("size_m"))]   # noqa: E731
+    rec = {p["id"]: {"asset": p["asset_id"], "size_m": size(by[p["asset_id"]])}
            for p in res["pieces"] if p["status"] == "library"}
     # a piece still to be generated stands in the room as the library's nearest of its kind until then (reported:
     # a bedroom was built without its bed because the bed's look matched no record closely enough)
     for p in res["pieces"]:
         if p["status"] == "generate" and p.get("nearest"):
-            rec[p["id"]] = {"asset": p["nearest"]["asset_id"], "size_m": by[p["nearest"]["asset_id"]].get("size_m")}
+            rec[p["id"]] = {"asset": p["nearest"]["asset_id"], "size_m": size(by[p["nearest"]["asset_id"]])}
     return rec, res
 
 

@@ -227,6 +227,11 @@ class Story:
         d = self.d(place)
         if self._build(place, "--write"):
             return False
+        rep = json.loads((self.set_dir(place) / "place_build_report.json").read_text())
+        gone = [ph for ph, at in (rep.get("named_places") or {}).items() if not at]
+        if gone:                         # a place the plan sends people to is not in the room: not a set to stage in
+            log(f"{place}: the set lacks the plan's places {gone}: {(rep.get('unmet') or [])[:3]}")
+            return False
         return sh([PY, HERE / "sets" / "build_set.py", self.set_dir(place) / "spec.json"], d / "build_set.log") == 0
 
     def _cast_cmd(self, name):

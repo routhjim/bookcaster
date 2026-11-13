@@ -184,6 +184,7 @@ def load_records(library=None):
         aid = d.get("id", f.parent.name)
         recs.append({"asset_id": aid, "tags": list(d.get("tags", [])),
                      "description": d.get("description", ""), "size_m": d.get("size_m"),
+                     "dims_m": (d.get("blender") or {}).get("dims_m"),
                      "seat": d.get("seat"), "lie": d.get("lie"), "variant_of": d.get("variant_of"),
                      "placement": d.get("placement"),
                      "variant": d.get("variant"), "look": d.get("look", ""), "piece_kind": d.get("piece_kind"),
