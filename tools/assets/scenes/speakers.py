@@ -1004,11 +1004,11 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
         sm, lm = ms[0], ms[1]
         aims["ots"] = [sm["eye_xy"][0] * 0.85 + lm["eye_xy"][0] * 0.15, sm["eye_xy"][1] * 0.85 + lm["eye_xy"][1] * 0.15,
                        sm["eye_z"] - 0.1]
-    W, D, _ = room
     out = []
     m0 = subjects[spk]["measured"] if spk else ms[0]
-    for x in range(-int(W * 5), int(W * 5) + 1):
-        for y in range(-int(D * 5), int(D * 5) + 1):
+    xr, yr = near_people(subjects, room)
+    for x in xr:
+        for y in yr:
             for z in sorted({1.45, 1.6} | ({round(subjects[lis]["measured"]["eye_z"] + 0.12, 2)} if lis else set())):
                 p = [x / 10.0, y / 10.0, z]
                 if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried):
@@ -1063,6 +1063,24 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
         return two_shot_candidates(dict(c, show=None), shot, spk, None, subjects, res, room, line, est_side, tried,
                                    dict(opts, _single=True))
     return [(q, mode if not opts.get("_single") else "single") for _, q, mode in sorted(out, key=lambda t: t[0])]
+
+
+CAMERA_REACH_M = 9.0     # a camera stands within this of the people it shows (the floor beyond is not searched)
+
+
+def near_people(subjects, room, step=1):
+    """The floor a camera is looked for on, as two ranges of tenths of a metre: the room, no farther than
+    CAMERA_REACH_M from the people (a hangar's whole floor at 10 cm was fifty times a sitting room's and the search
+    did not end)."""
+    W, D, _ = room
+    xs = [v["measured"]["pelvis_xy"][0] for v in subjects.values()] or [0.0]
+    ys = [v["measured"]["pelvis_xy"][1] for v in subjects.values()] or [0.0]
+    x0, x1 = max(-W / 2, min(xs) - CAMERA_REACH_M), min(W / 2, max(xs) + CAMERA_REACH_M)
+    y0, y1 = max(-D / 2, min(ys) - CAMERA_REACH_M), min(D / 2, max(ys) + CAMERA_REACH_M)
+    if (x1 - x0) * (y1 - y0) > 60.0:           # a wide floor is searched at twice the spacing
+        step *= 2
+    return (range(int(math.floor(x0 * 10)), int(math.ceil(x1 * 10)) + 1, step),
+            range(int(math.floor(y0 * 10)), int(math.ceil(y1 * 10)) + 1, step))
 
 
 def in_room(p, room):
@@ -1158,10 +1176,9 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
             out.append({"position": cs["position"], "target": cs["target"], "focal_mm": cs["focal_mm"]})
     else:                                    # a placed (wide) camera: another standpoint aimed at the same point,
         cam = shot["camera"]                 # nearest first, that keeps everyone in the frame
-        W, D, _ = room
         z = cam["position"][2]
-        grid = [[x / 10.0, y / 10.0, z] for x in range(-int(W * 5), int(W * 5) + 1, 2)
-                for y in range(-int(D * 5), int(D * 5) + 1, 2)]
+        xr, yr = near_people(subjects, room, 2)
+        grid = [[x / 10.0, y / 10.0, z] for x in xr for y in yr]
         ms = [v["measured"] for v in subjects.values()]
         mid = [sum(x["pelvis_xy"][0] for x in ms) / len(ms), sum(x["pelvis_xy"][1] for x in ms) / len(ms),
                sum((x["feet_z"] + x["head_top_z"]) / 2 for x in ms) / len(ms)]
