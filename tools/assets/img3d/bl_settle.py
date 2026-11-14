@@ -382,6 +382,15 @@ for it in range(int(JOB.get("iters", 40))):
     X[~free] = P[~free]
     X[mov] = collide(X[mov], None if outw is None else outw[mov])
 REP["times"]["relax"] = round(time.time() - t, 2)
+# a floor is a floor: on a low seat the posed legs put the soles and cuffs a few centimetres under it, and they are
+# set back on it (every seated stance on a low bunk failed for 7 cm of trouser cuff; cloth a hand's breadth or more
+# under the floor is another matter and stays to be counted)
+if not JOB.get("lie"):
+    _zc = X[_cloth, 2]
+    _sunk = (_zc < FLOOR_Z) & (_zc > FLOOR_Z - float(JOB.get("floor_lift_max_m", 0.12)))
+    _zc[_sunk] = FLOOR_Z + 0.002
+    X[_cloth, 2] = _zc
+    REP["floor_cloth_lifted"] = int(_sunk.sum())
 # the whole garment, not only the loose set: nothing of it under the floor
 REP["cloth_min_z_m"] = round(float(X[_cloth, 2].min()), 3)
 # (4 cm: a trouser cuff or a sole's edge a couple of centimetres into the floor on a low seat is not cloth through
