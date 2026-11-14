@@ -939,8 +939,8 @@ if LAB_RAW is not None and JOB.get("hair_keep", True) and HEAD is not None and (
     _deep = (float(np.quantile(_hv_[:, 1], 0.98)) - HAIR["face_front_y"]) / _fw_
     REP["hair_body"] = {"hangs_below_chin_m": round(_hang, 3), "width_over_face": round(_wide, 2),
                         "depth_over_face": round(_deep, 2)}
-    if _hang >= float(JOB.get("hair_keep_hang_m", 0.05)) or _wide >= float(JOB.get("hair_keep_wide", 1.25)) \
-            or _deep >= float(JOB.get("hair_keep_deep", 1.7)):
+    # (not by how far it hangs alone: any hair at the nape hangs below the chin, a balding man's fringe did)
+    if _wide >= float(JOB.get("hair_keep_wide", 1.25)) or _deep >= float(JOB.get("hair_keep_deep", 1.7)):
         HAIR_KEPT = True
     else:
         bpy.data.objects.remove(HAIR)
@@ -2182,6 +2182,8 @@ if HAIR is not None and HEAD is not None and HAIR_KEPT:
     REP["hair_kept"] = {"verts": int(len(P)), "scale": round(_s, 3), "shift_m": [round(float(v), 3) for v in (_cm - _cd)],
                         "moved_off_the_head": _moved, "lowest_z_m": round(float(P[:, 2].min()), 3),
                         "face_width_m": {"drawn": round(_dw, 3), "metahuman": round(_mw, 3)}}
+    _ka = HAIR.data.attributes.new("kept_hair", "INT", "POINT")      # (told from the garment after the join)
+    _ka.data.foreach_set("value", [1] * len(HAIR.data.vertices))
     if JOB.get("hair_debug_npz"):
         np.savez_compressed(JOB["hair_debug_npz"], hair=P, head=hv)
     bpy.ops.object.select_all(action="DESELECT")
@@ -2443,16 +2445,21 @@ if not STATUE and HEAD is not None:
     _hx = np.array(J("head"))
     _chin = (REP.get("collar_height") or {}).get("chin_z") or float(J("head").z) - 0.03
     _fv = np.array([fig.matrix_world @ v.co for v in fig.data.vertices])
+    _kh = np.zeros(len(_fv), bool)                # the figure's own hair kept on the head is not the garment
+    if "kept_hair" in fig.data.attributes:
+        _kv = np.zeros(len(_fv), np.int32)
+        fig.data.attributes["kept_hair"].data.foreach_get("value", _kv)
+        _kh = _kv > 0
     _face_y = float(np.quantile(_hv[_hv[:, 2] > _chin, 1], 0.5)) if (_hv[:, 2] > _chin).any() else float(_hx[1])
     _sel = ((_fv[:, 2] > _chin + 0.01) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05)
-            & (np.abs(_fv[:, 0] - _hx[0]) < 0.10) & (_fv[:, 1] < _face_y))
+            & (np.abs(_fv[:, 0] - _hx[0]) < 0.10) & (_fv[:, 1] < _face_y) & ~_kh)
     REP["head_volume_verts"] = int(_sel.sum())
     # all round the head above the chin (hair left at the back or the sides), away from a collar's stand
     _rr = np.linalg.norm(_fv[:, :2] - _hx[:2], axis=1)
     # above the collar's clean-edge surface (front at the chin, rising toward the nape at the edge's tilt)
     _zedge = _chin + 0.01 + np.maximum(_fv[:, 1] - (_hx[1] - 0.06), 0) * math.tan(math.radians(
         float(JOB.get("collar_edge_tilt_deg", 22)))) + 0.01
-    _round = ((_fv[:, 2] > _zedge) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05) & (_rr < 0.16) & ~_sel
+    _round = ((_fv[:, 2] > _zedge) & (_fv[:, 2] < float(_hv[:, 2].max()) + 0.05) & (_rr < 0.16) & ~_sel & ~_kh
               & (_rr > float(np.median(np.linalg.norm(_hv[np.abs(_hv[:, 2] - _chin) < 0.01, :2] - _hx[:2], axis=1)))
                  + 0.035 if (np.abs(_hv[:, 2] - _chin) < 0.01).any() else _rr > 0.12))
     REP["head_round_verts"] = int(_round.sum())
