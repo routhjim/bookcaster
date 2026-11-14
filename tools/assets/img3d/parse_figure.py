@@ -55,6 +55,9 @@ OCCLUDE = 0.03                              # hidden: this far (of the figure's 
 DRAW_IOU = 0.7                              # the drawing is used when its silhouette lies on the mesh's this well
 DRAW_WEIGHT = 6.0                           # the drawing's vote for what the front sees
 HEAD_PRIOR = 4.0
+BEARD_REACH_P = 0.3                         # and its reach, once there is one
+BEARD_P = 0.4                               # the text-prompted segmenter's "a beard" above this
+BEARD_SHARE = 0.03                          # of the face: less is no beard
 GAMMA = 1.2                                 # the baked colours are darker than the drawing they came from
 
 
@@ -279,8 +282,42 @@ def parse(glb: Path, out: Path, sheet: Path | None = None, drawing: Path | None 
             m_ = cand & (dh < 0.5 * dg)
             labels[m_] = HAIR
             recol = int(m_.sum())
+    # facial hair: a human parser has no class for it (a beard is "face" on a drawing, and nothing at all on the
+    # mesh's own views), and no public network segments it outright; a text-prompted segmenter (CLIPSeg, "a beard")
+    # says whether the drawn face has any and roughly where (on the 12 drawings on hand: every bearded or
+    # moustached man, no woman, no child). Inside that region of the face, what is not the colour of the face's own
+    # skin (learned from the face outside it) is the beard, and is hair.
+    beard, beard_facts = 0, {}
+    if dpx is not None and d_iou >= DRAW_IOU and (lab_d == FACE).any():
+        from transformers import CLIPSegForImageSegmentation, CLIPSegProcessor
+        ys, xs = np.nonzero(lab_d == FACE)
+        hh = int((ys.max() - ys.min()) * 1.7)
+        cy, cx = int(ys.mean()), int(xs.mean())
+        box = (max(0, cx - hh // 2), max(0, cy - hh // 2), min(dim.size[0], cx + hh // 2), min(dim.size[1], cy + hh // 2))
+        cp = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
+        cm = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined").to(dev).eval()
+        with torch.no_grad():
+            inp = cp(text=["a beard"], images=[dim.crop(box).resize((352, 352))], padding=True, return_tensors="pt").to(dev)
+            pr = torch.sigmoid(cm(**inp).logits).reshape(352, 352).cpu().numpy()
+        pm = np.zeros(lab_d.shape, np.float32)
+        pm[box[1]:box[3], box[0]:box[2]] = np.asarray(Image.fromarray(pr).resize((box[2] - box[0], box[3] - box[1])))
+        # (whether there is one: the surer mask's share of the face; how far it reaches: the looser mask)
+        share = float(((pm > BEARD_P) & (lab_d == FACE)).sum()) / float((lab_d == FACE).sum())
+        in_mask = (pm > BEARD_REACH_P) & (lab_d == FACE)
+        beard_facts = {"share_of_face": round(share, 3), "max": round(float(pm[lab_d == FACE].max()), 2)}
+        if share >= BEARD_SHARE:
+            fv = (labels == FACE) & seen_front
+            vin = fv & in_mask[dpy, dpx]
+            vout = fv & ~in_mask[dpy, dpx]
+            if vin.sum() >= 30 and vout.sum() >= 100:
+                skin_c = kmeans(VC[vout], 2)
+                d_skin = np.sqrt(((VC[:, None] - skin_c[None]) ** 2).sum(-1)).min(1)
+                m_ = vin & (d_skin > np.quantile(d_skin[vout], 0.65))       # (past what most of the bare face is)
+                labels[m_] = HAIR
+                beard = int(m_.sum())
+        del cm
     groups = GROUP[labels]
-    facts = {"drawing": str(drawing) if drawing else None, "drawing_overlap": d_iou, "head_prior": head_prior,
+    facts = {"facial_hair": beard, "beard": beard_facts, "drawing": str(drawing) if drawing else None, "drawing_overlap": d_iou, "head_prior": head_prior,
              "hair_by_colour": recol, "colours": col_facts,
              "figure": str(glb), "front_sign": fs, "vertices": int(len(V)), "unseen": int((~got).sum().item()),
              "share": {NAMES[i]: round(float((labels == i).mean()), 4) for i in range(len(NAMES)) if (labels == i).any()},
@@ -310,7 +347,7 @@ def main():
     ap.add_argument("--drawing", default=None, help="the drawing the figure was made from (its front view)")
     a = ap.parse_args()
     f = parse(Path(a.glb), Path(a.out), Path(a.sheet) if a.sheet else None, Path(a.drawing) if a.drawing else None)
-    print(json.dumps({k: f[k] for k in ("share", "unseen", "front_sign", "drawing_overlap", "head_prior", "hair_by_colour", "colours")}))
+    print(json.dumps({k: f[k] for k in ("share", "unseen", "front_sign", "drawing_overlap", "head_prior", "hair_by_colour", "facial_hair", "beard")}))
 
 
 if __name__ == "__main__":
