@@ -325,6 +325,12 @@ def character_actor(key):
             if c != body and c.get_name().lower() != "body":
                 c.set_render_in_main_pass(False)
                 c.set_cast_shadow(False)
+                # (out of the main pass alone it still wrote depth: the hidden head stood as a black silhouette
+                # wherever the figure's own head did not cover it, 11-14)
+                try:
+                    c.set_editor_property("render_in_depth_pass", False)
+                except Exception as e:
+                    note(f"render_in_depth_pass: {e}")
                 try:
                     c.set_editor_property("visibility_based_anim_tick_option",
                                           unreal.VisibilityBasedAnimTickOption.ALWAYS_TICK_POSE_AND_REFRESH_BONES)
