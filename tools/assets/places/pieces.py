@@ -184,7 +184,7 @@ def load_records(library=None):
         aid = d.get("id", f.parent.name)
         recs.append({"asset_id": aid, "tags": list(d.get("tags", [])),
                      "description": d.get("description", ""), "size_m": d.get("size_m"),
-                     "dims_m": (d.get("blender") or {}).get("dims_m"),
+                     "dims_m": (d.get("blender") or {}).get("dims_m"), "_replaced_by": d.get("replaced_by"),
                      "seat": d.get("seat"), "lie": d.get("lie"), "variant_of": d.get("variant_of"),
                      "placement": d.get("placement"),
                      "variant": d.get("variant"), "look": d.get("look", ""), "piece_kind": d.get("piece_kind"),
@@ -195,7 +195,7 @@ def load_records(library=None):
     # a remade record hides the one it replaces only when the remake passed its own checks
     replaced = {r["replaces"]: r["asset_id"] for r in recs if r["replaces"] and r["ok"] and r["checks"]}
     for r in recs:
-        r["replaced_by"] = replaced.get(r["asset_id"])
+        r["replaced_by"] = replaced.get(r["asset_id"]) or r.pop("_replaced_by", None)   # (or its own record says so)
     return recs
 
 

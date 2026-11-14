@@ -51,13 +51,22 @@ def _clear(did: str, aid: str, library: Path) -> None:
         f.unlink() if f.is_file() else shutil.rmtree(f, ignore_errors=True)
 
 
-def _try(req: dict, library: Path, seed: int, run) -> dict:
+def tiered(aid: str, library: Path) -> bool:
+    """The made bed has a tier above its mattress (its measured lying support says so)."""
+    rp = record(aid, library)
+    return bool(rp) and any(x.get("posture") == "lying" and x.get("tiers") for x in json.loads(rp.read_text()).get("supports") or [])
+
+
+def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> dict:
     aid, plan = req["asset_id"], req["plan"]
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
     pic = REFS / did / "three_quarter.png"
     if not pic.exists():
-        r = run([a.replace("{seed}", str(seed)) for a in steps["draw"]["argv"]])
+        dv = list(steps["draw"]["argv"])
+        if unsourced and "--sources" in dv:              # (drawn from its look and its needs alone this time)
+            dv = dv[:dv.index("--sources")]
+        r = run([a.replace("{seed}", str(seed)) for a in dv])
         log(f"{did}: drawing seed {seed} rc={r.returncode}")
     if not pic.exists():
         return {"asset_id": aid, "ok": False, "why": "no drawing with a three-quarter view"}
@@ -116,6 +125,11 @@ def _try(req: dict, library: Path, seed: int, run) -> dict:
         for need in req.get("needs") or []:
             if need in MEASURE:
                 run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+    # a bed is asked for with one open tier (people sit up on it, and a camera must see them): one that came out with
+    # a tier above its mattress is not the piece asked for (seated on a concept's lower bunk a woman's head was up
+    # inside the top one, and no camera saw a face)
+    if "lie" in (req.get("needs") or []) and tiered(aid, library):
+        return {"asset_id": aid, "ok": False, "why": "it has a tier above its mattress"}
     # a bunk is sized by the room over its lower tier: made again, once, at the scale that lets a person sit there
     sup_ = next((x for x in json.loads(record(aid, library).read_text()).get("supports") or []
                  if x.get("posture") == "lying"), None)
@@ -272,11 +286,17 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     """One request -> {"asset_id", "ok", "why", "seed"}: drawn, shaped and measured; a try that fails a gate is
     made again from the next seed's drawing, at most the plan's max_redraws tries. `run` starts a process."""
     aid, plan = req["asset_id"], req["plan"]
-    if record(aid, library):
+    if record(aid, library) and not ("lie" in (req.get("needs") or []) and tiered(aid, library)):
         return {"asset_id": aid, "ok": True, "why": "already in the library"}
-    out = {}
+    out, why = {}, ""
+    if record(aid, library):
+        _clear(plan["draw_id"], aid, library)
+        why = "it has a tier above its mattress"
     for n in range(plan.get("max_redraws", 3)):
-        out = dict(_try(req, library, seed + n, run), seed=seed + n)
+        # (after a try with a tier above the mattress, the next is drawn without the piece's own picture: the
+        # picture is what shows the tiers)
+        out = dict(_try(req, library, seed + n, run, unsourced="tier" in why), seed=seed + n)
+        why = out.get("why", "") or why
         if out["ok"]:
             return out
         log(f"{aid}: {out['why']}; the try is cleared" + ("" if n + 1 >= plan.get("max_redraws", 3) else ", next seed"))
@@ -293,10 +313,25 @@ def main():
     only = set(a[a.index("--only") + 1:]) - {"--dry"} if "--only" in a else None
     res = P.resolve(spec.get("pieces") or [], P.load_records(library))
     todo = [p for p in res["pieces"] if p["status"] == "generate" and (not only or p["kind"] in only)]
+    # a bed of the library that has a tier above its mattress is made again as the one asked for
+    by_id = {p["id"]: p for p in spec.get("pieces") or []}
+    for p in res["pieces"]:
+        if p["status"] == "library" and (P.kinds()[p["kind"]].get("needs") == "lie") and tiered(p["asset_id"], library) \
+                and p["asset_id"].endswith("_tr") and "_gen_" in p["asset_id"]:
+            todo.append(dict(p, request=P.generation_request(by_id[p["id"]]), _old=p["asset_id"]))
     log(f"{len(todo)} piece(s) to make: {[(p['kind'], p['request']['asset_id']) for p in todo]}")
     if "--dry" in a:
         return 0
-    out = [dict(make(p["request"], library, seed), kind=p["kind"]) for p in todo]
+    out = []
+    for p in todo:
+        o = dict(make(p["request"], library, seed), kind=p["kind"])
+        out.append(o)
+        old = p.get("_old")
+        if o["ok"] and old and old != o["asset_id"] and record(old, library):     # (the tiered one serves no longer)
+            rp_ = record(old, library)
+            rj_ = json.loads(rp_.read_text())
+            rj_["replaced_by"] = o["asset_id"]
+            rp_.write_text(json.dumps(rj_, indent=1))
     ww = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("words")
     if ww and not only:                                  # the place's own wall, as its concept shows it
         sys.path.insert(0, str(HERE.parent / "sets"))
