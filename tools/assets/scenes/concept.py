@@ -141,7 +141,9 @@ def read(concept: Path, spec: dict, ask) -> dict:
             "look": f"If there is a {name} in this picture, say in a few words what it is made of and its colour; "
                     "if there is none, answer none."}})
     items.append({"id": "seats", "image": str(concept), "max_new_tokens": 4, "ask": {
-        "abreast": "How many seats for people are side by side in this picture? Answer with one number."}})
+        "abreast": "How many seats for people are side by side in this picture? Answer with one number.",
+        # (the count alone came back "2" for every cabin picture, one seat or three, 11-14: a closed question first)
+        "single": "Does this cabin have one seat for a single person, or more than one seat? Answer one or more."}})
     a = ask(items)
     sp = re.sub(r"[^a-z]", "", str((a.get("space") or {}).get("space") or "").lower())
     space = next((k for k in ("cockpit", "outdoors", "room") if k in sp), "room")
@@ -162,6 +164,10 @@ def read(concept: Path, spec: dict, ask) -> dict:
     words = "; ".join(f"the {k}: {v[0].lower() + v[1:]}" for k, v in surf.items() if k != "light" and v)
     m_ = re.search(r"\d+", str((a.get("seats") or {}).get("abreast") or ""))
     abreast = max(1, min(4, int(m_.group(0)))) if m_ else 1
+    if re.sub(r"[^a-z]", "", str((a.get("seats") or {}).get("single") or "").lower()).startswith("one"):
+        abreast = 1
+    elif abreast < 2 and (a.get("seats") or {}).get("single"):
+        abreast = 2
     return {"concept": str(concept), "space": space, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
             "light": surf["light"], "seen": seen[:10], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")

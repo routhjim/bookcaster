@@ -115,6 +115,11 @@ def llm_down() -> None:
         log("the directing model was still up: stopped")
 
 
+CONCEPT_TRIES = 3
+SEATS_WORDS = ("{room} {inside} Seen from just behind and above the seats, looking forward over the instrument panel "
+               "and out through the canopy. It has {seats}, and no other seat anywhere. Empty: no people. {style}")
+
+
 class Story:
     def __init__(self, plan_p: Path, book: Path, work: Path, keys: Path, prefix: str):
         self.plan_p, self.book, self.work, self.keys, self.prefix = plan_p, book, work, keys, prefix
@@ -215,8 +220,48 @@ class Story:
             log(f"{place}: no concept picture ({hero.name}); built from the spec alone")
             return True
         shutil.copy2(hero, d / "concept.png")
-        line("igpu", "choose", f"concept_{self.places[place]['slug']}", d / "concept.log",
-             [VENV_PY, HERE / "scenes" / "concept.py", d / "concept.png", d / "place_spec.json", d / "concept.json"])
+        slug = self.places[place]["slug"]
+        read = lambda n: line("igpu", "choose", f"concept_{slug}{n}", d / "concept.log",          # noqa: E731
+                              [VENV_PY, HERE / "scenes" / "concept.py", d / "concept.png", d / "place_spec.json",
+                               d / "concept.json"])
+        read("")
+        if not (d / "concept.json").exists():
+            return False
+        # a cabin's picture with more seats abreast than the book's place has: the cabin is shaped from the picture,
+        # so the concept is drawn anew from the place's own words with the book's seats (a second seat in view was
+        # filled with a second pilot, 11-13; drawn from the old picture, its seats stayed and one more was added),
+        # and read again; the first picture that reads right is the concept
+        spec = json.loads((d / "place_spec.json").read_text())
+        want = sum(1 for q in spec.get("pieces") or [] if "seat" in q.get("kind", "") or "chair" in q.get("kind", ""))
+        con = json.loads((d / "concept.json").read_text())
+        if con.get("space") == "cockpit" and want and int(con.get("seats_abreast") or 1) > want:
+            from PIL import Image
+            size = Image.open(hero).size
+            style = self.book / "art_style.txt"
+            words = SEATS_WORDS.format(
+                room=str(spec.get("room") or "").strip(),
+                inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
+                seats="a single seat in the middle, for one person" if want == 1 else f"{want} seats",
+                style=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
+            for n in range(CONCEPT_TRIES):
+                pid = f"concept_{self.prefix}_{slug}_w{n}"
+                pic = C.LIBRARY / "_refs" / pid / "picture.png"
+                line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
+                     [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
+                      "--size", size[0], size[1], "--seed", 11 + n])
+                if not pic.exists():
+                    continue
+                shutil.copy2(pic, d / "concept.png")
+                (d / "concept.json").unlink()
+                read(f"_{n}")
+                got = json.loads((d / "concept.json").read_text()) if (d / "concept.json").exists() else {}
+                log(f"{place}: concept drawn anew with {want} seat(s), seed {11 + n}: reads "
+                    f"{got.get('space')}, {got.get('seats_abreast')} abreast")
+                if got.get("space") == "cockpit" and int(got.get("seats_abreast") or 1) <= want:
+                    break
+            else:
+                log(f"{place}: no picture with {want} seat(s) in {CONCEPT_TRIES} tries")
+                return False
         return (d / "concept.json").exists()
 
     def _build(self, place, *extra) -> int:
