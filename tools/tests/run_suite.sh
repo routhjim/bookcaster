@@ -57,7 +57,10 @@ for f in "${FILES[@]}"; do
     else
         py="$SUITE_PY_MAIN"; [[ "$m" == *" pose "* ]] && py="$SUITE_PY_POSE -I"
         # a pytest-style file (test functions, no main) runs under pytest, with an interpreter that has it
-        grep -q '^import pytest' "$f" && py="$SUITE_PY_PYTEST -m pytest -q -p no:cacheprovider"
+        # (also one with test functions that nothing calls: run as a script it would execute none of them)
+        if grep -q '^import pytest' "$f" || { grep -q '^def test_' "$f" && ! grep -q '__main__' "$f"; }; then
+            py="$SUITE_PY_PYTEST -m pytest -q -p no:cacheprovider"
+        fi
         RUN+=("$name|$py")
     fi
 done
