@@ -449,6 +449,9 @@ class Story:
                     self.keys / c["plan_id"]], d / "keys.log")
         staged = {r["shot"] for r in rows}
         rows += [{"shot": i, "key": False, "why": "no scene spec"} for i in self.shots_of(place) if i not in staged]
+        for r in rows:                       # a shot with no key this time has none: an earlier run's picture left
+            if not r["key"]:                 # in the folder is of another staging (eleven such went into a cut and
+                (self.keys / f"{r['shot']}_s0.png").unlink(missing_ok=True)      # the count called them keys, 11-14)
         (d / "keys.json").write_text(json.dumps(rows, indent=1))
         log(f"{place}: {sum(r['key'] for r in rows)} of {len(self.shots_of(place))} shots have a key")
         return True
@@ -477,7 +480,7 @@ class Story:
         for place in self.places:
             kp = self.d(place) / "keys.json"
             rows = json.loads(kp.read_text()) if kp.exists() else []
-            have = sum((self.keys / f"{i}_s0.png").exists() for i in self.shots_of(place))      # (the key folder's own)
+            have = sum(bool(r["key"]) and (self.keys / f"{r['shot']}_s0.png").exists() for r in rows)
             report[place] = {"shots": len(self.shots_of(place)), "keys": have,
                              "missing": [r for r in rows if not r["key"]]}
         (self.work / "report.json").write_text(json.dumps(report, indent=1))
