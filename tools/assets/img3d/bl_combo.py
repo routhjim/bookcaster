@@ -1910,6 +1910,7 @@ for m in list(hands.modifiers):
     else:
         hands.modifiers.remove(m)
 HANDB = ("hand", "thumb", "index", "middle", "ring", "pinky")
+YOKE = ("clavicle", "spine_04", "spine_05", "neck")
 gi = {g.index: g.name for g in hands.vertex_groups}
 keep = np.zeros(len(hands.data.vertices), bool)
 for v in hands.data.vertices:
@@ -1940,6 +1941,12 @@ if not STATUE and JOB.get("body_skin_shows", True):
         if _hbv is not None and _hbv.find_nearest(v.co, _hnear)[0] is not None:
             continue
         if v.co.z > float(J("head").z):
+            continue
+        # the shoulders and the top of the trunk are never bare skin of the body's own: round the neck the head
+        # mesh is the skin that shows, and under a collar's edge the body's slope looked out past the cloth (its
+        # normal met none) and stood out of every garment as skin-coloured horns at the shoulders
+        _b = max(v.groups, key=lambda g: g.weight, default=None)
+        if _b is not None and gi[_b.group].startswith(YOKE):
             continue
         _elig[v.index] = True
         loc_, _, _, d_ = _gb.find_nearest(v.co, _near)
