@@ -93,4 +93,6 @@ def test_sitters_on_an_open_seat_turn_to_whom_they_face():
     assert seating.turn_for(dict(chars["a"], facing_to="c"), dict(edge, front=[0.0, -1.0]), chars) < 15   # one ahead
     arms = dict(edge, box=dict(edge["box"], arm_z_m=0.65))
     assert seating.turn_for(chars["a"], arms, chars) == 0.0                    # between arm rests: square
-    assert seating.turn_for({"position": [0, 0]}, edge, chars) == 0.0          # nobody faced: square
+    assert seating.turn_for({"position": [0, 0]}, edge, chars) == 0.0          # nowhere to face: square
+    assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, chars) == seating.SEAT_TURN_DEG
+    assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, {"a": {}}) == 0.0   # alone: square

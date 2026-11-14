@@ -101,13 +101,19 @@ SEAT_TURN_DEG = 30.0         # how far a sitter on an open seat turns out of the
 
 
 def turn_for(c: dict, seat: dict, chars: dict) -> float:
-    """Degrees a sitter turns out of the seat's front toward the person they face ("facing_to"), at most
-    SEAT_TURN_DEG either way. Only on a seat open at the sides (a bed's edge, a bench): between arm rests, or inside
-    a cabin, the sitter stays square. Two people seated square to the room read as a line-up (11-13)."""
+    """Degrees a sitter turns out of the seat's front toward where the plan has them face (the person they face,
+    "facing_to", else the facing the plan gave them when others are in the room), at most SEAT_TURN_DEG either way.
+    Only on a seat open at the sides (a bed's edge, a bench): between arm rests, or inside a cabin, the sitter
+    stays square. Two people seated square to the room read as a line-up (11-13)."""
     b, t = seat["box"], chars.get(c.get("facing_to") or "")
-    if not t or t is c or b.get("arm_z_m") or b.get("inside"):
+    if b.get("arm_z_m") or b.get("inside"):
         return 0.0
-    d = [t["position"][0] - c["position"][0], t["position"][1] - c["position"][1]]
+    if t and t is not c:
+        d = [t["position"][0] - c["position"][0], t["position"][1] - c["position"][1]]
+    elif len(chars) > 1 and c.get("facing"):
+        d = list(c["facing"][:2])
+    else:
+        return 0.0
     if math.hypot(*d) < 0.2:
         return 0.0
     a = (_ang(d) - _ang(seat["front"]) + 180.0) % 360.0 - 180.0
@@ -262,6 +268,7 @@ def plan(spec: dict, library: Path) -> dict:
                         vid = vv
                 c = dict(c, id=vid)
             spec["characters"][k] = place(c, S[n], fitd, place_x=px)
+            spec["characters"][k]["_seat"]["asked_facing"] = list(c.get("facing") or [])[:2]
             pr = spec["characters"][k]["body_pose"]["params"]
             if pr.get("hands") == "lap":
                 if not pr.get("action"):     # a start action has the hands (the lap steps ran after it, 11-12)
@@ -276,10 +283,10 @@ def plan(spec: dict, library: Path) -> dict:
             raise SystemExit(f"{k}: no seat in the set fits (hips and dress {fitd['hip_half_m'] * 2:.2f} m across)")
     for k, n in taken.items():                   # once everyone has a place: sitters turned to whom they face
         c = spec["characters"][k]
-        tn = turn_for(c, S[n], spec["characters"])
+        st = c["_seat"]
+        tn = turn_for(dict(c, facing=st.get("asked_facing")), S[n], spec["characters"])
         if tn:
-            st = c["_seat"]
             c0 = {kk: vv for kk, vv in c.items() if kk != "_seat"}
             spec["characters"][k] = place(c0, S[n], st["fit"], st["x"], st["nudge"], tn)
-            spec["characters"][k]["_seat"].update({kk: vv for kk, vv in st.items() if kk in ("fit", "note")})
+            spec["characters"][k]["_seat"].update({kk: vv for kk, vv in st.items() if kk in ("fit", "note", "asked_facing")})
     return {"taken": taken, "seats": S}
