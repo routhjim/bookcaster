@@ -115,6 +115,7 @@ def llm_down() -> None:
         log("the directing model was still up: stopped")
 
 
+KEY_DARK = 10.0              # a key's mean brightness (of 255) under this: nearly black, not a key
 CONCEPT_TRIES = 3
 SEATS_WORDS = ("{room} {inside} Seen from just behind and above the seats, looking forward over the instrument panel "
                "and out through the canopy. It has {seats}, and no other seat anywhere. Empty: no people. {style}")
@@ -443,6 +444,16 @@ class Story:
                                                                                  or st.get("why") or [])))})
                     continue
                 a = next((v for k, v in acc.items() if k.startswith(f"{g.name}__{c['name']}__")), None)
+                if a:
+                    # a picture nearly all black is no key (a set whose lights were lost staged 20 "passing" shots
+                    # at 3 to 8 of 255, and the video model invented other rooms from them; the darkest good keys
+                    # of the same night scene stand at 15, 11-14)
+                    from PIL import Image
+                    lum = sum(Image.open(a["path"]).convert("L").resize((64, 36)).getdata()) / (64 * 36)
+                    if lum < KEY_DARK:
+                        rows.append({"shot": c["plan_id"], "key": False,
+                                     "why": f"the picture is nearly black (mean {lum:.1f} of 255)"})
+                        continue
                 rows.append({"shot": c["plan_id"], "key": bool(a), "why": (a or {}).get("fails") or ""})
                 if not a:
                     continue
