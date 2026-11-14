@@ -501,7 +501,7 @@ if JOB.get("neck_cone", True):
     # and what lies on the body's own head and neck: the generated figure's flesh (a chin, a beard, the skin of an
     # open neckline) sits where the MetaHuman's does, inside its head mesh or on its surface; cloth stands off it
     _flesh = 0
-    if HEAD is not None and JOB.get("neck_flesh", True):
+    if HEAD is not None and JOB.get("neck_flesh", False):   # (off: on a thick-necked man it took the collar's back too)
         from mathutils.bvhtree import BVHTree as _BVn  # noqa: E402
         _hbn = _BVn.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
         _off = float(JOB.get("neck_flesh_off_m", 0.008))
