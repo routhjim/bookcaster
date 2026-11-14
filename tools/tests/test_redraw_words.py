@@ -82,3 +82,16 @@ def test_unlit_thing_keeps_its_look():
     t = {"name": "drapes", "kind": "fixture", "words": "the drapes (damask with a fringed pelmet, gold)",
          "box": [0.1, 0.0, 0.4, 0.8], "visible_frac": 0.9, "flame_in_view": None}
     assert "fringed pelmet, gold" in redraw.set_words({"things": [t]})
+
+
+def test_a_cabins_view_is_worded_by_which_way_the_camera_looks(tmp_path):
+    import json
+    view = {"name": "outside_view_1", "words": "a dark mountain of ice, near", "ahead": [0.0, -1.0], "all": ["outside_view"]}
+    cams = [{"name": "fwd", "position": [0, 2, 1.2], "target": [0, 0, 1.2], "view": view, "setting": "the director's words"},
+            {"name": "back", "position": [0, -2, 1.2], "target": [0, 0, 1.2], "view": view, "setting": "the director's words"},
+            {"name": "plain", "position": [0, 2, 1.2], "target": [0, 0, 1.2], "setting": "the director's words"}]
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": cams}))
+    fwd, back, plain = (redraw.setting_words(tmp_path, n) for n in ("fwd", "back", "plain"))
+    assert "ahead through the canopy: a dark mountain of ice, near" in fwd
+    assert "mountain" not in back and "looks back into the cabin" in back      # the view is behind the camera
+    assert plain == " In this shot: the director's words"                       # a place with no views: as before

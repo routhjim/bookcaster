@@ -593,6 +593,14 @@ def run(job):
                         a_.set_is_temporarily_hidden_in_editor(True)
                         a_.set_actor_hidden_in_game(True)
                         wild.append(a_)
+            # a cabin's view outside: this shot's backdrop shown, the other views' hidden for this still
+            vw_ = c.get("view") or {}
+            for a_ in act.get_all_level_actors() if vw_.get("all") else []:
+                lb = a_.get_actor_label()
+                if lb in vw_["all"] and lb != vw_.get("name") and not a_.is_hidden_ed():
+                    a_.set_is_temporarily_hidden_in_editor(True)
+                    a_.set_actor_hidden_in_game(True)
+                    wild.append(a_)
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()

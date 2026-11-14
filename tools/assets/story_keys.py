@@ -392,7 +392,9 @@ class Story:
                                  for n, v in cast.items()},
                    scenes=sorted(os.path.dirname(p) for p in glob.glob(str(d / "seq" / "*" / "result.json"))),
                    set=str(self.set_dir(place)), out=str(out),
-                   extra_refs=[ss["concept"]] if ss.get("concept") else [],
+                   # (a cabin with views outside: its concept picture shows one view of its own, which the redraw
+                   # then painted in every window; the cabin's look reaches the redraw through its pieces)
+                   extra_refs=[ss["concept"]] if ss.get("concept") and not (ss.get("views") or {}).get("words") else [],
                    look=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
         rp = d / "run.json"
         rp.write_text(json.dumps(run, indent=1))

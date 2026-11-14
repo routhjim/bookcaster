@@ -247,6 +247,22 @@ def setting_words(sd: Path, cam: str) -> str:
     if not rounds:
         return ""
     c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    vw = c.get("view") or {}
+    if vw.get("ahead") and c.get("position") and c.get("target"):
+        # a cabin with a view outside: what the frame shows of it depends on which way the camera looks. Looking
+        # the way the cabin faces, the view of this shot is ahead through the canopy; looking back at whoever sits
+        # in it, the view is behind the camera and what is behind the person is the cabin's rear and the far dark
+        # (told of the view regardless, the redraw painted its mountain behind the pilot's seat, 11-14)
+        d = [c["target"][0] - c["position"][0], c["target"][1] - c["position"][1]]
+        n = (d[0] ** 2 + d[1] ** 2) ** 0.5 or 1.0
+        fwd = (d[0] * vw["ahead"][0] + d[1] * vw["ahead"][1]) / n
+        if fwd > 0.25:
+            return f" In this shot, ahead through the canopy: {vw['words'].strip()}." if vw.get("words") else ""
+        if fwd < -0.25:
+            return (" In this shot the camera looks back into the cabin: behind the person is the cabin's rear, and "
+                    "through any window only black space with a few faint stars.")
+        return (f" In this shot, to one side through the canopy: {vw['words'].strip()}; the rest of the windows show "
+                "black space with a few faint stars.") if vw.get("words") else ""
     return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
 
 

@@ -338,7 +338,9 @@ def main():
     # that item, no name matching
     np_path = set_dir / "named_places.json"
     set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
-    room = json.loads((set_dir / "spec.json").read_text())["size_m"]
+    set_spec_ = json.loads((set_dir / "spec.json").read_text())
+    room = set_spec_["size_m"]
+    views_ = set_spec_.get("views") or {}          # a cabin's backdrops, one for each thing the story sees outside
     seats = seating.seats(library, set_dir)
     beds = lying.beds(library, set_dir)
     for n, s_ in seats.items():
@@ -570,6 +572,10 @@ def main():
                "shot_kind": sh.get("kind")}
         if sh.get("setting"):                 # the director's own words for what this shot shows of the place
             cam["setting"] = sh["setting"]
+        if views_.get("words"):               # what is outside in this shot: its backdrop, its words, the way ahead
+            vn = (views_.get("by_shot") or {}).get(sid) or "outside_view"
+            cam["view"] = {"name": vn, "words": views_["words"].get(vn, ""), "ahead": views_.get("ahead"),
+                           "all": sorted(views_["words"])}
         if lis:
             cam["listener"] = lis
         if spk and ck == "over_the_shoulder" and lis:

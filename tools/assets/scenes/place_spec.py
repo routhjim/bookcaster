@@ -186,6 +186,47 @@ def ask(url: str, text: str, cache: Path) -> str:
     return txt
 
 
+VIEWS_ASK = """A story has these shots, in order, in the place "{place}". What is seen outside this place, through its
+windows or canopy, is in general: {outside}.
+
+For each shot write what is seen outside AT THAT MOMENT of the story, as the director's words for the shots tell it:
+what is in view, how near it has come, how it is lit. Under 16 words each, a plain description a painter could
+paint, nothing about the people or the inside of the place. When nothing outside has changed since the shot before,
+repeat that shot's words exactly, letter for letter. Use at most {most} different descriptions in all.
+
+The shots:
+{shots}
+
+Answer with one JSON object and nothing else: {{"<shot id>": "<what is seen outside>", ...}} with every shot id."""
+VIEWS_MOST = 6
+
+
+def views(plan: dict, ids: list, place: str, outside: str, url: str, cache: Path) -> dict:
+    """{shot id: what is seen outside in that shot}: the director's own account of how the view changes over the
+    story (a ship's canopy showed one fixed picture from the first shot to the last, 11-14). Asked once more with
+    its faults when a shot is missing or the descriptions are too many; {} when it still is not usable."""
+    lines = "\n".join(f"{i}: {(plan[i][0].get('setting') or plan[i][0].get('action') or '').strip() or '(no words)'}"
+                      for i in ids)
+    base = VIEWS_ASK.format(place=place, outside=outside, most=VIEWS_MOST, shots=lines)
+    text = base
+    for _ in range(2):
+        got = parse(ask(url, text, cache))
+        bad = []
+        if not isinstance(got, dict):
+            bad.append("the answer was not one JSON object")
+        else:
+            miss = [i for i in ids if not str(got.get(i) or "").strip()]
+            if miss:
+                bad.append("these shot ids have no description: " + ", ".join(miss[:8]))
+            if len({str(v).strip() for v in got.values()}) > VIEWS_MOST:
+                bad.append(f"more than {VIEWS_MOST} different descriptions")
+        if not bad:
+            return {i: str(got[i]).strip().rstrip(".") for i in ids}
+        text = base + "\n\nYour previous answer:\n" + json.dumps(got) + "\nIt had these faults; answer again:\n" + \
+            "\n".join(f"- {b}" for b in bad)
+    return {}
+
+
 def parse(txt: str):
     m = re.search(r"\{.*\}", txt, re.S)
     try:
@@ -222,6 +263,8 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     # is said there and nowhere else)
     out["_director_room"] = next((plan[i][0].get("room") for i in ids if plan[i][0].get("room")), "")
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
+    if str(out.get("outside") or "").strip() and len(ids) > 1:
+        out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
     if faults:
         out["_faults"] = faults
     return out, base

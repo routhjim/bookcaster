@@ -340,7 +340,9 @@ def main():
     if spec.get("outside") and not only:                 # what lies outside the place: its view's backdrop
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
-        out.append(dict(make_view(PB.view_spec(spec["outside"]), library, seed), kind="view"))
+        each = list(dict.fromkeys(str(v).strip() for v in (spec.get("_views") or {}).values() if str(v).strip()))
+        for vw in [spec["outside"]] + [v for v in each if v != spec["outside"]] + [PB.FAR_WORDS]:
+            out.append(dict(make_view(PB.view_spec(vw), library, seed), kind="view"))
     print(json.dumps(out, indent=1))
     return 0 if all(o["ok"] for o in out) else 1
 
