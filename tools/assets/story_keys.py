@@ -98,11 +98,20 @@ def llm(jid: str, logf: Path, cmds: list) -> int:
     """Commands that need the directing model, as one line job: the model is started for them and stopped after."""
     script = logf.with_suffix(".sh")
     lines = ["#!/bin/bash", f"cd {HERE.parents[1]}", "S=0",
-             f"if ! systemctl --user is-active -q strata-eval; then {VENV_PY} -c \"{LLM_UP}\" || exit 1; S=1; fi", "RC=0"]
+             f"if ! systemctl --user is-active -q strata-eval; then {VENV_PY} -c \"{LLM_UP}\" || exit 1; S=1; fi",
+             "trap '[ $S = 1 ] && systemctl --user stop strata-eval' EXIT", "RC=0"]
     lines += [" ".join(f"'{a}'" for a in map(str, c)) + " || RC=1" for c in cmds]
     lines += ["[ $S = 1 ] && systemctl --user stop strata-eval", "exit $RC"]
     script.write_text("\n".join(lines) + "\n")
     return line("igpu", "llm", jid, logf, ["bash", str(script)])
+
+
+def llm_down() -> None:
+    """The directing model is not left up between steps: it holds most of the box's memory, and an engine or card
+    job behind it waits for room (a figure's import sat ten minutes behind an idle model)."""
+    if subprocess.run(["systemctl", "--user", "is-active", "-q", "strata-eval"]).returncode == 0:
+        subprocess.run(["systemctl", "--user", "stop", "strata-eval"])
+        log("the directing model was still up: stopped")
 
 
 class Story:
@@ -408,6 +417,8 @@ class Story:
                 if self.done(place, st) and st not in redo:
                     continue
                 log(f"{place}: {st}")
+                if st not in ("spec", "pass"):
+                    llm_down()
                 t = time.time()
                 if not getattr(self, f"step_{st}")(place):
                     log(f"{place}: {st} FAILED after {time.time() - t:.0f} s; the place stops here")
