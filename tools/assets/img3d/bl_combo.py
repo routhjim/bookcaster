@@ -1948,6 +1948,13 @@ if not STATUE and JOB.get("body_skin_shows", True):
         _b = max(v.groups, key=lambda g: g.weight, default=None)
         if _b is not None and gi[_b.group].startswith(YOKE):
             continue
+        # an arm's skin shows only beyond its sleeve's cuff (CUFF: found where a short sleeve ends); above it, and on
+        # a long-sleeved arm anywhere, a gap in the cloth is a gap, not bare skin (it showed as patches of skin on
+        # the shoulders of a man in a flight suit)
+        if _b is not None and gi[_b.group].startswith(("upperarm", "lowerarm")):
+            _cf = CUFF.get(gi[_b.group][-1])
+            if _cf is None or float((np.array(v.co) - np.array(_cf[0])) @ np.array(_cf[1])) < float(_cf[2]) - 0.02:
+                continue
         _elig[v.index] = True
         loc_, _, _, d_ = _gb.find_nearest(v.co, _near)
         if loc_ is not None:
