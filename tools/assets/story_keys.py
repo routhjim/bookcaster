@@ -296,7 +296,7 @@ class Story:
         w.mkdir(parents=True, exist_ok=True)
         return fid, w, [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
                         "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
-                        "--scene-tool", HERE / "scenes"]
+                        "--scene-tool", HERE / "scenes"] + (["--whole"] if getattr(self, "whole", False) else [])
 
     def _built(self, name) -> bool:
         return name in self.cast and (C.LIBRARY / "character" / self.cast[name] / "character.json").exists()
@@ -512,6 +512,7 @@ def main():
             out.append(x)
         return out
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
+    s.whole = "--whole" in a             # figures as whole generated meshes on the skeleton (cast_char.py --whole)
     s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")))
 
 

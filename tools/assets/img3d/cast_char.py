@@ -204,6 +204,10 @@ def main():
                          "toward -Y")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
+    ap.add_argument("--whole", action="store_true",
+                    help="the whole generated figure (its own head, hair, hands and clothes, one mesh) on the "
+                         "MetaHuman's skeleton, the MetaHuman's body and face not shown: no join between a MetaHuman "
+                         "head and generated clothes (11-14: the redrawn key from it kept the sheet's own garment)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
     ap.add_argument("--until", default=None, choices=["face", "seats"],
                     help="stop after this step (face: after the conform; seats: after the seated stances)")
@@ -633,7 +637,7 @@ def main():
     # what each part of the figure is (hair, face, bare skin, a garment): the trained parser's labels of the drawing
     # and of the mesh's own views (parse_figure.py), for the fit to cut and keep by instead of by colour
     labels_p = W / "figure_labels.npz"
-    if not done("combo", labels_p):
+    if not a.whole and not done("combo", labels_p):
         @timed("parse")
         def _():
             p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_parse", "--", "bash", CARD, "05", HY_PY,
@@ -654,8 +658,8 @@ def main():
                 m["long_skirt"] = bool(gf["long"])
                 m["long_skirt_source"] = (gf.get("source") or {}).get("long_garment") or "fact"
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
-                   "figure_glb": str(glb), "out": str(combo), "labels": str(labels_p), "hair_cap": False,
-                   "neck_cut_m": 0.03,
+                   "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
+                   **({"mode": "statue"} if a.whole else {"labels": str(labels_p)}),
                    "collar_lift": False, "liner": False,
                    # cloth pushed out of the head mesh only near the neck (a push over the shoulders flattened puffed
                    # sleeves); the head mesh's skin under the cloth is hidden instead: the fit bakes an opacity mask in
@@ -699,7 +703,8 @@ def main():
                       str(jp)], W / "combo.log")
             if p.returncode or not (combo / "outfit.fbx").exists():
                 raise RuntimeError(f"combo failed: {p.stdout[-800:]}")
-            head_check()
+            if not a.whole:                 # (the whole figure keeps its own head: nothing to check for one left on)
+                head_check()
     # ---------------------------------------------------------------- the body fits the clothes at the neck
     # the fit measures the bare neck (chin to the generated collar's front top) and both girths (the collar's inner
     # one, the MetaHuman's neck); where the collar sits low or tight, the MetaHuman's neck is changed to meet it
@@ -821,6 +826,7 @@ def main():
                 "class": "character", "kind": "metahuman", "project": "CharLab", "blueprint": bp,
                 "rebuild_from": f"/Game/Char/{mh_name}", "bp_deps": ["/MetaHumanCharacter/Animation/ABP_MH_LiveLink"],
                 "character_asset": f"/Game/Char/{mh_name}", "hide_body": True, "id": a.id,
+                **({"hide_face": True, "whole_figure": True} if a.whole else {}),
                 "garments": [f"{dest}/Outfit/outfit", f"@face_material={sk['instance']}"], "body_swap": None,
                 "garment_material": None, "skin_mask": {"material": sk["instance"], "mask": sk["mask"]},
                 "missing_layers": ([" ".join(ch["garment"]["outer_words"])]
@@ -830,7 +836,8 @@ def main():
                                      if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
                                      else []),
                 # (its own drawn hair kept on the head: the MetaHuman's hair groom is not shown)
-                "hide_hair": bool(((json.loads((combo / "report.json").read_text()).get("hair_kept") or {}).get("verts"))),
+                "hide_hair": bool(((json.loads((combo / "report.json").read_text()).get("hair_kept") or {}).get("verts")))
+                and not a.whole,
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
                 indent=1))
@@ -1162,7 +1169,7 @@ def main():
     # flat-lit studio stills (no firelight to give dark cloth the face's warmth), each with a twin without the face
     # mesh: the head mesh's skin-coloured pixels at the shoulders must be under 0.2 % of the shoulder region
     skin_p = W / "skin_probe.json"
-    if not done("check", skin_p):
+    if not a.whole and not done("check", skin_p):          # (the whole figure shows no MetaHuman skin at all)
         @timed("skin_probe")
         def _():
             cj4 = json.loads((lib / "character.json").read_text())
