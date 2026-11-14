@@ -271,7 +271,10 @@ def plan(spec: dict, library: Path) -> dict:
             spec["characters"][k]["_seat"]["asked_facing"] = list(c.get("facing") or [])[:2]
             pr = spec["characters"][k]["body_pose"]["params"]
             if pr.get("hands") == "lap":
-                if not pr.get("action"):     # a start action has the hands (the lap steps ran after it, 11-12)
+                # a stance settled for this seat keeps the arms its clothes were settled in (hands on the thighs,
+                # forearms on the arm rests): moved to the lap afterwards, a bulky suit's sleeves sank into its
+                # torso and the redraw drew a man with one arm (11-14). The lap is for a figure with no stance.
+                if not pr.get("action") and not base:     # a start action has the hands (the lap steps ran after it, 11-12)
                     pr["steps"] = lap_steps(pr["seat_z_m"]) + list(pr.get("steps") or [])
                 pr.pop("hands")
             spec["characters"][k]["_seat"]["fit"] = fitd
