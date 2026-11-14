@@ -228,6 +228,25 @@ at.data.foreach_set("color", np.c_[col, np.ones(nv)].astype(np.float32).ravel())
 co = np.empty(nv * 3)
 me.vertices.foreach_get("co", co)
 co = co.reshape(-1, 3)
+# what each vertex IS (hair, face, bare skin, a garment), from the trained parser's labels of this same figure
+# (parse_figure.py: the drawing and twelve views of the mesh, voted): read by nearest point, the glb's y-up
+# coordinates turned to these. Told by colour alone, brown hair passed as skin, a ponytail and a beard counted as a
+# collar (and the collar was lifted to the jaw for it), and a tan garment was eaten away as skin.
+LAB_GROUP = None           # per vertex: 0 unknown, 1 hair (and a hat), 2 face, 3 bare skin, 4 garment
+if JOB.get("labels") and os.path.exists(JOB["labels"]):
+    from mathutils.kdtree import KDTree as _KD
+    _lz = np.load(JOB["labels"], allow_pickle=False)
+    _lp = _lz["points"]
+    _lp = np.stack([_lp[:, 0], -_lp[:, 2], _lp[:, 1]], 1)
+    _kd = _KD(len(_lp))
+    for _i, _q in enumerate(_lp):
+        _kd.insert(_q, _i)
+    _kd.balance()
+    _near = np.array([_kd.find(_q)[1:] for _q in co])
+    LAB_GROUP = _lz["groups"][_near[:, 0].astype(int)]
+    REP["labels"] = {"from": JOB["labels"], "max_gap_m": round(float(_near[:, 1].max()), 4),
+                     "hair": int((LAB_GROUP == 1).sum()), "face": int((LAB_GROUP == 2).sum()),
+                     "skin": int((LAB_GROUP == 3).sum()), "garment": int((LAB_GROUP == 4).sum())}
 mark("colour", t)
 
 
@@ -237,6 +256,11 @@ def is_skin(c):
 
 
 skin = is_skin(col)
+if LAB_GROUP is not None:
+    # skin by colour, but never what the labels say is a garment or hair; and the face is skin whatever its colour
+    REP["labels"]["skin_by_colour_on_garment_or_hair"] = int((skin & np.isin(LAB_GROUP, (1, 4))).sum())
+    skin = (skin & ~np.isin(LAB_GROUP, (1, 4))) | (LAB_GROUP == 2)
+HAIRY = (LAB_GROUP == 1) if LAB_GROUP is not None else np.zeros(len(co), bool)
 
 # ------------------------------------------------------------------ 1. scale and place
 t = time.time()
@@ -410,6 +434,7 @@ fig.data.vertices.foreach_set("co", co.ravel())
 fig.data.update()
 mark("fit", t)
 stage_save("s1_scaled_placed")
+
 # the neckline, measured on the generated figure before any cut or push (a beard hides a neckline from a picture,
 # not from the mesh; after the fit the cloth hugs every neck): a collar is cloth all round the neck (a beard is only
 # in front of it, long hair only behind and beside it), so at mid-neck height the ring just outside the neck's radius
@@ -428,7 +453,9 @@ if not STATUE and HEAD is not None:
         _an0 = np.arctan2(co[:, 1] - _nk0[1], co[:, 0] - _nk0[0])
         _sec0 = ((_an0 + math.pi) / (2 * math.pi) * 16).astype(int) % 16
         _band0 = (np.abs(co[:, 2] - _zmid) < 0.012) & (_rr0 > _nr0 - 0.01) & (_rr0 < _nr0 + 0.05)
-        _cloth_secs = sorted({int(k) for k in _sec0[_band0 & ~skin]})
+        # (cloth: what the labels call a garment; without labels, what is not skin-coloured)
+        _is_cloth0 = (LAB_GROUP == 4) if LAB_GROUP is not None else ~skin
+        _cloth_secs = sorted({int(k) for k in _sec0[_band0 & _is_cloth0]})
         _low = (np.abs(co[:, 2] - (_zsh0 - 0.03)) < 0.012) & (co[:, 1] < _nk0[1]) & (np.abs(co[:, 0] - _nk0[0]) < _nr0 + 0.02)
         _skin_front = float((skin[_low]).mean()) if _low.sum() > 10 else 0.0
         # skin on the chest below the shoulder line rules out a collar up to the chin (a beard and long hair also
@@ -542,7 +569,14 @@ if JOB.get("neck_cone", True):
             _hair = ((co[:, 2] > J("spine_03").z) & (nr < 0.22) & (co[:, 1] > _n1[1] - 0.02) & (_lum < 0.08) & ~gone)
             gone |= _hair
             _col_n += int(_hair.sum())
-    REP["neck_cone"] = {"neck_r_m": round(_rn, 3), "verts": int(gone.sum()), "on_the_body": _flesh, "by_colour": _col_n}
+    # the figure's own hair wherever it hangs round the neck, over the shoulders or down the back (the parser's
+    # labels): the head and its hair are the MetaHuman's
+    _hairy = HAIRY & (co[:, 2] > J("spine_01").z) & ~gone
+    if LAB_GROUP is not None:                # and its face (a beard, a chin carried forward of the cone)
+        _hairy |= (LAB_GROUP == 2) & ~gone
+    gone |= _hairy
+    REP["neck_cone"] = {"neck_r_m": round(_rn, 3), "verts": int(gone.sum()), "on_the_body": _flesh, "by_colour": _col_n,
+                        "hair": int(_hairy.sum())}
 else:
     gone = skin_n & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.12)))
     # the figure's own hair and head left under the collar line (a long face, hair at the nape): dark or skin above

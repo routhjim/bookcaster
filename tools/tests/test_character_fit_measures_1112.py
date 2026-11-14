@@ -338,8 +338,8 @@ class NecklineOnTheFigure(unittest.TestCase):
     JN = {"neck_01": NECK, "clavicle_l": V((0.05, 0.0, 1.47)), "head": V((0.0, 0.0, 1.62))}
     R = 0.055                                              # the head mesh's neck radius
 
-    def classify(self, parts):
-        """parts: list of (points, is_skin)"""
+    def classify(self, parts, groups=None):
+        """parts: list of (points, is_skin); groups: the parser's label group of each part (None: no labels)"""
         src = block(COMBO, 'REP["neckline_figure"]')
         co = np.vstack([p for p, _ in parts])
         skin = np.concatenate([np.full(len(p), s) for p, s in parts])
@@ -354,7 +354,8 @@ class NecklineOnTheFigure(unittest.TestCase):
                 return v
         HEAD = type("H", (), {"matrix_world": _M(), "data": type("D", (), {"vertices": [_Vt(p) for p in head_ring]})()})()
         ns = {"np": np, "math": math, "STATUE": False, "HEAD": HEAD, "J": lambda n: self.JN[n], "co": co,
-              "skin": skin, "REP": {}}
+              "skin": skin, "REP": {},
+              "LAB_GROUP": None if groups is None else np.concatenate([np.full(len(p), g) for (p, _), g in zip(parts, groups)])}
         exec(src, ns)
         rep = ns["REP"]["neckline_figure"]
         self.assertNotIn("error", rep, rep)
@@ -388,6 +389,15 @@ class NecklineOnTheFigure(unittest.TestCase):
     def test_skin_on_the_chest_is_an_open_neckline(self):
         rep = self.classify([(self.collar_ring(), True), (self.chest_front(), True)])
         self.assertEqual(rep["class"], "open")
+
+    def test_hair_all_round_the_neck_is_no_collar_when_the_figure_is_labelled(self):
+        # long hair worn down, not skin-coloured: by colour a collar to the chin, by the parser's labels (1 = hair,
+        # 4 = garment) a neckline at the base
+        parts = [(self.collar_ring(), False), (self.chest_front(), False)]
+        self.assertEqual(self.classify(parts)["class"], "chin")
+        rep = self.classify(parts, groups=[1, 4])
+        self.assertEqual(rep["cloth_sectors_at_mid_neck"], 0)
+        self.assertEqual(rep["class"], "base")
 
     def front_sectors(self):
         """the sixteenths of the ring in front of the neck (the block's front is -y)"""

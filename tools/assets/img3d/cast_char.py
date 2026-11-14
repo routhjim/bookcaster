@@ -630,6 +630,17 @@ def main():
             raise RuntimeError(f"GARMENT IN THE HEAD: {hv} garment vertices in front of the face or inside the head "
                                f"or round the head above the chin (at most {HEAD_VOLUME_MAX}); the figure's own head was probably left "
                                f"on the garment (its neck line); the build stops here")
+    # what each part of the figure is (hair, face, bare skin, a garment): the trained parser's labels of the drawing
+    # and of the mesh's own views (parse_figure.py), for the fit to cut and keep by instead of by colour
+    labels_p = W / "figure_labels.npz"
+    if not done("combo", labels_p):
+        @timed("parse")
+        def _():
+            p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_parse", "--", "bash", CARD, "05", HY_PY,
+                      str(HERE / "parse_figure.py"), str(glb), str(labels_p), "--sheet", str(W / "figure_labels.jpg"),
+                      "--drawing", str(drawing)], W / "parse.log")
+            if p.returncode or not labels_p.exists():
+                raise RuntimeError(f"figure labels failed: {p.stdout[-600:]}")
     if not done("combo", combo / "outfit.fbx"):
         @timed("combo")
         def _():
@@ -643,7 +654,8 @@ def main():
                 m["long_skirt"] = bool(gf["long"])
                 m["long_skirt_source"] = (gf.get("source") or {}).get("long_garment") or "fact"
             job = {"body_fbx": str(fbx / f"{mh_name}_Body.fbx"), "head_fbx": str(fbx / f"{mh_name}_Head.fbx"),
-                   "figure_glb": str(glb), "out": str(combo), "hair_cap": False, "neck_cut_m": 0.03,
+                   "figure_glb": str(glb), "out": str(combo), "labels": str(labels_p), "hair_cap": False,
+                   "neck_cut_m": 0.03,
                    "collar_lift": False, "liner": False,
                    # cloth pushed out of the head mesh only near the neck (a push over the shoulders flattened puffed
                    # sleeves); the head mesh's skin under the cloth is hidden instead: the fit bakes an opacity mask in
@@ -767,7 +779,10 @@ def main():
         bare = rep.get("bare_neck_measured_cm")
         nl = rep.get("neckline") or (ch.get("garment") or {}).get("neckline")
         CH["neckline"] = {"class": nl, "source": rep.get("neckline_source") or "picture"}
-        if bare is not None and bare > 2.0 and not job.get("collar_lift") and nl in (None, "chin"):
+        # (with the figure's labels the collar stays where the drawing has it: the lift was there to cover hair and
+        # beard read as a collar, and raised a low neckline to the jaw, 11-14)
+        if bare is not None and bare > 2.0 and not job.get("collar_lift") and nl in (None, "chin") \
+                and not job.get("labels"):
             # only a collar that comes up the neck is lifted to the chin (a round or open neckline is bare by design:
             # a lifted nightgown neckline became a boxy collar at the jaw, 11-11); the fact is asked text first
             @timed("collar_lift")
