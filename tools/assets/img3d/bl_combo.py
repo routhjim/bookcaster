@@ -318,6 +318,18 @@ for side, sg in (("l", 1), ("r", -1)):
         nearh = dxz < float(JOB.get("hand_search_r_m", 0.12))
         hand = (nearh & skin) if (nearh & skin).sum() >= 20 else nearh
         REP.setdefault("hand_search", {})[side + "_expected"] = [round(float(v), 3) for v in exp_]
+        if hand.sum() < 20:
+            # nothing where the pose map put the hand: the drawing hung the arm at another angle (a child's drawn
+            # 30 degrees under the map, 11-13). The arm's end is then the point of that side, out beyond the
+            # shoulder and above mid-thigh, farthest from the shoulder in the front view; the hand is round it
+            arm_ = (sg * co[:, 0] > abs(shx) + 0.12) & (co[:, 2] > J("pelvis").z - 0.25)
+            if arm_.sum() >= 20:
+                dxz_s = np.linalg.norm((co - S_)[:, [0, 2]], axis=1)
+                end_ = co[arm_][dxz_s[arm_] >= np.quantile(dxz_s[arm_], 0.98)].mean(0)
+                nearh = np.linalg.norm((co - end_)[:, [0, 2]], axis=1) < float(JOB.get("hand_search_r_m", 0.12))
+                hand = (nearh & skin) if (nearh & skin).sum() >= 20 else nearh
+                REP["hand_search"][side + "_found_deg"] = round(math.degrees(math.atan2(
+                    abs(end_[0] - S_[0]), S_[2] - end_[2])), 1)
     if FIT_POSE:
         # a posed figure (hands in the lap): the hand is the skin round the posed body's hand, not the far end of
         # a spread arm
