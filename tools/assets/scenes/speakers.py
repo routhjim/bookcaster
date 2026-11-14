@@ -1262,7 +1262,14 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
 # ------------------------------------------------------------------ driver
 def run_scene(spec_path, cams=None):
     cmd = [sys.executable, str(HERE / "scene.py"), str(spec_path)] + (["--cameras", ",".join(cams)] if cams else [])
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    for attempt in range(3):
+        # the editor dies when the machine runs short of memory (another job loading its model): the scene is run
+        # again, twice at most, after a wait. Unretried, one death dropped a whole group of sixteen shots (11-14)
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if not p.returncode or "the editor died" not in (p.stdout + p.stderr):
+            break
+        log(f"the editor died (attempt {attempt + 1}); the scene is run again")
+        time.sleep(20 * (attempt + 1))
     log(p.stdout.strip().splitlines()[0] if p.stdout.strip() else p.stderr[-400:])
     if p.returncode:
         raise SystemExit(p.stdout[-2000:] + p.stderr[-2000:])
