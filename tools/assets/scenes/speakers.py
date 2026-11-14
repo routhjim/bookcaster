@@ -1623,13 +1623,16 @@ def main():
                         tc = two_shot_candidates(c, shots[n_], spk, lis, subjects, res, room, line, est_side,
                                                  tried[n_], cam_opts(spec, c))
                         cands = [(q, md) for q, md in tc[:1]]
-            if not cands and spk and t["single"] < TRY_SINGLE:     # 2: a clean single of the speaker
+            named = [k for k in (c.get("show") or []) if k in subjects]
+            # a shot naming two or more with nobody speaking: every one of them stays in it (the person its line is
+            # about stood in as its speaker here, so it was given singles of him the check then failed for the
+            # others missing, eight of fifteen rounds, 11-14)
+            many = not c.get("speaker") and len(named) >= 2
+            if not cands and spk and not many and t["single"] < TRY_SINGLE:     # 2: a clean single of the speaker
                 tc = two_shot_candidates(dict(c, show=None), shots[n_], spk, None, subjects, res, room, line, est_side,
                                          tried[n_], dict(cam_opts(spec, c), _single=True))
                 cands = [(q, "single") for q, _ in tc[:1]]
             subj_k = spk or c.get("subject")
-            named = [k for k in (c.get("show") or []) if k in subjects]
-            many = not spk and len(named) >= 2       # a shot naming two or more: every one of them stays in it
             if not cands and many and t["wide"] < TRY_SINGLE:      # 2: a wider frame holding everyone named
                 tc = two_shot_candidates(dict(c, kind="full"), shots[n_], None, None, subjects, res, room, line,
                                          est_side, tried[n_], cam_opts(spec, c))
@@ -1640,7 +1643,7 @@ def main():
                 tc = two_shot_candidates(c, shots[n_], None, None, subjects, res, room, line, est_side, tried[n_],
                                          dict(cam_opts(spec, c), _lens=(50, 65, 85)))
                 cands = [(q, "tighter") for q, _ in tc[:1]]
-            if not cands and not spk and not many and subj_k in subjects and t["single"] < TRY_SINGLE:
+            if not cands and not c.get("speaker") and not many and subj_k in subjects and t["single"] < TRY_SINGLE:
                 # 2 (no speaker): a tighter frame on the shot's subject, the others clearly in or out
                 tc = two_shot_candidates(dict(c, show=[subj_k]), shots[n_], None, None, subjects, res, room, line,
                                          est_side, tried[n_], cam_opts(spec, c))
