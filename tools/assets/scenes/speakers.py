@@ -1059,7 +1059,11 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                         lens = (35, 50, 65, 85)
                     else:
                         lens = (28, 35, 40, 50)
-                    for f in lens:
+                    # a medium or a close takes the longest lens that frames it from this standpoint (tried widest
+                    # first, every seated talk came out a head-on 28 mm wide with small faces, 11-14); a wide, a full
+                    # or a move takes the widest
+                    tight = kind in ("medium", "close") and not opts.get("points") and not opts.get("_lens")
+                    for f in (lens[::-1] if tight else lens):
                         q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
                         why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
                                              opts=opts)
