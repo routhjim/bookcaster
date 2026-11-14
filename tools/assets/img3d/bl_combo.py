@@ -498,7 +498,39 @@ if JOB.get("neck_cone", True):
             _rn = float(min(0.085, np.quantile(_hr[_band], 0.75)))
     _R = _rn + float(JOB.get("neck_clear_m", 0.02)) + np.maximum(_t, 0.0) * float(JOB.get("neck_cone_slope", 0.9))
     gone = (_t > (J("clavicle_l").z - 0.02 - _n1[2])) & (_rr < _R)
-    REP["neck_cone"] = {"neck_r_m": round(_rn, 3), "verts": int(gone.sum())}
+    # and what lies on the body's own head and neck: the generated figure's flesh (a chin, a beard, the skin of an
+    # open neckline) sits where the MetaHuman's does, inside its head mesh or on its surface; cloth stands off it
+    _flesh = 0
+    if HEAD is not None and JOB.get("neck_flesh", True):
+        from mathutils.bvhtree import BVHTree as _BVn  # noqa: E402
+        _hbn = _BVn.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+        _off = float(JOB.get("neck_flesh_off_m", 0.008))
+        # (only the neck's own column, from just under its base up: over the shoulders and chest the head mesh
+        # runs on under the cloth, and by this test alone the whole collar and yoke went)
+        _cand = np.nonzero((_t > -0.03) & (_rr < _rn + float(JOB.get("neck_flesh_reach_m", 0.06))) & ~gone)[0]
+        for i in _cand:
+            loc_, nrm_, _, d_ = _hbn.find_nearest(Vector(co[i]), 0.06)
+            if loc_ is None:
+                continue
+            if (Vector(co[i]) - loc_).dot(nrm_) < _off:          # inside the head mesh, or within the offset of it
+                gone[i] = True
+                _flesh += 1
+    # the figure's own neck and hair where they stand off the body's (a head carried forward, a ponytail down the
+    # back): by colour, but only where the figure's skin is clearly not its cloth's colour, and its hair clearly
+    # darker than its cloth
+    _col_n = 0
+    if _ref_n is not None and _ref_n["apart"] >= float(JOB.get("neck_colour_apart", 0.12)) and SKL_SURE is not None:
+        _own = (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < 0.20) & SKL_SURE & ~gone
+        gone |= _own
+        _col_n += int(_own.sum())
+    if _ref_n is not None:
+        _cl_l = float(np.dot(_ref_n["cloth"], [0.3, 0.59, 0.11]))
+        _lum = col @ np.array([0.3, 0.59, 0.11])
+        if _cl_l > 0.2:                       # (a dark garment's back is not hair)
+            _hair = ((co[:, 2] > J("spine_03").z) & (nr < 0.22) & (co[:, 1] > _n1[1] - 0.02) & (_lum < 0.08) & ~gone)
+            gone |= _hair
+            _col_n += int(_hair.sum())
+    REP["neck_cone"] = {"neck_r_m": round(_rn, 3), "verts": int(gone.sum()), "on_the_body": _flesh, "by_colour": _col_n}
 else:
     gone = skin_n & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.12)))
     # the figure's own hair and head left under the collar line (a long face, hair at the nape): dark or skin above
