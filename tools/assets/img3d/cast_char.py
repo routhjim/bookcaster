@@ -918,6 +918,22 @@ def main():
                     pr.pop("arm_z_m", None)
                     pr.pop("arm_x_m", None)
                     pr["steps"] = PX.hands_in_lap(pr["seat_z_m"])
+                if a.whole:
+                    # a whole figure sits as it is: the pose on its own mesh. The settle is for clothes over a body
+                    # (cloth pushed off the seat and off the body under it): on a whole figure it pushed the face
+                    # off the hidden head and left a band across it (11-14)
+                    lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
+                    b = seat["box"]
+                    ent = dict(cj0, id=lid, stance={"base": a.id, "pose": "seated", "seat_asset": seat["asset"],
+                                                    "seat_z_m": b["seat_z_m"], "params": c["body_pose"]},
+                               seat_asset=seat["asset"], seat_z_m=b["seat_z_m"],
+                               note=f"Seated only, in the set's {name} ({seat['asset']}, seat {b['seat_z_m']} m): "
+                                    f"{a.id}, the whole figure posed.")
+                    ent.pop("relaxed_arm_steps", None)
+                    (Path(C.LIBRARY) / "character" / lid).mkdir(parents=True, exist_ok=True)
+                    (Path(C.LIBRARY) / "character" / lid / "character.json").write_text(json.dumps(ent, indent=1))
+                    made[name] = lid
+                    continue
                 sid = f"seatj_{tag}_{name}"
                 spec = {"id": sid, "set": a.set, "guides": False, "characters": {"a": c},
                         "cameras": [{"name": "wide", "kind": "full", "subject": "a", "focal_mm": 28, "az": -20}]}
@@ -1308,11 +1324,13 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     key = ("".join(ch for ch in bed.upper() if ch.isalnum())[:8] + hashlib.sha1(bed.encode()).hexdigest()[:4].upper()
            + variant[:1].upper())
     dest = f"/Game/Char/Outfit{tag}L{key}"
-    ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
-        "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),
-        "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "outfit.fbx"),
-                          "textures": str(W / f"lying_{bed}_{variant}" / "textures"), "dest": dest, "cloth_slots": False}},
-        900)
+    whole = bool(cj0.get("whole_figure"))        # (a whole figure lies as it is; only the bed's cover is the settle's)
+    if not whole:
+        ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
+            "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),
+            "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "outfit.fbx"),
+                              "textures": str(W / f"lying_{bed}_{variant}" / "textures"), "dest": dest,
+                              "cloth_slots": False}}, 900)
     cover = None
     if (W / f"lying_{bed}_{variant}" / "cover.fbx").exists():
         ue_job(W, f"import_cover_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
@@ -1335,7 +1353,8 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     lid = f"{a.id}_lying_{bed}" + ("_propped" if variant == "propped" else "")
     st = {"base": a.id, "pose": "lying", "variant": variant,
           "support": {"asset": bed, "posture": "lying", "top_z_m": top_z, "length_m": sup.get("length_m")}}
-    ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"] + ([cover] if cover else [])
+    ent = dict(cj0, id=lid, garments=([g for g in cj0["garments"] if not g.startswith("@")][:1] if whole
+                                      else [f"{dest}/Outfit/outfit"]) + ([cover] if cover else [])
                + [g for g in cj0["garments"] if g.startswith("@")],
                stance=st, body_pose=c["body_pose"],
                lie={"head_m": to_actor(jt["head"]), "pelvis_m": to_actor(pel), "heels_m": to_actor(heel)},
