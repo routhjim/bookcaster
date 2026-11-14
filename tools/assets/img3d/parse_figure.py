@@ -312,7 +312,17 @@ def parse(glb: Path, out: Path, sheet: Path | None = None, drawing: Path | None 
             if vin.sum() >= 30 and vout.sum() >= 100:
                 skin_c = kmeans(VC[vout], 2)
                 d_skin = np.sqrt(((VC[:, None] - skin_c[None]) ** 2).sum(-1)).min(1)
-                m_ = vin & (d_skin > np.quantile(d_skin[vout], 0.65))       # (past what most of the bare face is)
+                # the region's own two colours: its skin and its beard. The one farther from the bare face's skin
+                # is the beard; each vertex in the region goes to the nearer of that and the skin
+                rc = kmeans(VC[vin], 2)
+                far = np.sqrt(((rc[:, None] - skin_c[None]) ** 2).sum(-1)).min(1)
+                bc = rc[int(far.argmax())]
+                d_beard = np.sqrt(((VC - bc[None]) ** 2).sum(-1))
+                # (a thin moustache is a few vertices among skin and makes no colour of its own: there, what lies
+                # past most of the bare face's own spread)
+                m_ = vin & (d_beard < d_skin) if far.max() >= 0.06 else \
+                    vin & (d_skin > np.quantile(d_skin[vout], 0.65))
+                beard_facts.update(beard_colour=bc.round(3).tolist(), from_skin=round(float(far.max()), 3))
                 labels[m_] = HAIR
                 beard = int(m_.sum())
         del cm
