@@ -226,8 +226,13 @@ def plan(spec: dict, library: Path) -> dict:
             order = [c["seat"]] + sorted((n for n in S if n != c["seat"]),
                                          key=lambda n: math.dist(S[n]["pos"], S[c["seat"]]["pos"]))
         for n in order:
-            if n in taken.values() or not fits(S[n], fitd):
+            # a seat takes as many sitters as it has places (a sofa, a bed's edge), each on a place of their own
+            places = sorted(S[n]["box"].get("places") or [0.0], key=abs)
+            sat = [kk for kk, nn in taken.items() if nn == n]
+            if len(sat) >= len(places) or not fits(S[n], fitd):
                 continue
+            used = [spec["characters"][kk].get("_seat", {}).get("x") for kk in sat]
+            px = next(x for x in places if x not in used)
             if base:
                 vid = seated_variant(library, base, S[n])
                 if not vid:
@@ -237,7 +242,7 @@ def plan(spec: dict, library: Path) -> dict:
                     if (library / "character" / vv / "character.json").exists():
                         vid = vv
                 c = dict(c, id=vid)
-            spec["characters"][k] = place(c, S[n], fitd)
+            spec["characters"][k] = place(c, S[n], fitd, place_x=px)
             pr = spec["characters"][k]["body_pose"]["params"]
             if pr.get("hands") == "lap":
                 if not pr.get("action"):     # a start action has the hands (the lap steps ran after it, 11-12)

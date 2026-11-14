@@ -463,8 +463,13 @@ def main():
             entry = {"at": p.get("at"), "pose": p.get("pose"), "facing_words": p.get("facing")}
             if p.get("pose") == "sitting":
                 anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
-                taken = {v.get("seat") for kk, v in state.items() if kk != k}
-                cands = [s_ for s_ in seats.values() if s_["name"] not in taken]
+                # (a seat with several places, a sofa or a bed's edge, is free until every place is sat on)
+                sat_n = {}
+                for kk, v in state.items():
+                    if kk != k and v.get("seat"):
+                        sat_n[v["seat"]] = sat_n.get(v["seat"], 0) + 1
+                cands = [s_ for s_ in seats.values()
+                         if sat_n.get(s_["name"], 0) < len(s_["box"].get("places") or [0.0])]
                 own = [s_ for s_ in cands if thing and s_["name"] == thing.get("name")]   # the named thing is a seat
                 seat = own[0] if own else min(cands, key=lambda s_: math.dist(s_["pos"], anchor[:2])) if cands else None
                 if seat:
