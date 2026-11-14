@@ -433,26 +433,88 @@ if not STATUE and HEAD is not None:
         REP["neckline_figure"] = {"error": str(_e)}
 
 # ------------------------------------------------------------------ 4. cut head and hands
+SKL_SURE = None
+CUFF = {}          # side -> (shoulder, arm axis, cuff station): the body's own forearm shows beyond a short sleeve
+
+
+def _skin_like():
+    global SKL_SURE
+    hm_ = np.zeros(len(co), bool)
+    for s_ in ("l", "r"):
+        S_ = np.array(pose_head(f"upperarm_{s_}"))
+        E_ = np.array(pose_head(f"hand_{s_}"))
+        a_ = (E_ - S_) / np.linalg.norm(E_ - S_)
+        pp = (co - S_) @ a_
+        rr = np.linalg.norm((co - S_) - pp[:, None] * a_[None, :], axis=1)
+        hm_ |= (pp > np.linalg.norm(E_ - S_) + 0.02) & (rr < 0.1)
+    cm_ = ((co[:, 2] > J("spine_03").z) & (co[:, 2] < J("spine_05").z)
+           & (np.abs(co[:, 0] - J("spine_05").x) < 0.12) & (np.abs(co[:, 0] - J("spine_05").x) > 0.04))
+    if hm_.sum() < 30 or cm_.sum() < 30:
+        SKL_SURE = skin
+        return skin, None
+    sk_ref, cl_ref = np.median(col[hm_], 0), np.median(col[cm_], 0)
+    ds_, dc_ = np.linalg.norm(col - sk_ref, axis=1), np.linalg.norm(col - cl_ref, axis=1)
+    like = ds_ < dc_
+    SKL_SURE = ds_ < float(JOB.get("skin_sure_ratio", 0.5)) * dc_      # clearly the skin's colour, not between
+    return like, {"skin": [round(float(x), 3) for x in sk_ref], "cloth": [round(float(x), 3) for x in cl_ref],
+                  "apart": round(float(np.linalg.norm(sk_ref - cl_ref)), 3)}
+
+
+
 t = time.time()
 cut_z = J("neck_02").z + float(JOB.get("neck_cut_m", 0.01))
+# what counts as the figure's own skin round the neck: skin-coloured AND nearer its own hands' colour than its own
+# cloth's (a tan or brown garment passes any fixed skin test: a man's coveralls were eaten away at the collar, the
+# shoulders and the nape as "neck skin", and what was left of his collar hung in strips)
+_like_n, _ref_n = _skin_like()
+if _ref_n is not None:
+    REP["neck_skin_ref"] = _ref_n
+    skin_n = skin & _like_n
+else:
+    skin_n = skin
 # the head goes by one clean tilted plane (below); here only the figure's own neck skin inside the collar (a tube
 # round the neck axis) and, below, the hands
 nr = np.linalg.norm(co[:, :2] - np.array(J("neck_01"))[:2], axis=1)
-gone = skin & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.12)))
-# the figure's own hair and head left under the collar line (a long face, hair at the nape): dark or skin above
-# the body's upper neck, near the neck's axis
-lum_ = col @ np.array([0.3, 0.59, 0.11])
-gone |= (co[:, 2] > J("neck_02").z - 0.01) & (nr < 0.13) & (skin | (lum_ < float(JOB.get("hair_lum_max", 0.22))))
-if HEAD is not None and gone.any():
-    # only what lies on or inside the MetaHuman's own neck and head: a brown cloth, a dark collar or a tie near the
-    # neck passes the colour tests too
-    from mathutils.bvhtree import BVHTree as _BV  # noqa: E402
-    _hb = _BV.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
-    _near = float(JOB.get("neck_skin_near_m", 0.035))
-    for i in np.nonzero(gone)[0]:
-        loc_, nrm_, _, d_ = _hb.find_nearest(Vector(co[i]), 0.5)
-        if loc_ is not None and d_ > _near and (Vector(co[i]) - loc_).dot(nrm_) > 0:
-            gone[i] = False
+if JOB.get("neck_cone", True):
+    # the figure's own neck and head go by shape, not by colour: everything inside a surface round the body's own
+    # neck (its radius there, measured on the MetaHuman's head mesh, plus a finger's width) that opens out above
+    # the neck's base to take in the jaw, the beard and the head. Whatever colour it is, what lies inside is the
+    # generated head and neck; whatever colour it is, what lies outside is cloth and stays (by colour, a tan
+    # garment lost its collar, shoulders and nape as "skin", and a beard and a ponytail stayed as "cloth")
+    _n1, _hd_ = np.array(J("neck_01")), np.array(J("head"))
+    _ax = (_hd_ - _n1) / np.linalg.norm(_hd_ - _n1)
+    _t = (co - _n1) @ _ax
+    _rr = np.linalg.norm((co - _n1) - _t[:, None] * _ax[None, :], axis=1)
+    _rn = 0.065
+    if HEAD is not None:
+        _hp = np.array([(HEAD.matrix_world @ v_.co)[:] for v_ in HEAD.data.vertices])
+        _ht = (_hp - _n1) @ _ax
+        _hr = np.linalg.norm((_hp - _n1) - _ht[:, None] * _ax[None, :], axis=1)
+        # (mid-neck, between the neck's two joints: at its base the head mesh already spreads over the shoulders
+        # and read 16 cm)
+        _mid = float((np.array(J("neck_02")) - _n1) @ _ax) * 0.75
+        _band = np.abs(_ht - _mid) < 0.012
+        if _band.sum() > 20:
+            _rn = float(min(0.085, np.quantile(_hr[_band], 0.75)))
+    _R = _rn + float(JOB.get("neck_clear_m", 0.02)) + np.maximum(_t, 0.0) * float(JOB.get("neck_cone_slope", 0.9))
+    gone = (_t > (J("clavicle_l").z - 0.02 - _n1[2])) & (_rr < _R)
+    REP["neck_cone"] = {"neck_r_m": round(_rn, 3), "verts": int(gone.sum())}
+else:
+    gone = skin_n & (co[:, 2] > J("clavicle_l").z - 0.02) & (nr < float(JOB.get("neck_tube_m", 0.12)))
+    # the figure's own hair and head left under the collar line (a long face, hair at the nape): dark or skin above
+    # the body's upper neck, near the neck's axis
+    lum_ = col @ np.array([0.3, 0.59, 0.11])
+    gone |= (co[:, 2] > J("neck_02").z - 0.01) & (nr < 0.13) & (skin_n | (lum_ < float(JOB.get("hair_lum_max", 0.22))))
+    if HEAD is not None and gone.any():
+        # only what lies on or inside the MetaHuman's own neck and head: a brown cloth, a dark collar or a tie near the
+        # neck passes the colour tests too
+        from mathutils.bvhtree import BVHTree as _BV  # noqa: E402
+        _hb = _BV.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+        _near = float(JOB.get("neck_skin_near_m", 0.035))
+        for i in np.nonzero(gone)[0]:
+            loc_, nrm_, _, d_ = _hb.find_nearest(Vector(co[i]), 0.5)
+            if loc_ is not None and d_ > _near and (Vector(co[i]) - loc_).dot(nrm_) > 0:
+                gone[i] = False
 # the web: generated figures often join the sleeve's underside to the garment's side well below a real armpit (one
 # sheet of cloth from the elbow up); it stretches into a wing when the arm rises and hides the arm's outline when it
 # falls. Between the height where the arm really comes free (sliced in the front plane, as mesh_gate.py does) and
@@ -560,33 +622,6 @@ if JOB.get("collar_build") and not STATUE:
 # the second vote's colours: a skin-coloured tunic passes any fixed skin test (11-12), so a vertex is skin-like when
 # it is nearer the figure's own skin (its hands: the far end of each arm, past the body's wrist) than its cloth (the
 # chest and back between the armpits, off the neck)
-SKL_SURE = None
-CUFF = {}          # side -> (shoulder, arm axis, cuff station): the body's own forearm shows beyond a short sleeve
-
-
-def _skin_like():
-    global SKL_SURE
-    hm_ = np.zeros(len(co), bool)
-    for s_ in ("l", "r"):
-        S_ = np.array(pose_head(f"upperarm_{s_}"))
-        E_ = np.array(pose_head(f"hand_{s_}"))
-        a_ = (E_ - S_) / np.linalg.norm(E_ - S_)
-        pp = (co - S_) @ a_
-        rr = np.linalg.norm((co - S_) - pp[:, None] * a_[None, :], axis=1)
-        hm_ |= (pp > np.linalg.norm(E_ - S_) + 0.02) & (rr < 0.1)
-    cm_ = ((co[:, 2] > J("spine_03").z) & (co[:, 2] < J("spine_05").z)
-           & (np.abs(co[:, 0] - J("spine_05").x) < 0.12) & (np.abs(co[:, 0] - J("spine_05").x) > 0.04))
-    if hm_.sum() < 30 or cm_.sum() < 30:
-        SKL_SURE = skin
-        return skin, None
-    sk_ref, cl_ref = np.median(col[hm_], 0), np.median(col[cm_], 0)
-    ds_, dc_ = np.linalg.norm(col - sk_ref, axis=1), np.linalg.norm(col - cl_ref, axis=1)
-    like = ds_ < dc_
-    SKL_SURE = ds_ < float(JOB.get("skin_sure_ratio", 0.5)) * dc_      # clearly the skin's colour, not between
-    return like, {"skin": [round(float(x), 3) for x in sk_ref], "cloth": [round(float(x), 3) for x in cl_ref],
-                  "apart": round(float(np.linalg.norm(sk_ref - cl_ref)), 3)}
-
-
 def _limb_edge(S0, E0, sg, tube, step_min, ratio, lo_frac, hi_frac):
     ax_ = E0 - S0
     L_ = float(np.linalg.norm(ax_))
@@ -2296,6 +2331,89 @@ for name, rgb in (("Normal", (0.5, 0.5, 1.0)), ("RMA", (float(JOB.get("roughness
     im.filepath_raw = os.path.join(OUT, "textures", f"T_outfit_{name}.png")
     im.file_format = "PNG"
     im.save()
+# ------------------------------------------------------------------ the neck opening, finished
+# the head and neck of the generated figure were taken out vertex by vertex, by colour: the opening's rim is a
+# sawtooth, scraps of the figure's own head (skin flakes, a beard, a ponytail) float round it, and the cloth is one
+# skin thick, so from behind one looks through it at the neck (seen on every figure, from every side but the front).
+# Here, by shape alone: the scraps round the neck go, the rim is drawn in to an even line, and its edge is turned in
+# and down so the opening has a lip
+if JOB.get("neck_finish", True) and not STATUE:
+    t = time.time()
+    _bm = bmesh.new()
+    _bm.from_mesh(fig.data)
+    _bm.verts.ensure_lookup_table()
+    _sk = None
+    if "body_skin" in fig.data.attributes:
+        _sk = np.zeros(len(fig.data.vertices), np.int32)
+        fig.data.attributes["body_skin"].data.foreach_get("value", _sk)
+    # (the mesh is in the export's units by now, the joints in metres)
+    _u = 100.0 if max(v_.co.z for v_ in _bm.verts) > 20.0 else 1.0
+    _ju = _u if float(J("neck_01").z) < 20.0 else 1.0          # (the joints as they are read here, in either)
+    _nk = np.array(J("neck_01")) * _ju
+    _zc = float(J("clavicle_l").z) * _ju - 0.04 * _u
+
+    def _round_neck(v_):
+        return v_.co.z > _zc and math.hypot(v_.co.x - _nk[0], v_.co.y - _nk[1]) < 0.22 * _u
+
+    _cloth = [v_ for v_ in _bm.verts if _sk is None or _sk[v_.index] == 0]
+    _is_cloth = {v_.index for v_ in _cloth}
+    for v_ in _bm.verts:                     # (a vert's tag stays with it when others are deleted; its index does not)
+        v_.tag = v_.index in _is_cloth
+    # 1. scraps: small pieces of cloth, joined to nothing else, round the neck
+    _seen, _scr = set(), []
+    for v0 in _cloth:
+        if v0.index in _seen:
+            continue
+        comp, stack = [], [v0]
+        _seen.add(v0.index)
+        while stack:
+            v_ = stack.pop()
+            comp.append(v_)
+            for e_ in v_.link_edges:
+                o_ = e_.other_vert(v_)
+                if o_.index not in _seen and o_.index in _is_cloth:
+                    _seen.add(o_.index)
+                    stack.append(o_)
+        if len(comp) < int(JOB.get("neck_scrap_verts", 400)) and any(_round_neck(v_) for v_ in comp):
+            _scr += comp
+    if _scr:
+        bmesh.ops.delete(_bm, geom=_scr, context="VERTS")
+        _bm.verts.ensure_lookup_table()
+    # 2. the rim: the opening's boundary verts drawn toward their neighbours along the rim, then the cloth just
+    # behind them relaxed
+    _rim_e = [e_ for e_ in _bm.edges if len(e_.link_faces) == 1 and all(_round_neck(v_) and v_.tag for v_ in e_.verts)]
+    _rim_s = set(_rim_e)
+    _rim_v = list({v_ for e_ in _rim_e for v_ in e_.verts})
+    _nb = {v_: [e_.other_vert(v_) for e_ in v_.link_edges if e_ in _rim_s] for v_ in _rim_v}
+    for _ in range(int(JOB.get("neck_rim_iters", 30))):
+        new_ = {}
+        for v_, ns in _nb.items():
+            if len(ns) >= 2:
+                new_[v_] = v_.co * 0.5 + sum((n_.co for n_ in ns), Vector()) / len(ns) * 0.5
+        for v_, c_ in new_.items():
+            v_.co = c_
+    _ring = {o_ for v_ in _rim_v for e_ in v_.link_edges for o_ in (e_.other_vert(v_),)} - set(_rim_v)
+    for _ in range(6):
+        new_ = {v_: v_.co * 0.5 + sum((e_.other_vert(v_).co for e_ in v_.link_edges), Vector()) / len(v_.link_edges) * 0.5
+                for v_ in _ring if v_.link_edges}
+        for v_, c_ in new_.items():
+            v_.co = c_
+    # 3. the lip: the rim turned in toward the neck and down
+    _lip = 0
+    if _rim_e:
+        ex = bmesh.ops.extrude_edge_only(_bm, edges=_rim_e)
+        for v_ in (g_ for g_ in ex["geom"] if isinstance(g_, bmesh.types.BMVert)):
+            d_ = Vector((_nk[0] - v_.co.x, _nk[1] - v_.co.y, 0.0))
+            if d_.length > 1e-4:
+                v_.co += d_.normalized() * min(float(JOB.get("neck_lip_in_m", 0.012)) * _u, d_.length * 0.5)
+            v_.co.z -= float(JOB.get("neck_lip_down_m", 0.02)) * _u
+            _lip += 1
+    bmesh.ops.recalc_face_normals(_bm, faces=_bm.faces)
+    _bm.to_mesh(fig.data)
+    _bm.free()
+    fig.data.update()
+    REP["neck_finish"] = {"scrap_verts": len(_scr), "rim_verts": len(_rim_v), "lip_verts": _lip}
+    mark("neck_finish", t)
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "combo.blend"), compress=True)
 # this stance's outfit: the body skin that cloth covers here is cut (combo.blend keeps it all for the stances)
 if "body_skin" in fig.data.attributes:
