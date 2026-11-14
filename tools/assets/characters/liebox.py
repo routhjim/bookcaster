@@ -48,7 +48,29 @@ def glb_points(path: Path) -> np.ndarray:
             o = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
             stride = bv.get("byteStride", 12)
             raw = np.frombuffer(bin_, np.uint8, a["count"] * stride, o).reshape(a["count"], stride)
-            pts.append(raw[:, :12].copy().view(np.float32).reshape(-1, 3) + t)
+            vp = raw[:, :12].copy().view(np.float32).reshape(-1, 3) + t
+            pts.append(vp)
+            # a flat face is its three corners and nothing between: points are added across every face wider than
+            # a cell (a made bed's mattress top was two big triangles, its slats underneath a thousand small ones,
+            # and the lying surface was read off the slats)
+            if "indices" in p:
+                ia = j["accessors"][p["indices"]]
+                ib = j["bufferViews"][ia["bufferView"]]
+                dt = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32}[ia["componentType"]]
+                io = ib.get("byteOffset", 0) + ia.get("byteOffset", 0)
+                idx = np.frombuffer(bin_, dt, ia["count"], io).astype(np.int64).reshape(-1, 3)
+                A_, B_, C_ = vp[idx[:, 0]], vp[idx[:, 1]], vp[idx[:, 2]]
+                edge = np.maximum.reduce([np.linalg.norm(B_ - A_, axis=1), np.linalg.norm(C_ - B_, axis=1),
+                                          np.linalg.norm(A_ - C_, axis=1)])
+                for n_ in range(2, 41):
+                    m_ = (np.ceil(edge / CELL) == n_) if n_ < 40 else (np.ceil(edge / CELL) >= 40)
+                    if not m_.any():
+                        continue
+                    uu, vv = np.meshgrid(np.arange(n_ + 1) / n_, np.arange(n_ + 1) / n_)
+                    k_ = (uu + vv) <= 1.0
+                    uu, vv = uu[k_], vv[k_]
+                    pts.append((A_[m_][:, None, :] * (1 - uu - vv)[None, :, None] + B_[m_][:, None, :] * uu[None, :, None]
+                                + C_[m_][:, None, :] * vv[None, :, None]).reshape(-1, 3).astype(np.float32))
     g = np.concatenate(pts)
     return np.stack([g[:, 0], -g[:, 2], g[:, 1]], 1)        # glTF y-up -> asset x, y, z (front -y)
 
