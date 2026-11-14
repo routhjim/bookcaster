@@ -2165,7 +2165,7 @@ if HAIR is not None and HEAD is not None and HAIR_KEPT:
     hbvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
     HE = float(JOB.get("hair_ease_m", 0.004))
     _moved, _in, _onface = 0, [], []
-    _fhw = 0.5 * _mw * 0.8                                  # the face's own front: between the cheeks, chin to brow
+    _fhw = 0.5 * _mw * 0.95                                 # the face's own front: cheek to cheek, throat to brow
     for i, p_ in enumerate(P):
         loc, nrm, _, dist = hbvh.find_nearest(Vector(p_), 0.08)
         if loc is None:
@@ -2178,7 +2178,7 @@ if HAIR is not None and HEAD is not None and HAIR_KEPT:
             continue
         # on the front of the face and of the throat, up to the brow, there is no hair: the face is the MetaHuman's (a fringe
         # above the brow stays)
-        if nrm.y < -0.5 and abs(loc.x - _cm[0]) < _fhw and _chin_m - 0.10 < loc.z < _chin_m + 0.13 and sd < 0.06:
+        if nrm.y < -0.2 and abs(loc.x - _cm[0]) < _fhw and _chin_m - 0.10 < loc.z < _chin_m + 0.13 and sd < 0.06:
             _onface.append(i)
             continue
         if sd < HE:
