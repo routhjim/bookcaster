@@ -222,6 +222,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
         m = re.match(r"\s*outside\s*:\s*(.+)", str(spec.get("_director_room") or ""), re.I | re.S)
         if m:
             sp["outside"] = m.group(1).strip().rstrip(".")
+        elif str(spec.get("outside") or "").strip():         # (else what the place spec says is seen outside it)
+            sp["outside"] = str(spec["outside"]).strip().rstrip(".")
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare")}
     return sp
 
@@ -394,7 +396,7 @@ def with_crowd(spec: dict) -> dict:
     # (the director's own line for the place's crowd says who they are and what they wear; each of its groups one term)
     terms = [t.strip().rstrip(".") for t in re.split(r",| and ", str(spec.get("_director_crowd") or spec.get("crowd") or ""))
              if len(t.strip()) > 3]
-    rk = json.loads((HERE / "room_kinds.json").read_text())["room_kinds"]
+    rk = L.load_data()["room_kinds"]
     size = (rk.get(spec.get("kind")) or {}).get("sizes_m", {}).get(spec.get("size"))
     n = min(CROWD_MAX, int((size[0] * size[1]) // CROWD_M2)) if terms and size else 0
     if not n:

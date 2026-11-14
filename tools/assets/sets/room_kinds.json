@@ -744,5 +744,17 @@
     "vehicle_cabin"
    ]
   }
+ },
+ "room_kinds_like": {
+  "dining_room": "sitting_room",
+  "parlour": "sitting_room",
+  "cottage_room": "sitting_room",
+  "office": "study",
+  "library": "study",
+  "bar_room": "hall",
+  "shop": "hall",
+  "corridor": "hall",
+  "cell": "bedroom",
+  "attic": "bedroom"
  }
 }

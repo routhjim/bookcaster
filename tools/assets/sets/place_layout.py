@@ -43,7 +43,13 @@ DEFAULT_SIZE = [0.6, 0.6, 0.8]
 
 
 def load_data(path=None) -> dict:
-    return json.loads(Path(path or DATA).read_text())
+    d = json.loads(Path(path or DATA).read_text())
+    # a kind of room with no rules of its own is laid out as the kind it is most like ("room_kinds_like": a dining
+    # room as a sitting room): the director may name any kind, and a set is built for every one
+    for k, base in (d.get("room_kinds_like") or {}).items():
+        if k not in d["room_kinds"] and base in d["room_kinds"]:
+            d["room_kinds"][k] = d["room_kinds"][base]
+    return d
 
 
 # a kind the layout has no rule for stands where its piece record says (places/piece_kinds.json "placement"):

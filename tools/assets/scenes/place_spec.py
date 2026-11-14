@@ -85,6 +85,8 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         'story\'s people carry; no weather or sky; nothing seen outside it>, '
         '"fixtures": [<2 to 5 short names of things built into this place a viewer must see in every wide picture>], '
         '"crowd": <the unnamed people always there, or "" when none>, '
+        '"outside": <one phrase: what is seen outside this place, through its windows or canopy, as the text and the '
+        'shot lines tell it; "" when they say nothing of it>, '
         '"schema": "place_spec/1", "place": <the place name>, "kind": <one of ROOM_KINDS>, '
         '"period": <one of PERIODS or "not stated">, "size": <one of SIZES>, '
         '"openings": [{"id": "o1", "kind": <window|door|fireplace>, "wall": <north|south|east|west|not stated>, '

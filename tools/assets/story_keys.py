@@ -100,7 +100,8 @@ def llm(jid: str, logf: Path, cmds: list) -> int:
     lines = ["#!/bin/bash", f"cd {HERE.parents[1]}", "S=0",
              f"if ! systemctl --user is-active -q strata-eval; then {VENV_PY} -c \"{LLM_UP}\" || exit 1; S=1; fi",
              "trap '[ $S = 1 ] && systemctl --user stop strata-eval' EXIT", "RC=0"]
-    lines += [" ".join(f"'{a}'" for a in map(str, c)) + " || RC=1" for c in cmds]
+    import shlex
+    lines += [" ".join(shlex.quote(str(a)) for a in c) + " || RC=1" for c in cmds]     # (a place's name may hold a quote)
     lines += ["[ $S = 1 ] && systemctl --user stop strata-eval", "exit $RC"]
     script.write_text("\n".join(lines) + "\n")
     return line("igpu", "llm", jid, logf, ["bash", str(script)])
