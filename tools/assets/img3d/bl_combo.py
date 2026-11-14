@@ -2164,13 +2164,35 @@ if HAIR is not None and HEAD is not None and HAIR_KEPT:
     P = _cm + (P - _cd) * _s
     hbvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
     HE = float(JOB.get("hair_ease_m", 0.004))
-    _moved = 0
+    _moved, _in, _onface = 0, [], []
+    _fhw = 0.5 * _mw * 0.8                                  # the face's own front: between the cheeks, chin to brow
     for i, p_ in enumerate(P):
         loc, nrm, _, dist = hbvh.find_nearest(Vector(p_), 0.08)
-        if loc is not None and (Vector(p_) - loc).dot(nrm) < HE:
+        if loc is None:
+            continue
+        sd = (Vector(p_) - loc).dot(nrm)
+        # deep inside the head: the generated head's inner faces (its mouth, the back of its face), not hair; moved
+        # out to the skin they lay across the lips like a strap (11-14)
+        if sd < -float(JOB.get("hair_inside_m", 0.008)):
+            _in.append(i)
+            continue
+        # on the front of the face and of the throat, up to the brow, there is no hair: the face is the MetaHuman's (a fringe
+        # above the brow stays)
+        if nrm.y < -0.5 and abs(loc.x - _cm[0]) < _fhw and _chin_m - 0.10 < loc.z < _chin_m + 0.13 and sd < 0.06:
+            _onface.append(i)
+            continue
+        if sd < HE:
             P[i] = np.array(loc) + np.array(nrm) * HE
             _moved += 1
     HAIR.data.vertices.foreach_set("co", P.ravel())
+    if _in or _onface:
+        hb = bmesh.new()
+        hb.from_mesh(HAIR.data)
+        hb.verts.ensure_lookup_table()
+        bmesh.ops.delete(hb, geom=[hb.verts[i] for i in set(_in + _onface)], context="VERTS")
+        hb.to_mesh(HAIR.data)
+        hb.free()
+        P = np.array([v.co[:] for v in HAIR.data.vertices])
     HAIR.vertex_groups.clear()
     hg, sg_ = HAIR.vertex_groups.new(name="head"), HAIR.vertex_groups.new(name="spine_05")
     _nz = float(J("neck_01").z)
@@ -2180,12 +2202,13 @@ if HAIR is not None and HEAD is not None and HAIR_KEPT:
         if w_ > 0:
             sg_.add([i], w_, "REPLACE")
     REP["hair_kept"] = {"verts": int(len(P)), "scale": round(_s, 3), "shift_m": [round(float(v), 3) for v in (_cm - _cd)],
-                        "moved_off_the_head": _moved, "lowest_z_m": round(float(P[:, 2].min()), 3),
+                        "moved_off_the_head": _moved, "inside_the_head_dropped": len(_in),
+                        "on_the_face_dropped": len(_onface), "lowest_z_m": round(float(P[:, 2].min()), 3),
                         "face_width_m": {"drawn": round(_dw, 3), "metahuman": round(_mw, 3)}}
     _ka = HAIR.data.attributes.new("kept_hair", "INT", "POINT")      # (told from the garment after the join)
     _ka.data.foreach_set("value", [1] * len(HAIR.data.vertices))
     if JOB.get("hair_debug_npz"):
-        np.savez_compressed(JOB["hair_debug_npz"], hair=P, head=hv)
+        np.savez_compressed(JOB["hair_debug_npz"], hair=np.array([v.co[:] for v in HAIR.data.vertices]), head=hv)
     bpy.ops.object.select_all(action="DESELECT")
     fig.select_set(True)
     HAIR.select_set(True)
