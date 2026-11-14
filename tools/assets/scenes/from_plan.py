@@ -445,9 +445,16 @@ def main():
             stated = set_named.get(p.get("at") or "")
             if ans:
                 thing = next((t for t in things if t["name"] == ans.get("thing")), thing)
-            elif stated == "floor":                  # the open floor: the room's middle, wherever it is free
-                thing = {"name": "floor", "kind": "floor", "center": [0.0, 0.0], "half": [0.0, 0.0]}
-                f["defaults"].append(f"{k}: on the open floor (the room's middle)")
+            elif stated == "floor":
+                # the open floor: a few steps from where the shot's other people are (their own named things, or
+                # where they already stand), else the room's middle. In a hangar the middle of the floor was 23 m
+                # from the man at the workbench, and no wide shot held the two of them
+                oth = [t_["center"][:2] for q_ in sh.get("people") or [] if q_.get("name") != p.get("name")
+                       for t_ in things if t_["name"] == set_named.get(q_.get("at") or "")]
+                oth += [v_["position"][:2] for kk, v_ in state.items() if kk != k and v_.get("position")]
+                c_ = [sum(o[0] for o in oth) / len(oth), sum(o[1] for o in oth) / len(oth)] if oth else [0.0, 0.0]
+                thing = {"name": "floor", "kind": "floor", "center": c_, "half": [0.0, 0.0], "with": bool(oth)}
+                f["defaults"].append(f"{k}: on the open floor ({'near the others' if oth else 'the middle of the room'})")
             elif stated:
                 thing = next((t for t in things if t["name"] == stated), thing)
                 f["defaults"].append(f"{k}: place from the set's named places ({stated})")
@@ -484,7 +491,8 @@ def main():
                     near = (0.5, 0.9)
                 else:
                     tgt = (thing or {}).get("center") or [0, 0]
-                    near = (0.0, 1.6) if (thing or {}).get("kind") == "floor" else (0.6, 1.6)
+                    near = ((2.0, 5.0) if thing.get("with") else (0.0, 1.6)) if (thing or {}).get("kind") == "floor" \
+                        else (0.6, 1.6)
                 others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
                 entry.update(seat=None, position=free_mark(tgt, others, things, room, near))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
