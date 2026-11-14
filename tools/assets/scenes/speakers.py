@@ -1486,7 +1486,8 @@ def main():
             if not chk["ok"] and rnd < a.rounds and max(abs(e) for e in chk.get("error_m", [0])) > 0.01:
                 nud = [st["nudge"][0] + chk["error_m"][0], st["nudge"][1] + chk["error_m"][1]]
                 c0 = {kk: vv for kk, vv in spec["characters"][k].items() if kk != "_seat"}
-                spec["characters"][k] = seating.place(c0, seat_plan["seats"][n], st["fit"], st["x"], nud)
+                spec["characters"][k] = seating.place(c0, seat_plan["seats"][n], st["fit"], st["x"], nud,
+                                                         st.get("turn", 0.0))
                 spec["characters"][k]["_seat"]["fit"] = st["fit"]
                 moved = True
         if moved:

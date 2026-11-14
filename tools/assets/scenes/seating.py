@@ -97,8 +97,26 @@ def is_seated(c: dict) -> bool:
     return "sit" in p or "seat" in p
 
 
-def place(c: dict, seat: dict, fitd: dict, place_x: float | None = None, nudge=(0.0, 0.0)) -> dict:
-    """The character spec with position, facing and seat params from the seat block (nudge: seat-frame metres)."""
+SEAT_TURN_DEG = 30.0         # how far a sitter on an open seat turns out of the seat's front toward whom they face
+
+
+def turn_for(c: dict, seat: dict, chars: dict) -> float:
+    """Degrees a sitter turns out of the seat's front toward the person they face ("facing_to"), at most
+    SEAT_TURN_DEG either way. Only on a seat open at the sides (a bed's edge, a bench): between arm rests, or inside
+    a cabin, the sitter stays square. Two people seated square to the room read as a line-up (11-13)."""
+    b, t = seat["box"], chars.get(c.get("facing_to") or "")
+    if not t or t is c or b.get("arm_z_m") or b.get("inside"):
+        return 0.0
+    d = [t["position"][0] - c["position"][0], t["position"][1] - c["position"][1]]
+    if math.hypot(*d) < 0.2:
+        return 0.0
+    a = (_ang(d) - _ang(seat["front"]) + 180.0) % 360.0 - 180.0
+    return round(max(-SEAT_TURN_DEG, min(SEAT_TURN_DEG, a)), 1)
+
+
+def place(c: dict, seat: dict, fitd: dict, place_x: float | None = None, nudge=(0.0, 0.0), turn: float = 0.0) -> dict:
+    """The character spec with position, facing and seat params from the seat block (nudge: seat-frame metres;
+    turn: degrees out of the seat's front, see turn_for)."""
     b = seat["box"]
     xs = b.get("places") or [0.0]
     x = place_x if place_x is not None else min(xs, key=abs)
@@ -106,7 +124,8 @@ def place(c: dict, seat: dict, fitd: dict, place_x: float | None = None, nudge=(
     p = to_world(seat, [x + nudge[0], y + nudge[1]])
     out = dict(c)
     out["position"] = [round(p[0], 3), round(p[1], 3)]
-    out["facing"] = [round(seat["front"][0], 4), round(seat["front"][1], 4)]
+    fr = _rot(seat["front"], turn) if turn else seat["front"]
+    out["facing"] = [round(fr[0], 4), round(fr[1], 4)]
     bp = dict(out.get("body_pose") or {})
     pr = dict(bp.get("params") or {})
     pr["seat_z_m"] = b["seat_z_m"]
@@ -116,7 +135,7 @@ def place(c: dict, seat: dict, fitd: dict, place_x: float | None = None, nudge=(
         pr["arm_x_m"] = round(half_in + 0.05, 3)        # forearms on the arm rests, just outside their inner faces
     bp["params"] = pr
     out["body_pose"] = bp
-    out["_seat"] = {"name": seat.get("name"), "x": x, "nudge": list(nudge)}
+    out["_seat"] = {"name": seat.get("name"), "x": x, "nudge": list(nudge), "turn": turn}
     if b.get("inside"):                       # seated inside an enclosure (a cabin): the cameras work inside it
         out["_inside"] = True
     return out
@@ -255,4 +274,12 @@ def plan(spec: dict, library: Path) -> dict:
             break
         else:
             raise SystemExit(f"{k}: no seat in the set fits (hips and dress {fitd['hip_half_m'] * 2:.2f} m across)")
+    for k, n in taken.items():                   # once everyone has a place: sitters turned to whom they face
+        c = spec["characters"][k]
+        tn = turn_for(c, S[n], spec["characters"])
+        if tn:
+            st = c["_seat"]
+            c0 = {kk: vv for kk, vv in c.items() if kk != "_seat"}
+            spec["characters"][k] = place(c0, S[n], st["fit"], st["x"], st["nudge"], tn)
+            spec["characters"][k]["_seat"].update({kk: vv for kk, vv in st.items() if kk in ("fit", "note")})
     return {"taken": taken, "seats": S}

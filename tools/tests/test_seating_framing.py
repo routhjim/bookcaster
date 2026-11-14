@@ -80,3 +80,17 @@ def test_frame_facts_cut_at_side():
     f = speakers.frame_facts(cam, side, (1152, 640))
     assert f["cut"] and "right" in f["cut_edges"]
     assert math.isfinite(f["in_frac"])
+
+
+def test_sitters_on_an_open_seat_turn_to_whom_they_face():
+    edge = {"front": [0.0, -1.0], "rot": 0.0, "pos": [0.0, 0.0], "box": {"back_y_m": 0.3, "front_y_m": -0.3, "seat_z_m": 0.45, "inner_x_m": [-1.0, 1.0]}}
+    chars = {"a": {"position": [-0.5, 0.0], "facing_to": "b"}, "b": {"position": [0.5, 0.0], "facing_to": "a"},
+             "c": {"position": [0.0, -3.0], "facing_to": "a"}}
+    ta, tb = seating.turn_for(chars["a"], edge, chars), seating.turn_for(chars["b"], edge, chars)
+    assert ta == seating.SEAT_TURN_DEG and tb == -seating.SEAT_TURN_DEG        # side by side: each toward the other
+    facing = seating.place(chars["a"], edge, {"hip_back_m": 0.1}, turn=ta)["facing"]
+    assert facing[0] > 0.4 and facing[1] < -0.8                                # still mostly out of the seat's front
+    assert seating.turn_for(dict(chars["a"], facing_to="c"), dict(edge, front=[0.0, -1.0]), chars) < 15   # one ahead
+    arms = dict(edge, box=dict(edge["box"], arm_z_m=0.65))
+    assert seating.turn_for(chars["a"], arms, chars) == 0.0                    # between arm rests: square
+    assert seating.turn_for({"position": [0, 0]}, edge, chars) == 0.0          # nobody faced: square
