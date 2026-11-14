@@ -487,7 +487,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             xs = [q[0] for q in pr if q and q[1] < 1.0]
             if xs and not (min(xs) > 1.10 or max(xs) < -0.10 or (min(xs) > 0.05 and max(xs) < 0.95)):
                 why.append(f"{k} near the edge of a single")
-    if not speaker and shot is not None:     # no one speaks: the people are the picture, not its two edges
+    if not speaker and (shot is not None or not opts.get("points")):     # no one speaks: the people are the picture, not its two edges (asked of a camera before
+        # it is rendered too: the search took near cameras that the render then failed for this, 15 rounds, 11-13)
         xs = []
         for k, f in facts.items():
             if not in_picture(f):
