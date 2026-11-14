@@ -198,7 +198,7 @@ The shots:
 {shots}
 
 Answer with one JSON object and nothing else: {{"<shot id>": "<what is seen outside>", ...}} with every shot id."""
-VIEWS_MOST = 6
+VIEWS_MOST = 8
 
 
 def views(plan: dict, ids: list, place: str, outside: str, url: str, cache: Path) -> dict:
@@ -209,19 +209,22 @@ def views(plan: dict, ids: list, place: str, outside: str, url: str, cache: Path
                       for i in ids)
     base = VIEWS_ASK.format(place=place, outside=outside, most=VIEWS_MOST, shots=lines)
     text = base
-    for _ in range(2):
+    for n in range(2):
         got = parse(ask(url, text, cache))
-        bad = []
+        bad, many = [], False
         if not isinstance(got, dict):
             bad.append("the answer was not one JSON object")
         else:
             miss = [i for i in ids if not str(got.get(i) or "").strip()]
             if miss:
                 bad.append("these shot ids have no description: " + ", ".join(miss[:8]))
-            if len({str(v).strip() for v in got.values()}) > VIEWS_MOST:
-                bad.append(f"more than {VIEWS_MOST} different descriptions")
-        if not bad:
+            many = len({str(v).strip() for v in got.values()}) > VIEWS_MOST
+        # (too many descriptions is asked about once, then taken as it is: a whole answer one view over the count
+        # was thrown away twice and the canopy kept its single picture, 11-14)
+        if not bad and (not many or n):
             return {i: str(got[i]).strip().rstrip(".") for i in ids}
+        if many:
+            bad.append(f"more than {VIEWS_MOST} different descriptions")
         text = base + "\n\nYour previous answer:\n" + json.dumps(got) + "\nIt had these faults; answer again:\n" + \
             "\n".join(f"- {b}" for b in bad)
     return {}
