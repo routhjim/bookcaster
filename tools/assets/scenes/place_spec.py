@@ -217,6 +217,7 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     # the director's own set-sheet line for the place, as the plan carries it (what lies outside a vehicle's cabin
     # is said there and nowhere else)
     out["_director_room"] = next((plan[i][0].get("room") for i in ids if plan[i][0].get("room")), "")
+    out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
     if faults:
         out["_faults"] = faults
     return out, base

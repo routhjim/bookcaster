@@ -391,7 +391,9 @@ def with_crowd(spec: dict) -> dict:
     """The director's crowd of the place as a few standing figures: made like any piece (drawn from the crowd's own
     words, shaped, stood on the free floor), with no rig and no likeness to keep. Nobody of the cast is among them;
     the keys' pictures fill the rest of the crowd in behind (redraw.py)."""
-    terms = [t.strip() for t in re.split(r",| and ", str(spec.get("crowd") or "")) if t.strip()]
+    # (the director's own line for the place's crowd says who they are and what they wear; each of its groups one term)
+    terms = [t.strip().rstrip(".") for t in re.split(r",| and ", str(spec.get("_director_crowd") or spec.get("crowd") or ""))
+             if len(t.strip()) > 3]
     rk = json.loads((HERE / "room_kinds.json").read_text())["room_kinds"]
     size = (rk.get(spec.get("kind")) or {}).get("sizes_m", {}).get(spec.get("size"))
     n = min(CROWD_MAX, int((size[0] * size[1]) // CROWD_M2)) if terms and size else 0
@@ -404,7 +406,7 @@ def with_crowd(spec: dict) -> dict:
         who = "one of them" if i < len(terms) else "another of them, unlike the first"
         sp.setdefault("pieces", []).append({
             "id": f"x{i + 1}", "kind": "bystander", "against": "free", "phrases": [],
-            "look": f"the {t} of a {period} place, {who}: a single person standing at ease, the whole figure "
+            "look": f"{t[0].lower() + t[1:]} ({period}), {who}: a single person standing at ease, the whole figure "
                     "from head to feet"})
     return sp
 
@@ -418,8 +420,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
-    if str(spec.get("crowd") or "").strip():                 # the director's crowd of the place: drawn, never built
-        out["crowd"] = spec["crowd"].strip()
+    if str(spec.get("_director_crowd") or spec.get("crowd") or "").strip():      # the place's crowd, in the director's words
+        out["crowd"] = str(spec.get("_director_crowd") or spec["crowd"]).strip()
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
     if bare and out.get("structure"):
         mats = json.loads(json.dumps(out["materials"]))
