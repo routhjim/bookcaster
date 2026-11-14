@@ -445,6 +445,9 @@ def main():
             stated = set_named.get(p.get("at") or "")
             if ans:
                 thing = next((t for t in things if t["name"] == ans.get("thing")), thing)
+            elif stated == "floor":                  # the open floor: the room's middle, wherever it is free
+                thing = {"name": "floor", "kind": "floor", "center": [0.0, 0.0], "half": [0.0, 0.0]}
+                f["defaults"].append(f"{k}: on the open floor (the room's middle)")
             elif stated:
                 thing = next((t for t in things if t["name"] == stated), thing)
                 f["defaults"].append(f"{k}: place from the set's named places ({stated})")
@@ -481,7 +484,7 @@ def main():
                     near = (0.5, 0.9)
                 else:
                     tgt = (thing or {}).get("center") or [0, 0]
-                    near = (0.6, 1.6)
+                    near = (0.0, 1.6) if (thing or {}).get("kind") == "floor" else (0.6, 1.6)
                 others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
                 entry.update(seat=None, position=free_mark(tgt, others, things, room, near))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's

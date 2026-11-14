@@ -92,11 +92,13 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         '"pieces": [{"id": "p1", "kind": <one of PIECE_KINDS>, "look": <one line: material, colour, condition, style>, '
         '"phrases": [<the place phrases this piece answers to, verbatim>], "against": <wall|opening:<id>|free|not stated>}], '
         '"relations": [{"a": <id>, "rel": <one of RELATIONS>, "b": <id>}], '
-        '"named_places": {<each place phrase verbatim>: <a piece or opening id>}}\n'
+        '"named_places": {<each place phrase verbatim>: <a piece or opening id, or "floor">}}\n'
         f"ROOM_KINDS: {', '.join(k['ROOM_KINDS'])}\nPERIODS: {', '.join(k['PERIODS'])}\nSIZES: {', '.join(k['SIZES'])}\n"
         f"PIECE_KINDS: {', '.join(k['PIECE_KINDS'])}\nRELATIONS: {', '.join(k['RELATIONS'])}\n"
         "Include every piece a place phrase or shot line names, and the usual furnishing of such a room. Relations "
-        "only where the text states them. A named_places value is always a piece or opening id, never \"not stated\": "
+        "only where the text states them. A phrase that names the open floor itself and no thing (the middle of "
+        "the room, the centre of the floor) has the named_places value \"floor\": no piece is ever made up to stand "
+        "for a part of the floor. Otherwise a named_places value is always a piece or opening id, never \"not stated\": "
         "when a phrase names a thing whose position the text does not give, list that thing as an opening or piece "
         "anyway and write \"not stated\" only in its wall or against field. Write the JSON only, nothing else.")
 
@@ -151,7 +153,7 @@ def validate(spec, phr: list) -> list:
     for ph in phr:
         if ph not in np:
             f.append(f'the place phrase "{ph}" is missing from named_places')
-        elif np[ph] not in ids:
+        elif np[ph] not in ids and np[ph] != "floor":
             f.append(f'named_places["{ph}"] is {np[ph]!r}, not a known piece or opening id: list the thing this '
                      'phrase names as an opening or piece (its position may be "not stated") and map the phrase to its id')
     return f

@@ -1017,7 +1017,7 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
                 unmet.append(f"relation not checked (an end is not placed): {rel_words(ctx, r)}")
         unmet += path_problems(ctx, placed)
     for phrase, i in (spec.get("named_places") or {}).items():
-        if i not in placed and i not in ctx.by_id:
+        if i not in placed and i not in ctx.by_id and i != "floor":      # ("floor": the open floor, no piece)
             unmet.append(f"named place {phrase!r}: {i} is not in the room")
     pks = pc.pockets(ctx, placed, ctx.R, stand_point)
     if solved:
