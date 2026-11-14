@@ -284,7 +284,13 @@ def plan(spec: dict, library: Path) -> dict:
     for k, n in taken.items():                   # once everyone has a place: sitters turned to whom they face
         c = spec["characters"][k]
         st = c["_seat"]
-        tn = turn_for(dict(c, facing=st.get("asked_facing")), S[n], spec["characters"])
+        ask = dict(c, facing=st.get("asked_facing"))
+        if not c.get("facing_to") and math.hypot(*(st.get("asked_facing") or [0.0, 0.0])) < 0.2:
+            # no facing from the plan: someone sharing the seat is whom they sit with
+            mates = [kk for kk, nn in taken.items() if nn == n and kk != k]
+            if mates:
+                ask["facing_to"] = min(mates, key=lambda kk: math.dist(spec["characters"][kk]["position"], c["position"]))
+        tn = turn_for(ask, S[n], spec["characters"])
         if tn:
             c0 = {kk: vv for kk, vv in c.items() if kk != "_seat"}
             spec["characters"][k] = place(c0, S[n], st["fit"], st["x"], st["nudge"], tn)
