@@ -333,6 +333,17 @@ def character_actor(key):
         for gc in a.get_components_by_class(unreal.GroomComponent):
             gc.set_visibility(False, True)
         note(f"{key}: MetaHuman face and grooms hidden (pure figure)")
+    if spec.get("hide_hair") and not hide_face:
+        # the figure wears its own drawn hair (the fit kept it on the head): the MetaHuman's hair groom is not drawn;
+        # its brows, lashes and beard are
+        gone_ = []
+        for gc in a.get_components_by_class(unreal.GroomComponent):
+            nm = gc.get_name().lower()
+            if "hair" in nm and "facial" not in nm:
+                gc.set_visibility(False, True)
+                gone_.append(gc.get_name())
+        note(f"{key}: hair groom hidden (the figure's own hair): {gone_}; grooms: "
+             f"{[g.get_name() for g in a.get_components_by_class(unreal.GroomComponent)]}")
     if spec.get("body_swap"):
         followers.append(add_follower(a, body, spec["body_swap"], "body_swap", skin=True))
     if spec.get("body_swap") or spec.get("hide_body"):

@@ -120,6 +120,7 @@ def resolve(spec, cams_wanted=None):
                       "wear_add": c.get("wear_add"), "face_covered": bool(c.get("face_covered")),
                       "body_swap": cj.get("body_swap"), "hide_body": bool(cj.get("hide_body")),
                       "hide_face": bool(cj.get("hide_face")),       # a whole generated figure: no face mesh shown
+                      "hide_hair": bool(cj.get("hide_hair")),       # the figure wears its own drawn hair
                       "rebuild_from": cj.get("rebuild_from"),
                       "garment_material": cj.get("garment_material"),
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),

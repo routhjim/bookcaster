@@ -233,6 +233,7 @@ co = co.reshape(-1, 3)
 # coordinates turned to these. Told by colour alone, brown hair passed as skin, a ponytail and a beard counted as a
 # collar (and the collar was lifted to the jaw for it), and a tan garment was eaten away as skin.
 LAB_GROUP = None           # per vertex: 0 unknown, 1 hair (and a hat), 2 face, 3 bare skin, 4 garment
+LAB_RAW = None             # per vertex: the parser's own class (2 head hair, 1 face, 18 facial hair, ...)
 if JOB.get("labels") and os.path.exists(JOB["labels"]):
     from mathutils.kdtree import KDTree as _KD
     _lz = np.load(JOB["labels"], allow_pickle=False)
@@ -244,6 +245,7 @@ if JOB.get("labels") and os.path.exists(JOB["labels"]):
     _kd.balance()
     _near = np.array([_kd.find(_q)[1:] for _q in co])
     LAB_GROUP = _lz["groups"][_near[:, 0].astype(int)]
+    LAB_RAW = _lz["labels"][_near[:, 0].astype(int)]
     REP["labels"] = {"from": JOB["labels"], "max_gap_m": round(float(_near[:, 1].max()), 4),
                      "hair": int((LAB_GROUP == 1).sum()), "face": int((LAB_GROUP == 2).sum()),
                      "skin": int((LAB_GROUP == 3).sum()), "garment": int((LAB_GROUP == 4).sum())}
@@ -880,7 +882,54 @@ if not JOB.get("keep_figure_hands"):
 tilt = math.radians(float(JOB.get("collar_tilt_deg", 20)))
 above = (co[:, 2] - cut_z) * math.cos(tilt) - (co[:, 1] - J("neck_01").y) * math.sin(tilt) > 0
 HAIR = None
-if JOB.get("hair_cap", True):
+HAIR_KEPT = False
+if LAB_RAW is not None and JOB.get("hair_keep", True) and HEAD is not None and (LAB_RAW == 2).sum() > 500 \
+        and (LAB_RAW == 1).sum() > 100:
+    # the figure's own hair, kept (the parser's labels say which of it is head hair): the MetaHuman's grooms have
+    # no long hair worn back, no plait, no child's mop, and a woman drawn with long dark hair stood in the engine
+    # with a crop (11-14). Cut out here as its own piece, before the head goes; set on the MetaHuman's head below.
+    _hm = LAB_RAW == 2
+    _nk_k = np.array(J("neck_01"))
+    HAIR = fig.copy()
+    HAIR.data = fig.data.copy()
+    bpy.context.scene.collection.objects.link(HAIR)
+    hb = bmesh.new()
+    hb.from_mesh(HAIR.data)
+    hb.verts.ensure_lookup_table()
+    bmesh.ops.delete(hb, geom=[hb.verts[i] for i in np.nonzero(~_hm)[0]], context="VERTS")
+    # only hair that hangs from the head: each joined piece of it must reach above the neck's base (a dark patch
+    # on a chest pocket labelled hair is not the head's)
+    hb.verts.ensure_lookup_table()
+    _seen, _drop = set(), []
+    for v0 in hb.verts:
+        if v0.index in _seen:
+            continue
+        _isl, _st = [], [v0]
+        _seen.add(v0.index)
+        while _st:
+            v_ = _st.pop()
+            _isl.append(v_)
+            for e_ in v_.link_edges:
+                w_ = e_.other_vert(v_)
+                if w_.index not in _seen:
+                    _seen.add(w_.index)
+                    _st.append(w_)
+        if max(v_.co.z for v_ in _isl) < _nk_k[2] + 0.02:
+            _drop += _isl
+    if _drop:
+        bmesh.ops.delete(hb, geom=_drop, context="VERTS")
+    hb.to_mesh(HAIR.data)
+    hb.free()
+    # the drawn face: where the drawn head is, and how wide (the face labels on the head itself: above the neck's
+    # base, within a head's width of its axis)
+    _fm = (LAB_RAW == 1) & (co[:, 2] > _nk_k[2]) & (np.abs(co[:, 0] - _nk_k[0]) < 0.14)
+    _fc = co[_fm] if _fm.sum() > 100 else co[LAB_RAW == 1]
+    HAIR["face_x"] = [float(np.quantile(_fc[:, 0], 0.02)), float(np.quantile(_fc[:, 0], 0.98))]
+    HAIR["face_front_y"] = float(np.quantile(_fc[:, 1], 0.03))
+    HAIR["chin_z"] = float(np.quantile(_fc[:, 2], 0.02))
+    HAIR["face_top_z"] = float(np.quantile(_fc[:, 2], 0.98))
+    HAIR_KEPT = True
+elif JOB.get("hair_cap", True):
     # the figure's own hair, kept for the back and sides of the head (dark, not skin, above the collar line)
     lum = col @ np.array([0.3, 0.59, 0.11])
     hair = above & ~skin & (lum < float(JOB.get("hair_lum_max", 0.22)))
@@ -2077,7 +2126,54 @@ mark("hands", t)
 
 # ------------------------------------------------------------------ 6. this pose becomes the rest pose; join; export
 t = time.time()
-if HAIR is not None and HEAD is not None:
+if HAIR is not None and HEAD is not None and HAIR_KEPT:
+    # the kept hair set on the MetaHuman's head: the drawn head's place and size (from the drawn face: its middle,
+    # its front, its chin, its width) onto the MetaHuman head's own, one scale and one shift for the whole piece;
+    # then whatever of it lies inside the skull or the neck is moved out to just off the skin. It keeps its own
+    # volume and its own colours. On the head it follows the head; hair hanging below the neck's base follows the
+    # upper back more the lower it hangs.
+    hv = np.array([HEAD.matrix_world @ v.co for v in HEAD.data.vertices])
+    _hz = float(J("head").z)
+    _chin_m = (REP.get("collar_height") or {}).get("chin_z") or _hz - 0.03
+    _fz0, _fz1 = HAIR["chin_z"], HAIR["face_top_z"]
+    # the MetaHuman's face over the same share of its head: its width and front at cheek height
+    _cheek = hv[(hv[:, 2] > _chin_m + 0.05) & (hv[:, 2] < _chin_m + 0.11)]
+    _mw = float(np.quantile(_cheek[:, 0], 0.98) - np.quantile(_cheek[:, 0], 0.02)) if len(_cheek) > 50 else 0.15
+    _dw = max(0.08, HAIR["face_x"][1] - HAIR["face_x"][0])
+    _s = float(min(1.2, max(0.85, _mw / _dw)))
+    _cd = np.array([sum(HAIR["face_x"]) / 2, HAIR["face_front_y"], _fz0])
+    _cm = np.array([float(np.median(_cheek[:, 0])) if len(_cheek) > 50 else float(J("head").x),
+                    float(np.quantile(_cheek[:, 1], 0.03)) if len(_cheek) > 50 else float(J("head").y) - 0.09, _chin_m])
+    P = np.array([v.co[:] for v in HAIR.data.vertices])
+    P = _cm + (P - _cd) * _s
+    hbvh = BVHTree.FromObject(HEAD, bpy.context.evaluated_depsgraph_get())
+    HE = float(JOB.get("hair_ease_m", 0.004))
+    _moved = 0
+    for i, p_ in enumerate(P):
+        loc, nrm, _, dist = hbvh.find_nearest(Vector(p_), 0.08)
+        if loc is not None and (Vector(p_) - loc).dot(nrm) < HE:
+            P[i] = np.array(loc) + np.array(nrm) * HE
+            _moved += 1
+    HAIR.data.vertices.foreach_set("co", P.ravel())
+    HAIR.vertex_groups.clear()
+    hg, sg_ = HAIR.vertex_groups.new(name="head"), HAIR.vertex_groups.new(name="spine_05")
+    _nz = float(J("neck_01").z)
+    for i, p_ in enumerate(P):
+        w_ = float(min(1.0, max(0.0, (_nz - p_[2]) / 0.12)))            # 0 at the neck's base, 1 a hand lower
+        hg.add([i], 1.0 - w_, "REPLACE")
+        if w_ > 0:
+            sg_.add([i], w_, "REPLACE")
+    REP["hair_kept"] = {"verts": int(len(P)), "scale": round(_s, 3), "shift_m": [round(float(v), 3) for v in (_cm - _cd)],
+                        "moved_off_the_head": _moved, "lowest_z_m": round(float(P[:, 2].min()), 3),
+                        "face_width_m": {"drawn": round(_dw, 3), "metahuman": round(_mw, 3)}}
+    if JOB.get("hair_debug_npz"):
+        np.savez_compressed(JOB["hair_debug_npz"], hair=P, head=hv)
+    bpy.ops.object.select_all(action="DESELECT")
+    fig.select_set(True)
+    HAIR.select_set(True)
+    bpy.context.view_layer.objects.active = fig
+    bpy.ops.object.join()
+elif HAIR is not None and HEAD is not None:
     # fit the figure's hair cap to the head: its head box (above the collar line) onto the head mesh's box above
     # the neck, then out of the head by HAIR_EASE; the front (forehead and face) is dropped so the head's own
     # hairline shows; it follows the head bone rigidly
@@ -2266,7 +2362,7 @@ if not STATUE and HEAD is not None and JOB.get("liner", True):
                 me_l.attributes.remove(a_)
         me_l.materials.clear()
         REP["liner"] = {"covered": int(cov.sum()), "verts": len(me_l.vertices), "s": round(time.time() - t_l, 2)}
-if not STATUE and HEAD is not None and JOB.get("strip_hair", True):
+if not STATUE and HEAD is not None and JOB.get("strip_hair", True) and LAB_GROUP is None:      # (with labels: done by them)
     # the generated figure's own hair hanging below the neck line (long loose hair over the shoulders) is attached to
     # its head, not to the garment, and stays after the cut. Removed by geometry (colour fails for black hair on a
     # black dress): above the armpit line, (a) islands of cloth not joined to the garment's main piece, and (b) cloth

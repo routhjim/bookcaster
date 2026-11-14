@@ -829,6 +829,8 @@ def main():
                 "facts": entry_facts(ch, [" ".join(ch["garment"]["outer_words"])]
                                      if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
                                      else []),
+                # (its own drawn hair kept on the head: the MetaHuman's hair groom is not shown)
+                "hide_hair": bool(((json.loads((combo / "report.json").read_text()).get("hair_kept") or {}).get("verts"))),
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
                 indent=1))

@@ -26,18 +26,20 @@ from pathlib import Path
 import numpy as np
 
 NAMES = ["background", "face", "hair", "top", "dress", "skirt", "pants", "belt", "bag", "hat", "scarf", "glasses",
-         "arms", "hands", "legs", "feet", "torso", "jewelry"]
-HAIR, FACE = 2, 1
+         "arms", "hands", "legs", "feet", "torso", "jewelry", "facial_hair"]
+HAIR, FACE, FACIAL = 2, 1, 18           # (facial hair: not the parser's class, found inside the face below)
 SKIN = (12, 13, 14, 15, 16)                 # arms, hands, legs, feet, torso (bare)
 GARMENT = (3, 4, 5, 6, 7, 10)
 GROUP = np.zeros(len(NAMES), np.uint8)
 GROUP[HAIR], GROUP[FACE] = 1, 2
+GROUP[FACIAL] = 1                           # a beard is the head's own too (cut with it; the MetaHuman has its own)
 GROUP[9] = GROUP[11] = 1                    # a hat and glasses go with the head (the MetaHuman's), like its hair
 GROUP[list(SKIN)] = 3
 GROUP[list(GARMENT)] = 4
 PAL = np.array([[20, 20, 20], [240, 200, 80], [255, 40, 40], [60, 110, 255], [160, 80, 255], [200, 120, 255],
                 [40, 200, 120], [255, 255, 255], [120, 120, 120], [255, 140, 0], [0, 255, 255], [255, 255, 0],
-                [255, 170, 120], [255, 120, 170], [200, 160, 100], [150, 110, 70], [255, 225, 190], [255, 0, 255]],
+                [255, 170, 120], [255, 120, 170], [200, 160, 100], [150, 110, 70], [255, 225, 190], [255, 0, 255],
+                [170, 0, 0]],
                np.uint8)
 RES = (768, 1152)                           # a view's picture, wide by high
 BG = 0.72                                   # the views' plain light grey ground (the drawings')
@@ -323,7 +325,7 @@ def parse(glb: Path, out: Path, sheet: Path | None = None, drawing: Path | None 
                 m_ = vin & (d_beard < d_skin) if far.max() >= 0.06 else \
                     vin & (d_skin > np.quantile(d_skin[vout], 0.65))
                 beard_facts.update(beard_colour=bc.round(3).tolist(), from_skin=round(float(far.max()), 3))
-                labels[m_] = HAIR
+                labels[m_] = FACIAL
                 beard = int(m_.sum())
         del cm
     groups = GROUP[labels]
