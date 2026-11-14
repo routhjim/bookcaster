@@ -2566,7 +2566,13 @@ if JOB.get("neck_finish", True) and not STATUE:
     def _round_neck(v_):
         return v_.co.z > _zc and math.hypot(v_.co.x - _nk[0], v_.co.y - _nk[1]) < 0.22 * _u
 
-    _cloth = [v_ for v_ in _bm.verts if _sk is None or _sk[v_.index] == 0]
+    # (the figure's own hair kept on the head is neither cloth nor a scrap of it: drawn hair is hundreds of small
+    # strands, each one "a small piece joined to nothing round the neck", and all of it went here, 11-14)
+    _khn = None
+    if "kept_hair" in fig.data.attributes:
+        _khn = np.zeros(len(fig.data.vertices), np.int32)
+        fig.data.attributes["kept_hair"].data.foreach_get("value", _khn)
+    _cloth = [v_ for v_ in _bm.verts if (_sk is None or _sk[v_.index] == 0) and (_khn is None or _khn[v_.index] == 0)]
     _is_cloth = {v_.index for v_ in _cloth}
     for v_ in _bm.verts:                     # (a vert's tag stays with it when others are deleted; its index does not)
         v_.tag = v_.index in _is_cloth
