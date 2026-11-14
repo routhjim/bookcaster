@@ -928,7 +928,23 @@ if LAB_RAW is not None and JOB.get("hair_keep", True) and HEAD is not None and (
     HAIR["face_front_y"] = float(np.quantile(_fc[:, 1], 0.03))
     HAIR["chin_z"] = float(np.quantile(_fc[:, 2], 0.02))
     HAIR["face_top_z"] = float(np.quantile(_fc[:, 2], 0.98))
-    HAIR_KEPT = True
+    # kept when it is hair a groom cannot give: hair with a body of its own. Either it hangs below the jaw (worn
+    # long and down), or it stands well out from the head (long hair tied back, a plait, a mop): wider than the
+    # face by a quarter, or reaching back behind the face by more than a head is deep. Short hair stays the
+    # MetaHuman's own groom (kept, a crop was a thin shell of dots on the skull)
+    _hv_ = np.array([v.co[:] for v in HAIR.data.vertices]) if len(HAIR.data.vertices) else np.zeros((1, 3))
+    _fw_ = max(0.08, HAIR["face_x"][1] - HAIR["face_x"][0])
+    _hang = HAIR["chin_z"] - float(np.quantile(_hv_[:, 2], 0.02))
+    _wide = float(np.quantile(_hv_[:, 0], 0.98) - np.quantile(_hv_[:, 0], 0.02)) / _fw_
+    _deep = (float(np.quantile(_hv_[:, 1], 0.98)) - HAIR["face_front_y"]) / _fw_
+    REP["hair_body"] = {"hangs_below_chin_m": round(_hang, 3), "width_over_face": round(_wide, 2),
+                        "depth_over_face": round(_deep, 2)}
+    if _hang >= float(JOB.get("hair_keep_hang_m", 0.05)) or _wide >= float(JOB.get("hair_keep_wide", 1.25)) \
+            or _deep >= float(JOB.get("hair_keep_deep", 1.7)):
+        HAIR_KEPT = True
+    else:
+        bpy.data.objects.remove(HAIR)
+        HAIR = None
 elif JOB.get("hair_cap", True):
     # the figure's own hair, kept for the back and sides of the head (dark, not skin, above the collar line)
     lum = col @ np.array([0.3, 0.59, 0.11])
