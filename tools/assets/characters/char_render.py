@@ -332,7 +332,19 @@ def character_actor(key):
                     pass
         for gc in a.get_components_by_class(unreal.GroomComponent):
             gc.set_visibility(False, True)
-        note(f"{key}: MetaHuman face and grooms hidden (pure figure)")
+        # and whatever else the MetaHuman carries on its head (a groom's cap or cards as a mesh of their own): a
+        # dark disc stood behind a whole figure's head and reached a key (11-14)
+        left = []
+        for pc in a.get_components_by_class(unreal.PrimitiveComponent):
+            if pc == body or pc.get_name().lower() == "body" or isinstance(pc, unreal.SkeletalMeshComponent):
+                continue
+            try:
+                pc.set_visibility(False, True)
+                pc.set_hidden_in_game(True)
+                left.append(f"{pc.get_class().get_name()}:{pc.get_name()}")
+            except Exception:
+                pass
+        note(f"{key}: MetaHuman face and grooms hidden (pure figure); also hidden: {left}")
     if spec.get("hide_hair") and not hide_face:
         # the figure wears its own drawn hair (the fit kept it on the head): the MetaHuman's hair groom is not drawn;
         # its brows, lashes and beard are
