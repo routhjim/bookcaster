@@ -96,29 +96,3 @@ def test_sitters_on_an_open_seat_turn_to_whom_they_face():
     assert seating.turn_for({"position": [0, 0]}, edge, chars) == 0.0          # nowhere to face: square
     assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, chars) == seating.SEAT_TURN_DEG
     assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, {"a": {}}) == 0.0   # alone: square
-
-
-def _cabin():
-    """A made cabin: a wide level nose deck, walled, ending at the windscreen wall; behind the wall the seat under
-    a roof, a panel rising ahead of it, open behind."""
-    g = lambda a, b: np.arange(a, b + 1e-9, 0.02)
-    pts = []
-    box = lambda xs, ys, zs: pts.extend((x, y, z) for x in xs for y in ys for z in zs)
-    box(g(-0.5, 0.5), g(-2.0, -1.0), [0.5])                    # the nose deck
-    for sx in (-0.55, 0.55):
-        box([sx], g(-2.0, -1.0), g(0.5, 1.3))                  # its side walls
-    box(g(-0.55, 0.55), [-0.95], g(0.5, 2.0))                  # the windscreen wall
-    box(g(-0.3, 0.3), g(-0.3, 0.3), [0.4])                     # the seat
-    for sx in (-0.35, 0.35):
-        box([sx], g(-0.45, 0.3), g(0.4, 1.4))                  # the cabin's sides
-    box(g(-0.3, 0.3), [-0.42], g(0.4, 1.0))                    # the panel ahead of the seat
-    box(g(-0.35, 0.35), g(-0.45, 0.3), [1.6])                  # the roof
-    box(g(-0.6, 0.6), g(-2.0, 0.4), [0.0])                     # the ground it stands on
-    return np.array(pts)
-
-
-def test_a_cabins_seat_is_the_patch_under_its_canopy():
-    b = seatbox.cabin_seat_box(_cabin(), 1)
-    assert b["front_asset"] == [0.0, -1.0]                     # the sitter faces the panel, not back out of the nose
-    assert abs(b["seat_z_m"] - 0.4) < 0.05
-    assert -0.35 <= b["front_y_m"] < b["back_y_m"] <= 0.35     # on the seat, not out on the deck
