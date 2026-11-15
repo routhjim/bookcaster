@@ -193,7 +193,8 @@ For each shot write what is seen outside AT THAT MOMENT of the story, as the dir
 Each description is given, alone, to a painter who knows nothing else of the story and paints one picture from it,
 so it must be whole in itself: first what surrounds the place there (the kind of surroundings it is in, and what
 fills the rest of the view: its sky or its dark, its ground or the lack of any), then what is in view, how near it
-has come and how large it stands, and the light and its colour. Say every thing by what it is and looks like, never
+has come and how large it stands, and the light and its colour. Where the place is not on a ground (in the air, on
+open water, in space) say so in plain words: nothing lies under the things in view and there is no horizon. Say every thing by what it is and looks like, never
 by a name the story gave it or by a likeness to something else that the painter would paint instead. 20 to 40 words
 each, nothing about the people or the inside of the place or its windows. When nothing outside has changed since the
 shot before, repeat that shot's words exactly, letter for letter. Use at most {most} different descriptions in all.

@@ -269,8 +269,12 @@ def main():
         # the eyes as the shot opens: a figure's eyes are open in every engine still, and the redraw drew a child
         # wide awake in each shot of her asleep (11-15)
         for p in sh.get("people") or []:
-            e_ = ask.choose(q_choose(own, st, f"The shot's own words: {sh.get('action') or ''}\nAre {p['name']}'s eyes "
-                                     "open or closed as this shot starts?", ["open", "closed"]), ["open", "closed"])
+            # (asked of the shot's own words, which say who sleeps; the passage alone left sleepers "not stated")
+            e_ = ask.choose("You help stage a shot of a film. The shot's own words: " + (sh.get("action") or "")
+                            + f"\nWhere things stood just before: {st}\nQuestion: as this shot starts, are "
+                            f"{p['name']}'s eyes open or closed? Someone asleep or unconscious has them closed; anyone "
+                            "else has them open unless the words say they are shut.\nAnswer with exactly one word: "
+                            "open or closed.", ["open", "closed"])
             if e_ == "closed":
                 res.setdefault("eyes", {}).setdefault(sid, {})[p["name"]] = e_
         if sh.get("kind") == "talk":
