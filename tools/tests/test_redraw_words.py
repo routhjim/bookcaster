@@ -95,3 +95,13 @@ def test_a_cabins_view_is_worded_by_which_way_the_camera_looks(tmp_path):
     assert "ahead through the canopy: a dark mountain of ice, near" in fwd
     assert "mountain" not in back and "looks back into the cabin" in back      # the view is behind the camera
     assert plain == " In this shot: the director's words"                       # a place with no views: as before
+
+
+def test_a_cabins_view_reads_a_placed_cameras_aim_from_the_staged_scene(tmp_path):
+    import json
+    view = {"name": "outside_view_1", "words": "a dark mountain of ice, near", "ahead": [0.0, -1.0], "all": ["outside_view"]}
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "auto", "position": None, "target": None, "view": view, "setting": "the director's words"}]}))
+    (tmp_path / "truth.json").write_text(json.dumps({"shots": {"auto": {"camera": {
+        "position": [0, 2, 1.2], "target": [0, 0, 1.2]}}}}))
+    assert "ahead through the canopy: a dark mountain of ice, near" in redraw.setting_words(tmp_path, "auto")

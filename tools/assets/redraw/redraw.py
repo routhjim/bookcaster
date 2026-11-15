@@ -248,6 +248,12 @@ def setting_words(sd: Path, cam: str) -> str:
         return ""
     c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
     vw = c.get("view") or {}
+    if vw.get("ahead") and not (c.get("position") and c.get("target")):
+        # a camera the scene tool placed has no position in the spec: the staged one is in the scene's truth
+        # (without it every cabin shot fell through to the plain setting and no view reached the redraw, 11-14)
+        tf = sd / "truth.json"
+        tc = ((json.loads(tf.read_text()).get("shots") or {}).get(cam) or {}).get("camera") if tf.exists() else None
+        c = {**c, **{k: (tc or {}).get(k) for k in ("position", "target")}}
     if vw.get("ahead") and c.get("position") and c.get("target"):
         # a cabin with a view outside: what the frame shows of it depends on which way the camera looks. Looking
         # the way the cabin faces, the view of this shot is ahead through the canopy; looking back at whoever sits
