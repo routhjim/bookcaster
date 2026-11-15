@@ -1262,17 +1262,58 @@ def lie_frame(spot, sup):
             "facing": f if sgn > 0 else [-f[0], -f[1]], "bed_facing": f, "bed_xy": [x0, y0]}
 
 
-def bed_cover(lib, bed: str) -> dict:
-    """The cover's colour: the bed's own bedding, as its texture has it (the mean of its lighter half: the mattress
-    and bedding, not the frame). {} when the bed has no texture to read: the cover keeps its plain linen."""
-    tex = Path(lib) / "prop" / bed / "textures" / f"T_{bed}_BaseColor.png"
-    if not tex.exists():
-        return {}
+def bed_cover(bed: str, top_z_m: float | None = None) -> dict:
+    """The cover's colour: the bed's own bedding, read where the bed's texture lies on its upward faces at the
+    lying surface (the mattress and bedding, not the frame). {} when the bed has no mesh or texture to read: the
+    cover keeps its plain linen. (Given the character's folder for the library's, it found no texture and every
+    cover stayed off-white beside tan bedding, 11-15.)"""
+    import struct
     import numpy as np
     from PIL import Image
-    px = np.asarray(Image.open(tex).convert("RGB").resize((64, 64)), np.float32).reshape(-1, 3) / 255.0
-    lum = px.mean(1)
-    return {"cover_rgb": [round(float(v), 3) for v in px[lum >= np.median(lum)].mean(0)]}
+    d = Path(C.LIBRARY) / "prop" / bed
+    tex, glb = d / "textures" / f"T_{bed}_BaseColor.png", d / "export" / f"{bed}.glb"
+    if not (tex.exists() and glb.exists()):
+        return {}
+    b = glb.read_bytes()
+    n = struct.unpack_from("<I", b, 12)[0]
+    j = json.loads(b[20:20 + n])
+    bin_ = b[20 + n + 8:]
+
+    def acc(i, dt, w):
+        a = j["accessors"][i]
+        v = j["bufferViews"][a["bufferView"]]
+        off = v.get("byteOffset", 0) + a.get("byteOffset", 0)
+        step = v.get("byteStride") or np.dtype(dt).itemsize * w
+        raw = np.frombuffer(bin_, np.uint8, count=(a["count"] - 1) * step + np.dtype(dt).itemsize * w, offset=off)
+        if step == np.dtype(dt).itemsize * w:
+            return raw.view(dt).reshape(a["count"], w)
+        return np.stack([raw[k * step:k * step + np.dtype(dt).itemsize * w].view(dt) for k in range(a["count"])])
+    cols = []
+    img = np.asarray(Image.open(tex).convert("RGB"), np.float32) / 255.0
+    for m in j["meshes"]:
+        for pr in m["primitives"]:
+            at = pr["attributes"]
+            if "TEXCOORD_0" not in at or "indices" not in pr:
+                continue
+            P, U = acc(at["POSITION"], np.float32, 3), acc(at["TEXCOORD_0"], np.float32, 2)
+            ct = j["accessors"][pr["indices"]]["componentType"]
+            F = acc(pr["indices"], {5121: np.uint8, 5123: np.uint16, 5125: np.uint32}[ct], 1).reshape(-1, 3)
+            a_, b_, c_ = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
+            nrm = np.cross(b_ - a_, c_ - a_)
+            up = nrm[:, 1] / np.maximum(np.linalg.norm(nrm, axis=1), 1e-9)          # glTF: y is up
+            hy = (a_[:, 1] + b_[:, 1] + c_[:, 1]) / 3
+            top = float(top_z_m) if top_z_m else float(np.percentile(hy[up > 0.8], 70)) if (up > 0.8).any() else None
+            if top is None:
+                continue
+            ok = (up > 0.8) & (np.abs(hy - top) < 0.12)
+            uv = U[F[ok]].mean(1)
+            if len(uv):
+                px = img[np.clip((uv[:, 1] % 1.0) * img.shape[0], 0, img.shape[0] - 1).astype(int),
+                         np.clip((uv[:, 0] % 1.0) * img.shape[1], 0, img.shape[1] - 1).astype(int)]
+                cols.append(px)
+    if not cols:
+        return {}
+    return {"cover_rgb": [round(float(v), 3) for v in np.median(np.concatenate(cols), 0)]}
 
 
 def lie_pose(pelvis_z_cm, top_z_m, variant):
@@ -1322,7 +1363,7 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     jt = meas["joints"]
     lj = {"combo": str(combo), "joints": jt, "position": c["position"], "facing": c["facing"], "mode": "push",
           "iters": 0, "shoulder_ease_m": 0.0, "thigh_from": 0.0,
-          "lie": dict(fr, top_z_m=top_z, **bed_cover(lib, bed)), "out": str(W / f"lying_{bed}_{variant}")}
+          "lie": dict(fr, top_z_m=top_z, **bed_cover(bed, top_z)), "out": str(W / f"lying_{bed}_{variant}")}
     jp = W / f"settle_lie_{bed}_{variant}.json"
     jp.write_text(json.dumps(lj, indent=1))
     p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_lie_{bed}_{variant}", "--", "flock",
