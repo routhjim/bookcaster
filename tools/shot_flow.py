@@ -319,6 +319,12 @@ NO_STATUS = False        # a supplied-keys run under a work root leaves the book
 QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys(quiet_seeds=)); () = QUIET_SEED alone
 
 
+# 11-15: with the hold sentence closing the words, 41 of 57 quiet clips of one cut still reframed (take_checks: the
+# background scaled 10-53%). HOLD_FIRST says it as the talk clips do, first and without the list of moves not to
+# make; off until measured on the same clips.
+HOLD_FIRST = os.environ.get("BOOKCASTER_HOLD_FIRST", "off") == "on"
+
+
 def with_facts(prompt: str, s: dict, words: str = "") -> str:
     """A clip's words with what a supplied-keys run adds. The key's head count closes a talk shot's words. The camera
     is held on the opening picture's framing (hold, or facts) unless the director's own words for the shot (its
@@ -335,6 +341,8 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
         return prompt
     hold = "" if CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
         else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
+    if hold and HOLD_FIRST and s.get("kind") == "quiet":     # (an experiment's arm: the talk clips' opening words)
+        prompt, hold = f"Static camera, the framing does not change. {prompt[0].upper() + prompt[1:]}", ""
     if not SCENE_FACTS or s.get("kind") != "quiet":
         return f"{prompt.rstrip()}{hold}" if hold else prompt
     return (f"{prompt.rstrip()} The room keeps its fixed state through the whole clip, as in the opening picture: "
