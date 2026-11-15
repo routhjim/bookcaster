@@ -962,6 +962,7 @@
     "carriage interior",
     "cabin module"
    ],
+   "made_as": "shell",
    "parent": null,
    "size_m": [
     2.4,

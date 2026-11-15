@@ -96,3 +96,12 @@ def test_sitters_on_an_open_seat_turn_to_whom_they_face():
     assert seating.turn_for({"position": [0, 0]}, edge, chars) == 0.0          # nowhere to face: square
     assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, chars) == seating.SEAT_TURN_DEG
     assert seating.turn_for({"position": [0, 0], "facing": [1.0, 0.0]}, edge, {"a": {}}) == 0.0   # alone: square
+
+
+def test_a_seat_its_maker_knows_is_taken_as_given(tmp_path):
+    import json
+    seat = {"seat_z_m": 0.5, "front_y_m": -0.3, "back_y_m": 0.2, "places": [0.1], "inside": True}
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "spec.json").write_text(json.dumps({"seat": seat}))
+    (tmp_path / "asset.json").write_text(json.dumps({"export": {"glb": "none.glb"}}))
+    assert seatbox.for_asset(tmp_path) == seat

@@ -165,3 +165,13 @@ def test_a_role_kind_is_met_by_its_parents_records(tmp_path):
     rec(tmp_path, "club", ["armchair"], "Plain wooden armchair")
     both = P.lookup({"kind": "desk_chair", "look": "plain wooden"}, P.load_records(tmp_path), threshold=0.0)
     assert [x["asset_id"] for x in both] == ["chair_plain", "club"] and both[1]["why"]["parts"]["kind"] == 0.6
+
+
+def test_a_thing_people_sit_inside_is_made_from_a_panorama_of_its_inside():
+    rq = P.generation_request({"id": "p1", "kind": "vehicle_cabin", "look": "a dark panel, one seat", "seats_abreast": 1})
+    st = {s["step"]: s for s in rq["plan"]["steps"]}
+    dv = st["draw"]["argv"]
+    assert st["draw"]["picture"] == "picture.png" and "picture" in dv and dv[dv.index("--size") + 1:][:2] == ["2048", "1024"]
+    assert "panorama" in dv[dv.index("--desc") + 1] and "a dark panel, one seat" in dv[dv.index("--desc") + 1]
+    assert any(str(a).endswith("shell_one.py") for a in st["shape"]["argv"])
+    assert st["spec"]["spec"]["made_as"] == "shell" and rq["needs"] == ["seat"]

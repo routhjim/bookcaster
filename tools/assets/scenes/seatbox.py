@@ -183,6 +183,10 @@ def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
 
 def for_asset(asset_dir: Path) -> dict:
     aj = json.loads((asset_dir / "asset.json").read_text())
+    src = asset_dir / "source" / "spec.json"
+    given = json.loads(src.read_text()).get("seat") if src.exists() else None
+    if given:                                # its maker knows the seat (a cabin's shell: where its picture was taken)
+        return given
     P = glb_points(asset_dir / aj["export"]["glb"])
     if aj.get("piece_kind") == "vehicle_cabin" or "vehicle_cabin" in (aj.get("tags") or []):
         return cabin_seat_box(P, int(aj.get("seats_abreast") or 1))
@@ -207,7 +211,7 @@ def main():
         if "--write" in sys.argv:
             p = d / "asset.json"
             aj = json.loads(p.read_text())
-            aj["seat"] = dict(s, source="scenes/seatbox.py from the exported mesh")
+            aj["seat"] = {"source": "scenes/seatbox.py from the exported mesh", **s}
             p.write_text(json.dumps(aj, indent=1))
 
 

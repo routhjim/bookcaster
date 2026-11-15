@@ -155,7 +155,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
         rc = recs.get(it["asset"]) or {}
         d = re.split(r"[,:;.]", rc.get("description") or "", maxsplit=1)[0].strip()
         if rc.get("piece_kind") and rc.get("look"):          # a piece made on request: its kind and its own look
-            d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look'].replace(CABIN_LOOK, '')})"   # (not how it was drawn)
+            d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look']})"
         d = d or (it.get("name") or "").replace("_", " ")
         if out.get("style") and d.lower().startswith(out["style"].lower() + " "):
             d = d[len(out["style"]) + 1:]         # (the period is said once, for the room)
@@ -170,9 +170,6 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
             + "; ".join(held) + ".", kw.get("surfaces") or "")
 
 
-CABIN_LOOK = ("the whole cabin as one open model for filming inside it: no glass in its canopy frame, and the nose "
-              "cut away just ahead of the instrument panel, so that from in front and above one looks over the panel "
-              "straight at the seats: ")
 
 
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
@@ -212,9 +209,16 @@ def with_concept(spec: dict, concept: dict) -> dict:
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     if concept.get("space") == "cockpit":
-        seen = [x["name"] for x in concept.get("seen") or [] if x.get("name") and "view" not in x["name"]]
+        seen = [x["name"] + (f" ({x['look']})" if x.get("look") else "") for x in concept.get("seen") or []
+                if x.get("name") and "view" not in x["name"]]
+        # (what the place is, in the director's own words and its period: the kind's name alone drew any cabin)
+        inside = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
+                        flags=re.I).strip().rstrip(".")
+        inside = f"{str(spec.get('period') or '').replace('_', ' ')}: {inside}".strip(": ")
+        sf = concept.get("surfaces") or {}                   # (its surfaces as the picture shows them)
+        walls = "; ".join(f"the {k}: {str(sf[k]).strip().rstrip('.')}" for k in ("walls", "floor") if sf.get(k))
         sp.update(kind="cockpit", openings=[], relations=[], pieces=[{
-            "id": "p1", "kind": "vehicle_cabin", "look": CABIN_LOOK + ", ".join(dict.fromkeys(seen)),
+            "id": "p1", "kind": "vehicle_cabin", "look": "; ".join(x for x in (inside, ", ".join(dict.fromkeys(seen)), walls, str(spec.get("_style") or "")) if x),
             "phrases": [ph for p in spec.get("pieces") or [] for ph in p.get("phrases") or []], "against": "free",
             "source": concept.get("concept"), "seats_abreast": int(concept.get("seats_abreast") or 1)}])
         sp["named_places"] = {ph: "p1" for ph in spec.get("named_places") or {}}
@@ -349,7 +353,9 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
                                     "facing": [round(-vx, 4), round(-vy, 4)]})
     # (a made cabin is a closed shell: a light outside its nose lit nobody, so the view's light is set inside it,
     # ahead of and above the seats, without shadows)
-    key = {"type": "rect", "size_m": [1.2, 0.6], "lumens": 4200, "kelvin": 5200, "radius_m": 8, "shadows": False,
+    # (the lights were set for a cabin 4.75 m high: nearer the people in a lower one, they are that much weaker)
+    dim = min(1.0, ht / 4.75)
+    key = {"type": "rect", "size_m": [1.2, 0.6], "lumens": round(4200 * dim), "kelvin": 5200, "radius_m": 8, "shadows": False,
            "position": [round(x, 3), round(y, 3), round(ht * 0.72, 3)],
            "toward": [round(x - f[0] * ln * 0.25, 3), round(y - f[1] * ln * 0.25, 3), 1.1]}
     pic = lib / "_refs" / vid / "picture.png"
@@ -360,7 +366,7 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
         k = 255.0 / max(max(m), 1.0)
         key.pop("kelvin")
         key["color"] = "#%02x%02x%02x" % tuple(int(min(255, c * k)) for c in m)
-    glow = {"type": "point", "lumens": 420, "kelvin": 6500, "radius_m": 3, "source_radius_m": 0.15, "shadows": False,
+    glow = {"type": "point", "lumens": round(420 * dim), "kelvin": 6500, "radius_m": 3, "source_radius_m": 0.15, "shadows": False,
             "position": [round(x - f[0] * ln * 0.08, 3), round(y - f[1] * ln * 0.08, 3), 0.95]}
     out["lights"] = [{"type": "sky", "intensity": 0.05, "atmosphere": False}, key, glow]
     # (what is outside is said shot by shot, by which way the camera looks: redraw.setting_words)
@@ -464,9 +470,6 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]
         out["concept"] = spec["_concept"]["concept"]
-    for it in out["fixtures"] + out["props"]:                    # (how a cabin was drawn is not how it looks)
-        if it.get("look"):
-            it["look"] = it["look"].replace(CABIN_LOOK, "")
     wall_faces(out, lay, spec, library)
     cabin_stage(out, spec, library)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
@@ -489,6 +492,8 @@ def main():
     spec = json.loads(Path(a[0]).read_text())
     spec = spec.get("sheet", spec)
     spec = with_beds(spec)
+    if "--style" in a:                                 # the book's art style: what its pieces are drawn in
+        spec["_style"] = Path(a[a.index("--style") + 1]).read_text().strip().rstrip(".")
     if "--concept" in a:
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
     spec = with_crowd(spec)

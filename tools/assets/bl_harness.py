@@ -258,7 +258,10 @@ def run_checks(ob):
         vol += a.dot(b.cross(c)) / 6.0
     bmt.free()
     check("normals_consistent", flipped == 0, flipped, 0, "edges whose two faces wind the same way")
-    check("normals_outward", vol > 0, round(vol, 6), "> 0", "signed volume of the mesh (negative = inside out)")
+    if SPEC.get("seen_from_inside"):                      # a shell people are filmed inside: its faces look inward
+        check("normals_inward", vol < 0, round(vol, 6), "< 0", "signed volume of the mesh (a shell seen from inside)")
+    else:
+        check("normals_outward", vol > 0, round(vol, 6), "> 0", "signed volume of the mesh (negative = inside out)")
     REPORT["non_manifold_edges"] = nonman
     degen = sum(1 for f in bm.faces if f.calc_area() < 1e-10)
     check("degenerate_faces", degen == 0, degen, 0,
@@ -567,6 +570,8 @@ def bake(ob):
     # one material on the baked maps
     mat = bpy.data.materials.new(f"M_{AID}")
     mat.use_nodes = True
+    if SPEC.get("seen_from_inside"):                      # a shell's walls have no back: a camera outside sees in
+        mat.use_backface_culling = True
     nt = mat.node_tree
     nt.nodes.clear()
     out = nt.nodes.new("ShaderNodeOutputMaterial")

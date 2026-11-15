@@ -548,6 +548,7 @@ def run(job):
         for key, spec in job["characters"].items():
             if spec.get("_inside"):
                 r["subjects"][key]["measured"]["inside"] = True
+                r["subjects"][key]["measured"]["open_walls"] = spec["_inside"] == "open"
         for key, f in (job.get("figures") or {}).items():
             r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)

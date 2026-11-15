@@ -69,10 +69,11 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
     """Camera {position, target, focal_mm, distance_m, frame_h_m} for a close / medium / full shot of a subject."""
     head_h = subject["head_top_z"] - subject["chin_z"]
     eye = subject["eye_z"]
-    if subject.get("inside") and kind in ("close", "medium", "full"):
+    if subject.get("inside") and (kind == "full" or (kind in ("close", "medium") and not subject.get("open_walls"))):
         # seated inside a cabin: there is no room to stand back. A close or medium is taken from just in front of
         # the face with a wide lens (between the sitter and the controls); a full shot from behind the shoulder,
-        # the controls and the windscreen ahead of the sitter in view
+        # the controls and the windscreen ahead of the sitter in view. In a shell whose walls have no back
+        # (img3d/pano_shell.py) a close or medium stands back like any other: it sees in through the wall
         f = _unit(list(subject["facing"]) + [0.0])
         ex, ey = subject["eye_xy"]
         left = [-f[1], f[0]]

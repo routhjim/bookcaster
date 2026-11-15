@@ -8,6 +8,7 @@ Spec keys:
     "bump_m"       detail-normal depth from the colour's luminance (0 = none)              [0.002 x height]
     "rough"        [lo, hi]: roughness from luminance, bright -> lo, dark -> hi              [0.45, 0.8]
     "keep_uvs": true (the port's atlas is non-overlapping and inside 0-1)
+    "seen_from_inside": true for a shell whose faces look inward (img3d/pano_shell.py): its winding is kept
 
 The port gives base colour only. A normal map and a roughness map are derived here as node maths on the colour (a
 bump from its luminance, roughness from its luminance) and the harness bakes them on its GPU like any material.
@@ -104,7 +105,8 @@ bm.from_mesh(ob.data)
 loose = [e for e in bm.edges if not e.link_faces]
 bmesh.ops.delete(bm, geom=loose, context="EDGES")
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
-bmesh.ops.recalc_face_normals(bm, faces=bm.faces)       # the collapse can leave a face wound against its neighbours
+if not SPEC.get("seen_from_inside"):                    # (a shell made to face inward keeps its own winding)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)   # the collapse can leave a face wound against its neighbours
 bm.to_mesh(ob.data)
 bm.free()
 print(f"[img3d model] tris {tris} -> {sum(len(p.vertices) - 2 for p in ob.data.polygons)} (decimate {t_dec:.1f}s on "

@@ -61,7 +61,7 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
     aid, plan = req["asset_id"], req["plan"]
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
-    pic = REFS / did / "three_quarter.png"
+    pic = REFS / did / steps["draw"].get("picture", "three_quarter.png")
     if not pic.exists():
         dv = list(steps["draw"]["argv"])
         if unsourced and "--sources" in dv:              # (drawn from its look and its needs alone this time)
@@ -69,7 +69,7 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         r = run([a.replace("{seed}", str(seed)) for a in dv])
         log(f"{did}: drawing seed {seed} rc={r.returncode}")
     if not pic.exists():
-        return {"asset_id": aid, "ok": False, "why": "no drawing with a three-quarter view"}
+        return {"asset_id": aid, "ok": False, "why": f"no drawing ({pic.name})"}
     sp = library / "prop" / did / "source" / "spec.json"
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(steps["spec"]["spec"], indent=1))
@@ -103,7 +103,7 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
     # out with a seat 0.3 m wide, the pilot taller than the whole cockpit): made again at the scale that gives the
     # measured seat a person's width, once
     seat = json.loads(record(aid, library).read_text()).get("seat") or {}
-    if seat.get("inside") and seat.get("width_m"):
+    if seat.get("inside") and seat.get("width_m") and steps["spec"]["spec"].get("made_as") != "shell":
         k = max(1.0, min(2.5, SEAT_W_M / float(seat["width_m"])))
         k = k if k > 1.1 else 1.0
         spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]],

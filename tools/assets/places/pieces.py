@@ -293,6 +293,19 @@ NEED_WORDS = {"lie": "(a single tier: one mattress at knee height, open to the c
               "seat": "(one seat for one person, open at the front)"}
 
 
+SHELL_WORDS = (
+    "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join seamlessly. "
+    "The inside of a {name}, seen from the head of the person sitting in {seat}: {look}. It is a small closed room "
+    "of solid walls with framed panes of glass set into them, not a glass bubble. In the middle of the picture, "
+    "straight ahead and within arm's reach: what that person works at, and above it the framed panes they look out "
+    "through. To the left and to the right: solid side walls rising above the sitter's head, covered with what is "
+    "fitted along them, with one small framed pane in each. At the far left and far right edges of the picture, "
+    "which is directly behind the seat: the rear wall, solid from floor to roof and wider than the seat, plainly "
+    "seen with what is fitted to it, and low in front of it the top of the seat's own small headrest. At the top "
+    "the solid roof; at the bottom the seat's edge and the floor. Empty: no people. Through every pane of glass "
+    "only a plain even darkness, nothing else outside.")
+
+
 def generation_request(piece, K=None, python="python", tools=None, work=None):
     """The dry-run request for a piece the library lacks: {kind, look, size_m, needs} and, under "plan", the jobs
     the existing prop route runs for it, in order. Nothing is started here."""
@@ -318,6 +331,32 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
+    if d.get("made_as") == "shell":
+        # a thing people sit inside is made from within: one panorama of its inside from its seat, then a shell of
+        # what that shows (img3d/pano_shell.py). Its size and its seat are the shell's own, not the kind's.
+        n = int(piece.get("seats_abreast") or 1)
+        seat = "its single seat" if n < 2 else "the leftmost of its seats, which stand side by side"
+        spec["made_as"] = "shell"
+        steps = [
+            {"step": "draw", "what": "one panorama of the inside, from the seat", "station": C.IMAGE_STATION,
+             "kind": "refs", "picture": "picture.png",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{aid}", "--",
+                             python, str(tools / "refs" / "ref_draw.py"), "picture", aid, "--desc",
+                             SHELL_WORDS.format(name=name, seat=seat, look=look.rstrip(".")),
+                             "--size", "2048", "1024", "--seed", "{seed}"],
+             "gate": "the panorama shows a window", "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS}"},
+            {"step": "spec", "what": "the piece's source spec", "write": f"<library>/prop/{aid}/source/spec.json",
+             "spec": spec},
+            {"step": "shape", "what": "the panorama's depth as an inward shell with its panes open, then the asset "
+             "chain", "station": C.IMAGE_STATION, "kind": "shape",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "shape", "--id", f"gen_shape_{aid}", "--log",
+                             str(work / f"{aid}.log"), "--", python, str(tools / "img3d" / "shell_one.py"), aid],
+             "result_id": f"{aid}_tr", "gate": "the asset's own checks pass",
+             "on_fail": "re-draw with the next seed"},
+            {"step": "measure_seat", "what": "the seat under the panorama's eye, written into the record",
+             "gate": "a seat box is found", "on_fail": "re-draw with the next seed"}]
+        return {"kind": kind, "look": look, "size_m": d["size_m"], "needs": needs, "asset_id": f"{aid}_tr",
+                "dry_run": True, "plan": {"draw_id": aid, "max_redraws": MAX_REDRAWS, "steps": steps}}
     steps = [
         {"step": "draw", "what": "the reference set (a 2x2 turnaround sheet cut into four views) from the look line",
          "station": C.IMAGE_STATION, "kind": "refs",
