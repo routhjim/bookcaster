@@ -521,17 +521,23 @@ def behind_in_cabin(cam, m) -> bool:
     return (p[0] - e[0]) * f[0] + (p[1] - e[1]) * f[1] < 0
 
 
-def subject_face_why(shot, k, subjects, res, covered=False) -> list:
+SHARED_HEAD_DEG = 100.0      # the subject of a shot that shows others too: a profile will do, the back of a head not
+SHARED_FACE_VISIBLE = 0.4    # and part of the face behind another person is how a room looks
+
+
+def subject_face_why(shot, k, subjects, res, covered=False, shared=False) -> list:
     """The face of the person a shot is about, shown as a speaker's is: turned toward the camera and seen on the
-    still (a woman whose line it was showed only the back of her head in the foreground, 11-12)."""
+    still (a woman whose line it was showed only the back of her head in the foreground, 11-12). In a shot that
+    shows others with them (shared) the hard rules are the speaker's alone: two people turned to each other are
+    both in profile from the side, and held to a speaker's angle no camera passed (11-14)."""
     m = subjects[k]["measured"]
     cam = shot["camera"]
     if behind_in_cabin(cam, m):
         return []
-    if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > MAX_HEAD_DEG + 15:
+    if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > (SHARED_HEAD_DEG if shared else MAX_HEAD_DEG + 15):
         return [f"{k}'s face (the shot is about {k}) is turned from the camera"]
     fv = face_seen(shot, k, m, res, covered)
-    if fv is not None and fv < MIN_FACE_VISIBLE:
+    if fv is not None and fv < (SHARED_FACE_VISIBLE if shared else MIN_FACE_VISIBLE):
         return [f"{k}'s face (the shot is about {k}) {fv:.0%} visible"]
     return []
 
@@ -1532,7 +1538,8 @@ def main():
             # the subject of an action or quiet shot (whom the plan's line is about) has a face shown, as a speaker
             if not c.get("speaker") and c.get("line_subject") in subjects:
                 pw += subject_face_why(sh, c["line_subject"], subjects, res,
-                                       c["line_subject"] in (cam_opts(spec, c).get("covered") or ()))
+                                       c["line_subject"] in (cam_opts(spec, c).get("covered") or ()),
+                                       shared=len([k for k in c.get("show") or [] if k in subjects]) >= 2)
             if pw:                           # outside the room, a body filling the frame, the subject's face unseen
                 chk["why"] = pw + chk["why"]
                 chk["framing"] = pw + chk.get("framing", [])

@@ -314,3 +314,12 @@ def test_across_the_line_fails_for_a_medium_and_not_for_a_wide():
     est = -SP.side(line, c["position"])
     assert "across the line" in SP.check_shot({"camera": c}, "a", subj, RES, "medium", line, est)["why"]
     assert "across the line" not in SP.check_shot({"camera": c}, "a", subj, RES, "wide", line, est)["why"]
+
+
+def test_subject_shown_with_others_may_be_in_profile():
+    side = {"b": S.person([0, 0], facing=[1, 0])}                     # turned to someone beside her: a profile
+    c = S.cam([0.0, -3.0, 1.5], [0.0, 0, 1.45], 35)
+    assert any("turned from the camera" in x for x in SP.subject_face_why({"camera": c}, "b", side, RES))
+    assert SP.subject_face_why({"camera": c}, "b", side, RES, shared=True) == []
+    away = {"b": S.person([0, 0], facing=[0, 1])}                     # the back of her head: never
+    assert any("turned from the camera" in x for x in SP.subject_face_why({"camera": c}, "b", away, RES, shared=True))
