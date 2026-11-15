@@ -918,11 +918,11 @@ def main():
                     pr.pop("arm_z_m", None)
                     pr.pop("arm_x_m", None)
                     pr["steps"] = PX.hands_in_lap(pr["seat_z_m"])
+                lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
                 if a.whole:
                     # a whole figure sits as it is: the pose on its own mesh. The settle is for clothes over a body
                     # (cloth pushed off the seat and off the body under it): on a whole figure it pushed the face
                     # off the hidden head and left a band across it (11-14)
-                    lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
                     b = seat["box"]
                     ent = dict(cj0, id=lid, stance={"base": a.id, "pose": "seated", "seat_asset": seat["asset"],
                                                     "seat_z_m": b["seat_z_m"], "params": c["body_pose"]},
@@ -968,7 +968,6 @@ def main():
                     "out": str(W / "ue" / f"import_seat_{name}"),
                     "import_outfit": {"outfit_fbx": str(W / f"seated_{name}" / "outfit.fbx"),
                                       "textures": str(W / f"seated_{name}" / "textures"), "dest": dest, "cloth_slots": False}}, 900)
-                lid = f"{a.id}_seated_{''.join(ch for ch in name.lower() if ch.isalnum() or ch == '_')}"
                 st = {"base": a.id, "pose": "seated", "seat_asset": seat["asset"], "seat_z_m": b["seat_z_m"],
                       "params": c["body_pose"]}
                 ent = dict(cj0, id=lid, garments=[f"{dest}/Outfit/outfit"] + [g for g in cj0["garments"] if g.startswith("@")],
