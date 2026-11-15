@@ -1272,7 +1272,8 @@ def lie_pose(pelvis_z_cm, top_z_m, variant):
         steps += [["rot", "spine_02", [1, 0, 0], -35.0], ["rot", "neck_01", [1, 0, 0], -15.0]]
     else:
         steps += [["rot", "neck_01", [1, 0, 0], -12.0]]               # the head on the pillow
-    return {"pose": "stand", "params": {"steps": steps, "lie": variant}}
+    # (the arms lie along the body: a standing figure's clearance from its clothes spread them wide under the cover)
+    return {"pose": "stand", "params": {"steps": steps, "lie": variant, "arm_clear_deg": 0.0, "forearm_fwd_deg": 0.0}}
 
 
 def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):

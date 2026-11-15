@@ -34,7 +34,7 @@ def spec_for(spec0: dict, facts: dict, glb: Path) -> dict:
     keep = {k: spec0[k] for k in ("class", "description", "tags", "placement", "cameras", "camera_preset") if k in spec0}
     return dict(keep, id=f"{spec0['id']}_tr", source="generated", keep_uvs=True, source_glb=str(glb), tier="hero",
                 size_m=facts["size_m"], height_m=facts["size_m"][2], size_tolerance=0.05, yaw_deg=0, bump_m=0,
-                seen_from_inside=True, seat=facts["seat"], eye_m=facts["eye_m"],
+                seen_from_inside=True, seat=facts["seat"], eye_m=facts["eye_m"], regions=facts.get("regions") or [],
                 tags=list(keep.get("tags", [])) + ["img3d", "panorama_shell"], replaces=spec0["id"],
                 licence="internal: panorama drawn by the local image model; depth by MoGe-2 (MIT), panes by CLIPSeg (MIT)")
 

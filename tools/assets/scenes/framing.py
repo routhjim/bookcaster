@@ -46,6 +46,7 @@ def _facing_angle(f):
     return math.atan2(f[1], f[0])
 
 
+CABIN_AZ_DEG = {"close": 28.0, "medium": 30.0}      # how far round from the sitter's front a cabin shot stands (at 40 the face check read 58%)
 LIE_EL_DEG = 18.0                                  # a lying person is seen from above their side, never level
 LIE_CLOSE_EL_DEG = 50.0                            # a close on one: from well above, the face turned up to the camera
 LIE_CLOSE_UP_M = 1.4                               # ... and no higher over the head than a room's ceiling leaves
@@ -91,6 +92,11 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
             fl = 16 if kind == "close" else 13
         return {"position": [round(x, 4) for x in pos], "target": [round(x, 4) for x in tgt], "focal_mm": fl,
                 "distance_m": round(math.dist(pos, tgt), 3), "frame_h_m": 0.6}
+    if subject.get("open_walls") and kind in ("close", "medium") and not az:
+        # in a cabin a camera sees into, a shot of the sitter is taken from the side of their front: the face
+        # three-quarter on, the side glass and what is outside behind them (square on, a wall stood behind the
+        # head in every shot and the outside was never in a frame with the face, 11-15)
+        az = CABIN_AZ_DEG[kind]
     if subject.get("lying") and kind in ("close", "medium", "full"):
         # lying: the frame is sized in metres along the bed (a head's height in z says nothing here), aimed at the
         # head, the chest or the body's middle, from above the bed's side

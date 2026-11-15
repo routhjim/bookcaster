@@ -84,27 +84,17 @@ def test_unlit_thing_keeps_its_look():
     assert "fringed pelmet, gold" in redraw.set_words({"things": [t]})
 
 
-def test_a_cabins_view_is_worded_by_which_way_the_camera_looks(tmp_path):
+def test_a_cabins_view_is_told_for_whatever_glass_the_frame_shows(tmp_path):
     import json
     view = {"name": "outside_view_1", "words": "a dark mountain of ice, near", "ahead": [0.0, -1.0], "all": ["outside_view"]}
     cams = [{"name": "fwd", "position": [0, 2, 1.2], "target": [0, 0, 1.2], "view": view, "setting": "the director's words"},
-            {"name": "back", "position": [0, -2, 1.2], "target": [0, 0, 1.2], "view": view, "setting": "the director's words"},
+            {"name": "placed", "position": None, "target": None, "view": view, "setting": "the director's words"},
             {"name": "plain", "position": [0, 2, 1.2], "target": [0, 0, 1.2], "setting": "the director's words"}]
     (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": cams}))
-    fwd, back, plain = (redraw.setting_words(tmp_path, n) for n in ("fwd", "back", "plain"))
-    assert "ahead through the canopy: a dark mountain of ice, near" in fwd
-    assert "mountain" not in back and "looks back into the cabin" in back      # the view is behind the camera
+    fwd, placed, plain = (redraw.setting_words(tmp_path, n) for n in ("fwd", "placed", "plain"))
+    assert "seen through its glass" in fwd and "a dark mountain of ice, near." in fwd
+    assert placed == fwd                                # (the engine hangs the view where each camera looks)
     assert plain == " In this shot: the director's words"                       # a place with no views: as before
-
-
-def test_a_cabins_view_reads_a_placed_cameras_aim_from_the_staged_scene(tmp_path):
-    import json
-    view = {"name": "outside_view_1", "words": "a dark mountain of ice, near", "ahead": [0.0, -1.0], "all": ["outside_view"]}
-    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
-        {"name": "auto", "position": None, "target": None, "view": view, "setting": "the director's words"}]}))
-    (tmp_path / "truth.json").write_text(json.dumps({"shots": {"auto": {"camera": {
-        "position": [0, 2, 1.2], "target": [0, 0, 1.2]}}}}))
-    assert "ahead through the canopy: a dark mountain of ice, near" in redraw.setting_words(tmp_path, "auto")
 
 
 def test_what_a_person_holds_is_told_except_in_a_close_shot(tmp_path):
@@ -116,3 +106,13 @@ def test_what_a_person_holds_is_told_except_in_a_close_shot(tmp_path):
     assert "holds in the hands, not worn: helmet (a dark rounded pilot helmet)." in w
     assert redraw.holds_words(tmp_path, "c1", ppl, {}, "close") == ""        # the hands are out of a close shot
     assert redraw.holds_words(tmp_path, "c2", ppl, {}, "medium") == ""
+
+
+def test_what_a_person_has_on_is_told_in_every_kind_of_shot(tmp_path):
+    import json
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "c1", "wears": {"a": "a dark flight helmet with its visor up"}}, {"name": "c2"}]}))
+    ppl = [("a", [0.3, 0.1, 0.6, 1.0], 10.0, "sitting", 10.0, None)]
+    w = redraw.wears_words(tmp_path, "c1", ppl, {})
+    assert "has on, worn and not held: a dark flight helmet with its visor up." in w
+    assert redraw.wears_words(tmp_path, "c2", ppl, {}) == ""

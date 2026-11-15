@@ -376,7 +376,7 @@ class Story:
     def step_stage(self, place):
         d = self.d(place)
         shutil.rmtree(d / "seq", ignore_errors=True)
-        (d / "seq").mkdir()
+        (d / "seq").mkdir(exist_ok=True)      # (a stopped run's last scene may still be writing into it)
         prev = None
         for f in sorted((d / "specs").glob("pl_g*.json")):
             rc = sh([PY, HERE / "scenes" / "speakers.py", f] + (["--prev", prev] if prev else []),
@@ -476,12 +476,32 @@ class Story:
         log(f"{place}: {sum(r['key'] for r in rows)} of {len(self.shots_of(place))} shots have a key")
         return True
 
+    def _room_picture(self, place, rows) -> list:
+        """The picture a drawn key takes its room from: one of the place's own engine keys, the widest there is (a
+        full shot before a medium before a close), so a drawn shot stands in the room the shots around it show; with
+        no engine key, the place's concept picture. (Drawn from the concept, the drawn shots of a built room were
+        in another room than its engine keys: darker walls, other bunks, 11-15.)"""
+        d = self.d(place)
+        have = {r["shot"] for r in rows if r["key"] and not r.get("drawn")}
+        rank = {"wide": 0, "full": 1, "medium": 2, "close": 3}
+        best = None
+        for sp in sorted((d / "seq").glob("pl_g*/spec_round0.json")):
+            for c in json.loads(sp.read_text()).get("cameras") or []:
+                k = (rank.get(c.get("kind"), 9), -len(c.get("show") or []))
+                if c.get("plan_id") in have and (self.keys / f"{c['plan_id']}_s0.png").exists() and \
+                        (best is None or k < best[0]):
+                    best = (k, self.keys / f"{c['plan_id']}_s0.png")
+        if best:
+            return [str(best[1])]
+        return [str(d / "concept.png")] if (d / "concept.png").exists() else []
+
     def step_drawn(self, place):
         """The shots the engine has no key for are drawn straight from the plan's own picture of them, the people
         from their sheets and LoRAs: every shot of a place the story only glances at (DRAWN_MAX_SHOTS or fewer: a
         memory, a thing imagined, never built), and in a built place each shot whose staging failed its checks (two
         people in one bunk; a cut showed black there). A drawn picture is a key when it shows as many people as the
-        plan puts in it (the first of DRAWN_SEEDS that does); the room of a built place is its concept picture's."""
+        plan puts in it (the first of DRAWN_SEEDS that does); the room of a built place is that of its engine keys
+        (_room_picture)."""
         d = self.d(place)
         kp = d / "keys.json"
         rows = [r for r in (json.loads(kp.read_text()) if kp.exists() else []) if not r.get("drawn")]
@@ -493,7 +513,7 @@ class Story:
         out.mkdir()
         style = self.book / "art_style.txt"
         look = (style.read_text().strip().rstrip(".") + ".") if style.exists() else ""
-        room = [str(d / "concept.png")] if rows and (d / "concept.png").exists() else []
+        room = self._room_picture(place, rows) if rows else []
         jobs, facts = [], {}
         for i in todo:
             s = self.plan[i][0]
@@ -510,7 +530,8 @@ class Story:
             n = len(vis)
             only = ("Nobody is in the picture." if not n else
                     f"Exactly {n} {'person is' if n == 1 else 'people are'} in the picture, each of them once.")
-            where = " The room is the one of the last reference picture." if room else ""
+            where = (" The room is the one of the last reference picture: its walls, floor, furniture and light; "
+                     "whoever stands in that picture is not taken over from it.") if room else ""
             # (a sheet shows its person twice, near and whole, and a picture of one person alone copied both: three
             # of three drawings had the child twice, told in words or not. One person alone is drawn from their
             # LoRA; with others in the picture the sheets tell them apart)

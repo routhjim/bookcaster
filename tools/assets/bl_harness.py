@@ -613,6 +613,8 @@ def bake(ob):
             _, gp = _principled(sl.material)
             gmat = bpy.data.materials.new(f"M_{AID}_Glass" + (str(len(gmats) + 1) if gmats else ""))
             gmat.use_nodes = True
+            if SPEC.get("seen_from_inside"):              # (a shell's panes, like its walls, have no back)
+                gmat.use_backface_culling = True
             gpr = gmat.node_tree.nodes["Principled BSDF"]
             for k in ("Base Color", "Roughness", "IOR", "Transmission Weight", "Metallic", "Alpha",
                       "Emission Color", "Emission Strength"):

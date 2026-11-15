@@ -1,6 +1,6 @@
 """A cabin people sit inside, as a shell seen from within: one panorama picture of its inside (equirectangular, taken
 from the head of whoever sits in it) -> its depth (MoGe-2, a panorama split into views and merged) -> a mesh of
-everything the picture shows, facing inward, with the panes of its windows left open (CLIPSeg finds them), the
+everything the picture shows, facing inward, with the panes of its windows made glass (CLIPSeg finds them), the
 surface behind each near thing carried on behind it, and the picture as its texture.
 
     python pano_shell.py PICTURE OUT.glb [--grid 512] [--device cuda]
@@ -26,7 +26,10 @@ import numpy as np
 EYE_UP_M = 0.78             # a sitter's eyes above the seat
 SEAT_W_M = 0.56             # the width a person takes
 PANE_MIN = 0.004            # a pane is at least this share of the picture
-PANE_SURE = 0.5             # ... and at least this sure, against the surest pane (a dark screen is not glass)
+PANE_SURE = 0.3             # ... and at least this sure, against the surest pane (a dark screen is not glass)
+GLASS_KEY = (0, 0, 255)     # the panes' colour in the shell's picture
+GLASS_REGION = {"name": "pane", "material": "glass", "hsv": [[0.62, 0.70], [0.9, 1.0], [0.9, 1.0]],
+                "color": [0.95, 0.97, 1.0], "rough": 0.02, "ior": 1.0}   # ... and what the asset chain makes of it (flat, clear)
 VIEW_PX = 512               # the side of each view the panorama is split into for the depth model
 
 
@@ -77,8 +80,19 @@ def glass_of(im, device: str) -> np.ndarray:
         acc[:, xs] += np.asarray(Image.fromarray((p * 255).astype(np.uint8)).resize((h, h), Image.BILINEAR)) / 255.0
         cnt[:, xs] += 1
     prob = acc / np.maximum(cnt, 1)
-    raw = ndi.binary_closing(ndi.binary_opening(prob > 0.25, iterations=2), iterations=3)
-    raw = np.concatenate([raw, raw[:, :1]], 1)                      # a pane over the seam is one pane
+    # a pane is a dark even patch (the picture is drawn with a plain even darkness outside) that the segmenter takes
+    # for a window. The segmenter alone marks a window whole, its bars and frame with it, and misses the smaller
+    # panes; darkness alone would take a dark screen. So: how dark glass is, is learnt from where the segmenter is
+    # surest; every dark patch is then a pane or not by how sure the segmenter is of it, against the surest.
+    lum = ndi.uniform_filter(np.asarray(im.convert("L"), np.float32), 5, mode="wrap")
+    core = prob > 0.6
+    if core.sum() < 100:
+        return np.zeros((h, w), bool)
+    g0 = np.asarray(im.convert("L"), np.float32)
+    rough = np.sqrt(np.maximum(ndi.uniform_filter(g0 * g0, 7, mode="wrap") - ndi.uniform_filter(g0, 7, mode="wrap") ** 2, 0))
+    dark = ndi.binary_opening((lum <= float(np.percentile(lum[core], 90)) * 1.15 + 2.0)
+                              & (rough <= float(np.percentile(rough[core], 90)) * 1.5 + 0.5), iterations=2)
+    raw = np.concatenate([dark, dark[:, :1]], 1)                    # a pane over the seam is one pane
     lab, n = ndi.label(raw)
     for i in np.unique(lab[:, -1][lab[:, -1] > 0]):
         j = lab[:, 0][lab[:, -1] == i]
@@ -86,10 +100,12 @@ def glass_of(im, device: str) -> np.ndarray:
             lab[lab == i] = j.max()
     lab = lab[:, :-1]
     ids = [i for i in np.unique(lab) if i and (lab == i).mean() > PANE_MIN]
+    sure = {i: float(prob[lab == i].mean()) for i in ids}
+    print("panes", sorted(((round(float((lab == i).mean()), 4), round(v, 2)) for i, v in sure.items()), reverse=True))
     if not ids:
         return np.zeros((h, w), bool)
-    sure = {i: float(prob[lab == i].mean()) for i in ids}
-    return np.isin(lab, [i for i in ids if sure[i] >= PANE_SURE * max(sure.values())])
+    panes = np.isin(lab, [i for i in ids if sure[i] >= PANE_SURE * max(sure.values())])
+    return ndi.binary_fill_holes(ndi.binary_closing(panes, iterations=6))       # (a pane is whole: no specks in it)
 
 
 STEEP_DEG = 78.0            # a face turned further than this from facing the eye is an edge seen end on, not a surface
@@ -142,12 +158,21 @@ def shell(depth: np.ndarray, glass: np.ndarray, grid: int):
     ys, xs = ((np.arange(gh) + 0.5) * H / gh).astype(int), ((np.arange(gw) + 0.5) * W / gw).astype(int)
     # (a pixel beside a depth jump holds a mix of near and far: the grid takes the picture's median round each point)
     d = ndi.median_filter(depth, size=max(3, (W // gw) | 1), mode="wrap")[np.ix_(ys, xs)].astype(np.float64)
-    g = ndi.binary_dilation(glass, iterations=2)[np.ix_(ys, xs)]
+    g = glass[np.ix_(ys, xs)]
     dirs = spherical_uv_to_directions(utils3d.numpy.image_uv(width=gw, height=gh))
     dirs = np.stack([-dirs[..., 1], dirs[..., 0], dirs[..., 2]], -1)  # the picture's middle (-x there) is ahead: -y
     u = (np.arange(gw + 1) + 0.5) / gw                                # one more column past the seam, u past the edge
     v = 1 - (np.arange(gh) + 0.5) / gh
     fd, sr, sc, seed = behind(d, g)
+    # each pane's own surface: the distance carried in from the frame round it (through the glass the depth model
+    # saw the dark outside, at no distance one could use), smoothed across the pane
+    gd = d.copy()
+    if g.any() and not g.all():
+        near = ndi.distance_transform_edt(g, return_distances=False, return_indices=True)
+        gd = d[near[0], near[1]]
+        for _ in range(60):
+            sm = (np.roll(gd, 1, 1) + np.roll(gd, -1, 1) + np.vstack([gd[:1], gd[:-1]]) + np.vstack([gd[1:], gd[-1:]])) / 4
+            gd = np.where(g, sm, gd)
 
     def wrap(x):                                                      # the first column again after the last
         return np.concatenate([x, x[:, :1]], 1)
@@ -162,6 +187,7 @@ def shell(depth: np.ndarray, glass: np.ndarray, grid: int):
     # (nor a sliver along such an edge: seen from the side it hung in the air as a shard, 11-15)
     steep = 1.0 + (2 * np.pi / gw) * np.tan(np.radians(STEEP_DEG))
     q1 = quads[~flat(g).any(1) & (flat(d).max(1) < steep * flat(d).min(1))]
+    qg = quads[flat(g).any(1)]                                        # the panes (their own smooth surface)
     # what is behind the near things: carried on from the far side of each jump, in the far side's own colour; where
     # the far side is glass it stays open
     fq = flat(fd)
@@ -170,13 +196,13 @@ def shell(depth: np.ndarray, glass: np.ndarray, grid: int):
     q2 = quads[(fq > 0).all(1) & (fq.max(1) < steep * fq.min(1)) & ~flat(g[sr, sc]).any(1) & ~flat(seed).all(1)
                & (uq.max(1) - uq.min(1) < 0.5)]
     n1 = idx.size
-    vtx = np.concatenate([(wrap(dirs[..., k]) * wrap(d)).reshape(-1) for k in range(3)]
+    vtx = np.concatenate([(wrap(dirs[..., k]) * wrap(gd)).reshape(-1) for k in range(3)]
                          + [(wrap(dirs[..., k]) * wrap(fd)).reshape(-1) for k in range(3)]).reshape(2, 3, -1)
     vtx = np.concatenate([vtx[0].T, vtx[1].T])
     uv1 = np.stack(np.meshgrid(np.clip(u, 0, 1), v), -1).reshape(-1, 2)
     uv2 = np.stack([wrap(su), wrap(1 - (sr + 0.5) / gh)], -1).reshape(-1, 2)
     uv = np.concatenate([uv1, uv2])
-    quads = np.concatenate([q1, q2 + n1])
+    quads = np.concatenate([q1, qg, q2 + n1])
     faces = np.concatenate([quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]])
     c = vtx[faces]
     n = np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0])
@@ -216,15 +242,20 @@ def main():
     depth = depth_of(np.asarray(im), a.device)
     glass = glass_of(im, a.device)
     vtx, faces, uv, eye = shell(depth, glass, a.grid)
+    # the panes are painted one flat key colour in the shell's own picture: the asset chain makes what has that
+    # colour glass (model_img3d "regions": GLASS_REGION)
+    tex = np.asarray(im).copy()
+    tex[glass] = GLASS_KEY
+    im_tex = Image.fromarray(tex)
     lo, hi = vtx.min(0), vtx.max(0)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     yup = np.stack([vtx[:, 0], vtx[:, 2], -vtx[:, 1]], -1)            # glTF is y up
-    trimesh.Trimesh(yup, faces, visual=trimesh.visual.TextureVisuals(uv=uv, image=im), process=False).export(out)
+    trimesh.Trimesh(yup, faces, visual=trimesh.visual.TextureVisuals(uv=uv, image=im_tex), process=False).export(out)
     Image.fromarray((glass * 255).astype(np.uint8)).save(out.with_name(out.stem + "_glass.png"))
     facts = {"eye_m": [round(v, 3) for v in eye], "bounds_m": [lo.round(3).tolist(), hi.round(3).tolist()],
              "size_m": (hi - lo).round(3).tolist(), "faces": int(len(faces)), "glass_share": round(float(glass.mean()), 3),
-             "seat": seat_under(eye)}
+             "seat": seat_under(eye), "regions": [GLASS_REGION]}
     out.with_suffix(".json").write_text(json.dumps(facts, indent=1))
     print(json.dumps(facts))
     if facts["glass_share"] < 0.02:

@@ -534,6 +534,20 @@ if LIE and LIE.get("cover", True):
     # the hem: a little toward the feet from the shoulders' line (head and shoulders show)
     sh_ = (J["upperarm_l"] + J["upperarm_r"]) / 2
     hem_u = float((sh_[:2] - hd_) @ u_) + float(LIE.get("hem_below_shoulders_m", 0.08))
+    # ... and never above the body's own shoulders: on a figure with a large head (a child) the skeleton's shoulder
+    # line stood at the chin and the hem lay across the mouth (11-15). The neck is where the body is narrowest
+    # between the crown and the chest; the hem lies a hand's breadth toward the feet from where it has widened again.
+    _pu, _pv = (X[:, :2] - hd_) @ u_, (X[:, :2] - hd_) @ v_
+    _top = float(_pu.min())
+    _bins = np.arange(_top + 0.06, _top + 0.60, 0.01)
+    _wid = np.array([np.ptp(_pv[(_pu >= b_) & (_pu < b_ + 0.01)]) if ((_pu >= b_) & (_pu < b_ + 0.01)).sum() > 8 else np.nan
+                     for b_ in _bins])
+    if np.isfinite(_wid).sum() > 10:
+        _ok = np.where(np.isfinite(_wid))[0]
+        _neck = _ok[int(np.argmin(_wid[_ok]))]
+        _full = np.nanmax(_wid[_neck:])
+        _sh = next((i for i in range(_neck, len(_bins)) if np.isfinite(_wid[i]) and _wid[i] >= 0.8 * _full), _neck)
+        hem_u = max(hem_u, float(_bins[_sh]) + float(LIE.get("hem_below_shoulders_m", 0.08)))
     over = float(LIE.get("overhang_m", 0.22))
     step_ = 0.02
     us = np.arange(hem_u, cu.max() + 0.12, step_)

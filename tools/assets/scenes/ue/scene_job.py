@@ -599,12 +599,28 @@ def run(job):
                         wild.append(a_)
             # a cabin's view outside: this shot's backdrop shown, the other views' hidden for this still
             vw_ = c.get("view") or {}
+            moved = []
             for a_ in act.get_all_level_actors() if vw_.get("all") else []:
                 lb = a_.get_actor_label()
                 if lb in vw_["all"] and lb != vw_.get("name") and not a_.is_hidden_ed():
                     a_.set_is_temporarily_hidden_in_editor(True)
                     a_.set_actor_hidden_in_game(True)
                     wild.append(a_)
+                elif lb == vw_.get("name") and vw_.get("ahead"):
+                    # the shot's view stands where this camera looks, beyond whoever it frames, as a painted
+                    # backdrop is hung behind the actors for each set-up: whichever pane is behind them shows it
+                    # (standing only ahead of the nose, every camera looking back or across saw the far dark)
+                    d_ = [cs["target"][0] - cs["position"][0], cs["target"][1] - cs["position"][1]]
+                    n_ = math.hypot(*d_)
+                    if n_ > 1e-6:
+                        d_ = [d_[0] / n_, d_[1] / n_]
+                        l0, r0 = a_.get_actor_location(), a_.get_actor_rotation()
+                        moved.append((a_, l0, r0))
+                        at_ = [cs["target"][0] + d_[0] * float(vw_.get("beyond_m", 14.0)),
+                               cs["target"][1] + d_[1] * float(vw_.get("beyond_m", 14.0))]
+                        turn = math.degrees(math.atan2(d_[1], d_[0]) - math.atan2(vw_["ahead"][1], vw_["ahead"][0]))
+                        a_.set_actor_location(unreal.Vector(at_[0] * 100.0, -at_[1] * 100.0, l0.z), False, False)
+                        a_.set_actor_rotation(unreal.Rotator(r0.roll, r0.pitch, r0.yaw - turn), False)
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()
@@ -647,6 +663,9 @@ def run(job):
             for a_ in wild:
                 a_.set_is_temporarily_hidden_in_editor(False)
                 a_.set_actor_hidden_in_game(False)
+            for a_, l0, r0 in moved:
+                a_.set_actor_location(l0, False, False)
+                a_.set_actor_rotation(r0, False)
             shot = {"name": c["name"], "path": path, "guides": guides, "truth": truth(cs, r["subjects"]), "attach_ticks": shot_ticks, "kind": c["kind"], "camera": cs, "frame_check": chk, "others_check": everyone,
                     "attach": att, "still_s": round(time.time() - ts, 2), "t_s": round(time.time() - t0, 2)}
             if not all(v["ok"] for v in att.values()):

@@ -248,29 +248,12 @@ def setting_words(sd: Path, cam: str) -> str:
         return ""
     c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
     vw = c.get("view") or {}
-    if vw.get("ahead") and not (c.get("position") and c.get("target")):
-        # a camera the scene tool placed has no position in the spec: the staged one is in the scene's truth
-        # (without it every cabin shot fell through to the plain setting and no view reached the redraw, 11-14)
-        tf = sd / "truth.json"
-        tc = ((json.loads(tf.read_text()).get("shots") or {}).get(cam) or {}).get("camera") if tf.exists() else None
-        c = {**c, **{k: (tc or {}).get(k) for k in ("position", "target")}}
-    if vw.get("ahead") and c.get("position") and c.get("target"):
-        # a cabin with a view outside: what the frame shows of it depends on which way the camera looks. Looking
-        # the way the cabin faces, the view of this shot is ahead through the canopy; looking back at whoever sits
-        # in it, the view is behind the camera and what is behind the person is the cabin's rear wall (told it was
-        # black space there, the redraw painted the wall out, 11-14)
-        # (told of the view regardless, the redraw painted its mountain behind the pilot's seat, 11-14)
-        d = [c["target"][0] - c["position"][0], c["target"][1] - c["position"][1]]
-        n = (d[0] ** 2 + d[1] ** 2) ** 0.5 or 1.0
-        fwd = (d[0] * vw["ahead"][0] + d[1] * vw["ahead"][1]) / n
-        if fwd > 0.25:
-            return f" In this shot, ahead through the canopy: {vw['words'].strip()}." if vw.get("words") else ""
-        if fwd < -0.25:
-            return (" In this shot the camera looks back into the cabin: behind the person is the cabin's own rear "
-                    "wall, as the picture shows it: a solid wall of the cabin's own material, with no window in it and "
-                    "nothing of the outside seen there.")
-        return (f" In this shot, to one side through the canopy: {vw['words'].strip()}; the rest of the windows show "
-                "black space with a few faint stars.") if vw.get("words") else ""
+    if vw.get("ahead"):
+        # a cabin with a view outside: the engine hangs this shot's view where its camera looks (scene_job), so
+        # whatever glass is in the frame shows it; the walls and frames between the panes are the cabin's own
+        return (f" In this shot, outside the cabin, seen through its glass wherever a pane is in the picture: "
+                f"{vw['words'].strip().rstrip('.')}. The glass sits in the cabin's own frame, which closes it all "
+                "round; the cabin's walls stay as the picture shows them.") if vw.get("words") else ""
     return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
 
 
@@ -288,6 +271,23 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
         if held.get(k):
             who = nm.get(k, "the person")
             out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}.")
+    return (" " + " ".join(out)) if out else ""
+
+
+def wears_words(sd: Path, cam: str, ppl: list, cast: dict | None) -> str:
+    """What each person in the frame has on in this shot beyond their usual clothes, from the staged camera
+    ("wears", the director's account): the figures wear their usual look in every shot."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    worn = c.get("wears") or {}
+    nm = names(ppl, cast or {})
+    out = []
+    for k in [p[0] for p in ppl]:
+        if worn.get(k):
+            who = nm.get(k, "the person")
+            out.append(f"{who[0].upper() + who[1:]} has on, worn and not held: {worn[k]}.")
     return (" " + " ".join(out)) if out else ""
 
 
@@ -732,7 +732,8 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
                          + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
-                         + facing_to_words(sd, ppl, cast) + holds_words(sd, cam, ppl, cast, kind),
+                         + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast)
+                         + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
                          + [crops[t["name"]] for t in sorted(sh.get("things") or [], key=lambda t: -t.get("mask_area", 0))

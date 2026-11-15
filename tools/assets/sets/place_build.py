@@ -232,7 +232,6 @@ def with_concept(spec: dict, concept: dict) -> dict:
     return sp
 
 
-FAR_WORDS = "the empty dark away from the view: black space with a few faint far stars, nothing else"
 VIEW_SIZE_M = (48.0, 24.0)       # a view's picture: wide enough to fill a canopy from the seats
 VIEW_AHEAD_M = 12.0              # how far beyond the cabin it stands
 VIEW_EMIT = 30.0                 # the picture's own light
@@ -338,19 +337,8 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
                                              round(ht / 2 - VIEW_SIZE_M[1] / 2, 3)],
                                 "facing": [round(-f[0], 4), round(-f[1], 4)]})
     out["views"] = {"by_shot": {k: names[v] for k, v in per_shot.items() if v in names},
-                    "words": {nm: vw for vw, nm in names.items()}, "ahead": [round(f[0], 4), round(f[1], 4)]}
-    # away from the view (behind the cabin and to its sides) is the far dark: a camera looking back at the pilot
-    # saw the stage's void, and the redraw put the view's mountain there
-    fid = view_id(FAR_WORDS)
-    if (lib / "prop" / fid / "asset.json").exists():
-        dd = ln / 2 + VIEW_AHEAD_M
-        lf = [-f[1], f[0]]
-        for nm, (vx, vy) in (("outside_far_back", (-f[0], -f[1])), ("outside_far_left", (lf[0], lf[1])),
-                             ("outside_far_right", (-lf[0], -lf[1]))):
-            out["fixtures"].append({"asset": fid, "name": nm, "outside": True, "view_words": FAR_WORDS,
-                                    "position": [round(x + vx * dd, 3), round(y + vy * dd, 3),
-                                                 round(ht / 2 - VIEW_SIZE_M[1] / 2, 3)],
-                                    "facing": [round(-vx, 4), round(-vy, 4)]})
+                    "words": {nm: vw for vw, nm in names.items()}, "ahead": [round(f[0], 4), round(f[1], 4)],
+                    "beyond_m": VIEW_AHEAD_M + 2.0}   # (a still hangs its view this far beyond what it frames)
     # (a made cabin is a closed shell: a light outside its nose lit nobody, so the view's light is set inside it,
     # ahead of and above the seats, without shadows)
     # (the lights were set for a cabin 4.75 m high: nearer the people in a lower one, they are that much weaker)
@@ -452,6 +440,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
+    if spec.get("_wears"):                                # what each person has on, shot by shot (place_spec.wears)
+        out["wears"] = spec["_wears"]
     if str(spec.get("_director_crowd") or spec.get("crowd") or "").strip():      # the place's crowd, in the director's words
         out["crowd"] = str(spec.get("_director_crowd") or spec["crowd"]).strip()
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's

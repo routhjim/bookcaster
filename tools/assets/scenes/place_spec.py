@@ -189,10 +189,14 @@ def ask(url: str, text: str, cache: Path) -> str:
 VIEWS_ASK = """A story has these shots, in order, in the place "{place}". What is seen outside this place, through its
 windows or canopy, is in general: {outside}.
 
-For each shot write what is seen outside AT THAT MOMENT of the story, as the director's words for the shots tell it:
-what is in view, how near it has come, how it is lit. Under 16 words each, a plain description a painter could
-paint, nothing about the people or the inside of the place. When nothing outside has changed since the shot before,
-repeat that shot's words exactly, letter for letter. Use at most {most} different descriptions in all.
+For each shot write what is seen outside AT THAT MOMENT of the story, as the director's words for the shots tell it.
+Each description is given, alone, to a painter who knows nothing else of the story and paints one picture from it,
+so it must be whole in itself: first what surrounds the place there (the kind of surroundings it is in, and what
+fills the rest of the view: its sky or its dark, its ground or the lack of any), then what is in view, how near it
+has come and how large it stands, and the light and its colour. Say every thing by what it is and looks like, never
+by a name the story gave it or by a likeness to something else that the painter would paint instead. 20 to 40 words
+each, nothing about the people or the inside of the place or its windows. When nothing outside has changed since the
+shot before, repeat that shot's words exactly, letter for letter. Use at most {most} different descriptions in all.
 
 The shots:
 {shots}
@@ -228,6 +232,47 @@ def views(plan: dict, ids: list, place: str, outside: str, url: str, cache: Path
         text = base + "\n\nYour previous answer:\n" + json.dumps(got) + "\nIt had these faults; answer again:\n" + \
             "\n".join(f"- {b}" for b in bad)
     return {}
+
+
+WEARS_ASK = """A story is told below, whole. Then come its shots in the place "{place}", in order, each with the
+people in it and what happens.
+
+For each shot and each person in it, say what that person has ON at that moment beyond their everyday clothes:
+anything on the head or face, on the hands, or put on over the clothes for what they are doing. Take it from what
+the story tells and from what follows from it: a thing the story has someone take off was on them until then, a thing
+it has them put on is on them from then, and a thing they hold in a hand is not worn. One short plain description
+for each thing, in the same words every time it is the same thing. An empty list when the person has nothing on
+beyond their everyday clothes.
+
+The story:
+<<<
+{story}
+>>>
+
+The shots:
+{shots}
+
+Answer with one JSON object and nothing else: {{"<shot id>": {{"<person>": ["<thing>", ...]}}, ...}} with every shot id."""
+
+
+def wears(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
+    """{shot id: {person: [what they have on beyond their everyday clothes]}}: the director's account, from the whole
+    story (a pilot flew bare-headed in every shot: the story only says he pulled his helmet off after landing).
+    {} when the answer is not usable."""
+    sys.path.insert(0, str(HERE))
+    import staging_pass as SP
+    lines = "\n".join(f"{i}: " + ", ".join(p["name"] for p in plan[i][0].get("people") or [])
+                      + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}" for i in ids)
+    got = parse(ask(url, WEARS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9), shots=lines), cache))
+    if not isinstance(got, dict):
+        return {}
+    out = {}
+    for i in ids:
+        row = got.get(i) if isinstance(got.get(i), dict) else {}
+        who = {p["name"] for p in plan[i][0].get("people") or []}
+        out[i] = {n: [str(t).strip() for t in v if str(t).strip()] for n, v in row.items()
+                  if n in who and isinstance(v, list) and any(str(t).strip() for t in v)}
+    return out
 
 
 def parse(txt: str):
@@ -268,6 +313,8 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
     if str(out.get("outside") or "").strip() and len(ids) > 1:
         out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
+    if any(plan[i][0].get("people") for i in ids):
+        out["_wears"] = wears(plan, ids, place, timeline, url, cache)
     if faults:
         out["_faults"] = faults
     return out, base

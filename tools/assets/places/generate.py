@@ -255,7 +255,7 @@ def make_face(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> 
     return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
 
 
-def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
+def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run, style: str = "") -> dict:
     """The backdrop of a place's view outside (sets/place_build.py view_spec): its picture drawn through the line from
     the view's own words, then the scripted panel's asset chain (bake, engine import)."""
     aid, words = spec["id"], spec["view_words"]
@@ -264,8 +264,10 @@ def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> 
     pic = REFS / aid / "picture.png"
     ra = [sys.executable, str(HERE.parent / "run_asset.py")]
     if not pic.exists():
-        desc = (f"{words[0].upper() + words[1:]}. A wide open view of it, seen from far off, with nothing in the "
-                "foreground: no window, no frame, no vehicle, no people, no writing.")
+        # (the view as its words give it, whole: "seen from far off" drew a far hill where the words had a thing
+        # filling the view, 11-15)
+        desc = (f"{words[0].upper() + words[1:].rstrip('.')}. The view alone, as one looks out at it, filling the "
+                f"whole picture: no window, no frame, no vehicle, no people, no writing.{style}")
         r = run(ra + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_view_{aid}", "--", sys.executable,
                       str(HERE.parent / "refs" / "ref_draw.py"), "picture", aid, "--desc", desc, "--seed", str(seed)])
         log(f"{aid}: view picture rc={r.returncode}")
@@ -341,8 +343,9 @@ def main():
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         each = list(dict.fromkeys(str(v).strip() for v in (spec.get("_views") or {}).values() if str(v).strip()))
-        for vw in [spec["outside"]] + [v for v in each if v != spec["outside"]] + [PB.FAR_WORDS]:
-            out.append(dict(make_view(PB.view_spec(vw), library, seed), kind="view"))
+        sty = f" {str(spec['_style']).strip().rstrip('.')}." if str(spec.get("_style") or "").strip() else ""
+        for vw in [spec["outside"]] + [v for v in each if v != spec["outside"]]:
+            out.append(dict(make_view(PB.view_spec(vw), library, seed, style=sty), kind="view"))
     print(json.dumps(out, indent=1))
     return 0 if all(o["ok"] for o in out) else 1
 

@@ -105,7 +105,8 @@ def resolve(spec, cams_wanted=None):
         n = (f[0] ** 2 + f[1] ** 2) ** 0.5
         bpose = c.get("body_pose")
         if (cj.get("relaxed_arm_steps") and bpose and bpose.get("pose") in ("stand", "stand_relaxed")
-                and not (bpose.get("params") or {}).get("hand_at_lapel", bpose.get("pose") == "stand_relaxed")):
+                and not (bpose.get("params") or {}).get("hand_at_lapel", bpose.get("pose") == "stand_relaxed")
+                and not (bpose.get("params") or {}).get("lie")):        # (lying, the arms rest along the body)
             # the character's own arm clearance (its builder measured it against its clothes) in place of the default
             pr = dict(bpose.get("params") or {})
             pr.setdefault("arm_clear_deg", 0.0)

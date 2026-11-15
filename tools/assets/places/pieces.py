@@ -295,15 +295,14 @@ NEED_WORDS = {"lie": "(a single tier: one mattress at knee height, open to the c
 
 SHELL_WORDS = (
     "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join seamlessly. "
-    "The inside of a {name}, seen from the head of the person sitting in {seat}: {look}. It is a small closed room "
-    "of solid walls with framed panes of glass set into them, not a glass bubble. In the middle of the picture, "
-    "straight ahead and within arm's reach: what that person works at, and above it the framed panes they look out "
-    "through. To the left and to the right: solid side walls rising above the sitter's head, covered with what is "
-    "fitted along them, with one small framed pane in each. At the far left and far right edges of the picture, "
-    "which is directly behind the seat: the rear wall, solid from floor to roof and wider than the seat, plainly "
-    "seen with what is fitted to it, and low in front of it the top of the seat's own small headrest. At the top "
-    "the solid roof; at the bottom the seat's edge and the floor. Empty: no people. Through every pane of glass "
-    "only a plain even darkness, nothing else outside.")
+    "The inside of a {name}, seen from the head of the person sitting in {seat}: {look}. In the middle of the "
+    "picture, straight ahead and within arm's reach: what that person works at, and above it large panes of glass "
+    "in a heavy frame that they look out through. To the left and to the right: low consoles along the sides up to "
+    "the sitter's elbows, and above them more large panes in the same heavy frame, up to the roof. At the far left "
+    "and far right edges of the picture, which is directly behind the seat: the rear wall, solid from floor to "
+    "roof and wider than the seat, plainly seen with what is fitted to it, and low in front of it the top of the "
+    "seat's own small headrest. At the top the frame's ribs and the roof; at the bottom the seat's edge and the "
+    "floor. Empty: no people. Through every pane of glass only a plain even darkness, nothing else outside.")
 
 
 def generation_request(piece, K=None, python="python", tools=None, work=None):
@@ -337,6 +336,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
         n = int(piece.get("seats_abreast") or 1)
         seat = "its single seat" if n < 2 else "the leftmost of its seats, which stand side by side"
         spec["made_as"] = "shell"
+        aid = _asset_id(kind, look + " " + hashlib.sha1(SHELL_WORDS.encode()).hexdigest()[:8])   # (new words, new shell)
+        spec["id"] = aid
         steps = [
             {"step": "draw", "what": "one panorama of the inside, from the seat", "station": C.IMAGE_STATION,
              "kind": "refs", "picture": "picture.png",
