@@ -575,13 +575,17 @@ def main():
         if views_.get("words"):               # what is outside in this shot: its backdrop, its words, the way ahead
             vn = (views_.get("by_shot") or {}).get(sid) or "outside_view"
             cam["view"] = {"name": vn, "words": views_["words"].get(vn, ""), "ahead": views_.get("ahead"),
-                           "beyond_m": views_.get("beyond_m"), "all": sorted(views_["words"])}
+                           "beyond_m": views_.get("beyond_m"), "width_m": views_.get("width_m"),
+                           "all": sorted(views_["words"])}
         # what each person has on in this shot beyond their usual clothes (the set's "wears": the director's
         # account from the whole story); the figures wear their usual look, so the redraw is told
         worn_ = {names[n_]: ", ".join(t_) for n_, t_ in ((set_spec_.get("wears") or {}).get(sid) or {}).items()
                  if n_ in names and t_}
         if worn_:
             cam["wears"] = worn_
+        shut_ = [names[n_] for n_ in ((sp or {}).get("eyes") or {}).get(sid) or {} if n_ in names]
+        if shut_:                             # whose eyes are closed as the shot opens (the pass's closed answer)
+            cam["eyes_closed"] = shut_
         # what each person holds in this shot (the plan's "holds", with the thing's look when the plan gives one):
         # the engine stages no hand props, so the redraw is told (47 shots held a helmet and no key showed one;
         # the video then invented it, on his head in one shot and in his hand in the next, 11-14)

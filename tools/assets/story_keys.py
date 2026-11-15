@@ -185,10 +185,15 @@ class Story:
         wear = m.group(1).strip() if m else ""
         pos = "her" if noun in ("woman", "girl") else "his"
         short = wear.split(",")[0]
+        # the book's sheets of this person in something more than their usual look (refs/<person>_<what>-<hash>.png;
+        # a sheet named for a thing's absence is the usual look again)
+        worn = {q.stem[len(sl) + 1:].rsplit("-", 1)[0].replace("_", " "): str(q)
+                for q in sorted(self.video.glob(f"refs/{sl}_*-*.png"))}
+        worn = {n: q for n, q in worn.items() if not n.startswith(("no ", "without "))}
         return {"look": look, "sheet": str(sheets[0]) if sheets else b["sheet"], "lora": b["lora"],
                 "trigger": b["trigger"], "noun": noun, "slug": sl,
                 "words": {"noun": noun, "trigger": b["trigger"], "lora": b["lora"],
-                          "sheet": str(sheets[0]) if sheets else b["sheet"], "wear": wear,
+                          "sheet": str(sheets[0]) if sheets else b["sheet"], "wear": wear, "worn_sheets": worn,
                           "wear_back": f"the back of {pos} {short} and the back of {pos} head",
                           "back_detail": f"the back of {pos} {short}"}}
 

@@ -338,7 +338,8 @@ def cabin_stage(out: dict, spec: dict, library) -> None:
                                 "facing": [round(-f[0], 4), round(-f[1], 4)]})
     out["views"] = {"by_shot": {k: names[v] for k, v in per_shot.items() if v in names},
                     "words": {nm: vw for vw, nm in names.items()}, "ahead": [round(f[0], 4), round(f[1], 4)],
-                    "beyond_m": VIEW_AHEAD_M + 2.0}   # (a still hangs its view this far beyond what it frames)
+                    "beyond_m": VIEW_AHEAD_M + 2.0,   # (a still hangs its view at least this far beyond what it frames)
+                    "width_m": VIEW_SIZE_M[0]}
     # (a made cabin is a closed shell: a light outside its nose lit nobody, so the view's light is set inside it,
     # ahead of and above the seats, without shadows)
     # (the lights were set for a cabin 4.75 m high: nearer the people in a lower one, they are that much weaker)

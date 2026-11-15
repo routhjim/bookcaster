@@ -116,3 +116,10 @@ def test_what_a_person_has_on_is_told_in_every_kind_of_shot(tmp_path):
     w = redraw.wears_words(tmp_path, "c1", ppl, {})
     assert "has on, worn and not held: a dark flight helmet with its visor up." in w
     assert redraw.wears_words(tmp_path, "c2", ppl, {}) == ""
+
+
+def test_a_person_in_something_the_book_has_a_sheet_of_takes_that_sheet():
+    w = {"sheet": "/s/usual.png", "worn_sheets": {"flight helmet": "/s/helmet.png", "rain cape": "/s/cape.png"}}
+    assert redraw.worn_sheet(w, "helmet") == "/s/helmet.png"
+    assert redraw.worn_sheet(w, "a long cape for the rain") == "/s/cape.png"
+    assert redraw.worn_sheet(w, "gloves") is None and redraw.worn_sheet(w, None) is None

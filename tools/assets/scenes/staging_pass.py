@@ -266,6 +266,13 @@ def main():
         if isinstance(back, list) and back:
             res.setdefault("enters", {})[sid] = back
             gone.difference_update(back)
+        # the eyes as the shot opens: a figure's eyes are open in every engine still, and the redraw drew a child
+        # wide awake in each shot of her asleep (11-15)
+        for p in sh.get("people") or []:
+            e_ = ask.choose(q_choose(own, st, f"The shot's own words: {sh.get('action') or ''}\nAre {p['name']}'s eyes "
+                                     "open or closed as this shot starts?", ["open", "closed"]), ["open", "closed"])
+            if e_ == "closed":
+                res.setdefault("eyes", {}).setdefault(sid, {})[p["name"]] = e_
         if sh.get("kind") == "talk":
             res["camera"][sid] = ask.choose(q_choose(psg, st, "This shot shows someone speaking. Which kind of camera "
                                                      "framing does the passage's moment call for?", CAMERAS), CAMERAS)

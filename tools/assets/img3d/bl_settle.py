@@ -587,6 +587,19 @@ if LIE and LIE.get("cover", True):
         h = np.maximum(avg, floor_h)
         h = np.where(drop > 0, np.minimum(h, zt + 0.012 - drop + 0.0), h)
     h = np.maximum(h, zt - 0.30)
+    # cloth lies in folds: soft ridges a hand's width apart running off the body's rise, and smaller creases, a
+    # centimetre or so high (a smooth membrane drew as a flat white slab in every picture of a bed, 11-15)
+    _rng = np.random.default_rng(7)
+    def _waves(cells):
+        a_ = _rng.standard_normal((nu // cells + 3, nv_ // cells + 3))
+        iu_, iv_ = np.arange(nu) / cells, np.arange(nv_) / cells
+        u0, v0 = iu_.astype(int), iv_.astype(int)
+        fu, fv = (iu_ - u0)[:, None], (iv_ - v0)[None, :]
+        fu, fv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)
+        return (a_[np.ix_(u0, v0)] * (1 - fu) * (1 - fv) + a_[np.ix_(u0 + 1, v0)] * fu * (1 - fv)
+                + a_[np.ix_(u0, v0 + 1)] * (1 - fu) * fv + a_[np.ix_(u0 + 1, v0 + 1)] * fu * fv)
+    _fold = float(LIE.get("cover_fold_m", 0.012))
+    h = np.maximum(h + _fold * _waves(6) + 0.4 * _fold * _waves(2), floor_h - 0.004)
     # the top hem folded back: the first rows stand a little higher (a rolled edge)
     h[:2] += 0.012
     Vg = np.zeros((nu, nv_, 3))

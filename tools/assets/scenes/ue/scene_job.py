@@ -576,7 +576,8 @@ def run(job):
                         for k, v in r["subjects"].items() if k != c.get("subject")}
             eyes = [subj["eye_xy"][0], subj["eye_xy"][1], subj["eye_z"]] if subj else cs["target"]
             focus = math.dist(cs["position"], eyes)
-            ap = c.get("aperture", {"close": 2.8, "medium": 4.0}.get(c["kind"], 8.0))
+            # (a view outside is part of the picture: stopped down, it stays readable behind the face)
+            ap = c.get("aperture", 11.0 if c.get("view") else {"close": 2.8, "medium": 4.0}.get(c["kind"], 8.0))
             cam = cine(c["name"], cs["position"], cs["target"], cs["focal_mm"], ap, focus, res)
             temp.append(cam)
             cams.append((c, cs, chk, cam, everyone))
@@ -616,8 +617,12 @@ def run(job):
                         d_ = [d_[0] / n_, d_[1] / n_]
                         l0, r0 = a_.get_actor_location(), a_.get_actor_rotation()
                         moved.append((a_, l0, r0))
-                        at_ = [cs["target"][0] + d_[0] * float(vw_.get("beyond_m", 14.0)),
-                               cs["target"][1] + d_[1] * float(vw_.get("beyond_m", 14.0))]
+                        # ... as far off as lets the lens take in most of the picture's width (near, a long lens
+                        # saw a quarter of it, blown up to a smear the redraw painted as a wall)
+                        hf_ = framing.hfov(cs["focal_mm"])
+                        far_ = max(float(vw_.get("beyond_m") or 14.0),
+                                   float(vw_.get("width_m") or 48.0) / 2 / math.tan(min(1.4, hf_ * 0.65)))
+                        at_ = [cs["target"][0] + d_[0] * far_, cs["target"][1] + d_[1] * far_]
                         turn = math.degrees(math.atan2(d_[1], d_[0]) - math.atan2(vw_["ahead"][1], vw_["ahead"][0]))
                         a_.set_actor_location(unreal.Vector(at_[0] * 100.0, -at_[1] * 100.0, l0.z), False, False)
                         a_.set_actor_rotation(unreal.Rotator(r0.roll, r0.pitch, r0.yaw - turn), False)

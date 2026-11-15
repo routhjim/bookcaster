@@ -1262,6 +1262,19 @@ def lie_frame(spot, sup):
             "facing": f if sgn > 0 else [-f[0], -f[1]], "bed_facing": f, "bed_xy": [x0, y0]}
 
 
+def bed_cover(lib, bed: str) -> dict:
+    """The cover's colour: the bed's own bedding, as its texture has it (the mean of its lighter half: the mattress
+    and bedding, not the frame). {} when the bed has no texture to read: the cover keeps its plain linen."""
+    tex = Path(lib) / "prop" / bed / "textures" / f"T_{bed}_BaseColor.png"
+    if not tex.exists():
+        return {}
+    import numpy as np
+    from PIL import Image
+    px = np.asarray(Image.open(tex).convert("RGB").resize((64, 64)), np.float32).reshape(-1, 3) / 255.0
+    lum = px.mean(1)
+    return {"cover_rgb": [round(float(v), 3) for v in px[lum >= np.median(lum)].mean(0)]}
+
+
 def lie_pose(pelvis_z_cm, top_z_m, variant):
     """the scene tool's pose steps on the standing pose: onto the back about the hips (head to the actor's back,
     face up), the back on the surface; propped: the chest raised and the head forward"""
@@ -1309,7 +1322,7 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     jt = meas["joints"]
     lj = {"combo": str(combo), "joints": jt, "position": c["position"], "facing": c["facing"], "mode": "push",
           "iters": 0, "shoulder_ease_m": 0.0, "thigh_from": 0.0,
-          "lie": dict(fr, top_z_m=top_z), "out": str(W / f"lying_{bed}_{variant}")}
+          "lie": dict(fr, top_z_m=top_z, **bed_cover(lib, bed)), "out": str(W / f"lying_{bed}_{variant}")}
     jp = W / f"settle_lie_{bed}_{variant}.json"
     jp.write_text(json.dumps(lj, indent=1))
     p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_lie_{bed}_{variant}", "--", "flock",

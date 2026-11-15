@@ -44,6 +44,7 @@ away is said to be seen from behind with no face visible.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -274,6 +275,24 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
     return (" " + " ".join(out)) if out else ""
 
 
+def cam_wears(sd: Path, cam: str) -> dict:
+    """{scene key: what they have on in this shot} from the staged camera ("wears"), {} when it says nothing."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return {}
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    return c.get("wears") or {}
+
+
+def worn_sheet(w: dict, worn: str | None) -> str | None:
+    """The person's own sheet in what they have on now: of the cast entry's "worn_sheets" ({what is worn: sheet})
+    the one sharing most words with the shot's worn things; None when none shares a word."""
+    have = set(re.findall(r"[a-z]+", str(worn or "").lower()))
+    best = max(((len(have & set(re.findall(r"[a-z]+", n.lower()))), p) for n, p in (w.get("worn_sheets") or {}).items()),
+               default=(0, None))
+    return best[1] if best[0] else None
+
+
 def wears_words(sd: Path, cam: str, ppl: list, cast: dict | None) -> str:
     """What each person in the frame has on in this shot beyond their usual clothes, from the staged camera
     ("wears", the director's account): the figures wear their usual look in every shot."""
@@ -288,6 +307,9 @@ def wears_words(sd: Path, cam: str, ppl: list, cast: dict | None) -> str:
         if worn.get(k):
             who = nm.get(k, "the person")
             out.append(f"{who[0].upper() + who[1:]} has on, worn and not held: {worn[k]}.")
+        if k in (c.get("eyes_closed") or []):
+            who = nm.get(k, "the person")
+            out.append(f"{who[0].upper() + who[1:]} has the eyes closed.")
     return (" " + " ".join(out)) if out else ""
 
 
@@ -701,6 +723,7 @@ def main():
                         if wv.get("face_covered"):
                             c2.pop("face_ref", None)
                         cast[k] = c2
+                worn_now = cam_wears(sd, cam)
                 if cast:          # each person's own LoRA on their own region; their sheets as references
                     loras, sheets = [], []
                     for k, b, *_ in ppl:
@@ -718,8 +741,11 @@ def main():
                             j2 = (sh["people"].get(k) or {}).get("joints2d") or {}
                             hh = (j2["chin"][1] - j2["head_top"][1]) if "chin" in j2 and "head_top" in j2 else None
                             loras.append([w["lora"], float(w.get("lora_w", lora_by_head(lw, run, hh, len(ppl)))), area])
-                        if w.get("sheet") and w["sheet"] not in sheets:
-                            sheets.append(w["sheet"])
+                        # (wearing something the book has a sheet of them in, that sheet is their reference here:
+                        # told in words alone that a pilot had his helmet on, no key drew it, 11-15)
+                        ws = worn_sheet(w, worn_now.get(k)) or w.get("sheet")
+                        if ws and ws not in sheets:
+                            sheets.append(ws)
                 else:
                     loras, sheets = [[run["lora"], lw, [0.0, 0.0, 1.0, 1.0]]], [run["sheet"]]
                 for st, seed in [(a, b) for a in run.get("strengths", [0.7]) for b in (run.get("seeds") or [seed])]:
