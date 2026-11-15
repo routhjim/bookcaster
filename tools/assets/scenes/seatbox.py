@@ -119,6 +119,9 @@ def front_of(P: np.ndarray) -> list:
     return best[1]
 
 
+PAN_MIN_M = 0.35                        # the least of a seat pan, front to back
+
+
 def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
     """The seats INSIDE an enclosure (a cockpit, a cab, a carriage): a chair's measure reads the top of the centre
     line, which in a cabin is its roof or canopy. Here a seat is a level patch with headroom above it (no geometry
@@ -136,12 +139,13 @@ def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
     cells = collections.defaultdict(list)
     for i, j, zz in zip(ix, iy, z):
         cells[(int(i), int(j))].append(float(zz))
-    surf = {}
+    surf, roofed = {}, {}
     for k, zs in cells.items():
         zs = sorted(zs)
         for n, zc in enumerate(zs):
             if (zs[n + 1] if n + 1 < len(zs) else 9.0) - zc >= 0.55 and 0.15 < zc < 1.2:
                 surf[k] = zc
+                roofed[k] = n + 1 < len(zs)
                 break
 
     def has(i0, i1, j0, j1, lo, hi):
@@ -158,6 +162,22 @@ def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
             cand[(i, j)] = 1 if bp else -1
     if not cand:
         raise SystemExit("no seat found inside the cabin")
+    # a made cabin has other level, walled patches: the deck of its nose, a sill behind its seats. The interior is
+    # the patch under the canopy (geometry overhead, past the headroom); with no canopy over any, the largest. The
+    # largest alone sat a pilot out on the nose, facing back into the windscreen (11-14).
+    left, comps = set(cand), []
+    while left:
+        stack, comp = [left.pop()], []
+        while stack:
+            k = stack.pop()
+            comp.append(k)
+            for q in [(k[0] + a, k[1] + b) for a in range(-2, 3) for b in range(-2, 3)]:
+                if q in left:
+                    left.remove(q)
+                    stack.append(q)
+        comps.append(comp)
+    best = max(comps, key=lambda c: (sum(roofed[k] for k in c) >= 0.5 * len(c), len(c)))
+    cand = {k: cand[k] for k in best}
     ks = np.array(list(cand))
     f = 1.0 if np.mean(list(cand.values())) > 0 else -1.0             # the sitter faces the cabin's tall end
     xl, xr = x0 + ks[:, 0].min() * C, x0 + (ks[:, 0].max() + 1) * C     # the walled interior, side to side
@@ -174,7 +194,9 @@ def cabin_seat_box(P: np.ndarray, seats: int = 1) -> dict:
     xs, ys, lane_w = [float(v) for v in xs], [float(v) for v in ys], float(lane_w)
     # the interior's rear end is the cabin's sill or bulkhead, not the seat's back: the sitter's back rests a seat
     # back's thickness ahead of it (measured at the end itself, the pilot sat on the rear sill behind his seat)
-    ys[1] -= 0.30
+    # (only where the level runs on behind a seat's own depth: a patch no longer than a seat pan is the pan itself)
+    if ys[1] - ys[0] >= 0.30 + PAN_MIN_M:
+        ys[1] -= 0.30
     return {"seat_z_m": round(seat_z, 3), "front_y_m": round(ys[0], 3), "back_y_m": round(ys[1], 3),
             "inner_x_m": [round(xs[0], 3), round(xs[1], 3)], "arm_z_m": None, "width_m": round(lane_w, 3),
             "depth_m": round(ys[1] - ys[0], 3), "places": [round((xs[0] + xs[1]) / 2, 3)],
