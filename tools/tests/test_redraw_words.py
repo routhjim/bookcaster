@@ -105,3 +105,14 @@ def test_a_cabins_view_reads_a_placed_cameras_aim_from_the_staged_scene(tmp_path
     (tmp_path / "truth.json").write_text(json.dumps({"shots": {"auto": {"camera": {
         "position": [0, 2, 1.2], "target": [0, 0, 1.2]}}}}))
     assert "ahead through the canopy: a dark mountain of ice, near" in redraw.setting_words(tmp_path, "auto")
+
+
+def test_what_a_person_holds_is_told_except_in_a_close_shot(tmp_path):
+    import json
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "c1", "holds": {"a": "helmet (a dark rounded pilot helmet)"}}, {"name": "c2"}]}))
+    ppl = [("a", [0.3, 0.1, 0.6, 1.0], 10.0, "standing", 10.0, None)]
+    w = redraw.holds_words(tmp_path, "c1", ppl, {}, "medium")
+    assert "holds in the hands, not worn: helmet (a dark rounded pilot helmet)." in w
+    assert redraw.holds_words(tmp_path, "c1", ppl, {}, "close") == ""        # the hands are out of a close shot
+    assert redraw.holds_words(tmp_path, "c2", ppl, {}, "medium") == ""

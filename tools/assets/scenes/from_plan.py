@@ -576,6 +576,14 @@ def main():
             vn = (views_.get("by_shot") or {}).get(sid) or "outside_view"
             cam["view"] = {"name": vn, "words": views_["words"].get(vn, ""), "ahead": views_.get("ahead"),
                            "all": sorted(views_["words"])}
+        # what each person holds in this shot (the plan's "holds", with the thing's look when the plan gives one):
+        # the engine stages no hand props, so the redraw is told (47 shots held a helmet and no key showed one;
+        # the video then invented it, on his head in one shot and in his hand in the next, 11-14)
+        held = {names[p_["name"]]: (str(p_["holds"]).strip() + (f" ({lk})" if (lk := next(
+                    (v_ for t_, v_ in (sh.get("things") or {}).items() if t_.lower() in str(p_["holds"]).lower()), "")) else ""))
+                for p_ in sh.get("people") or [] if p_.get("name") in names and str(p_.get("holds") or "").strip()}
+        if held:
+            cam["holds"] = held
         if lis:
             cam["listener"] = lis
         if spk and ck == "over_the_shoulder" and lis:

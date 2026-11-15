@@ -272,6 +272,23 @@ def setting_words(sd: Path, cam: str) -> str:
     return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
 
 
+def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> str:
+    """What each person in the frame holds in this shot, from the staged camera ("holds", the plan's own words):
+    the engine stages no hand props. Not in a close shot: the hands are out of it."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds or kind == "close":
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    held = c.get("holds") or {}
+    nm = names(ppl, cast or {})
+    out = []
+    for k in [p[0] for p in ppl]:
+        if held.get(k):
+            who = nm.get(k, "the person")
+            out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}.")
+    return (" " + " ".join(out)) if out else ""
+
+
 def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
     """Whom each person in the frame is turned toward, from the staged spec ("facing_to"): the redraw kept the
     engine's bodies, but a video model read two men at a window as looking out of it (11-12)."""
@@ -713,7 +730,7 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
                          + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
-                         + facing_to_words(sd, ppl, cast),
+                         + facing_to_words(sd, ppl, cast) + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
                          + [crops[t["name"]] for t in sorted(sh.get("things") or [], key=lambda t: -t.get("mask_area", 0))
