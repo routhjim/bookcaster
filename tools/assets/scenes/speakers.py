@@ -347,7 +347,10 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             f["mask"] = mf
             # cut: the person's visible part reaches the left or right edge (any of it), or the top edge with the
             # head (a medium's waist at the bottom edge is the shot, not a cut)
-            f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))
+            if subjects[k]["measured"].get("lying"):     # (a lying body runs out of the side: frame_facts' head rule)
+                f["cut"] = f["cut"] or (mf["area"] > 0 and mf["top"] and f["head_any"])
+            else:
+                f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))
             f["cut_edges"] = [e for e in ("left", "right", "top") if mf[e]]
             f["head_proj"] = f["head_any"]   # the head inside the frame's bounds (behind someone or not)
             if mf["area"] < LISTENER_AREA["two"] * 0.3:

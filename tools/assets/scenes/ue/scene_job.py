@@ -558,8 +558,11 @@ def run(job):
             subj = r["subjects"][c["subject"]]["measured"] if c.get("subject") else None
             if c["kind"] in ("close", "medium", "full") and not c.get("position"):
                 # inside a cabin an action is at the controls: it is seen from behind the shoulder (the cabin's
-                # "full" view), the quiet shots from in front of the face
-                k_ = "full" if (subj or {}).get("inside") and c.get("shot_kind") == "action" else c["kind"]
+                # "full" view), the quiet shots from in front of the face. In a cabin whose walls a camera sees
+                # through, an action the director framed close is a close on the face (a man in tears was shown
+                # as the back of a head, 11-15)
+                k_ = "full" if (subj or {}).get("inside") and c.get("shot_kind") == "action" and not \
+                    ((subj or {}).get("open_walls") and c["kind"] == "close") else c["kind"]
                 cs = framing.shot(subj, k_, c.get("focal_mm", 50), res, c.get("az", 0.0), c.get("el", 0.0),
                                   c.get("screen_x", 0.5))
             else:

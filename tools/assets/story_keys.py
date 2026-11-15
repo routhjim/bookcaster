@@ -18,6 +18,7 @@ in WORK_DIR/<place>/ when it is done, so a second run takes up where the first s
   stage     every scene group staged in the engine                          (scenes/speakers.py)
   redraw    guides, the redraw, its checks, one re-draw, the pick           (redraw/*.py)
   keys      the accepted keys and their people facts into KEYS_DIR          (scenes/shot_people.py)
+  drawn     the shots left without a key, drawn from the plan's own picture (this file, redraw/count_people.py)
 
 All GPU work goes through the line (run_asset.py --line-cmd); nothing here decides how anything looks. WORK_DIR's
 places.json ({place name: {"slug", "set"}}) and cast.json ({person: figure id}) are written on the first run and
@@ -39,12 +40,13 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
 
-STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys"]
+STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
 LAB = C.UE_HOME / "lab"
 # the redraw's two card scripts and its pose model (the line's image station runs them)
 IMAGE_SH = Path(os.environ.get("STORY_IMAGE_SH", LAB / "redraw4" / "figs" / "run_image.sh"))
+COUNT_SH = Path(os.environ.get("STORY_COUNT_SH", LAB / "redraw5" / "count.sh"))
 CHECK_SH = Path(os.environ.get("STORY_CHECK_SH", LAB / "redraw5" / "check.sh"))
 POSE_MODEL = Path(os.environ.get("STORY_POSE_MODEL", LAB / "redraw5" / "models" / "rtmw_x_256x192.pt"))
 CARD_SH = HERE / "orbit" / "card.sh"
@@ -115,6 +117,10 @@ def llm_down() -> None:
         log("the directing model was still up: stopped")
 
 
+DRAWN_MAX_SHOTS = 2           # a place the story shows in this many shots or fewer is drawn, not built
+DRAWN_SEEDS = (7, 11, 23)     # a drawn key's tries
+SIDE_BOX = {"left": [0.08, 0.12, 0.46, 1.0], "right": [0.54, 0.12, 0.92, 1.0], "center": [0.3, 0.1, 0.7, 1.0],
+            "centre": [0.3, 0.1, 0.7, 1.0]}       # where the plan's side puts a drawn person in the picture
 KEY_DARK = 10.0              # a key's mean brightness (of 255) under this: nearly black, not a key
 CONCEPT_TRIES = 3
 SEATS_WORDS = ("{room} {inside} Seen from just behind and above the seats, looking forward over the instrument panel "
@@ -268,8 +274,9 @@ class Story:
     def _build(self, place, *extra) -> int:
         d = self.d(place)
         con = ["--concept", d / "concept.json"] if (d / "concept.json").exists() else []
+        sty = ["--style", self.book / "art_style.txt"] if (self.book / "art_style.txt").exists() else []
         return sh([PY, HERE / "sets" / "place_build.py", d / "place_spec.json", self.places[place]["set"]] + con
-                  + list(extra), d / "place_build.log")
+                  + sty + list(extra), d / "place_build.log")
 
     def step_pieces(self, place):
         d = self.d(place)
@@ -469,11 +476,106 @@ class Story:
         log(f"{place}: {sum(r['key'] for r in rows)} of {len(self.shots_of(place))} shots have a key")
         return True
 
+    def step_drawn(self, place):
+        """The shots the engine has no key for are drawn straight from the plan's own picture of them, the people
+        from their sheets and LoRAs: every shot of a place the story only glances at (DRAWN_MAX_SHOTS or fewer: a
+        memory, a thing imagined, never built), and in a built place each shot whose staging failed its checks (two
+        people in one bunk; a cut showed black there). A drawn picture is a key when it shows as many people as the
+        plan puts in it (the first of DRAWN_SEEDS that does); the room of a built place is its concept picture's."""
+        d = self.d(place)
+        kp = d / "keys.json"
+        rows = [r for r in (json.loads(kp.read_text()) if kp.exists() else []) if not r.get("drawn")]
+        todo = [r["shot"] for r in rows if not r["key"]] if rows else list(self.shots_of(place))
+        if not todo:
+            return True
+        out = d / "drawn"
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir()
+        style = self.book / "art_style.txt"
+        look = (style.read_text().strip().rstrip(".") + ".") if style.exists() else ""
+        room = [str(d / "concept.png")] if rows and (d / "concept.png").exists() else []
+        jobs, facts = [], {}
+        for i in todo:
+            s = self.plan[i][0]
+            ppl = [q for q in s.get("people") or [] if q["name"] in self.look["characters"]]
+            words = str(s.get("keyshot") or s.get("picture") or s.get("action") or "").strip()
+            vis = []
+            for q in ppl:
+                w = self.person(q["name"])["words"]
+                said = f"the {w['noun']} in {w['wear'].split(',')[0]}" if w["wear"] else f"the {w['noun']}"
+                words = words.replace(q["name"], said)
+                box = SIDE_BOX.get(str(q.get("side") or "").lower(), SIDE_BOX["center"])
+                vis.append({"name": q["name"], "look": said, "seen": "front", "box": box, "_w": w})
+            vis.sort(key=lambda v: v["box"][0])
+            n = len(vis)
+            only = ("Nobody is in the picture." if not n else
+                    f"Exactly {n} {'person is' if n == 1 else 'people are'} in the picture, each of them once.")
+            where = " The room is the one of the last reference picture." if room else ""
+            # (a sheet shows its person twice, near and whole, and a picture of one person alone copied both: three
+            # of three drawings had the child twice, told in words or not. One person alone is drawn from their
+            # LoRA; with others in the picture the sheets tell them apart)
+            sheets = [v["_w"]["sheet"] for v in vis] if n > 1 else []
+            for seed in DRAWN_SEEDS:
+                jobs.append({"id": f"{i}__{seed}", "seed": seed, "path": str(out / f"{i}__{seed}.png"),
+                             "prompt": f"A photographed frame from a film. {words} {only}{where} {look}".strip(),
+                             "size": [1152, 640], "refs": sheets + room,
+                             "loras": [[v["_w"]["lora"], 0.8, [0.0, 0.0, 1.0, 1.0] if n == 1 else
+                                        [v["box"][0], 0.0, v["box"][2], 1.0]] for v in vis]})
+            facts[i] = [{k: v[k] for k in v if k != "_w"} for v in vis]
+        (out / "image_jobs.jsonl").write_text("".join(json.dumps(j) + "\n" for j in jobs))
+        tag = self.places[place]["slug"]
+        if line("image", "refs", f"drawn_{tag}", out / "run.log", ["bash", IMAGE_SH, out / "image_jobs.jsonl"]):
+            return False
+        (out / "count.json").write_text(json.dumps({"out": str(out / "people.json"),
+                                                    "items": [{"id": j["id"], "path": j["path"]} for j in jobs]}))
+        if line("image", "check", f"count_{tag}", out / "count.log", ["bash", COUNT_SH, out / "count.json"]):
+            return False
+        seen = json.loads((out / "people.json").read_text())
+        from PIL import Image
+        drawn = []
+        for i in todo:
+            pick, why = None, "no drawing shows the plan's people, each once"
+            for seed in DRAWN_SEEDS:
+                pic, bx = out / f"{i}__{seed}.png", (seen.get(f"{i}__{seed}") or {}).get("boxes")
+                if not pic.exists() or bx is None or len(bx) != len(facts[i]):
+                    continue
+                if sum(Image.open(pic).convert("L").resize((64, 36)).getdata()) / (64 * 36) < KEY_DARK:
+                    why = "the drawing is nearly black"
+                    continue
+                pick = (pic, bx)
+                break
+            drawn.append({"shot": i, "key": bool(pick), "why": "" if pick else why, "drawn": True})
+            if not pick:
+                (self.keys / f"{i}_s0.png").unlink(missing_ok=True)
+                continue
+            shutil.copy2(pick[0], self.keys / f"{i}_s0.png")
+            vis = [dict(v, box=[round(x, 4) for x in b], area=round((b[2] - b[0]) * (b[3] - b[1]), 4))
+                   for v, b in zip(facts[i], pick[1])]                     # (left to right, as the plan's sides)
+            (self.keys / f"{i}.shot_facts.json").write_text(json.dumps(
+                {"camera": "drawn", "visible": vis, "count": len(vis), "move": None}, indent=1))
+            n = len(vis)
+            (self.keys / f"{i}.shot_facts.txt").write_text(
+                f"- In the picture: {n} {'person' if n == 1 else 'people'}"
+                + (": " + "; ".join(v["look"] for v in vis) if vis else "") + ".\n")
+        got = {r["shot"]: r for r in drawn}
+        kp.write_text(json.dumps([got.pop(r["shot"], r) for r in rows] + list(got.values()), indent=1))
+        log(f"{place}: {sum(r['key'] for r in drawn)} of {len(drawn)} shots without an engine key have a drawn one")
+        return True
+
     # ------------------------------------------------------------ the run
-    def run(self, only=None, first="shots", last="keys", redo=()):
+    def run(self, only=None, first="shots", last="drawn", redo=()):
         todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
         for place in self.places:
             if only and place not in only and self.places[place]["slug"] not in only:
+                continue
+            if 0 < len(self.shots_of(place)) <= DRAWN_MAX_SHOTS:         # a glance at a place: drawn, not built
+                if not self.done(place, "drawn") or "drawn" in redo:
+                    log(f"{place}: drawn")
+                    llm_down()
+                    if self.step_drawn(place):
+                        self.mark(place, "drawn")
+                    else:
+                        log(f"{place}: drawn FAILED")
                 continue
             for st in todo:
                 if self.done(place, st) and st not in redo:
@@ -513,7 +615,7 @@ def main():
         return out
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
     s.whole = "--whole" in a             # figures as whole generated meshes on the skeleton (cast_char.py --whole)
-    s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")))
+    s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "drawn"), set(many("--redo")))
 
 
 if __name__ == "__main__":

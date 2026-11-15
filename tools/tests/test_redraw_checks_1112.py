@@ -347,3 +347,12 @@ def test_the_lit_mask_grows_upward_over_the_flames(tmp_path):
     grown = KC.lab_of(img, str(tmp_path / "m.png"), rise=KC.LIT_RISE)
     assert flat["L90"] < 5 and grown["L90"] > 60 and grown["px"] > flat["px"]
     assert grown["px"] == (10 + max(30, int(KC.LIT_RISE * 10))) * 100           # upward only, by the stated rise
+
+
+def test_a_head_found_again_inside_its_own_body_is_not_a_second_person():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "redraw"))
+    import count_people as CP
+    body, head, other, speck = [0.3, 0.1, 0.6, 1.0], [0.38, 0.12, 0.52, 0.35], [0.7, 0.2, 0.9, 1.0], [0.0, 0.5, 0.05, 0.6]
+    assert CP.distinct([head, other, body, speck]) == [body, other]            # left to right, the crowd's speck out
