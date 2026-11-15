@@ -1,0 +1,14 @@
+{
+  "id": "chest_of_drawers_01",
+  "class": "prop",
+  "description": "Victorian mahogany chest of drawers, front -Y, 0.98 W x 0.50 D x 1.12 H m: moulded overhanging top, two short drawers over four long graduated drawers with cock-beaded edges, brass swan-neck bail handles and keyhole escutcheons, plinth moulding and four bracket feet. French polish worn pale round the handles and on the top's front edge, darker grime in the joints.",
+  "tags": ["chest-of-drawers", "drawers", "dresser", "bedroom", "victorian", "furniture", "mahogany", "brass", "interior"],
+  "tier": "mid",
+  "size_m": [0.98, 0.50, 1.12],
+  "size_tolerance": 0.1,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "handle", "position": [0.15, -0.75, 0.95], "target": [0.25, -0.25, 0.80], "focal": 60}],
+  "paint": {"prompt": "Victorian mahogany chest of drawers, worn French polish pale around the brass bail handles, darker grime in the joints", "views": {"ring": 5, "upper": 3, "top": true}, "close": {"box": [0.0, 0.0, 0.5, 1.0, 0.3, 1.0], "ring": 3, "top": false}}
+}

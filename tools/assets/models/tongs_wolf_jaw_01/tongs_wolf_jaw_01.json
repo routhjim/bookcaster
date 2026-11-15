@@ -1,0 +1,34 @@
+{
+ "id": "tongs_wolf_jaw_01",
+ "class": "prop",
+ "description": "Blacksmith's wolf-jaw tongs, ~0.5 m, lying flat, jaws a little open: two hand-forged iron arms half-lapped at a peened rivet, jaws to -X bowed outward with a V groove to hold round bar, tips meeting, round reins spreading to square-cut ends at +X; black scale, worn bright on the reins.",
+ "tags": [
+  "tongs",
+  "blacksmith",
+  "forge",
+  "smithy",
+  "tool",
+  "iron",
+  "hand-tool",
+  "medieval"
+ ],
+ "tier": "hero",
+ "size_m": [
+  0.51,
+  0.12,
+  0.037
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "variant": "wolf",
+ "paint": {
+  "prompt": "hand-forged black iron with hammer marks, flaking blue-black scale, specks of rust, the reins worn smooth and grey from hands",
+  "views": {
+   "ring": 6,
+   "upper": 3
+  }
+ }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "hammer_cross_peen_01",
+  "class": "prop",
+  "description": "Blacksmith's cross-peen hammer, about 0.4 m: forged steel head with a ground flat face and a cross peen, worn ash handle with a dark polished grip and a steel wedge. Lies on its side, head at -X, face toward the front (-Y).",
+  "tags": ["hammer", "cross-peen", "blacksmith", "forge", "tool", "steel", "wood", "hard-surface"],
+  "tier": "hero",
+  "size_m": [0.40, 0.125, 0.033],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

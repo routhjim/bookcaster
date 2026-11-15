@@ -1,0 +1,1297 @@
+{
+ "id": "cleanroom_fab_01",
+ "description": "A sterile, high-tech cleanroom with rows of gleaming white machinery, blue ambient lighting, and glass walls revealing complex piping and ventilation systems overhead.",
+ "style": "Spotless and clinical: white epoxy floor with yellow aisle lines, white panel walls, a white filter-grid ceiling with flush light strips, cool blue-white light; behind a full-height glass wall a taller service chase crowded with stainless pipes and ducts under blue light.",
+ "tags": [
+  "cleanroom",
+  "semiconductor",
+  "fab",
+  "industrial",
+  "white",
+  "glass"
+ ],
+ "size_m": [
+  16,
+  30,
+  4.5
+ ],
+ "exposure_ev100": 8.8,
+ "materials": {
+  "epoxy": {
+   "preset": "epoxy_floor"
+  },
+  "line_yellow": {
+   "preset": "paint_line",
+   "color": "#e0b21c",
+   "grime": 0.05,
+   "roughness": [
+    0.25,
+    0.4
+   ]
+  },
+  "wall_panel": {
+   "preset": "white_panel",
+   "panel_m": [
+    1.2,
+    1.2,
+    0
+   ]
+  },
+  "grid_bar": {
+   "preset": "plastic",
+   "color": "#d9dcdc",
+   "roughness": [
+    0.3,
+    0.4
+   ]
+  },
+  "ffu_panel": {
+   "preset": "white_panel",
+   "color": "#f0f2f2",
+   "panel_m": [
+    0.6,
+    0.6,
+    0
+   ],
+   "joint_m": 0.004,
+   "joint_darken": 0.75
+  },
+  "plenum": {
+   "preset": "galvanized_steel"
+  },
+  "glass_frame": {
+   "preset": "bare_steel",
+   "color": "#c9ccce",
+   "grime": 0.0,
+   "roughness": [
+    0.25,
+    0.35
+   ]
+  },
+  "clear_glass": {
+   "preset": "glass",
+   "tint": "#eef4f6",
+   "opacity": 0.05,
+   "roughness": 0.02,
+   "specular": 0.25
+  },
+  "chase_wall": {
+   "preset": "worn_concrete",
+   "color": "#9a9fa3",
+   "color2": "#a9aeb1",
+   "grime": 0.15,
+   "panel_m": [
+    3,
+    3,
+    0
+   ]
+  },
+  "stainless": {
+   "preset": "stainless_steel",
+   "grime": 0.0
+  },
+  "duct": {
+   "preset": "galvanized_steel",
+   "color": "#a9adb0"
+  },
+  "pipe_blue": {
+   "preset": "painted_steel",
+   "color": "#2f5f9c",
+   "grime": 0.05,
+   "roughness": [
+    0.3,
+    0.4
+   ]
+  },
+  "pipe_yellow": {
+   "preset": "painted_steel",
+   "color": "#c9a521",
+   "grime": 0.05,
+   "roughness": [
+    0.3,
+    0.4
+   ]
+  },
+  "light_frame": {
+   "preset": "plastic",
+   "color": "#e2e5e5"
+  },
+  "light_lens": {
+   "preset": "emissive",
+   "color": "#c4d3ff",
+   "nits": 8000
+  },
+  "blue_lens": {
+   "preset": "emissive",
+   "color": "#7f9cff",
+   "nits": 3000
+  },
+  "door_panel": {
+   "preset": "white_panel",
+   "panel_m": [
+    0,
+    0,
+    0
+   ]
+  },
+  "cove_lens": {
+   "preset": "emissive",
+   "color": "#7a97ff",
+   "nits": 1500
+  }
+ },
+ "structure": [
+  {
+   "kind": "ground",
+   "material": "chase_wall",
+   "extent_m": 200
+  },
+  {
+   "kind": "floor",
+   "material": "epoxy",
+   "thickness_m": 0.4,
+   "extend_m": 0.5
+  },
+  {
+   "kind": "wall",
+   "side": "west",
+   "material": "wall_panel",
+   "thickness_m": 0.15,
+   "height_m": 5.4
+  },
+  {
+   "kind": "wall",
+   "side": "north",
+   "material": "wall_panel",
+   "thickness_m": 0.15,
+   "height_m": 5.4,
+   "openings": [
+    {
+     "kind": "glass_wall",
+     "from_m": -2.0,
+     "to_m": 2.0,
+     "sill_m": 1.0,
+     "head_m": 2.2,
+     "bay_m": 2.0,
+     "panes": [
+      1,
+      1
+     ],
+     "mullion_m": [
+      0.08,
+      0.2
+     ],
+     "frame_material": "glass_frame",
+     "glass_material": "clear_glass"
+    }
+   ]
+  },
+  {
+   "kind": "wall",
+   "side": "south",
+   "material": "wall_panel",
+   "thickness_m": 0.15,
+   "height_m": 5.4,
+   "openings": [
+    {
+     "kind": "door",
+     "from_m": -1.1,
+     "to_m": 1.1,
+     "sill_m": 0.0,
+     "head_m": 2.4,
+     "panel_m": [
+      1.1,
+      2.4
+     ],
+     "material": "door_panel",
+     "frame_material": "glass_frame",
+     "braced": false,
+     "frame_m": 0.06,
+     "header_m": [
+      0.1,
+      0.08
+     ]
+    }
+   ]
+  },
+  {
+   "kind": "wall",
+   "side": "east",
+   "material": "wall_panel",
+   "thickness_m": 0.15,
+   "height_m": 5.4,
+   "openings": [
+    {
+     "kind": "glass_wall",
+     "from_m": -14.6,
+     "to_m": 14.6,
+     "sill_m": 0.1,
+     "head_m": 4.5,
+     "bay_m": 1.2,
+     "panes": [
+      1,
+      2
+     ],
+     "mullion_m": [
+      0.06,
+      0.2
+     ],
+     "bar_m": 0.04,
+     "frame_material": "glass_frame",
+     "glass_material": "clear_glass"
+    }
+   ]
+  },
+  {
+   "kind": "grid_ceiling",
+   "height_m": 4.5,
+   "cell_m": [
+    1.2,
+    1.2
+   ],
+   "bar_m": [
+    0.05,
+    0.06
+   ],
+   "x_m": [
+    -8,
+    8
+   ],
+   "y_m": [
+    -15,
+    15
+   ],
+   "bar_material": "grid_bar",
+   "panel_material": "ffu_panel",
+   "plenum": {
+    "top_m": 5.4,
+    "material": "plenum"
+   }
+  },
+  {
+   "kind": "box",
+   "name": "chase_floor",
+   "base": [
+    10.1,
+    0,
+    -0.4
+   ],
+   "size_m": [
+    4.2,
+    30.3,
+    0.4
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "box",
+   "name": "chase_far_wall",
+   "base": [
+    12.3,
+    0,
+    0
+   ],
+   "size_m": [
+    0.3,
+    30.3,
+    7.0
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "box",
+   "name": "chase_roof",
+   "base": [
+    10.1,
+    0,
+    7.0
+   ],
+   "size_m": [
+    4.7,
+    30.6,
+    0.3
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "box",
+   "name": "chase_end_n",
+   "base": [
+    10.1,
+    15.15,
+    0
+   ],
+   "size_m": [
+    4.2,
+    0.3,
+    7.0
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "box",
+   "name": "chase_end_s",
+   "base": [
+    10.1,
+    -15.15,
+    0
+   ],
+   "size_m": [
+    4.2,
+    0.3,
+    7.0
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "box",
+   "name": "chase_upper_wall",
+   "base": [
+    8.08,
+    0,
+    5.4
+   ],
+   "size_m": [
+    0.15,
+    30.3,
+    1.6
+   ],
+   "material": "chase_wall"
+  },
+  {
+   "kind": "duct_run",
+   "name": "supply_main",
+   "points": [
+    [
+     10.9,
+     -15,
+     6.1
+    ],
+    [
+     10.9,
+     15,
+     6.1
+    ]
+   ],
+   "size_m": [
+    1.2,
+    0.8
+   ],
+   "material": "duct"
+  },
+  {
+   "kind": "duct_run",
+   "name": "return_main",
+   "points": [
+    [
+     9.2,
+     -15,
+     6.4
+    ],
+    [
+     9.2,
+     15,
+     6.4
+    ]
+   ],
+   "size_m": [
+    0.8,
+    0.6
+   ],
+   "material": "duct"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "exhaust_main",
+   "points": [
+    [
+     11.6,
+     -15,
+     4.9
+    ],
+    [
+     11.6,
+     15,
+     4.9
+    ]
+   ],
+   "diameter_m": 0.45,
+   "material": "stainless",
+   "drops": {
+    "at": [
+     [
+      11.6,
+      -9
+     ],
+     [
+      11.6,
+      -3
+     ],
+     [
+      11.6,
+      3
+     ],
+     [
+      11.6,
+      9
+     ]
+    ],
+    "to_z_m": 0.0,
+    "diameter_m": 0.3
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "pcw_supply",
+   "points": [
+    [
+     9.0,
+     -15,
+     4.4
+    ],
+    [
+     9.0,
+     15,
+     4.4
+    ]
+   ],
+   "diameter_m": 0.2,
+   "material": "pipe_blue",
+   "drops": {
+    "at": [
+     [
+      9.0,
+      -11
+     ],
+     [
+      9.0,
+      -5
+     ],
+     [
+      9.0,
+      1
+     ],
+     [
+      9.0,
+      7
+     ],
+     [
+      9.0,
+      13
+     ]
+    ],
+    "to_z_m": 0.0,
+    "diameter_m": 0.1
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "pcw_return",
+   "points": [
+    [
+     9.35,
+     -15,
+     4.15
+    ],
+    [
+     9.35,
+     15,
+     4.15
+    ]
+   ],
+   "diameter_m": 0.2,
+   "material": "pipe_blue"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "gas_a",
+   "points": [
+    [
+     8.7,
+     -15,
+     3.7
+    ],
+    [
+     8.7,
+     15,
+     3.7
+    ]
+   ],
+   "diameter_m": 0.06,
+   "material": "stainless"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "gas_b",
+   "points": [
+    [
+     8.7,
+     -15,
+     3.55
+    ],
+    [
+     8.7,
+     15,
+     3.55
+    ]
+   ],
+   "diameter_m": 0.06,
+   "material": "stainless"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "gas_c",
+   "points": [
+    [
+     8.7,
+     -15,
+     3.4
+    ],
+    [
+     8.7,
+     15,
+     3.4
+    ]
+   ],
+   "diameter_m": 0.06,
+   "material": "pipe_yellow"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "vacuum",
+   "points": [
+    [
+     10.3,
+     -15,
+     2.6
+    ],
+    [
+     10.3,
+     15,
+     2.6
+    ]
+   ],
+   "diameter_m": 0.25,
+   "material": "stainless"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "riser_1",
+   "points": [
+    [
+     11.9,
+     -6,
+     0.0
+    ],
+    [
+     11.9,
+     -6,
+     7.0
+    ]
+   ],
+   "diameter_m": 0.35,
+   "material": "duct"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "riser_2",
+   "points": [
+    [
+     11.9,
+     6,
+     0.0
+    ],
+    [
+     11.9,
+     6,
+     7.0
+    ]
+   ],
+   "diameter_m": 0.35,
+   "material": "duct"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_exhaust",
+   "points": [
+    [
+     -2.35,
+     -12.0,
+     3.7
+    ],
+    [
+     -2.35,
+     12.0,
+     3.7
+    ]
+   ],
+   "diameter_m": 0.3,
+   "material": "stainless",
+   "drops": {
+    "at": [
+     [
+      -2.55,
+      -10.5
+     ],
+     [
+      -2.55,
+      -7.5
+     ],
+     [
+      -2.55,
+      -4.5
+     ],
+     [
+      -2.55,
+      -1.5
+     ],
+     [
+      -2.55,
+      1.5
+     ],
+     [
+      -2.55,
+      4.5
+     ],
+     [
+      -2.55,
+      7.5
+     ],
+     [
+      -2.55,
+      10.5
+     ]
+    ],
+    "to_z_m": 2.23,
+    "diameter_m": 0.12
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "east_exhaust",
+   "points": [
+    [
+     2.35,
+     -12.0,
+     3.7
+    ],
+    [
+     2.35,
+     12.0,
+     3.7
+    ]
+   ],
+   "diameter_m": 0.3,
+   "material": "stainless",
+   "drops": {
+    "at": [
+     [
+      2.55,
+      -10.5
+     ],
+     [
+      2.55,
+      -7.5
+     ],
+     [
+      2.55,
+      -4.5
+     ],
+     [
+      2.55,
+      -1.5
+     ],
+     [
+      2.55,
+      1.5
+     ],
+     [
+      2.55,
+      4.5
+     ],
+     [
+      2.55,
+      7.5
+     ],
+     [
+      2.55,
+      10.5
+     ]
+    ],
+    "to_z_m": 2.23,
+    "diameter_m": 0.12
+   }
+  },
+  {
+   "kind": "pipe_run",
+   "name": "west_exhaust_up",
+   "points": [
+    [
+     -2.35,
+     12.0,
+     3.7
+    ],
+    [
+     -2.35,
+     12.0,
+     4.5
+    ]
+   ],
+   "diameter_m": 0.3,
+   "material": "stainless"
+  },
+  {
+   "kind": "pipe_run",
+   "name": "east_exhaust_up",
+   "points": [
+    [
+     2.35,
+     12.0,
+     3.7
+    ],
+    [
+     2.35,
+     12.0,
+     4.5
+    ]
+   ],
+   "diameter_m": 0.3,
+   "material": "stainless"
+  },
+  {
+   "kind": "floor_lines",
+   "lines": [
+    {
+     "points": [
+      [
+       -1.65,
+       -14.6
+      ],
+      [
+       -1.65,
+       14.6
+      ]
+     ],
+     "width_m": 0.1,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       1.65,
+       -14.6
+      ],
+      [
+       1.65,
+       14.6
+      ]
+     ],
+     "width_m": 0.1,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -3.05,
+       -14.6
+      ],
+      [
+       -3.05,
+       14.6
+      ]
+     ],
+     "width_m": 0.06,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       3.05,
+       -14.6
+      ],
+      [
+       3.05,
+       14.6
+      ]
+     ],
+     "width_m": 0.06,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -1.65,
+       -12.6
+      ],
+      [
+       1.65,
+       -12.6
+      ]
+     ],
+     "width_m": 0.06,
+     "material": "line_yellow"
+    },
+    {
+     "points": [
+      [
+       -1.65,
+       12.6
+      ],
+      [
+       1.65,
+       12.6
+      ]
+     ],
+     "width_m": 0.06,
+     "material": "line_yellow"
+    }
+   ]
+  }
+ ],
+ "lights": [
+  {
+   "type": "sky",
+   "intensity": 0.3
+  },
+  {
+   "type": "strip_lights",
+   "z_m": 4.49,
+   "length_m": 1.1,
+   "along": "y",
+   "lumens": 4500,
+   "radius_m": 14,
+   "fixture_material": "light_frame",
+   "tube_material": "light_lens",
+   "rows": [
+    {
+     "from": [
+      -6.0,
+      -13.2
+     ],
+     "to": [
+      -6.0,
+      13.2
+     ],
+     "count": 12
+    },
+    {
+     "from": [
+      -3.6,
+      -13.2
+     ],
+     "to": [
+      -3.6,
+      13.2
+     ],
+     "count": 12
+    },
+    {
+     "from": [
+      0.0,
+      -13.2
+     ],
+     "to": [
+      0.0,
+      13.2
+     ],
+     "count": 12
+    },
+    {
+     "from": [
+      3.6,
+      -13.2
+     ],
+     "to": [
+      3.6,
+      13.2
+     ],
+     "count": 12
+    },
+    {
+     "from": [
+      6.0,
+      -13.2
+     ],
+     "to": [
+      6.0,
+      13.2
+     ],
+     "count": 12
+    }
+   ],
+   "color": "#c9d6ff"
+  },
+  {
+   "type": "strip_lights",
+   "z_m": 6.95,
+   "length_m": 1.5,
+   "along": "y",
+   "lumens": 35000,
+   "radius_m": 12,
+   "shadows": true,
+   "fixture_material": "light_frame",
+   "tube_material": "blue_lens",
+   "rows": [
+    {
+     "from": [
+      9.5,
+      -13.5
+     ],
+     "to": [
+      9.5,
+      13.5
+     ],
+     "count": 8
+    },
+    {
+     "from": [
+      11.2,
+      -13.5
+     ],
+     "to": [
+      11.2,
+      13.5
+     ],
+     "count": 8
+    }
+   ],
+   "color": "#9fb4ff"
+  },
+  {
+   "type": "rect",
+   "position": [
+    8.3,
+    0,
+    0.12
+   ],
+   "toward": [
+    8.3,
+    0,
+    5
+   ],
+   "size_m": [
+    0.2,
+    29.0
+   ],
+   "lumens": 40000,
+   "color": "#8aa5ff",
+   "radius_m": 8,
+   "shadows": false
+  },
+  {
+   "type": "strip_lights",
+   "z_m": 4.35,
+   "length_m": 2.4,
+   "along": "y",
+   "lumens": 6000,
+   "color": "#7f9bff",
+   "radius_m": 6,
+   "shadows": false,
+   "fixture_material": "light_frame",
+   "tube_material": "cove_lens",
+   "rows": [
+    {
+     "from": [
+      -7.7,
+      -13.2
+     ],
+     "to": [
+      -7.7,
+      13.2
+     ],
+     "count": 12
+    },
+    {
+     "from": [
+      7.7,
+      -13.2
+     ],
+     "to": [
+      7.7,
+      13.2
+     ],
+     "count": 12
+    }
+   ]
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    -10,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    -10,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    -3,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    -3,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    4,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    4,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  },
+  {
+   "type": "rect",
+   "position": [
+    10.1,
+    11,
+    0.1
+   ],
+   "toward": [
+    10.1,
+    11,
+    6
+   ],
+   "size_m": [
+    1.5,
+    3
+   ],
+   "lumens": 45000,
+   "color": "#a8bcff",
+   "radius_m": 10,
+   "shadows": true
+  }
+ ],
+ "fixtures": [
+  {
+   "asset": "cleanroom_tool_bay_01",
+   "name": "west_tool",
+   "facing": [
+    1,
+    0
+   ],
+   "row": {
+    "from": [
+     -2.315,
+     -10.5
+    ],
+    "to": [
+     -2.315,
+     10.5
+    ],
+    "count": 8
+   }
+  },
+  {
+   "asset": "cleanroom_tool_bay_01",
+   "name": "east_tool",
+   "facing": [
+    -1,
+    0
+   ],
+   "row": {
+    "from": [
+     2.315,
+     -10.5
+    ],
+    "to": [
+     2.315,
+     10.5
+    ],
+    "count": 8
+   }
+  }
+ ],
+ "props": [
+  {
+   "asset": "cart_cleanroom_01",
+   "name": "wafer_cart",
+   "position": [
+    4.4,
+    -5.25
+   ],
+   "facing": [
+    -1,
+    0
+   ]
+  },
+  {
+   "asset": "wafer_cassette_200mm_01",
+   "name": "cassette_0",
+   "position": [
+    4.4,
+    -5.6
+   ],
+   "facing": [
+    -1,
+    0
+   ],
+   "on": "wafer_cart",
+   "on_z_m": 0.9
+  },
+  {
+   "asset": "wafer_cassette_200mm_01",
+   "name": "cassette_1",
+   "position": [
+    4.4,
+    -5.25
+   ],
+   "facing": [
+    -1,
+    0
+   ],
+   "on": "wafer_cart",
+   "on_z_m": 0.9
+  },
+  {
+   "asset": "wafer_cassette_200mm_01",
+   "name": "cassette_2",
+   "position": [
+    4.4,
+    -4.9
+   ],
+   "facing": [
+    -1,
+    0
+   ],
+   "on": "wafer_cart",
+   "on_z_m": 0.9
+  }
+ ],
+ "validation": {
+  "figures": [
+   {
+    "position": [
+     0.5,
+     -1.6
+    ],
+    "facing": [
+     -1,
+     0
+    ]
+   },
+   {
+    "position": [
+     -5.0,
+     6.0
+    ],
+    "facing": [
+     0,
+     -1
+    ]
+   }
+  ]
+ },
+ "cameras": [
+  {
+   "name": "wide_south",
+   "position": [
+    -0.9,
+    -14.3,
+    1.7
+   ],
+   "target": [
+    0.4,
+    5,
+    1.7
+   ],
+   "focal_mm": 18
+  },
+  {
+   "name": "wide_north",
+   "position": [
+    1.2,
+    14.3,
+    1.7
+   ],
+   "target": [
+    -0.4,
+    -5,
+    1.5
+   ],
+   "focal_mm": 18
+  },
+  {
+   "name": "medium_person",
+   "position": [
+    1.0,
+    -4.5,
+    1.65
+   ],
+   "target": [
+    -1.8,
+    -0.6,
+    1.3
+   ],
+   "focal_mm": 30
+  },
+  {
+   "name": "low",
+   "position": [
+    1.0,
+    -9.0,
+    0.3
+   ],
+   "target": [
+    0.0,
+    2.0,
+    1.7
+   ],
+   "focal_mm": 20
+  },
+  {
+   "name": "above",
+   "position": [
+    6.8,
+    -14.0,
+    4.2
+   ],
+   "target": [
+    0.5,
+    0.0,
+    0.4
+   ],
+   "focal_mm": 18
+  }
+ ],
+ "post": {
+  "saturation": 1.08
+ }
+}

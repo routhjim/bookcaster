@@ -1,0 +1,17 @@
+{
+  "id": "safe_iron_01",
+  "class": "prop",
+  "description": "Victorian cast-iron safe (a tall single-door cabinet safe), front -Y, 0.72 W x 0.58 D x 1.25 H m: plinth on four short bracket feet, body with rounded edges, one heavy door with a raised moulded border and rows of rivet heads, round combination dial with a brass ring, drop T-handle, keyhole with a swinging cover, blank brass maker's plate, two barrel hinges on the right edge. Black paint worn to grey iron on the edges and round the handle, rust in seams.",
+  "tags": ["safe", "strongbox", "iron", "cast-iron", "victorian", "furniture", "metal", "lock", "interior"],
+  "tier": "mid",
+  "size_m": [0.72, 0.58, 1.25],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "dial", "position": [0.25, -0.85, 1.05], "target": [0.0, -0.29, 0.85], "focal": 55},
+    {"name": "handle", "position": [-0.2, -0.75, 0.70], "target": [-0.10, -0.29, 0.62], "focal": 60}
+  ],
+  "paint": {"prompt": "heavy Victorian cast iron safe painted black, paint worn to bare grey iron on the edges and around the handle, rust in the seams, brass dial ring and keyhole cover", "views": {"ring": 6, "upper": 3, "top": true}, "close": {"box": [0.0, 0.0, 0.45, 1.0, 0.15, 0.85], "ring": 3, "top": false}}
+}

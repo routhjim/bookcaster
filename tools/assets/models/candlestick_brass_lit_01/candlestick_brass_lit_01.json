@@ -1,0 +1,52 @@
+{
+ "id": "candlestick_brass_lit_01",
+ "class": "prop",
+ "description": "Brass bedroom candlestick with a tallow candle, 0.34 m: domed round foot with a bead, turned column with knops, socket with a wide drip pan; a half-burnt cream candle with a hollowed, melted top, wax runs down one side and on the pan, a blackened wick. Tarnished brass, polished where held. Lit: a flame burns on the wick (emissive). Unlit twin: candlestick_brass_01.",
+ "tags": [
+  "candlestick",
+  "candle",
+  "brass",
+  "light",
+  "victorian",
+  "bedroom",
+  "hand-prop",
+  "tableware",
+  "lit"
+ ],
+ "tier": "hero",
+ "texture_px": 1024,
+ "size_m": [
+  0.13,
+  0.13,
+  0.37
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "variant": "lit",
+ "cameras": [
+  {
+   "name": "candle_top",
+   "position": [
+    0.15,
+    -0.25,
+    0.42
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.3
+   ],
+   "focal": 70
+  }
+ ],
+ "paint": {
+  "prompt": "antique tarnished brass candlestick with a half burnt cream tallow candle, wax drips, polished where held",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

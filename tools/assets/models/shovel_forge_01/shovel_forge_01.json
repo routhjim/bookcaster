@@ -1,0 +1,33 @@
+{
+ "id": "shovel_forge_01",
+ "class": "prop",
+ "description": "Small blacksmith's fire shovel lying flat along X, ~0.86 m: flat pointed shield-shaped blade ~0.15 m wide with a turned-up back lip at -X, thin square shaft with a twisted grip, ring end at +X; sooty black iron.",
+ "tags": [
+  "shovel",
+  "fire-shovel",
+  "forge-tool",
+  "blacksmith",
+  "smithy",
+  "iron",
+  "hand-tool",
+  "medieval"
+ ],
+ "tier": "mid",
+ "size_m": [
+  0.87,
+  0.15,
+  0.04
+ ],
+ "size_tolerance": 0.2,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 1024,
+ "paint": {
+  "prompt": "sooty hand-forged black iron with hammer marks, flaking scale, ash dust in the blade, a little rust",
+  "views": {
+   "ring": 6,
+   "upper": 3
+  }
+ }
+}

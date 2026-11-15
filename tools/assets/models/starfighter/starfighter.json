@@ -1,0 +1,25 @@
+{
+ "id": "starfighter_twin_01",
+ "class": "vehicle",
+ "description": "Single-seat twin-engine starfighter, original design: chined lifting-body fuselage with a bubble canopy, side intakes, twin nacelles with hot nozzles, swept anhedral wings with wingtip missile rails and underwing pylons, canards, outward-canted twin fins, tricycle landing gear. Light grey over dark grey paint with orange accent blocks, panel lines, edge wear and exhaust grime.",
+ "tags": [
+  "starfighter",
+  "spacecraft",
+  "fighter",
+  "vehicle",
+  "sci-fi",
+  "hard-surface",
+  "hangar"
+ ],
+ "tier": "hero",
+ "size_m": [
+  9.0,
+  12.0,
+  3.6
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 4096
+}

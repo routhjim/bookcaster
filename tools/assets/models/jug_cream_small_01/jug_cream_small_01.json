@@ -1,0 +1,15 @@
+{
+  "id": "jug_cream_small_01",
+  "class": "prop",
+  "description": "Small Victorian earthenware milk / cream jug, 0.11 m high: round-bellied body on a foot, pulled pouring lip to +X, loop handle to -X, cream glaze with blue painted bands at the neck and foot, crazed and stained, a chip on the lip.",
+  "tags": ["jug", "milk-jug", "cream-jug", "crockery", "ceramic", "earthenware", "victorian", "tableware", "small-prop"],
+  "tier": "hero",
+  "texture_px": 1024,
+  "size_m": [0.125, 0.085, 0.11],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "spout", "position": [0.22, -0.20, 0.17], "target": [0.02, 0.0, 0.07], "focal": 60}],
+  "paint": {"prompt": "small old cream earthenware milk jug with blue painted bands, crazed and stained glaze", "views": {"ring": 6, "upper": 3, "top": true}}
+}

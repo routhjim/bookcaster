@@ -1,0 +1,64 @@
+{
+ "id": "clock_mantel_01",
+ "class": "prop",
+ "description": "Victorian rococo mantel clock, 0.30 m tall, front -Y: a scrolled case of worn gilt bronze with a shell crest, C-scrolls and leaf scrolls in relief and four scroll feet, round a drum movement; a white enamel dial with black Roman numerals and a minute track, blued-steel spade hands, a domed glass in a beaded gilt bezel. Stands on a mantel shelf.",
+ "tags": [
+  "clock",
+  "mantel-clock",
+  "gilt",
+  "rococo",
+  "victorian",
+  "mantelpiece",
+  "ornament",
+  "interior"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.26,
+  0.13,
+  0.3
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "dial",
+   "position": [
+    0.1,
+    -0.45,
+    0.25
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.17
+   ],
+   "focal": 70
+  }
+ ],
+ "paint": {
+  "prompt": "worn antique gilt bronze, the gold rubbed bright on the high scrolls and dark brown-green in the recesses, fine chasing; a white enamel clock dial with fine crazing and black Roman numerals",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  },
+  "close": {
+   "box": [
+    0.2,
+    0.0,
+    0.3,
+    0.8,
+    0.5,
+    0.85
+   ],
+   "ring": 3
+  }
+ },
+ "glass_materials": [
+  "clock_glass"
+ ]
+}

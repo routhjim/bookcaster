@@ -1,0 +1,60 @@
+{
+ "id": "picture_framed_engraving_02",
+ "class": "prop",
+ "description": "Black-and-white steel engraving of a river landscape with a stone bridge and a distant church behind a pale mount in a gilt frame, 0.53 x 0.61 m. Front -Y; the back is flat at the back of the bounds (lay it against the wall). Origin is the contract's floor-centre point: the middle of the frame's BOTTOM edge at the wall face; to hang it, place that point at the wanted height of the frame's bottom edge on the wall. No glass (a glazed print would mirror the room in keyframes).",
+ "tags": [
+  "picture",
+  "frame",
+  "gilt",
+  "wall",
+  "art",
+  "victorian",
+  "interior",
+  "decor",
+  "engraving",
+  "print",
+  "landscape"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.53,
+  0.045,
+  0.61
+ ],
+ "size_tolerance": 0.12,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script; picture drawn by the local image model)",
+ "picture": {
+  "w": 0.32,
+  "h": 0.4,
+  "frame_w": 0.05,
+  "mount_w": 0.055,
+  "oil": false
+ },
+ "cameras": [
+  {
+   "name": "corner",
+   "position": [
+    0.355,
+    -0.45,
+    0.305
+   ],
+   "target": [
+    0.20500000000000002,
+    0.0,
+    0.305
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "antique gilt picture frame with worn gilding showing red bole, dark grime in the mouldings",
+  "views": {
+   "ring": 3,
+   "upper": 2,
+   "top": false
+  }
+ }
+}

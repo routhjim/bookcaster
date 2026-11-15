@@ -1,0 +1,50 @@
+{
+ "id": "books_row_mantel_01",
+ "class": "prop",
+ "description": "A short row of seven old leather-bound books standing upright, spines to -Y, 0.30 m long: brown, red and green leather with gilt bands and title panels, slightly uneven heights, worn corners. For a mantel shelf or a table (use bookends or a wall behind).",
+ "tags": [
+  "books",
+  "book-row",
+  "leather",
+  "victorian",
+  "mantelpiece",
+  "library",
+  "ornament",
+  "interior"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.3,
+  0.17,
+  0.24
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "spines",
+   "position": [
+    0.08,
+    -0.5,
+    0.16
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.11
+   ],
+   "focal": 60
+  }
+ ],
+ "paint": {
+  "prompt": "row of old leather bound books with gilt tooled spines and title labels, worn corners",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

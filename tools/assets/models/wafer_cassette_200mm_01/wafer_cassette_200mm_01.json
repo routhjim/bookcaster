@@ -1,0 +1,13 @@
+{
+  "id": "wafer_cassette_200mm_01",
+  "class": "prop",
+  "description": "Semiconductor wafer cassette for 200 mm wafers: white moulded open carrier with slotted side walls, U-frame front, H-bar back with a grip handle, holding a row of 25 patterned silicon wafers. Front (-Y) shows the wafer faces.",
+  "tags": ["wafer", "cassette", "semiconductor", "cleanroom", "fab", "plastic", "silicon", "hard-surface"],
+  "tier": "mid",
+  "size_m": [0.222, 0.21, 0.222],
+  "size_tolerance": 0.15,
+  "texture_px": 2048,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

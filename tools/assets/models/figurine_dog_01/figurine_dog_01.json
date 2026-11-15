@@ -1,0 +1,51 @@
+{
+ "id": "figurine_dog_01",
+ "class": "prop",
+ "description": "Staffordshire pottery spaniel figurine, 0.18 m: seated dog facing -Y on an oval base, white glaze with rust-brown patches, gilt collar and a short gilt chain, black painted eyes and nose. Mantel ornament (usually one of a pair: mirror it for the other).",
+ "tags": [
+  "figurine",
+  "dog",
+  "spaniel",
+  "staffordshire",
+  "pottery",
+  "ornament",
+  "victorian",
+  "mantelpiece",
+  "interior"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.11,
+  0.09,
+  0.18
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "face",
+   "position": [
+    0.05,
+    -0.35,
+    0.17
+   ],
+   "target": [
+    0.0,
+    -0.01,
+    0.13
+   ],
+   "focal": 70
+  }
+ ],
+ "paint": {
+  "prompt": "Staffordshire pottery seated spaniel figurine, white glaze with rust-brown patches, gilt collar and chain, painted black eyes",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

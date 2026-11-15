@@ -1,0 +1,14 @@
+{
+  "id": "chair_wicker_01",
+  "class": "prop",
+  "description": "Small Victorian wicker-work bedroom chair, front -Y, 0.56 W x 0.52 D x 0.80 H m: round woven seat at 0.42 m, a horseshoe back that sweeps down into the arms, woven panels framed by thick rolled cane rims, four cane legs with a woven skirt band and stretcher hoop. Natural cane gone honey-grey, darker in the weave, worn pale on the arm rims.",
+  "tags": ["chair", "wicker", "cane", "rattan", "bedroom", "victorian", "furniture", "interior"],
+  "tier": "mid",
+  "size_m": [0.56, 0.52, 0.80],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "weave", "position": [0.3, -0.6, 0.75], "target": [0.05, 0.05, 0.55], "focal": 55}],
+  "paint": {"prompt": "small Victorian wicker work chair, woven natural cane gone honey grey, darker in the weave, worn pale on the arm rims", "views": {"ring": 6, "upper": 3, "top": true}}
+}

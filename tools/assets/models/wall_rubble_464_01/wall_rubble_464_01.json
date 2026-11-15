@@ -1,0 +1,42 @@
+{
+ "class": "prop",
+ "tier": "hero",
+ "size_tolerance": 0.1,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "tags": [
+  "wall",
+  "stone",
+  "rubble",
+  "masonry",
+  "fieldstone",
+  "interior",
+  "set-dressing",
+  "medieval",
+  "smithy",
+  "barn",
+  "cottage"
+ ],
+ "paint": {
+  "prompt": "a rough wall of grey-brown fieldstones of many sizes laid in thick lime mortar, chipped and weathered, darkened by smoke and soot toward the top, dusty at the foot",
+  "views": {
+   "ring": 4,
+   "ring_el": 10,
+   "upper": 2,
+   "upper_el": 35,
+   "top": false
+  }
+ },
+ "id": "wall_rubble_464_01",
+ "panel_w": 4.64,
+ "panel_h": 3.45,
+ "seed": 17,
+ "size_m": [
+  4.64,
+  0.21,
+  3.47
+ ],
+ "description": "Section of rough fieldstone wall facing, 4.64 m wide x 3.45 m tall x ~0.2 m deep, for lining a room: rubble stones in rough courses over a recessed lime-mortar core, smoke-darkened upward from ~1.5 m. Front -Y, back flat at +Y against the room's wall; side edges cut straight to butt against other sections."
+}

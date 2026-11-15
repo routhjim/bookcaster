@@ -1,0 +1,594 @@
+{
+ "victorian": {
+  "_from": "the period's interior defaults (materials, wall dressing, window, door and chimney-breast detail, light levels); taken once from a finished room of the period, no layout",
+  "materials": {
+   "plaster": {
+    "preset": "painted_plaster",
+    "color": "#ddd4bb",
+    "variation": 0.03,
+    "grime": 0.04
+   },
+   "dado_pale": {
+    "preset": "painted_wood",
+    "color": "#b9b195",
+    "roughness": [
+     0.45,
+     0.6
+    ],
+    "grime": 0.18
+   },
+   "dado_panel": {
+    "preset": "painted_wood",
+    "color": "#c1b99c",
+    "roughness": [
+     0.45,
+     0.6
+    ],
+    "grime": 0.14
+   },
+   "ceiling": {
+    "preset": "painted_plaster",
+    "color": "#d8d2bf",
+    "grime": 0.18
+   },
+   "trim_white": {
+    "preset": "painted_wood",
+    "color": "#e6e1d2",
+    "grime": 0.12
+   },
+   "panel_wood": {
+    "preset": "dark_wood"
+   },
+   "panel_raised": {
+    "preset": "dark_wood",
+    "color": "#46291a",
+    "color2": "#5d3820"
+   },
+   "floor": {
+    "preset": "wood_floor",
+    "grime": 0.35
+   },
+   "drape": {
+    "preset": "fabric",
+    "color": "#5a1e1c",
+    "color2": "#6e2622"
+   },
+   "gilt": {
+    "preset": "brass",
+    "color": "#a8843f",
+    "roughness": [
+     0.3,
+     0.5
+    ]
+   },
+   "brass": {
+    "preset": "brass"
+   },
+   "glass": {
+    "preset": "glass",
+    "tint": "#e8eef0",
+    "opacity": 0.06,
+    "roughness": 0.02
+   },
+   "door_oak": {
+    "preset": "dark_wood",
+    "color": "#5a3a22",
+    "color2": "#714a2c"
+   },
+   "black_iron": {
+    "preset": "bare_steel",
+    "color": "#1d1c1b",
+    "metallic": 0.6,
+    "roughness": [
+     0.45,
+     0.7
+    ],
+    "grime": 0.3
+   },
+   "hearth": {
+    "preset": "worn_concrete",
+    "color": "#3b3936",
+    "panel_m": [
+     0,
+     0,
+     0
+    ],
+    "grime": 0.2
+   },
+   "marble": {
+    "preset": "painted_wood",
+    "color": "#e9e5da",
+    "roughness": [
+     0.2,
+     0.3
+    ]
+   },
+   "rug_field": {
+    "preset": "fabric",
+    "color": "#8d4a3a",
+    "color2": "#a86a50",
+    "variation": 0.0,
+    "feature_m": 0.15,
+    "mottle": [
+     0.03,
+     0.15
+    ]
+   },
+   "rug_border": {
+    "preset": "fabric",
+    "color": "#3b2a35",
+    "feature_m": 0.1,
+    "mottle": [
+     0.03,
+     0.15
+    ]
+   },
+   "paper_x": {
+    "preset": "painted_plaster",
+    "color": "#a8a487",
+    "color2": "#b4ae92",
+    "variation": 0.05,
+    "grime": 0.12,
+    "panel_m": [
+     0.105,
+     0,
+     0
+    ],
+    "joint_m": 0.012,
+    "joint_darken": 0.08,
+    "roughness": [
+     0.7,
+     0.85
+    ]
+   },
+   "paper_y": {
+    "preset": "painted_plaster",
+    "color": "#a8a487",
+    "color2": "#b4ae92",
+    "variation": 0.05,
+    "grime": 0.12,
+    "panel_m": [
+     0,
+     0.105,
+     0
+    ],
+    "joint_m": 0.012,
+    "joint_darken": 0.08,
+    "roughness": [
+     0.7,
+     0.85
+    ]
+   }
+  },
+  "floor": {
+   "kind": "floor",
+   "material": "floor",
+   "thickness_m": 0.3,
+   "extend_m": 0.5
+  },
+  "ceiling": {
+   "kind": "ceiling",
+   "height_m": 3.2,
+   "material": "ceiling",
+   "thickness_m": 0.25
+  },
+  "wall": {
+   "kind": "wall",
+   "material": "paper_x",
+   "thickness_m": 0.25,
+   "dado": {
+    "height_m": 0.95,
+    "material": "dado_pale"
+   },
+   "trim": [
+    {
+     "z_m": 0.0,
+     "height_m": 0.22,
+     "depth_m": 0.025,
+     "material": "trim_white"
+    },
+    {
+     "z_m": 0.88,
+     "height_m": 0.07,
+     "depth_m": 0.04,
+     "material": "trim_white"
+    },
+    {
+     "z_m": 2.62,
+     "height_m": 0.04,
+     "depth_m": 0.02,
+     "material": "trim_white"
+    },
+    {
+     "z_m": 3.04,
+     "height_m": 0.16,
+     "depth_m": 0.14,
+     "material": "trim_white"
+    }
+   ],
+   "plates": [
+    {
+     "z_m": [
+      0.24,
+      0.86
+     ],
+     "size_m": [
+      0.62,
+      0.62
+     ],
+     "gap_m": 0.07,
+     "depth_m": 0.018,
+     "material": "dado_panel"
+    }
+   ]
+  },
+  "wall_material_ns": "paper_x",
+  "wall_material_ew": "paper_y",
+  "window": {
+   "bay_m": 1.3,
+   "panes": [
+    2,
+    3
+   ],
+   "mullion_m": [
+    0.09,
+    0.3
+   ],
+   "bar_m": 0.025,
+   "frame_material": "trim_white",
+   "glass_material": "glass"
+  },
+  "door": {
+   "panel_m": [
+    0.42,
+    0.7
+   ],
+   "material": "door_oak",
+   "frame_material": "door_oak",
+   "braced": false,
+   "frame_m": 0.09,
+   "header_m": [
+    0.12,
+    0.05
+   ]
+  },
+  "chimney_breast_material": "paper_x",
+  "window_dressing": [
+   {
+    "asset": "backdrop_street_01",
+    "name": "street_backdrop"
+   },
+   {
+    "asset": "drapes_pelmet_damask_01",
+    "name": "drapes"
+   }
+  ],
+  "drapes_look": "heavy deep crimson damask drapes woven with a darker red and dull gold floral pattern, a fringed pelmet and gold tasselled tie-backs",
+  "exposure_ev100": 5.0,
+  "post": {
+   "bloom": 0.25,
+   "vignette": 0.45
+  },
+  "lights": {
+   "sun": {
+    "type": "sun",
+    "toward_sun": [
+     -0.8,
+     0.3,
+     0.35
+    ],
+    "lux": 16000,
+    "kelvin": 6500,
+    "volumetric": 0.0
+   },
+   "sky": {
+    "type": "sky",
+    "intensity": 1.0
+   },
+   "fire": {
+    "type": "point",
+    "lumens": 1700,
+    "kelvin": 1900,
+    "radius_m": 8,
+    "source_radius_m": 0.25,
+    "shadows": true
+   },
+   "fire_offset_m": [
+    0.0,
+    0.23,
+    0.32
+   ],
+   "window_rect": {
+    "type": "rect",
+    "size_m": [
+     1.3,
+     1.8
+    ],
+    "lumens": 1300,
+    "kelvin": 6800,
+    "radius_m": 9,
+    "shadows": true
+   },
+   "lamp": {
+    "type": "point",
+    "lumens": 480,
+    "kelvin": 2300,
+    "radius_m": 7,
+    "source_radius_m": 0.04,
+    "shadows": true
+   }
+  },
+  "words": {
+   "window": "a tall sash window with heavy deep crimson damask drapes and a fringed pelmet",
+   "door": "a panelled door",
+   "fireplace": "a fireplace with a black iron grate",
+   "surfaces": "The walls are papered in a sage-grey stripe above a pale panelled dado, with white woodwork and worn dark floorboards."
+  }
+ },
+ "far_future": {
+  "_from": "a ship's or station's interior of the far future (materials from the finished hangar set of the period; no layout)",
+  "materials": {
+   "wall_steel": {
+    "preset": "painted_steel",
+    "color": "#646760",
+    "color2": "#757467",
+    "grime": 0.5,
+    "panel_m": [
+     1.5,
+     1.5,
+     1.2
+    ],
+    "joint_m": 0.012,
+    "grime_contrast": 1.8
+   },
+   "wall_lower": {
+    "preset": "painted_steel",
+    "color": "#55574f",
+    "color2": "#686555",
+    "panel_m": [
+     1.2,
+     1.2,
+     1.0
+    ],
+    "grime": 0.6,
+    "grime_color": "#2a2620",
+    "grime_contrast": 1.8
+   },
+   "steel_frame": {
+    "preset": "painted_steel",
+    "color": "#4a4c48",
+    "grime": 0.35
+   },
+   "window_frame": {
+    "preset": "painted_steel",
+    "color": "#50524e"
+   },
+   "window_glass": {
+    "preset": "glass",
+    "tint": "#f3f2e8",
+    "opacity": 0.55,
+    "roughness": 0.3
+   },
+   "door_panel": {
+    "preset": "painted_steel",
+    "color": "#5e605a",
+    "panel_m": [
+     1.5,
+     1.5,
+     1.5
+    ],
+    "grime": 0.45
+   },
+   "door_frame": {
+    "preset": "painted_steel",
+    "color": "#3f413d"
+   },
+   "roof_deck": {
+    "preset": "painted_steel",
+    "color": "#777a74",
+    "panel_m": [
+     0.22,
+     0,
+     0
+    ],
+    "joint_m": 0.04,
+    "joint_darken": 0.55,
+    "grime": 0.25,
+    "grime_contrast": 1.2
+   },
+   "light_housing": {
+    "preset": "painted_steel",
+    "color": "#9a9c98",
+    "grime": 0.15
+   },
+   "light_tube": {
+    "preset": "emissive",
+    "color": "#f0f4ff",
+    "nits": 12000
+   },
+   "cabinet": {
+    "preset": "painted_steel",
+    "color": "#6b7066",
+    "panel_m": [
+     0.6,
+     0.6,
+     0.7
+    ]
+   },
+   "deck": {
+    "preset": "painted_steel",
+    "color": "#4c4e4b",
+    "color2": "#5d5f5a",
+    "feature_m": 4.0,
+    "grime": 0.5,
+    "grime_color": "#24221e",
+    "grime_m": 5.0,
+    "roughness": [
+     0.18,
+     0.85
+    ],
+    "rough_m": 5.0,
+    "grime_rough": 0.95,
+    "joint_darken": 0.3,
+    "grime_contrast": 1.3,
+    "panel_m": [
+     1.2,
+     1.2,
+     0
+    ],
+    "joint_m": 0.012
+   },
+   "floor": {
+    "preset": "painted_steel",
+    "color": "#4c4e4b",
+    "color2": "#5d5f5a",
+    "feature_m": 4.0,
+    "grime": 0.5,
+    "grime_color": "#24221e",
+    "grime_m": 5.0,
+    "roughness": [
+     0.18,
+     0.85
+    ],
+    "rough_m": 5.0,
+    "grime_rough": 0.95,
+    "joint_darken": 0.3,
+    "grime_contrast": 1.3,
+    "panel_m": [
+     1.2,
+     1.2,
+     0
+    ],
+    "joint_m": 0.012
+   },
+   "ceiling": {
+    "preset": "painted_steel",
+    "color": "#777a74",
+    "panel_m": [
+     0.22,
+     0,
+     0
+    ],
+    "joint_m": 0.04,
+    "joint_darken": 0.55,
+    "grime": 0.25,
+    "grime_contrast": 1.2
+   }
+  },
+  "floor": {
+   "kind": "floor",
+   "material": "deck",
+   "thickness_m": 0.3,
+   "extend_m": 0.5
+  },
+  "ceiling": {
+   "kind": "ceiling",
+   "height_m": 2.4,
+   "material": "roof_deck",
+   "thickness_m": 0.25
+  },
+  "wall": {
+   "kind": "wall",
+   "material": "wall_steel",
+   "thickness_m": 0.25,
+   "dado": {
+    "height_m": 0.9,
+    "material": "wall_lower"
+   },
+   "trim": [
+    {
+     "z_m": 0.0,
+     "height_m": 0.12,
+     "depth_m": 0.03,
+     "material": "steel_frame"
+    },
+    {
+     "z_m": 0.88,
+     "height_m": 0.05,
+     "depth_m": 0.03,
+     "material": "steel_frame"
+    }
+   ]
+  },
+  "wall_material_ns": "wall_steel",
+  "wall_material_ew": "wall_steel",
+  "window": {
+   "bay_m": 1.3,
+   "panes": [
+    1,
+    1
+   ],
+   "mullion_m": [
+    0.12,
+    0.3
+   ],
+   "bar_m": 0.04,
+   "frame_material": "window_frame",
+   "glass_material": "window_glass"
+  },
+  "door": {
+   "panel_m": [
+    0.9,
+    0.9
+   ],
+   "material": "door_panel",
+   "frame_material": "door_frame",
+   "braced": false,
+   "frame_m": 0.12,
+   "header_m": [
+    0.15,
+    0.06
+   ]
+  },
+  "chimney_breast_material": "wall_steel",
+  "window_dressing": [],
+  "exposure_ev100": 5.0,
+  "post": {
+   "bloom": 0.3,
+   "vignette": 0.4
+  },
+  "lights": {
+   "sky": {
+    "type": "sky",
+    "intensity": 0.15
+   },
+   "ceiling": {
+    "type": "rect",
+    "size_m": [
+     1.2,
+     0.3
+    ],
+    "lumens": 2600,
+    "kelvin": 4600,
+    "radius_m": 12,
+    "shadows": true
+   },
+   "lamp": {
+    "type": "point",
+    "lumens": 420,
+    "kelvin": 3000,
+    "radius_m": 6,
+    "source_radius_m": 0.04,
+    "shadows": true
+   },
+   "fire": {
+    "type": "point",
+    "lumens": 1700,
+    "kelvin": 1900,
+    "radius_m": 8,
+    "source_radius_m": 0.25,
+    "shadows": true
+   },
+   "fire_offset_m": [
+    0.0,
+    0.23,
+    0.32
+   ]
+  },
+  "words": {
+   "window": "a thick-framed viewport of dark glass",
+   "door": "a heavy steel hatch door",
+   "surfaces": "The walls are bare grey steel panels with riveted seams, the floor is worn metal deck plate, and the room is lit by cold overhead light strips."
+  }
+ }
+}

@@ -1,0 +1,18 @@
+{
+ "id": "quench_tub_oak_01",
+ "class": "prop",
+ "description": "Blacksmith's quench (slack) tub: low coopered oak tub ~0.8 m across the rim and 0.42 m tall, narrowing to ~0.7 m at the foot, two riveted iron hoops, filled to ~6 cm below the rim with dark still water; wet-darkened staves.",
+ "tags": ["quench", "slack-tub", "tub", "water", "blacksmith", "forge", "smithy", "oak", "coopered", "medieval"],
+ "tier": "mid",
+ "size_m": [0.81, 0.81, 0.42],
+ "size_tolerance": 0.1,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "cameras": [{"name": "rim", "position": [0.3, -0.75, 0.75], "target": [0.0, 0.0, 0.33], "focal": 45}],
+ "paint": {
+  "prompt": "a coopered tub of weathered oak staves, grey-brown with dark wet stains and open grain, rusty riveted iron hoops, dark still water inside",
+  "views": {"ring": 6, "upper": 3}
+ }
+}

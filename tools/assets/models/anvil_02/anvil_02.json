@@ -1,0 +1,17 @@
+{
+  "id": "anvil_london_02",
+  "class": "prop",
+  "description": "Blacksmith's anvil, London pattern, about 0.62 m: long tapered horn to +X flowing out of a lower step, flat hardened face with dressed, chipped edges and a forge-weld seam, heel to -X with a square hardy hole and a round pritchel hole, narrow waist, wide base with four feet and arched cut-outs. Hand-forged body with hammer dents, black scale, rust in recesses, polished wear on the face, horn top and working edges.",
+  "tags": ["anvil", "blacksmith", "forge", "metal", "tool", "hard-surface", "steel", "wrought-iron"],
+  "tier": "hero",
+  "size_m": [0.62, 0.205, 0.28],
+  "size_tolerance": 0.1,
+  "texture_px": 4096,
+  "cameras": [
+    {"name": "junction", "position": [0.20, -0.23, 0.36], "target": [0.075, -0.02, 0.252], "focal": 85},
+    {"name": "heel_edge", "position": [-0.43, -0.25, 0.40], "target": [-0.265, -0.04, 0.272], "focal": 85}
+  ],
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

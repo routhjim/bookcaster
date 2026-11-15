@@ -1,0 +1,50 @@
+{
+ "id": "shelf_wall_books_01",
+ "class": "prop",
+ "description": "Small wooden hanging shelf with books, front -Y, 0.70 W x 0.20 D x 0.55 H m: two plain pine shelves (stained dark) between shaped side boards, with a row of worn books on each shelf. Hangs on a wall: the back is flat at the back of the bounds; the origin is the bottom centre (lift it to the wanted height).",
+ "tags": [
+  "shelf",
+  "bookshelf",
+  "wall-shelf",
+  "books",
+  "victorian",
+  "furniture",
+  "pine",
+  "interior"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.7,
+  0.2,
+  0.55
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "books",
+   "position": [
+    0.2,
+    -0.6,
+    0.4
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.3
+   ],
+   "focal": 50
+  }
+ ],
+ "paint": {
+  "prompt": "small dark stained pine hanging shelf with rows of old worn books",
+  "views": {
+   "ring": 5,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

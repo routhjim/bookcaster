@@ -1,0 +1,14 @@
+{
+  "id": "stool_dressing_01",
+  "class": "prop",
+  "description": "Victorian dressing stool, 0.50 W x 0.36 D x 0.45 H m: stuffed rectangular top in worn brown leather with a row of brass nail heads, serpentine-shaped seat rails, four short cabriole legs in mahogany. Pairs with dressing_table_mirror_01.",
+  "tags": ["stool", "dressing-stool", "seat", "victorian", "furniture", "leather", "mahogany", "bedroom"],
+  "tier": "mid",
+  "size_m": [0.50, 0.36, 0.45],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "top", "position": [0.3, -0.55, 0.65], "target": [0.0, -0.05, 0.40], "focal": 50}],
+  "paint": {"prompt": "Victorian dressing stool with a worn cracked brown leather top, brass nail heads, mahogany cabriole legs", "views": {"ring": 5, "upper": 3, "top": true}}
+}

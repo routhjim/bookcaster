@@ -1,0 +1,12 @@
+{
+  "id": "bellows_forge_01",
+  "class": "prop",
+  "description": "Forge bellows: two teardrop oak boards about 0.7 m long with handle tabs, pleated dark leather sides, iron-strapped nose, iron nozzle and tacks; top board hinged open at the back. Lies on the floor, nozzle to +X.",
+  "tags": ["bellows", "forge", "blacksmith", "leather", "wood", "iron", "hard-surface"],
+  "tier": "mid",
+  "size_m": [0.98, 0.36, 0.24],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

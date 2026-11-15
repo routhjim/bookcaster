@@ -1,0 +1,14 @@
+{
+ "id": "blade_blank_01",
+ "class": "prop",
+ "description": "Half-forged straight sword blade lying flat along X (tip to +X), ~0.82 m: double-edged blade ~0.66 m, ~52 mm wide at the shoulders, still thick and wavy from the hammer, rough rounded point, short rough tang; dark hammer-scaled iron, not yet ground.",
+ "tags": ["blade", "sword", "blank", "forging", "work-in-progress", "iron", "blacksmith", "smithy", "dressing", "medieval"],
+ "tier": "hero",
+ "size_m": [0.82, 0.055, 0.012],
+ "size_tolerance": 0.2,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "paint": {"prompt": "a roughly forged iron sword blade: dark hammer-scaled surface with blue-grey and black flaking scale, hammer facets and dents, no polish", "views": {"ring": 6, "upper": 3}}
+}

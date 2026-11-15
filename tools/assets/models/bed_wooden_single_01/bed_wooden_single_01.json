@@ -1,0 +1,77 @@
+{
+ "id": "bed_wooden_single_01",
+ "class": "prop",
+ "description": "Victorian mahogany single bed with bedding, foot to -Y, head against a wall at +Y; 0.99 W x 2.02 L x 1.27 H m. Square posts with turned finials, panelled headboard with an arched top rail (1.15 m + arch), low panelled footboard (0.72 m), deep side rails. Mattress top 0.57 m, white sheet, one pillow, a plain white counterpane over most of the bed hanging over the sides, gently creased.",
+ "tags": [
+  "bed",
+  "single-bed",
+  "wooden-bed",
+  "victorian",
+  "bedroom",
+  "furniture",
+  "mahogany",
+  "bedding",
+  "counterpane",
+  "pillow"
+ ],
+ "tier": "mid",
+ "size_m": [
+  1.0,
+  2.04,
+  1.27
+ ],
+ "size_tolerance": 0.12,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "foot",
+   "position": [
+    0.6,
+    -1.9,
+    1.15
+   ],
+   "target": [
+    0.1,
+    -0.85,
+    0.7
+   ],
+   "focal": 45
+  },
+  {
+   "name": "head",
+   "position": [
+    -0.35,
+    0.2,
+    1.05
+   ],
+   "target": [
+    0.0,
+    0.88,
+    0.85
+   ],
+   "focal": 45
+  }
+ ],
+ "paint": {
+  "prompt": "Victorian mahogany single bed with a panelled headboard, worn polish, white linen counterpane and pillow",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  },
+  "close": {
+   "box": [
+    0.0,
+    0.0,
+    0.3,
+    1.0,
+    0.3,
+    1.0
+   ],
+   "ring": 3
+  }
+ },
+ "frame": "wood"
+}

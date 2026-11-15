@@ -1,0 +1,17 @@
+{
+  "id": "bed_iron_single_01",
+  "class": "prop",
+  "description": "Victorian black iron single bedstead with bedding, foot to -Y, head against a wall at +Y; 0.99 W x 2.02 L x 1.17 H m. Tubular posts with brass ball finials and collars, arched top rails, vertical bars and cross rails at head (1.15 m) and foot (0.86 m), angle-iron side rails, small castors. Mattress top 0.57 m, white sheet, one pillow at the head, a rumpled oatmeal wool blanket over the lower two thirds hanging over the sides. Black paint chipped to bare iron, brass dulled.",
+  "tags": ["bed", "bedstead", "iron-bed", "single-bed", "victorian", "bedroom", "furniture", "bedding", "blanket", "pillow"],
+  "tier": "mid",
+  "size_m": [0.99, 2.02, 1.17],
+  "size_tolerance": 0.12,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [
+    {"name": "foot", "position": [0.6, -1.9, 1.15], "target": [0.1, -0.85, 0.7], "focal": 45},
+    {"name": "head", "position": [-0.35, 0.2, 1.05], "target": [0.0, 0.88, 0.85], "focal": 45}
+  ],
+  "paint": {"prompt": "Victorian black painted iron bedstead with chipped paint and brass knobs, white linen sheet and pillow, rumpled oatmeal wool blanket", "views": {"ring": 6, "upper": 3, "top": true}, "close": {"box": [0.0, 0.0, 0.3, 1.0, 0.3, 1.0], "ring": 3}}
+}

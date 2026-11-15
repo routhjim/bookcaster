@@ -1,0 +1,50 @@
+{
+ "id": "table_bedside_01",
+ "class": "prop",
+ "description": "Victorian mahogany bedside cabinet (pot cupboard), front -Y, 0.40 W x 0.36 D x 0.76 H m: square top with a three-sided gallery, one frieze drawer with a turned knob, a panelled cupboard door below with a small knob, plinth base. Worn polish, ring marks on the top.",
+ "tags": [
+  "bedside-table",
+  "nightstand",
+  "pot-cupboard",
+  "cabinet",
+  "victorian",
+  "bedroom",
+  "furniture",
+  "mahogany"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.4,
+  0.36,
+  0.79
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "top",
+   "position": [
+    0.25,
+    -0.6,
+    1.0
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.74
+   ],
+   "focal": 50
+  }
+ ],
+ "paint": {
+  "prompt": "Victorian mahogany bedside cupboard, worn polish with ring marks on the top",
+  "views": {
+   "ring": 5,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

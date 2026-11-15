@@ -1,0 +1,15 @@
+{
+  "id": "whip_lash_loop_01",
+  "class": "prop",
+  "description": "Short dog whip lying on the floor: a 0.30 m leather-covered stock with a knob end and a plaited keeper at the tip, and a whipcord lash curled upon itself and tied into a small loop (about 0.13 m across) with a knot, a short frayed end beyond. Dark, greasy leather; worn grey-brown cord.",
+  "tags": ["whip", "dog-whip", "lash", "whipcord", "loop", "leash", "lead", "victorian", "hand-prop", "clue"],
+  "tier": "hero",
+  "texture_px": 1024,
+  "size_m": [0.60, 0.16, 0.028],
+  "size_tolerance": 0.2,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "knot", "position": [0.22, -0.30, 0.25], "target": [0.12, 0.0, 0.01], "focal": 60}],
+  "paint": {"prompt": "old dog whip with a dark leather covered handle and a worn plaited whipcord lash tied in a loop with a knot", "views": {"ring": 6, "upper": 3, "top": true}}
+}

@@ -1,0 +1,204 @@
+# img3d: picture to 3D (TRELLIS.2) for props, creatures and people
+
+One drawing in, a textured mesh out, through the line. TRELLIS.2 (MIT) runs in the trellis.cpp port (MIT), installed
+under `$ASSETS_UE_HOME/tools/trellis` (bin-rocm/, bin-vulkan/; weights in `~/models/trellis2-gguf`).
+
+| File | What |
+|---|---|
+| `img3d.py` | drawing -> `.glb` (+ base-colour atlas, cut-out, per-stage times in `.json`) on the line's station device |
+| `model_img3d.py` | asset-chain model script: the `.glb` with its own texture, turned, scaled, decimated to the tier budget; bump and roughness derived from the colour so the harness bakes normal and ORM maps on its GPU |
+| `bl_view.py` | Cycles views of a `.glb` / `.blend` on a GPU: ring, ortho, aimed close-ups (`"target": "top:0.13"` = a head) |
+| `bl_combo.py` | fit a generated figure over the MetaHuman body: `mode outfit` (its clothes on the MetaHuman head and hands) or `mode statue` (the whole figure rigged to the body's skeleton) |
+| `stage.py`, `ue_stage_figure.py` | a plain-mesh figure (a statue) on a set mark with the scene tool's cameras and depth guides |
+| `grid_sheet.py` | captioned picture grids |
+
+## Speed (11-11, dragon drawing, seed 42)
+
+| Device | Build | 1024 | 1536 |
+|---|---|---|---|
+| card 65 (XTX) | ROCm | 154 s | 352 s |
+| card 65 (XTX) | Vulkan | 271 s | 607 s |
+| iGPU | Vulkan | 738 s | ~31 min (and ~50 GiB of system RAM) |
+
+About 30 s of every run is CPU inside the port (xatlas UV unwrap ~26 s, mesh clean-up). Both resolutions end at
+~300k faces, so 1536 adds surface detail, not shape. Default: ROCm, 1024, card 65.
+
+```
+ASSETS_TRELLIS_OMP=<folder with libomp.so> \
+python tools/assets/run_asset.py --line-cmd engine shape --id NAME --detach -- \
+    python tools/assets/img3d/img3d.py DRAWING.png OUT.glb --res 1024 --build rocm
+```
+
+`--line-cmd engine` borrows the engine card while the engine has no work (engine jobs go first; the editor unloads
+and reloads for the next engine job, ~13 s). Submit one drawing per entry: a long batch in one entry holds the
+engine away from everyone else.
+
+## A character from a sheet: the combo route (generated clothes, MetaHuman head, skeleton and hands)
+
+Needs: the character sheet (a drawing), a MetaHuman character of that person in the project (face, groom,
+skeleton), and that character's body and head exported as FBX (the character tools' `export_geometry` job writes
+them; the first figure used `MHC_<name>_Body.fbx` and `_Head.fbx`).
+
+1. **Spread-pose drawing** (image station, edit model, ~40 s a picture): the sheet as Picture 1 and a prompt asking
+   for the same person, same clothes, full length, straight from the front, arms held out and down about 45
+   degrees, hands open, legs slightly apart, coat hanging open and clear of the arms, plain light grey background.
+   Two seeds, photographic look (the ink look generates too, the photographic one gave the cleaner surface).
+   Jobs file format and runner: `tools/assets/qwen_edit.py` (run it through `run_asset.py --line-cmd image refs --
+   bash tools/assets/orbit/card.sh 05 <python> -I tools/assets/qwen_edit.py jobs.json`).
+2. **Generate**: `img3d.py` on the drawing (above). Look at it with `bl_view.py` (front, back, head) before going on.
+3. **Fit, cut, weights, export** (`bl_combo.py`, Blender on the iGPU station, ~20-35 s, part of it CPU):
+   ```
+   JOB.json {"body_fbx": ".../<char>_Body.fbx", "head_fbx": ".../<char>_Head.fbx",
+             "figure_glb": ".../figure.glb", "out": ".../combo", "skirt_pelvis": 1.0}
+   python tools/assets/run_asset.py --line-cmd igpu combo --id NAME --detach -- \
+       flock /tmp/gpu-igpu.lock <blender> -b --factory-startup -t 0 --python tools/assets/img3d/bl_combo.py -- JOB.json
+   ```
+   What it does: scales the figure so its shirt collar meets the body's neck (a drawn head is often large); centres
+   the body's chest between the figure's chest front and back; turns the body's upper arms and thighs onto the
+   figure's wrists and shoes (found from the texture colours: skin, dark shoes); stretches the sleeves to the
+   body's wrists; cuts the head with a tilted collar plane and the hands at the wrists; pushes everything out of the
+   body and head by 1.4 cm; copies the posed body's weights and then applies the region rules (below); keeps the
+   figure's hair as a cap on the back and sides of the head (`hair_cap`); takes the body's own hands into the
+   outfit as slot `M_skin`; makes that pose the bind pose and exports `outfit.fbx` (centimetres) with
+   `textures/T_outfit_{BaseColor,Normal,RMA}.png`. `report.json` has every number.
+4. **Import** (engine, ~15 s): a character-tools job (`tools/assets/characters/char_submit.py`, from the worktree
+   that has the scene tool you use) with
+   `"import_outfit": {"outfit_fbx": ".../outfit.fbx", "textures": ".../textures", "dest": "/Game/Char/Outfit<X>",
+   "cloth_slots": false}` and a character `{"path": <the MetaHuman Blueprint>, "garments": ["@outfit"],
+   "hide_body": true}`. Shots with hands checks need the M_skin slot (the outfit mode has it).
+5. **character.json** in `<library>/character/<id>/`: a copy of the MetaHuman character's entry with
+   `"garments": ["/Game/Char/Outfit<X>/Outfit/outfit"]`, `"hide_body": true`, `"body_swap": null`. The scene tool
+   then poses it like any library character.
+
+Region rules (in `bl_combo.py`, general; the numbers are job keys):
+- only sleeves follow the arms: a vertex keeps arm weights when it is nearer the arm's surface than the torso's,
+  clear of the torso (`sleeve_off_torso_m`), or at the armhole; everything else takes the weights of the body
+  without its arms;
+- cloth below the waist that is off the legs (`skirt_off_leg_m`, 5 cm) is skirt: it follows the pelvis by
+  `skirt_pelvis` and the nearer thigh by the rest. **A long dress or a frock coat: `skirt_pelvis` 1.0** (hangs from
+  the pelvis, does not split with the legs; it will pass through the legs on a big step, and a seated pose needs the
+  skirt to drape, which this does not do). Trousers stay on the legs;
+- shoes (under 11 cm) are rigid on the foot bones; weights are smoothed over the mesh (8 rounds, 25 at the
+  armholes);
+- mode statue: the head (above the collar plane) is rigid on the head bone and scaled to enclose the hidden
+  MetaHuman head (else its face shows through); the hands past the wrists are rigid on the hand bones.
+
+What the outfit covers (job keys `liner*`, `flap_*`): the MetaHuman head mesh reaches down over the trapezius and
+collarbones (weighted to spine_04, the clavicles and the arms' corrective joints) and showed through the coat's
+shoulder seams. bl_combo copies the part of that skin the outfit covers (outward ray meets the outfit within 10 cm,
+or, away from the neck, outfit lies within 5 cm all round a hole), grown two edge rings below the collar line, as a
+liner 4 mm outside the skin, painted with one even texel of the cloth's shoulder colour and carrying the skin's own
+weights; it joins the outfit. Outfit vertices within 5 cm of that skin blend in the skin's weights. The coat's
+shoulder cap is Taubin-smoothed (`shoulder_round_m` 0.15, 12 rounds). `report.json`: `liner`, `flap_follow_verts`,
+`head_skin_below_collar` (rays that meet no cloth; the open shirt front counts too).
+
+Long skirts: `"turn_legs": false` (the hem is no ankle), `"shoe_top_m": 0.03` and `"skirt_min_z_m": 0.03` (the hem
+is skirt, not shoe), `"skirt_pelvis": 1.0`. `skirt_idx.npy` lists the loose cloth for the settle step.
+
+## A cast by the same route (11-11): what a new character takes
+
+Per character, from its sheet: (1) a MetaHuman from a preset near the sheet through the character tools (`make` +
+`cloud` + `export_geometry` in one char_render job, ~2.5 min; body constraints are now really applied); (2) the
+spread drawing with the character's LoRA and an OpenPose control map of a 40-degree spread pose drawn from fixed
+proportions (no detector), gated by pose_gate.py; (3) TRELLIS.2 on a card (~3.5 min incl. the inner wall);
+(4) bl_combo.py (~12 s, ~35 s for a long dress); (5) import (~8 s); (6) per stance that moves the legs: one scene
+run for the joints, bl_settle.py (~5 s), an import, its own library id.
+Hands are found at the far end of each arm (brown cloth passes the skin test); neck-skin and nape-hair removal only
+touches what lies on or inside the MetaHuman's own neck and head; floating pieces above the collarbones off the
+neck's axis (a drawn bun) are dropped.
+
+Hair indoors: groom strands take the sky light's cubemap with no room occlusion, so black hair shows the outdoor
+sky's blue in a room. char_render's job key `"interior": true` turns `r.HairStrands.SkyLighting` off for the job and
+restores it (the scene tool should pass the set's own interior flag); exteriors are unchanged.
+
+## Loose cloth per stance: bl_settle.py
+
+Pelvis-only weights hang a skirt straight whatever the legs do. Per stance (iGPU station, Blender, ~3 s of numpy):
+the combo's armature is posed to the stance's joints (the scene tool's `result.json`, `subjects.<key>.measured.
+joints`, with the scene's mark and facing), the loose cloth is laid column by column from its pinned top over the
+thigh and hip volumes (capsules), the seat box and the floor (`"mode": "drape"`, seated; the cloth behind the hips
+that reaches the seat stays under the body), or pushed out of the legs along its own outward direction (`"push"`,
+walking), relaxed (edge lengths of the standing outfit, gravity, collisions, top edge pinned), and the outfit is
+exported with that stance as its bind pose. A library entry per stance (`<id>_seated`, `<id>_walk`) names that
+outfit; the scene must use the same pose and parameters it was settled for. Cost per stance: one scene run for the
+joints, ~3 s settle (+ ~15 s Blender load/export), one engine import (~15 s).
+
+Specific to the first figure (a frock coat, cravat, black hair) and to check on the next one: the colour tests
+(skin, white collar, dark hair, dark shoes) in `is_skin` and the collar/hair thresholds; the cravat smoothing
+(light unsaturated cloth in front of the neck); the shoulder pull-in (`shoulder_gap_m`). A woman in a long dress:
+set `skirt_pelvis` 1.0, check that the collar is found (a high dress collar is not white: pass `"match": "height"`
+to scale by height instead), and expect the dress to hang straight in a seated pose.
+
+## Guide fixes, new garments and the one-command route (11-11, later)
+
+**Arms that read in the still, the mask and the depth pass.** A drawn coat or bodice flares past the body below the
+armpit and the generated sleeve is a wide tube; with the arms down they merge. bl_combo now pulls the garment's
+sides in to the body's own side (`side_slim_k` 0.1 of the excess past `side_slim_gap_m` 1.5 cm, mid-thigh to the
+armpit; long skirts from the hips up) and, optionally, the sleeves to the body's arm (`sleeve_slim_k`, measured per
+2 cm along each arm bone). The relaxed stance takes 12 deg of arm abduction and 10 deg of forearm forward (character
+.json `relaxed_arm_steps`; `cast_char.py` picks the smallest of 4 / 8 / 12 deg that separates by measurement).
+Measured with `characters/arm_gap.py` on the scene tool's guides (rows along the forearm where the line to the body's
+centre crosses background or a depth jump): the man went from 0/10 rows to 10/10 at wide and 5/5 at medium.
+**The web.** The real cause of arms that will not separate (and of "wings" when they rise): the generated figure
+joins the sleeve's underside to the garment's side below a real armpit. `mesh_gate.py` measures it on the mesh
+(free height and gap at elbow height, front-plane slices); `cast_char.py` sends every drawing that passes
+`pose_gate.py` to 3D and keeps the first mesh that passes `mesh_gate.py` (free >= 0.70 of the height, gap >= 5 % at
+the elbow), else draws the next seeds. bl_combo's `web_cut` (cut the sheet between the arm's slice width and the
+torso's side) is experimental and off: it cut nothing on the figures tried.
+
+**Neckwear (`bl_collar.py`, job key `collar_build`).** The generated shirt front, cravat and shirt collar (cloth
+lighter than the coat in the throat; lower down only what is nearer the shirt's white, so a grey waistcoat stays)
+are removed and rebuilt: a closed standing collar from the neck's base to `visible_neck_frac` x head height under
+the chin (rings at the neck's own radius from the head mesh, never the jaw's), wing tips (`style` "wing"), a shirt
+front plate under the lapels, a bow (`neckwear` "bow") or a tie ("tie"); for a dress: `white_top_m` (her own high
+collar in the dress colour with a white edge), `cuffs`, `plate` false. Colours from the removed cloth, written as
+swatches into a free corner of the atlas; linen capped at albedo 0.72 (it blew out in window light).
+**Neck length.** A slim, tall MetaHuman preset keeps the "Neck Length" body constraint inactive at its own value
+(9.7 cm on the man in black against 6.4 on the doctor): set it (choose_mh.py sets 6.8 / 6.4).
+**Hands.** char_render gives an outfit's `M_skin` slot the body's skin material at spawn (the import had given every
+slot the cloth atlas: dark hands with white specks).
+
+**Veil (`bl_veil.py`).** A small bonnet and a net veil built round the head mesh as two extra garments on the
+combo's skeleton ("down" to below the chin, or "raised": turned back over the bonnet); the veil's material is
+masked by a net opacity map, dithered (char_render: an outfit folder with `T_outfit_Opacity.png`).
+
+**Poses (`characters/poses_extra.py`).** In the scene tool's pose form (a base pose + `steps`): a head look control
+(pitch / yaw over neck_01, neck_02, head; eye curves follow), hands in the lap, the veil lift (start and end), looking
+down at one's own sleeve, and a hand resting on another person's forearm solved from both measured skeletons.
+**Stance variants (`characters/stances.py`).** Seated / walking entries carry `stance` and `seat_asset`, `seat_z_m`;
+`resolve()` picks the entry for a shot's pose and chair.
+
+**One command (`cast_char.py`).** Sheet + look line + LoRA -> library character: measured MetaHuman choice
+(`characters/choose_mh.py`, CLIP + DINOv2 on the card), make + cloud + export, drawings in seed rounds until both
+gates pass, shape, fit rules measured on the drawing, import, arm abduction by measurement, check stills. Resumable
+(each step skipped when its output exists); `--mh` reuses an existing MetaHuman.
+
+**The fit keeps the generated garment (11-11, after the clothes audit).** Rendering one dress at every stage showed
+the texture intact throughout and the loss in two places: the fit (every vertex pushed out of the hidden body by
+1.4 cm printed the body's bust into the bodice; pull-ins and smoothing flattened folds) and the export (every face
+flat-shaded: the glTF's smooth normals are lost at the first weld and the FBX carried per-face smoothing, so the
+engine drew each garment faceted). Now: only the visible head mesh pushes (`push_body` false), all fit moves are one
+displacement field smoothed over the mesh before it is applied (`disp_smooth` 12), shoulder and collar pull-ins,
+shoulder rounding and cravat smoothing are off, the liner is off for the rebuilt cast (it made dark spikes at
+collars), the mesh is shaded smooth before export, and the cloth material is matte (roughness 0.95, specular 0.15).
+A seated stance lays the skirt with `iters` 0 (no relaxation). `stage_dir` saves a .blend after each step for audits.
+The constructed collar (`collar_build`) is no longer used for the cast: collar and cravat come from the generated
+figure (draw them closed and high in the spread drawing).
+
+**Raised-arm "wings" (11-11).** Coloured by dominant bone with both arms raised 70 deg, the dark sheet under a puffed
+sleeve was the sleeve's own underside: past the sleeve tube radius (`sleeve_radius_m`, 12 cm) it took torso weights
+and stayed down. A 20 cm tube made it follow the arm cleanly (picture in the lab notes); the armhole weight blend
+was not the cause (the wing share of the bodice side stayed 4.4-4.5 % from no blend to the default, and smaller
+blends tore more edges). cast_char uses 20 cm for a dress.
+
+**Skin under the clothes is hidden, not pushed (11-11).** The cloth is pushed out of the MetaHuman head mesh only
+within 8 cm of the neck (a push over the shoulders flattened puffed sleeves). The fit bakes an opacity mask in the
+head mesh's UVs (`bl_skinmask.py`: below the collar line and under cloth, in a gap of it, or out over the
+shoulders); `characters/char_skinmask.py` gives the character its own masked copy of the face skin material and its
+own Blueprint copy wearing it (the shared material and the MetaHuman's assets stay as they are);
+`characters/skin_probe.py` measures skin through the cloth on flat-lit stills against a twin without the face mesh
+and fails the build. A shipped hide mask or parameter does not exist on the face material (checked first).
+
+**Seated garments are not generated from a seated drawing (11-11).** Tried once: a front view gives the 3D model no
+depth for seated legs, so the skirt below the knees came out in shreds; the standing garment bent onto the seat by
+`bl_settle.py` reads far better.

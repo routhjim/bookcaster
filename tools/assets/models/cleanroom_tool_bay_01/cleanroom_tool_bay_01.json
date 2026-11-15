@@ -1,0 +1,12 @@
+{
+  "id": "cleanroom_tool_bay_01",
+  "class": "prop",
+  "description": "Cleanroom process-tool bay: white powder-coated equipment cabinet 1.2 m wide, 2 m tall, with panel seams and screws, glass load-port window over a stainless load-port stage, status screen, EMO button, louvered vents, fan filter unit, signal tower and levelling feet. Front faces -Y.",
+  "tags": ["cleanroom", "semiconductor", "fab", "equipment", "cabinet", "tool", "industrial", "set-dressing", "hard-surface"],
+  "tier": "mid",
+  "size_m": [1.22, 1.03, 2.24],
+  "size_tolerance": 0.15,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

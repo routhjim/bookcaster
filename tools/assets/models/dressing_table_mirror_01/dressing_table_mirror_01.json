@@ -1,0 +1,14 @@
+{
+  "id": "dressing_table_mirror_01",
+  "class": "prop",
+  "description": "Victorian mahogany dressing table with a swing mirror, front -Y, 1.05 W x 0.50 D x 1.55 H m: table top at 0.76 m on four square tapered legs, frieze with a wide centre drawer between two small drawers (brass knobs, keyhole), and on the top a mirror stand: a base with two small drawers, two turned uprights with finials, and a swing mirror with an arched mahogany frame and old silvered glass. Polish worn on the top and drawer edges.",
+  "tags": ["dressing-table", "vanity", "mirror", "table", "bedroom", "victorian", "furniture", "mahogany", "interior"],
+  "tier": "mid",
+  "size_m": [1.05, 0.50, 1.55],
+  "size_tolerance": 0.1,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)",
+  "cameras": [{"name": "mirror", "position": [0.3, -1.1, 1.3], "target": [0.1, 0.0, 1.15], "focal": 45}],
+  "paint": {"prompt": "Victorian mahogany dressing table with a swing mirror, worn French polish, old silvered mirror glass with spotting at the edges", "views": {"ring": 5, "upper": 3, "top": true}}
+}

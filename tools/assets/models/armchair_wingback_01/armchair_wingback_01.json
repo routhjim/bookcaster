@@ -1,0 +1,79 @@
+{
+ "id": "armchair_wingback_01",
+ "class": "prop",
+ "description": "Victorian wingback armchair, front -Y: tall raked back with a humped top and two wings, rolled arms with scroll front panels edged in piping, loose seat cushion with piped edges, short cabriole front legs and turned raked back legs in dark mahogany on brass castor cups. Upholstered in muted, worn gold silk damask with a darker woven figure: rubbed and creased on the arm rolls, seat front and wing edges, darker in the seams. Seat: flat cushion top at 0.45 m; cushion front face 0.43 m in front of the chair's centre (Blender y = -0.43, UE +43 cm along the asset's front); seat 0.54 m wide between the arms, 0.66 m deep to the back; arm tops at ~0.67 m.",
+ "tags": [
+  "armchair",
+  "wingback",
+  "chair",
+  "seat",
+  "victorian",
+  "furniture",
+  "upholstery",
+  "mahogany",
+  "interior",
+  "sitting-room",
+  "damask",
+  "gold"
+ ],
+ "tier": "hero",
+ "texture_px": 2048,
+ "size_m": [
+  0.85,
+  0.85,
+  1.15
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "back_wing",
+   "position": [
+    0.15,
+    -0.75,
+    0.95
+   ],
+   "target": [
+    0.0,
+    0.22,
+    0.8
+   ],
+   "focal": 60
+  },
+  {
+   "name": "arm_front",
+   "position": [
+    0.75,
+    -0.85,
+    0.6
+   ],
+   "target": [
+    0.34,
+    -0.42,
+    0.45
+   ],
+   "focal": 70
+  }
+ ],
+ "paint": {
+  "prompt": "worn antique gold silk damask upholstery with a woven floral pattern, faded and rubbed on the arms and seat front, creases, piping on the seams, dark mahogany legs",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  },
+  "close": {
+   "box": [
+    0.0,
+    0.0,
+    0.25,
+    1.0,
+    0.45,
+    0.65
+   ],
+   "ring": 3
+  }
+ }
+}

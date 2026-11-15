@@ -1,0 +1,16 @@
+{
+ "id": "bar_hot_iron_01",
+ "class": "prop",
+ "description": "Square iron bar fresh from the fire, lying flat along X, ~0.8 m x 16 mm: the -X end glows (emissive: yellow-white tip, orange, cherry red, dull red ~0.2 m back), the rest black scaled iron. For a forge fire or an anvil face.",
+ "tags": ["iron", "bar", "hot", "glowing", "forging", "work-in-progress", "blacksmith", "smithy", "lit"],
+ "tier": "hero",
+ "size_m": [0.8, 0.016, 0.016],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 1024,
+ "variant": "lit",
+ "cameras": [{"name": "hot_end", "position": [-0.28, -0.22, 0.14], "target": [-0.33, 0.0, 0.0], "focal": 50}],
+ "paint": {"prompt": "a forged square iron bar: dark blue-black hammer scale, flaking, the end burnt pale grey and scaled from the fire", "views": {"ring": 4, "upper": 2}}
+}

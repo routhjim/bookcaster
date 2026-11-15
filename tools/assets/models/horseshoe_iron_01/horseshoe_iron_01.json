@@ -1,0 +1,14 @@
+{
+ "id": "horseshoe_iron_01",
+ "class": "prop",
+ "description": "Hand-forged iron horseshoe lying flat, ~0.13 m across, toe to -Y with a raised toe clip, eight square nail holes, black scale with rust in the holes.",
+ "tags": ["horseshoe", "iron", "blacksmith", "farrier", "smithy", "dressing", "medieval"],
+ "tier": "mid",
+ "size_m": [0.13, 0.13, 0.022],
+ "size_tolerance": 0.2,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 1024,
+ "paint": {"prompt": "hand-forged black iron with hammer marks, blue-black scale and orange rust in the nail holes", "views": {"ring": 6, "upper": 3}}
+}

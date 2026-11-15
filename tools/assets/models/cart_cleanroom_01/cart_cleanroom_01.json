@@ -1,0 +1,13 @@
+{
+  "id": "cart_cleanroom_01",
+  "class": "prop",
+  "description": "Cleanroom stainless-steel utility cart: two solid shelves with a low rim (top shelf surface 0.90 m above the floor), four round-tube posts, a push handle at the +X end, four grey polyurethane casters. Front faces -Y (long side).",
+  "tags": ["cart", "trolley", "cleanroom", "semiconductor", "fab", "stainless", "set-dressing", "hard-surface"],
+  "tier": "mid",
+  "size_m": [0.96, 0.62, 1.02],
+  "size_tolerance": 0.15,
+  "texture_px": 1024,
+  "placement": "floor",
+  "source": "scripted",
+  "licence": "CC0 (original script)"
+}

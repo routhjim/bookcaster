@@ -1,0 +1,62 @@
+{
+ "id": "stump_anvil_oak_01",
+ "class": "prop",
+ "description": "Anvil stump: a sawn section of oak trunk 0.5 m tall, ~0.58 m across the top flaring to ~0.7 m at the foot; deeply furrowed bark, one iron band below the top, sawn end-grain top with growth rings, radial checks, scorch marks and flakes of forge scale. Takes a ~0.3 m anvil on top (face at ~0.8 m).",
+ "tags": [
+  "stump",
+  "anvil-block",
+  "blacksmith",
+  "forge",
+  "smithy",
+  "oak",
+  "wood",
+  "medieval"
+ ],
+ "tier": "mid",
+ "size_m": [
+  0.75,
+  0.75,
+  0.5
+ ],
+ "size_tolerance": 0.1,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "texture_px": 2048,
+ "cameras": [
+  {
+   "name": "top",
+   "position": [
+    0.25,
+    -0.55,
+    0.95
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.48
+   ],
+   "focal": 45
+  }
+ ],
+ "paint": {
+  "prompt": "a sawn oak log: deeply furrowed grey-brown bark with cracks and lichen-free dry plates, a rusty iron band, the sawn top showing growth rings, radial cracks, black scorch marks and flakes of iron scale",
+  "views": {
+   "ring": 6,
+   "upper": 3
+  },
+  "close": {
+   "box": [
+    0.0,
+    0.0,
+    0.8,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "ring": 3,
+   "el": 55,
+   "top": true
+  }
+ }
+}

@@ -1,0 +1,49 @@
+{
+ "id": "vase_ornament_01",
+ "class": "prop",
+ "description": "Small Victorian porcelain vase, 0.21 m: baluster body, waisted neck and flared lip, dark blue glaze with gilt bands at lip and foot (worn).",
+ "tags": [
+  "vase",
+  "ornament",
+  "porcelain",
+  "ceramic",
+  "victorian",
+  "mantelpiece",
+  "interior"
+ ],
+ "tier": "mid",
+ "texture_px": 1024,
+ "size_m": [
+  0.1,
+  0.1,
+  0.21
+ ],
+ "size_tolerance": 0.15,
+ "placement": "floor",
+ "source": "scripted",
+ "licence": "CC0 (original script)",
+ "cameras": [
+  {
+   "name": "panel",
+   "position": [
+    0.05,
+    -0.35,
+    0.15
+   ],
+   "target": [
+    0.0,
+    0.0,
+    0.1
+   ],
+   "focal": 70
+  }
+ ],
+ "paint": {
+  "prompt": "small Victorian dark blue porcelain vase with worn gilt bands",
+  "views": {
+   "ring": 6,
+   "upper": 3,
+   "top": true
+  }
+ }
+}

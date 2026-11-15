@@ -10,6 +10,7 @@
 #   # suite: slow     - takes over ~20 s alone; FULL only
 #   # suite: manual   - a harness that needs arguments, a GPU or a person; never run here
 #   # suite: pose     - needs ~/tts-ab/.venv-pose/bin/python -I (default: ~/tts_reader/.venv/bin/python)
+# A file that imports pytest runs as 'python3 -m pytest -q FILE' (SUITE_PY_PYTEST).
 # Exit 0 when every test run passed, 1 otherwise. CPU only: systemctl, systemd-run and sudo are shimmed on PATH (a
 # test can never stop, start or restart a unit such as strata-eval, nor launch a scoped GPU job); is-active answers
 # "inactive". Every shimmed call is listed at the end as a side effect the test should stub itself.
@@ -22,6 +23,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 export SUITE_PY_MAIN=${SUITE_PY_MAIN:-$HOME/tts_reader/.venv/bin/python}
 export SUITE_PY_POSE=${SUITE_PY_POSE:-$HOME/tts-ab/.venv-pose/bin/python}
+export SUITE_PY_PYTEST=${SUITE_PY_PYTEST:-python3}   # for pytest-style files (the main venv has no pytest)
 JOBS=${SUITE_JOBS:-$(nproc)}
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/run_suite.XXXXXX")   # logs only (small)
 trap 'rm -rf "$OUT"' EXIT
@@ -54,6 +56,11 @@ for f in "${FILES[@]}"; do
     elif [[ "$m" == *" slow "* && "$MODE" == fast ]]; then SKIP_SLOW+=("$name")
     else
         py="$SUITE_PY_MAIN"; [[ "$m" == *" pose "* ]] && py="$SUITE_PY_POSE -I"
+        # a pytest-style file (test functions, no main) runs under pytest, with an interpreter that has it
+        # (also one with test functions that nothing calls: run as a script it would execute none of them)
+        if grep -q '^import pytest' "$f" || { grep -q '^def test_' "$f" && ! grep -q '__main__' "$f"; }; then
+            py="$SUITE_PY_PYTEST -m pytest -q -p no:cacheprovider"
+        fi
         RUN+=("$name|$py")
     fi
 done

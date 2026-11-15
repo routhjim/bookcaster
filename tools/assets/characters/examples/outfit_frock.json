@@ -1,0 +1,327 @@
+{
+ "_doc": "Period day dress (c. 1890): knee-length single-breasted frock coat with a waist seam, notch lapels, turned cuffs, centre-back vent; single-breasted waistcoat with points; high standing collar; tied silk cravat; grey striped trousers; black leather shoes. Garments are constructed from girths measured on the exported body (hull per height + ease, hanging from chest, blades and seat). Units: metres; colours linear RGB.",
+ "shirt": {
+  "gap": 0.004,
+  "sleeve_ease": 0.008,
+  "cuff_past_wrist": -0.01,
+  "tuck_below_waist": 0.07,
+  "neck_rise": 0.01,
+  "collar_below_neck": 0.015,
+  "collar_h_back": 0.068,
+  "collar_h_front": 0.058,
+  "collar_gap": 0.005,
+  "collar_flare": 0.006,
+  "collar_open_deg": 4,
+  "collar_corner": 0.01
+ },
+ "trousers": {
+  "gap": 0.006,
+  "crotch_drop": 0.035,
+  "rise_above_waist": 0.01,
+  "hem_above_ankle": -0.01,
+  "hem_tilt": 0.012,
+  "seat_ease": [
+   0.016,
+   0.012,
+   0.022
+  ],
+  "seat_hang": [
+   0.3,
+   0.6,
+   0.15
+  ],
+  "leg_ease": [
+   0.03,
+   0.026,
+   0.02
+  ],
+  "leg_taper": 0.06,
+  "nang": 64,
+  "inner": 10,
+  "smooth": 4
+ },
+ "shoes": {
+  "gap": 0.007,
+  "top_above_ankle": 0.0,
+  "heel_back": 0.008,
+  "toe_ext": 0.012,
+  "sole_bottom": -0.004,
+  "toe_round": 0.55
+ },
+ "waistcoat": {
+  "gap": 0.004,
+  "ease": [
+   0.012,
+   0.01,
+   0.01
+  ],
+  "hang": [
+   0.12,
+   0.5,
+   0.35
+  ],
+  "v_depth": 0.17,
+  "v_half_top": 0.075,
+  "hem_below_waist": 0.02,
+  "point_lat": 0.03,
+  "point_drop": 0.06,
+  "notch_rise": 0.03,
+  "point_slope": 0.45,
+  "buttons": 6,
+  "button_r": 0.0055,
+  "lapel_w": 0.024,
+  "lapel_proud": 0.003,
+  "welt_lat": 0.095,
+  "welt_w": 0.075
+ },
+ "cravat": {
+  "band_z": 0.022,
+  "band_h": 0.017,
+  "band_t": 0.006,
+  "knot": [
+   0.021,
+   0.015,
+   0.019
+  ],
+  "end_len": [
+   0.105,
+   0.12
+  ],
+  "end_fan": 0.024,
+  "end_w0": 0.026,
+  "end_w1": 0.05,
+  "end_gap": 0.008
+ },
+ "coat": {
+  "gap": 0.006,
+  "ease": [
+   0.03,
+   0.026,
+   0.026
+  ],
+  "hang": [
+   0.08,
+   0.3,
+   0.15
+  ],
+  "smooth": 12,
+  "edge_lat": 0.05,
+  "neck_half": 0.075,
+  "break_above_waist": 0.08,
+  "neck_point_below": 0.02,
+  "back_neck_rise": 0.015,
+  "sleeve_short_of_wrist": -0.025,
+  "sleeve_ease": 0.016,
+  "sleeve_taper": 0.16,
+  "cuff_len": 0.075,
+  "cuff_proud": 0.006,
+  "gorge_below_neckpoint": 0.02,
+  "notch_below_neck": 0.115,
+  "lapel_w": 0.085,
+  "notch_w": 0.03,
+  "notch_rise": 0.012,
+  "lapel_belly": 0.012,
+  "lapel_lift": 0.004,
+  "lapel_roll": 0.009,
+  "collar_stand": 0.028,
+  "collar_stand_end": 0.012,
+  "collar_fall": 0.04,
+  "collar_fall_end": 0.03,
+  "collar_gap": 0.012,
+  "hem_vs_knee": 0.02,
+  "skirt_gap": 0.02,
+  "skirt_flare": 0.06,
+  "skirt_edge_hem": 0.06,
+  "skirt_folds": 9,
+  "skirt_fold_amp": 0.008,
+  "skirt_smooth": 3,
+  "button_r": 0.0115,
+  "button_in": 0.024,
+  "button_dz": [
+   0.0,
+   -0.09,
+   -0.18,
+   -0.27
+  ],
+  "back_button_lat": 0.05,
+  "breast_welt_lat": 0.11,
+  "breast_welt_w": 0.1
+ },
+ "thickness": {
+  "coat": 0.0045,
+  "skirt": 0.0045,
+  "lapels": 0.0035,
+  "coat_collar": 0.004,
+  "waistcoat": 0.003,
+  "collar": 0.002,
+  "trousers": 0.003,
+  "shirt": 0.0015,
+  "shoes": 0.004,
+  "cravat": 0.0015,
+  "wc_lapels": 0.002
+ },
+ "materials": {
+  "wool": {
+   "color": [
+    0.022,
+    0.022,
+    0.025
+   ],
+   "rough": 0.9,
+   "sheen": 0.6,
+   "weave": "folds",
+   "scale": 1400,
+   "bump": 0.06,
+   "vary": 0.08,
+   "heather_scale": 60,
+   "weave_tone": 0.05,
+   "wear": 0.35,
+   "seam_depth": 3.0,
+   "seam_dark": 0.5
+  },
+  "wool_vest": {
+   "color": [
+    0.04,
+    0.038,
+    0.04
+   ],
+   "rough": 0.8,
+   "sheen": 0.4,
+   "weave": "twill",
+   "scale": 420,
+   "bump": 0.15,
+   "vary": 0.08,
+   "wear": 0.3,
+   "seam_depth": 2.5,
+   "seam_dark": 0.45
+  },
+  "wool_trousers": {
+   "color": [
+    0.2,
+    0.2,
+    0.19
+   ],
+   "rough": 0.75,
+   "sheen": 0.25,
+   "weave": "twill",
+   "scale": 420,
+   "bump": 0.15,
+   "vary": 0.08,
+   "wear": 0.15,
+   "stripe": [
+    0.009,
+    0.22
+   ],
+   "seam_depth": 2.5,
+   "seam_dark": 0.4
+  },
+  "cotton": {
+   "color": [
+    0.8,
+    0.79,
+    0.76
+   ],
+   "rough": 0.75,
+   "sheen": 0.1,
+   "weave": "plain",
+   "scale": 520,
+   "bump": 0.07,
+   "weave_tone": 0.06
+  },
+  "silk": {
+   "color": [
+    0.11,
+    0.11,
+    0.115
+   ],
+   "rough": 0.3,
+   "sheen": 0.5,
+   "weave": "folds",
+   "scale": 90,
+   "bump": 0.3,
+   "spec": 0.7,
+   "vary": 0.1,
+   "heather_scale": 25
+  },
+  "leather": {
+   "color": [
+    0.012,
+    0.011,
+    0.011
+   ],
+   "rough": 0.28,
+   "coat": 0.4,
+   "weave": "folds",
+   "scale": 300,
+   "bump": 0.08,
+   "spec": 0.6
+  },
+  "horn": {
+   "color": [
+    0.012,
+    0.011,
+    0.011
+   ],
+   "rough": 0.25,
+   "spec": 0.6
+  },
+  "wool_lapel": {
+   "color": [
+    0.022,
+    0.022,
+    0.025
+   ],
+   "rough": 0.8,
+   "sheen": 0.6,
+   "weave": "folds",
+   "scale": 1400,
+   "bump": 0.06,
+   "vary": 0.08,
+   "heather_scale": 60,
+   "weave_tone": 0.05,
+   "wear": 0.45,
+   "seam_depth": 3.0,
+   "seam_dark": 0.5
+  },
+  "starch": {
+   "color": [
+    0.84,
+    0.84,
+    0.82
+   ],
+   "rough": 0.42,
+   "sheen": 0.05,
+   "weave": "plain",
+   "scale": 600,
+   "bump": 0.025,
+   "weave_tone": 0.03,
+   "wear": 0.1
+  },
+  "thread": {
+   "color": [
+    0.012,
+    0.012,
+    0.013
+   ],
+   "rough": 0.7
+  }
+ },
+ "material_of": {
+  "coat": "wool",
+  "skirt": "wool",
+  "lapels": "wool_lapel",
+  "coat_collar": "wool",
+  "welts": "wool",
+  "coat_buttons": "horn",
+  "buttonholes": "thread",
+  "waistcoat": "wool_vest",
+  "wc_lapels": "wool_vest",
+  "wc_welts": "wool_vest",
+  "wc_buttons": "horn",
+  "trousers": "wool_trousers",
+  "shirt": "cotton",
+  "collar": "starch",
+  "cravat": "silk",
+  "shoes": "leather"
+ }
+}
