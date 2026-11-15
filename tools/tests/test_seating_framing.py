@@ -104,15 +104,15 @@ def _cabin():
     g = lambda a, b: np.arange(a, b + 1e-9, 0.02)
     pts = []
     box = lambda xs, ys, zs: pts.extend((x, y, z) for x in xs for y in ys for z in zs)
-    box(g(-0.5, 0.5), g(-2.0, -1.0), [0.5])                    # the nose deck
-    for sx in (-0.55, 0.55):
+    box(g(-0.3, 0.3), g(-2.0, -1.0), [0.5])                    # the nose deck
+    for sx in (-0.35, 0.35):
         box([sx], g(-2.0, -1.0), g(0.5, 1.3))                  # its side walls
     box(g(-0.55, 0.55), [-0.95], g(0.5, 2.0))                  # the windscreen wall
-    box(g(-0.3, 0.3), g(-0.3, 0.3), [0.4])                     # the seat
-    for sx in (-0.35, 0.35):
+    box(g(-0.2, 0.2), g(-0.3, 0.3), [0.4])                     # the seat
+    for sx in (-0.25, 0.25):
         box([sx], g(-0.45, 0.3), g(0.4, 1.4))                  # the cabin's sides
-    box(g(-0.3, 0.3), [-0.42], g(0.4, 1.0))                    # the panel ahead of the seat
-    box(g(-0.35, 0.35), g(-0.45, 0.3), [1.6])                  # the roof
+    box(g(-0.2, 0.2), [-0.42], g(0.4, 1.0))                    # the panel ahead of the seat
+    box(g(-0.25, 0.25), g(-0.45, 0.3), [1.6])                  # the roof
     box(g(-0.6, 0.6), g(-2.0, 0.4), [0.0])                     # the ground it stands on
     return np.array(pts)
 
