@@ -75,7 +75,9 @@ PLAN = {"state_end": "x", "shots": [
      "setting": "Dim light.", "action": "Lio sets the toy fox down beside her.", "pose_end": {}},
     {"start": 12.0, "kind": "talk", "speaker": "Lio", "listener": "Sena", "framing": "group"}]}
 def converse(url, model, messages, max_tokens=5000, effort=""):
-    return json.dumps(BREAK if "SCENES" in messages[-1]["content"] else PLAN), 0
+    # (the breakdown ask, and its one re-look at who is in each scene, get the breakdown)
+    m_ = messages[-1]["content"]
+    return json.dumps(BREAK if "SCENES" in m_ or m_.startswith("Look again at who is in each scene") else PLAN), 0
 S._converse = converse
 animate.igpu = lambda *a, **k: None
 S.subprocess.run = (lambda real: (lambda cmd, *a, **k: real(cmd, *a, **k) if cmd and cmd[0] == "ffmpeg"
