@@ -105,3 +105,28 @@ def test_a_seat_its_maker_knows_is_taken_as_given(tmp_path):
     (tmp_path / "source" / "spec.json").write_text(json.dumps({"seat": seat}))
     (tmp_path / "asset.json").write_text(json.dumps({"export": {"glb": "none.glb"}}))
     assert seatbox.for_asset(tmp_path) == seat
+
+
+def test_a_close_on_someone_lying_down_looks_from_well_above_under_the_ceiling():
+    import framing
+    subj = {"head_top_z": 0.95, "chin_z": 0.75, "eye_z": 0.85, "waist_z": 0.8, "feet_z": 0.7, "facing": [0.0, -1.0],
+            "eye_xy": [0.0, 0.0], "chest_xy": [0.3, 0.0], "pelvis_xy": [0.8, 0.0]}
+    subj = framing.lay(subj, {"head_xy": [-0.1, 0.0], "foot_xy": [1.7, 0.0]})
+    c = framing.shot(subj, "close", 85)
+    up, flat = c["position"][2] - c["target"][2], math.dist(c["position"][:2], c["target"][:2])
+    assert math.degrees(math.atan2(up, flat)) > 45 and up <= framing.LIE_CLOSE_UP_M + 0.01 and c["focal_mm"] < 85
+    m = framing.shot(subj, "medium", 50)
+    assert math.degrees(math.atan2(m["position"][2] - m["target"][2], math.dist(m["position"][:2], m["target"][:2]))) < 25
+
+
+def test_a_lying_body_running_out_of_the_side_of_a_close_frame_is_not_cut():
+    import framing
+    import speakers
+    m = {"head_top_z": 0.95, "chin_z": 0.75, "eye_z": 0.85, "waist_z": 0.8, "feet_z": 0.7, "facing": [0.0, -1.0],
+         "eye_xy": [0.0, 0.0], "chest_xy": [0.3, 0.0], "pelvis_xy": [0.8, 0.0], "head_fwd_xy": [0.0, -1.0],
+         "joints": {"upperarm_l": [0.25, 0.15, 0.8], "upperarm_r": [0.25, -0.15, 0.8], "thigh_l": [0.8, 0.1, 0.8],
+                    "foot_l": [1.6, 0.1, 0.8]}}
+    lying = framing.lay(m, {"head_xy": [-0.1, 0.0], "foot_xy": [1.7, 0.0]})
+    cam = framing.shot(lying, "close", 85)
+    assert not speakers.frame_facts(cam, lying, (1152, 640))["cut"]          # the legs leave the frame's side
+    assert speakers.frame_facts(cam, dict(m), (1152, 640))["cut"]            # (the same points on someone not lying)

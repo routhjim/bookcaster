@@ -197,8 +197,11 @@ def frame_facts(cam, m, res):
     pr = {k: framing.project(cam, p, res) for k, p in body_points(m).items()}
     inside = {k: bool(q) and SIDE_EDGE < q[0] < 1 - SIDE_EDGE and EDGE < q[1] < 1 - EDGE for k, q in pr.items()}
     side_in = [q for k, q in pr.items() if q and SIDE_EDGE < q[0] < 1 - SIDE_EDGE and q[1] < 1 - EDGE]
-    left = any(q and q[0] <= SIDE_EDGE for q in pr.values())
-    right = any(q and q[0] >= 1 - SIDE_EDGE for q in pr.values())
+    # (a lying body runs out of a close frame sideways as a standing one runs out of its bottom: only the head's own
+    # points count as cut there; every close on a sleeper failed as "cut by the frame's edge", 11-15)
+    edge = [pr[k] for k in ("head_top", "eyes", "chin", "head_l", "head_r")] if m.get("lying") else list(pr.values())
+    left = any(q and q[0] <= SIDE_EDGE for q in edge)
+    right = any(q and q[0] >= 1 - SIDE_EDGE for q in edge)
     top = bool(pr["head_top"]) and pr["head_top"][1] <= EDGE and bool(pr["chin"]) and pr["chin"][1] > EDGE
     cut = bool(side_in) and (left or right) or top
     near_sh = [k for k in ("upperarm_l", "upperarm_r") if inside.get(k)]

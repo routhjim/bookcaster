@@ -47,6 +47,8 @@ def _facing_angle(f):
 
 
 LIE_EL_DEG = 18.0                                  # a lying person is seen from above their side, never level
+LIE_CLOSE_EL_DEG = 50.0                            # a close on one: from well above, the face turned up to the camera
+LIE_CLOSE_UP_M = 1.4                               # ... and no higher over the head than a room's ceiling leaves
 LIE_FRAME_H_M = {"close": 0.65, "medium": 1.25}     # frame height: head and shoulders; head to the hips
 
 
@@ -100,7 +102,9 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
         else:
             fh, xy = subject["lying"]["length_m"] * (1 + 2 * FULL_MARGIN) * res[1] / res[0] * 1.3, px
         cz = subject["waist_z"]
-        el = max(el, LIE_EL_DEG)
+        # (from 18 degrees a close showed a profile behind the cover's hem, a third of the face: every close on a
+        # sleeper failed its face check, 11-14)
+        el = max(el, LIE_CLOSE_EL_DEG if kind == "close" else LIE_EL_DEG)
     elif kind == "close":
         fh = CLOSE_HEADS * head_h
         cz = eye - fh * (0.5 - CLOSE_EYE_LINE)
@@ -118,6 +122,9 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
     else:
         raise ValueError(f"unknown shot kind {kind!r}")
     dist = fh / 2 / math.tan(vfov(focal_mm, res) / 2)
+    if subject.get("lying") and kind == "close" and dist * math.sin(math.radians(el)) > LIE_CLOSE_UP_M:
+        near = LIE_CLOSE_UP_M / math.sin(math.radians(el))      # nearer with a wider lens, the frame the same
+        focal_mm, dist = round(focal_mm * near / dist, 1), near
     # direction from the subject to the camera: its facing turned by az, counter-clockwise in plan (the frame is
     # right-handed with Z up, so positive az swings the camera toward the subject's own left)
     a = _facing_angle(subject["facing"]) + math.radians(az)
