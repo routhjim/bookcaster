@@ -57,5 +57,23 @@ S.TAKE_CHECKS = False
 jd = S._judge_chain_line(st, 1, takes, J, lambda *a: None)
 check("off: the judge's pick stands", jd["pick"] == order[0] and jd["checks"] is None, jd)
 
+# a chain line of a supplied key: a take with more people than the key shows is not picked while another has its number
+names2 = ["x", "y", "z"]
+names2[order[0]] = "crowd"
+takes2 = [J / f"{n}.mp4" for n in names2]
+real_ok = S.MF.fight_clip_ok
+S.MF.fight_clip_ok = lambda mp4, people=None: ["2 people, not 1, at 1.5 s", "deformed body at 1.5 s"] if "crowd" in Path(mp4).stem else []
+S.KEY_PEOPLE["action-9"] = 1
+jd = S._judge_chain_line(st, 1, takes2, J, lambda *a: None)
+check("the judge's pick has a second person: the next-best with the key's number is kept", jd["pick"] == order[1], (jd["pick"], order))
+check("... and each take's head-count faults are recorded (only those)", jd["crowd"][order[0]] == ["2 people, not 1, at 1.5 s"], jd["crowd"])
+S.MF.fight_clip_ok = lambda mp4, people=None: ["3 people, not 1, at 0.7 s"]
+jd = S._judge_chain_line(st, 1, takes2, J, lambda *a: None)
+check("every take crowded: the judge's pick stands", jd["pick"] == order[0], jd["pick"])
+del S.KEY_PEOPLE["action-9"]
+jd = S._judge_chain_line(st, 1, takes2, J, lambda *a: None)
+check("no supplied key: nobody is counted", jd["crowd"] is None and jd["pick"] == order[0], jd)
+S.MF.fight_clip_ok = real_ok
+
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

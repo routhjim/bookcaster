@@ -4669,6 +4669,20 @@ def _judge_chain_line(st: dict, k: int, takes: list, J: Path, log) -> dict:
     pick = best if best is not None else nx if nx is not None else 0
     log(f"{st['id']} line {k}: judge picks take {'ABC'[pick]} (best {a.get('best')!r}, next {a.get('next')!r}, "
         f"shown {''.join('ABC'[i] for i in order)}) in {time.time() - t0:.0f} s")
+    # a take with more people than the key shows is not picked while another has the right number: the judge ranks
+    # pictures against the line and passed such takes (11-15, a cabin's close shots: it picked a take with a second
+    # man on three cards; the head count caught 9 of the 10 crowded takes of 24 and faulted none of the 13 clean)
+    crowd = None
+    people = KEY_PEOPLE.get(st["id"])
+    if people:
+        try:
+            crowd = [[f for f in MF.fight_clip_ok(t, people) if re.search(r"\d+ people, not \d+", f)] for t in takes]
+            if crowd[pick] and not all(crowd):
+                clean = [i for i in ([nx] if nx is not None else []) + list(range(len(takes))) if not crowd[i]]
+                log(f"{st['id']} line {k}: take {'ABC'[pick]} {crowd[pick]}: take {'ABC'[clean[0]]} instead")
+                pick = clean[0]
+        except Exception as e:              # noqa: BLE001  (a count that cannot be made never stops the chain)
+            log(f"!!! head count on {st['id']} line {k}: {e!r}")
     checks = None
     if TAKE_CHECKS:                         # the mechanical checks per take: a take they fault is not picked while
         try:                                # another is clean (the judge ranks pictures; it does not see the camera move)
@@ -4680,7 +4694,7 @@ def _judge_chain_line(st: dict, k: int, takes: list, J: Path, log) -> dict:
         except Exception as e:              # noqa: BLE001
             log(f"!!! take checks on {st['id']} line {k}: {e!r}")
     return {"pick": pick, "best": best, "next": nx, "order": order, "answers": a, "ask": ask,
-            "sheets": [str(x) for x in sheets], "fallback": best is None, "checks": checks}
+            "sheets": [str(x) for x in sheets], "fallback": best is None, "checks": checks, "crowd": crowd}
 
 
 def _join_chain(L: Path, st: dict, log) -> Path:
