@@ -336,7 +336,9 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             "source": "generated", "piece_kind": kind, "look": look}
     if d.get("sized_by") == "longest":
         # (shaped at the coarser setting: it is small in any frame, and the finer one took eight minutes a thing)
-        spec.update(longest_m=size[0], size_tolerance=1.0, shape_res=512)
+        # ... and it keeps the generator's own front (-Y): the rule that takes a piece's flat end for its back is
+        # for furniture, and turned a helmet back to front on the head
+        spec.update(longest_m=size[0], size_tolerance=1.0, shape_res=512, yaw_deg=0)
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]

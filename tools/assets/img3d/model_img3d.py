@@ -21,6 +21,7 @@ import bpy
 from mathutils import Matrix
 
 aid = SPEC["id"]
+SPECK_POINTS = 40           # a loose piece of at most this many points that touches no other piece is a speck
 TIER_TRIS = {"hero": 250000, "mid": 60000, "background": 8000}
 t0 = time.time()
 before = set(bpy.data.objects)
@@ -105,6 +106,36 @@ import bmesh  # noqa: E402
 
 bm = bmesh.new()
 bm.from_mesh(ob.data)
+# specks: a piece of the shape with almost none of its points, joined to nothing (the generator leaves a few; one of
+# four points beside a helmet failed the whole object as a floating part)
+bm.verts.ensure_lookup_table()
+seen_, isl_ = set(), []
+for v0 in bm.verts:
+    if v0.index in seen_:
+        continue
+    stack, grp = [v0], []
+    seen_.add(v0.index)
+    while stack:
+        v_ = stack.pop()
+        grp.append(v_)
+        for e_ in v_.link_edges:
+            o_ = e_.other_vert(v_)
+            if o_.index not in seen_:
+                seen_.add(o_.index)
+                stack.append(o_)
+    isl_.append(grp)
+if len(isl_) > 1:
+    # (the shape comes in many pieces, one for each patch of its texture: a speck is a piece of a few points
+    # whose box touches no other piece's, the harness's own measure of a floating part)
+    import numpy as _np
+    bx_ = [(_np.min([v_.co[:] for v_ in g_], 0), _np.max([v_.co[:] for v_ in g_], 0)) for g_ in isl_]
+    eps_ = 0.002                                        # (2 mm: the mesh is at its finished size here)
+    gone_ = [v_ for i_, g_ in enumerate(isl_) if len(g_) <= SPECK_POINTS and not any(
+        j_ != i_ and _np.all(bx_[i_][0] <= bx_[j_][1] + eps_) and _np.all(bx_[j_][0] <= bx_[i_][1] + eps_)
+        for j_ in range(len(isl_))) for v_ in g_]
+    if gone_:
+        bmesh.ops.delete(bm, geom=gone_, context="VERTS")
+        print(f"[img3d model] {len(gone_)} points of specks removed ({len(isl_)} pieces in all)")
 loose = [e for e in bm.edges if not e.link_faces]
 bmesh.ops.delete(bm, geom=loose, context="EDGES")
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")

@@ -65,7 +65,8 @@ def to_set(v):
     return [v.x / 100.0, -v.y / 100.0, v.z / 100.0]
 
 
-HEAD_THING = 1.35           # a thing worn on the head stands this many head heights (crown to chin) tall
+HEAD_THING = 1.25           # a thing worn on the head stands this many head heights (crown to chin) tall
+HEAD_OVER = 0.10            # ... its crown this share of a head's height over the head's own
 
 
 def to_ue(p):
@@ -633,11 +634,11 @@ def run(job):
             # what the people of this shot wear on the head or carry in a hand (from_plan's "carried"): each made
             # object set on the head, sized to it, or hung from the right hand; those of other shots hidden
             shown = set()
-            for key, ts in (c.get("carried") or {}).items():
+            for key, things_ in (c.get("carried") or {}).items():
                 m_ = (r["subjects"].get(key) or {}).get("measured")
                 if not m_ or m_.get("lying"):
                     continue
-                for t_ in ts:
+                for t_ in things_:
                     cm_ = (job.get("carried") or {}).get(t_["asset"])
                     tag = (key, t_["asset"])
                     if cm_ and tag not in worn_actors:
@@ -655,8 +656,9 @@ def run(job):
                         f_ = [f_[0] / n_, f_[1] / n_]
                         hh_ = m_["head_top_z"] - m_["chin_z"]
                         k_ = HEAD_THING * hh_ / max(sz_[2], 1e-3)
-                        xy_ = [m_["eye_xy"][0] - f_[0] * 0.08, m_["eye_xy"][1] - f_[1] * 0.08]
-                        z_ = (m_["head_top_z"] + m_["chin_z"]) / 2 - sz_[2] * k_ / 2 + 0.02
+                        # (the eyes stand at the face's front: the head's middle is half a head's depth behind them)
+                        xy_ = [m_["eye_xy"][0] - f_[0] * 0.42 * hh_, m_["eye_xy"][1] - f_[1] * 0.42 * hh_]
+                        z_ = m_["head_top_z"] + HEAD_OVER * hh_ - sz_[2] * k_
                     else:
                         j_ = (m_.get("joints") or {}).get("hand_r")
                         if not j_:

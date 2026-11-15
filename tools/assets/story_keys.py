@@ -117,8 +117,9 @@ def llm_down() -> None:
         log("the directing model was still up: stopped")
 
 
-HEAD_OPEN = ("; made as it is worn with the wearer's face in full view: any visor raised, any mask unfastened and "
-             "hanging aside, the opening for the face wide")
+# (said as "with the wearer's face in view", it was drawn with a stranger's face inside it)
+HEAD_OPEN = ("; an open-faced one, shown empty with nobody inside it: the whole front open where the wearer's face "
+             "would be, any visor raised out of the way, no mask across the opening")
 DRAWN_MAX_SHOTS = 2           # a place the story shows in this many shots or fewer is drawn, not built
 DRAWN_SEEDS = (7, 11, 23)     # a drawn key's tries
 SIDE_BOX = {"left": [0.08, 0.12, 0.46, 1.0], "right": [0.54, 0.12, 0.92, 1.0], "center": [0.3, 0.1, 0.7, 1.0],

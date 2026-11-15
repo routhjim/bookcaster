@@ -295,6 +295,14 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
             ok = [t for t in ok if t["on"] in THING_ON]
             if n in who and ok:
                 out[i][n] = ok
+    # a thing a person has in the shot before and in the shot after, the same way, they have in between too (the
+    # account left a helmet off for one shot of a flight)
+    for a_, b_, c_ in zip(ids, ids[1:], ids[2:]):
+        for n in set(out[a_]) & set(out[c_]) & {p["name"] for p in plan[b_][0].get("people") or []}:
+            for t in out[a_][n]:
+                if any(u["what"] == t["what"] and u["on"] == t["on"] for u in out[c_][n]) and \
+                        not any(u["what"] == t["what"] for u in out[b_].get(n) or []):
+                    out[b_].setdefault(n, []).append(dict(t))
     return out
 
 

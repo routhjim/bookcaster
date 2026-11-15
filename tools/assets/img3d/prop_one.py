@@ -81,7 +81,7 @@ def main():
     new = dict(keep, id=f"{a.id}_tr", source="generated", keep_uvs=True, source_glb=str(glb),
                licence="internal: reference drawn by the local image model; shape and texture by TRELLIS.2 (MIT) "
                        "through trellis.cpp (MIT)",
-               size_tolerance=1.0 if spec.get("longest_m") else 0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", "auto"),
+               size_tolerance=1.0 if spec.get("longest_m") else 0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", spec.get("yaw_deg", "auto")),
                tags=list(keep.get("tags", [])) + ["img3d", "trellis2"], replaces=a.id)
     if extra.get("regions"):
         new["regions"] = extra["regions"]
