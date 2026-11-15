@@ -986,6 +986,20 @@
    ],
    "needs": null,
    "placement": "floor"
+  },
+  "hand_thing": {
+   "synonyms": [
+    "hand thing"
+   ],
+   "parent": null,
+   "size_m": [
+    0.3,
+    0.3,
+    0.3
+   ],
+   "needs": null,
+   "placement": "floor",
+   "sized_by": "longest"
   }
  }
 }

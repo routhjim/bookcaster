@@ -143,7 +143,15 @@ def resolve(spec, cams_wanted=None):
     S = layout.Scene()
     layout.light_items(S, spec.get("lights", []))
     cams = [c for c in spec["cameras"] if not cams_wanted or c["name"] in cams_wanted]
-    return proj, {"id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
+    carried = {}                             # what people wear on the head or carry, by library prop id
+    for c in cams:
+        for ts in (c.get("carried") or {}).values():
+            for t in ts:
+                ap = lib / "prop" / t["asset"] / "asset.json"
+                if t["asset"] not in carried and ap.exists():
+                    aj = json.loads(ap.read_text())
+                    carried[t["asset"]] = {"mesh": aj["ue"]["path"], "size_m": aj["size_m"]}
+    return proj, {"carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
                   "characters": chars, "figures": figs, "cameras": cams, "lights": S.lights,
                   "figure_tools": str(HERE.parent / "img3d" / "ue_stage_figure.py"),

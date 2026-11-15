@@ -65,6 +65,9 @@ def to_set(v):
     return [v.x / 100.0, -v.y / 100.0, v.z / 100.0]
 
 
+HEAD_THING = 1.35           # a thing worn on the head stands this many head heights (crown to chin) tall
+
+
 def to_ue(p):
     return unreal.Vector(p[0] * 100.0, -p[1] * 100.0, p[2] * 100.0)
 
@@ -582,6 +585,7 @@ def run(job):
             temp.append(cam)
             cams.append((c, cs, chk, cam, everyone))
         # stills
+        worn_actors = {}                 # (person, library prop) -> its actor: what people wear on the head or carry
         t_r = time.time()
         for c, cs, chk, cam, everyone in cams:
             ts = time.time()
@@ -626,6 +630,47 @@ def run(job):
                         turn = math.degrees(math.atan2(d_[1], d_[0]) - math.atan2(vw_["ahead"][1], vw_["ahead"][0]))
                         a_.set_actor_location(unreal.Vector(at_[0] * 100.0, -at_[1] * 100.0, l0.z), False, False)
                         a_.set_actor_rotation(unreal.Rotator(r0.roll, r0.pitch, r0.yaw - turn), False)
+            # what the people of this shot wear on the head or carry in a hand (from_plan's "carried"): each made
+            # object set on the head, sized to it, or hung from the right hand; those of other shots hidden
+            shown = set()
+            for key, ts in (c.get("carried") or {}).items():
+                m_ = (r["subjects"].get(key) or {}).get("measured")
+                if not m_ or m_.get("lying"):
+                    continue
+                for t_ in ts:
+                    cm_ = (job.get("carried") or {}).get(t_["asset"])
+                    tag = (key, t_["asset"])
+                    if cm_ and tag not in worn_actors:
+                        mesh_ = EAL.load_asset(cm_["mesh"])
+                        if mesh_ is not None:
+                            worn_actors[tag] = act.spawn_actor_from_object(mesh_, unreal.Vector(0, 0, 0), unreal.Rotator(0, 0, 0))
+                            worn_actors[tag].set_actor_label(f"carried_{key}_{len(worn_actors)}")
+                            temp.append(worn_actors[tag])
+                    if tag not in worn_actors:
+                        continue
+                    sz_ = cm_["size_m"]
+                    if t_["at"] == "head":
+                        f_ = m_.get("head_fwd_xy") or m_["facing"]
+                        n_ = math.hypot(f_[0], f_[1]) or 1.0
+                        f_ = [f_[0] / n_, f_[1] / n_]
+                        hh_ = m_["head_top_z"] - m_["chin_z"]
+                        k_ = HEAD_THING * hh_ / max(sz_[2], 1e-3)
+                        xy_ = [m_["eye_xy"][0] - f_[0] * 0.08, m_["eye_xy"][1] - f_[1] * 0.08]
+                        z_ = (m_["head_top_z"] + m_["chin_z"]) / 2 - sz_[2] * k_ / 2 + 0.02
+                    else:
+                        j_ = (m_.get("joints") or {}).get("hand_r")
+                        if not j_:
+                            continue
+                        f_, k_ = m_["facing"], 1.0
+                        xy_, z_ = [j_[0], j_[1]], j_[2] - sz_[2] - 0.02
+                    a_ = worn_actors[tag]
+                    a_.set_actor_scale3d(unreal.Vector(k_, k_, k_))
+                    a_.set_actor_location(to_ue([xy_[0], xy_[1], z_]), False, False)
+                    a_.set_actor_rotation(unreal.Rotator(0, 0, -(math.degrees(math.atan2(f_[1], f_[0])) + 90.0)), False)
+                    shown.add(tag)
+            for tag, a_ in worn_actors.items():
+                a_.set_is_temporarily_hidden_in_editor(tag not in shown)
+                a_.set_actor_hidden_in_game(tag not in shown)
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()

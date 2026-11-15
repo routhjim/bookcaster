@@ -265,3 +265,23 @@ def test_a_shot_is_placed_in_the_audio_by_its_own_line_never_by_a_short_line_els
     assert at["talk-1"] == 10.0 and at["talk-2"] == 14.0
     assert at["talk-3"] == pytest.approx(14.0 + (26.0 - 14.0) * 4 / 12)      # between its neighbours' own lines
     assert at["talk-4"] == 26.0                                             # a short line is found whole
+
+
+def test_worn_and_carried_things_are_kept_as_the_director_gives_them_and_checked(monkeypatch, tmp_path):
+    import json
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "scenes"))
+    import place_spec as PS
+    plan = {"s1": [{"people": [{"name": "Ann", "holds": "a lamp"}], "action": "she walks in"}],
+            "s2": [{"people": [{"name": "Ann"}], "action": "she sits"}]}
+    answer = {"s1": {"Ann": [{"what": "hat", "on": "head", "goes_on": "head", "size_cm": 30},
+                             {"what": "lamp", "on": "held", "goes_on": "none", "size_cm": 25},
+                             {"what": "rail", "on": "wall", "size_cm": 100}, {"what": "", "on": "head"}],
+                     "Bob": [{"what": "cap", "on": "head", "size_cm": 20}]},
+              "s2": {"Ann": [{"what": "hat", "on": "held", "goes_on": "head", "size_cm": 3000}]}}
+    monkeypatch.setattr(PS, "ask", lambda url, text, cache: json.dumps(answer))
+    got = PS.things(plan, ["s1", "s2"], "a room", [], "http://x", tmp_path)
+    assert [t["what"] for t in got["s1"]["Ann"]] == ["hat", "lamp"] and "Bob" not in got["s1"]   # (a place's part, a blank and a stranger are out)
+    assert got["s1"]["Ann"][1]["goes_on"] is None and got["s1"]["Ann"][0]["goes_on"] == "head"
+    assert got["s2"]["Ann"][0] == {"what": "hat", "on": "held", "goes_on": "head", "size_cm": None}  # (no usable size)

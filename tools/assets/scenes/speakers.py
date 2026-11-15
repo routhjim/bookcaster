@@ -232,6 +232,12 @@ def mask_facts(shot, key, nx=72, ny=40):
             "right": edge([(0.998, v) for v in rows]), "top": edge([(u, 0.002) for u in cols])}
 
 
+def head_worn(c: dict) -> set:
+    """The people of a camera who wear a made object on the head in its shot (from_plan's "carried"): the face is
+    seen within it, as within a veil."""
+    return {k for k, ts in (c.get("carried") or {}).items() if any(t.get("at") == "head" for t in ts)}
+
+
 def face_seen(shot, key, m, res, covered=False):
     """The share of a person's face points where the still's depth shows them (None: no depth passes)."""
     g = shot.get("guides") or {}
@@ -992,7 +998,7 @@ def cam_opts(spec, c):
     subject, the action's joints that must be seen ("show_joints": [[key, joint], ...]) and a move's places."""
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
-    covered = {k for k, v in spec["characters"].items() if v.get("face_covered")}
+    covered = {k for k, v in spec["characters"].items() if v.get("face_covered")} | head_worn(c)
     return {"seated": seated, "subject": c.get("subject"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
             "landmark": c.get("_landmark"), "at_thing": c.get("_at_thing"),
             "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
@@ -1538,7 +1544,8 @@ def main():
             lis = listener_of(c, keys, c.get("speaker"))
             chk = check_shot(sh, c.get("speaker"), subjects, res, c["kind"], line, est_side, lis, bool(c.get("ots")),
                              c.get("show"),
-                             bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered")),
+                             bool((spec["characters"].get(c.get("speaker") or "") or {}).get("face_covered"))
+                             or c.get("speaker") in head_worn(c),
                              cam_opts(spec, c))
             pw = [w for w in placement_why(sh["camera"], subjects, room)
                   if not w.startswith("the camera is inside ") or

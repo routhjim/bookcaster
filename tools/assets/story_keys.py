@@ -117,6 +117,8 @@ def llm_down() -> None:
         log("the directing model was still up: stopped")
 
 
+HEAD_OPEN = ("; made as it is worn with the wearer's face in full view: any visor raised, any mask unfastened and "
+             "hanging aside, the opening for the face wide")
 DRAWN_MAX_SHOTS = 2           # a place the story shows in this many shots or fewer is drawn, not built
 DRAWN_SEEDS = (7, 11, 23)     # a drawn key's tries
 SIDE_BOX = {"left": [0.08, 0.12, 0.46, 1.0], "right": [0.54, 0.12, 0.92, 1.0], "center": [0.3, 0.1, 0.7, 1.0],
@@ -375,8 +377,42 @@ class Story:
             return False
         shutil.rmtree(d / "specs", ignore_errors=True)
         sh([PY, HERE / "scenes" / "from_plan.py", self.plan_p, d / "shots.txt", d / "cast.json", d / "specs",
-            "--pass", d / "pass.json", "--looks", self.look_p], d / "from_plan.log")
+            "--pass", d / "pass.json", "--looks", self.look_p, "--carried", self.carried(place)], d / "from_plan.log")
         return bool(list((d / "specs").glob("pl_g*.json")))
+
+    def carried(self, place) -> Path:
+        """What people wear on the head or carry in a hand in this place's shots (the pass's "things"), each made
+        once as a library object from its own words, the book's look of it added when the book names it, and as
+        long as the director says. -> the file {the thing's words: library prop id} (only what was made)."""
+        d = self.d(place)
+        things = {}
+        for row in (json.loads((d / "pass.json").read_text()).get("things") or {}).values():
+            for ts in row.values():
+                for t in ts:
+                    if t["on"] in ("head", "held") and t.get("size_cm"):
+                        things.setdefault(t["what"], (t["size_cm"], t.get("goes_on")))
+        props = self.look.get("props") or {}
+        def look_of(what):
+            w = set(re.findall(r"[a-z]+", what.lower()))
+            best = max(props, key=lambda n: len(w & set(re.findall(r"[a-z]+", n.lower()))), default=None)
+            return str(props[best]).strip().rstrip(".") if best and w & set(re.findall(r"[a-z]+", best.lower())) else ""
+        # (a thing that goes on the head is made as it is worn with the face in view: the camera shows faces)
+        pcs = [{"id": f"h{n + 1}", "kind": "hand_thing", "longest_m": round(cm / 100.0, 3),
+                "look": what + (f": {lk}" if (lk := look_of(what)) else "") + (HEAD_OPEN if on in ("head", "face") else "")}
+               for n, (what, (cm, on)) in enumerate(things.items())]
+        out = d / "carried.json"
+        out.write_text("{}")
+        if not pcs:
+            return out
+        (d / "carried_spec.json").write_text(json.dumps({"pieces": pcs}, indent=1))
+        sh([PY, HERE / "places" / "generate.py", d / "carried_spec.json"], d / "carried.log")
+        sys.path.insert(0, str(HERE / "places"))
+        import pieces as P
+        res = P.resolve(pcs, P.load_records(C.LIBRARY))
+        made = {what: r["asset_id"] for what, r in zip(things, res["pieces"]) if r["status"] == "library"}
+        out.write_text(json.dumps(made, indent=1))
+        log(f"{place}: {len(made)} of {len(pcs)} worn or carried things are made: {sorted(made)}")
+        return out
 
     def step_stage(self, place):
         d = self.d(place)

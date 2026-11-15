@@ -363,6 +363,16 @@ def main():
             if x != keep:
                 res["pose"][x][nm] = "none"
     res.update(_asked=ask.asked, _calls=ask.calls, _cached=ask.cached, _split=ask.split, _s=round(time.time() - t0, 1))
+    # what each person has on or carries beyond their everyday clothes, shot by shot: the director's account from
+    # the whole story (place_spec.things; one open question, its answer checked there)
+    import place_spec as PS
+    sj = set_dir / "spec.json"
+    place = (json.loads(sj.read_text()).get("place") if sj.exists() else None) or set_dir.name
+    res["things"] = PS.things(plan, ids, place, timeline if isinstance(timeline, list) else
+                              timeline.get("segments") or timeline.get("lines") or [], url, cache)
+    # what is worn, in words for the redraw (the figures wear their usual look)
+    res["wears"] = {i: {n: [t["what"] for t in ts if t["on"] != "held"] for n, ts in row.items()
+                        if any(t["on"] != "held" for t in ts)} for i, row in res["things"].items()}
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
     print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))
 

@@ -66,7 +66,7 @@ def main():
         # port never backs off below 1024, so its token budget does not help there): a fireplace filled 22k
         # tokens against the dragon's 7k and took 3.3x as long. Large pieces (largest side >= LARGE_M, mostly
         # furniture and architecture that read at medium and wide) run at 512; smaller ones keep 1024.
-        res = extra.get("res") or (512 if max(spec0["size_m"]) >= float(os.environ.get("IMG3D_LARGE_M", "1.2"))
+        res = extra.get("res") or spec0.get("shape_res") or (512 if max(spec0["size_m"]) >= float(os.environ.get("IMG3D_LARGE_M", "1.2"))
                                    else a.res)
         log(f"{a.id}: res {res} (largest side {max(spec0['size_m'])} m)")
         r = subprocess.run([sys.executable, str(HERE / "img3d.py"), str(pic), str(glb), "--res", str(res),
@@ -77,11 +77,11 @@ def main():
     src = find_asset(a.id)
     spec = json.loads((src / "source" / "spec.json").read_text())
     keep = {k: spec[k] for k in ("class", "description", "tags", "tier", "size_m", "placement", "cameras",
-                                 "camera_preset", "texture_px", "sight_cut_m") if k in spec}
+                                 "camera_preset", "texture_px", "sight_cut_m", "longest_m") if k in spec}
     new = dict(keep, id=f"{a.id}_tr", source="generated", keep_uvs=True, source_glb=str(glb),
                licence="internal: reference drawn by the local image model; shape and texture by TRELLIS.2 (MIT) "
                        "through trellis.cpp (MIT)",
-               size_tolerance=0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", "auto"),
+               size_tolerance=1.0 if spec.get("longest_m") else 0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", "auto"),
                tags=list(keep.get("tags", [])) + ["img3d", "trellis2"], replaces=a.id)
     if extra.get("regions"):
         new["regions"] = extra["regions"]

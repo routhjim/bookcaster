@@ -51,6 +51,7 @@ import setfacts  # noqa: E402
 FRAMING = {"wide": "full", "full": "full", "medium": "medium", "close": "close", "two": "medium",
            "over-the-shoulder": "medium"}
 FOCAL = {"full": 28, "medium": 50, "close": 85}
+CARRIED_ON = ("head", "held")           # the things staged as objects: worn on the head, carried in a hand
 STAND_POSE = {"pose": "stand_relaxed", "params": {"weight_on": "l", "chest_deg": 0, "head_deg": 0, "head_tilt": 0,
                                                     "hand_at_lapel": False}}
 SEAT_POSE = {"pose": "seated", "params": {"lean_deg": 4, "chin_deg": 2, "knee_spread_m": 0.03, "shin_fwd": 0.12,
@@ -322,6 +323,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     answers = json.loads(Path(a[a.index("--answers") + 1]).read_text()) if "--answers" in a else {}
     sp = json.loads(Path(a[a.index("--pass") + 1]).read_text()) if "--pass" in a else None    # staging_pass.py
+    # the made objects of what people wear on the head or carry in a hand: {the thing's words: library prop id}
+    made_ = json.loads(Path(a[a.index("--carried") + 1]).read_text()) if "--carried" in a else {}
     # the book's look file: each person's look phrase, as the director's lines name people ("the man in the ...")
     look_txt = (json.loads(Path(a[a.index("--looks") + 1]).read_text()).get("characters") or {}) if "--looks" in a else {}
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -577,12 +580,18 @@ def main():
             cam["view"] = {"name": vn, "words": views_["words"].get(vn, ""), "ahead": views_.get("ahead"),
                            "beyond_m": views_.get("beyond_m"), "width_m": views_.get("width_m"),
                            "all": sorted(views_["words"])}
-        # what each person has on in this shot beyond their usual clothes (the set's "wears": the director's
+        # what each person has on in this shot beyond their usual clothes (the pass's "wears": the director's
         # account from the whole story); the figures wear their usual look, so the redraw is told
-        worn_ = {names[n_]: ", ".join(t_) for n_, t_ in ((set_spec_.get("wears") or {}).get(sid) or {}).items()
+        worn_ = {names[n_]: ", ".join(t_) for n_, t_ in (((sp or {}).get("wears") or {}).get(sid) or {}).items()
                  if n_ in names and t_}
         if worn_:
             cam["wears"] = worn_
+        obj_ = {names[n_]: [{"asset": made_[t_["what"]], "at": "head" if t_["on"] == "head" else "hand"}
+                            for t_ in ts_ if t_["on"] in CARRIED_ON and t_["what"] in made_]
+                for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items() if n_ in names}
+        obj_ = {k_: v_ for k_, v_ in obj_.items() if v_}
+        if obj_:                              # (scene_job puts each on the person's head or in their hand)
+            cam["carried"] = obj_
         shut_ = [names[n_] for n_ in ((sp or {}).get("eyes") or {}).get(sid) or {} if n_ in names]
         if shut_:                             # whose eyes are closed as the shot opens (the pass's closed answer)
             cam["eyes_closed"] = shut_

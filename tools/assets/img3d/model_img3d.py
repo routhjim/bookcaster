@@ -68,6 +68,9 @@ ob.data.transform(Matrix.Rotation(math.radians(yaw), 4, "Z"))
 zs = [v.co.z for v in ob.data.vertices]
 h = max(zs) - min(zs)
 want_h = float(SPEC.get("height_m") or SPEC["size_m"][2])
+if SPEC.get("longest_m"):               # a thing sized by its longest side, whichever way up it came
+    xs_, ys_ = [v.co.x for v in ob.data.vertices], [v.co.y for v in ob.data.vertices]
+    want_h = float(SPEC["longest_m"]) * h / max(h, max(xs_) - min(xs_), max(ys_) - min(ys_))
 ob.data.transform(Matrix.Scale(want_h / h, 4))
 ob.data.update()
 # a cabin people sit inside is opened where they look out: the shape model closes a canopy with a solid skin, and from

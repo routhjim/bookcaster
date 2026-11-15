@@ -323,10 +323,20 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     if any(n in NEED_WORDS for n in needs):                 # (first: the look's own words follow it)
         desc = desc.replace(f"One single {name}", f"One single {name} "
                             + " ".join(NEED_WORDS[n] for n in needs if n in NEED_WORDS), 1)
+    size = list(d["size_m"])
+    if d.get("sized_by") == "longest":
+        # a thing a person wears or carries: known only by its words and how long it is (the director's), so it is
+        # drawn as those words say and made that long, whatever way up the shape comes
+        lng = float(piece.get("longest_m") or max(size))
+        size = [lng, lng, lng]
+        desc = f"One single object, alone: {look}. The whole object in view on a plain floor, nothing else in the picture."
     spec = {"id": aid, "class": "prop", "description": f"{name}: {look}. Front -Y." if look else f"{name}. Front -Y.",
             "tags": sorted({kind, *([d["parent"]] if d.get("parent") else []), "generated-on-request"}),
-            "tier": "mid", "size_m": d["size_m"], "size_tolerance": 0.35, "placement": d["placement"],
+            "tier": "mid", "size_m": size, "size_tolerance": 0.35, "placement": d["placement"],
             "source": "generated", "piece_kind": kind, "look": look}
+    if d.get("sized_by") == "longest":
+        # (shaped at the coarser setting: it is small in any frame, and the finer one took eight minutes a thing)
+        spec.update(longest_m=size[0], size_tolerance=1.0, shape_res=512)
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
@@ -416,9 +426,10 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
             row.update(status="unresolved", reason=f"kind {p.get('kind')!r} is not in PIECE_KINDS")
         else:
             hits = lookup(p, records, K, threshold, allow_scripted)
-            if p.get("source"):
+            if p.get("source") or K[p["kind"]].get("sized_by") == "longest":
                 # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
-                # the asset already made from that same picture serves, never a near match by words
+                # the asset already made from that same picture serves, never a near match by words. So is a thing
+                # worn or carried: a kind that holds any object, where a near match by words is another object
                 want = generation_request(p, K)["asset_id"]
                 hits = [h for h in hits if h["asset_id"] == want] or \
                     [{"asset_id": want, "score": 1.0, "why": "made from this piece's own picture", "others": []}

@@ -234,15 +234,21 @@ def views(plan: dict, ids: list, place: str, outside: str, url: str, cache: Path
     return {}
 
 
-WEARS_ASK = """A story is told below, whole. Then come its shots in the place "{place}", in order, each with the
-people in it and what happens.
+THINGS_ASK = """A story is told below, whole. Then come its shots in the place "{place}", in order, each with the
+people in it, what happens, and what the shot's plan has each person holding.
 
-For each shot and each person in it, say what that person has ON at that moment beyond their everyday clothes:
-anything on the head or face, on the hands, or put on over the clothes for what they are doing. Take it from what
-the story tells and from what follows from it: a thing the story has someone take off was on them until then, a thing
-it has them put on is on them from then, and a thing they hold in a hand is not worn. One short plain description
-for each thing, in the same words every time it is the same thing. An empty list when the person has nothing on
-beyond their everyday clothes.
+For each shot and each person in it, list what that person has ON or CARRIES at that moment beyond their everyday
+clothes: anything worn on the head or face, on the hands or feet, or put on over the clothes for what they are
+doing, and anything they hold in a hand and could carry away with them. A part of the place itself that they grip
+or work (a lever, a wheel, a rail, a panel) is not listed. Take it from what the story tells and from what follows
+from it: a thing the story has someone take off was on them until then, a thing it has them put on is on them from
+then. For each thing give:
+  "what": one short plain description of the thing, in the same words every time it is the same thing;
+  "on": exactly one of head, face, hands, feet, body (where it is worn) or held (carried in a hand);
+  "goes_on": for a thing made to be worn, where it is worn when it is on (head, face, hands, feet or body), even
+  while it is only being carried; none for a thing that is never worn;
+  "size_cm": its longest side in centimetres, a number.
+An empty list when the person has nothing on or in hand beyond their everyday clothes.
 
 The story:
 <<<
@@ -252,26 +258,43 @@ The story:
 The shots:
 {shots}
 
-Answer with one JSON object and nothing else: {{"<shot id>": {{"<person>": ["<thing>", ...]}}, ...}} with every shot id."""
+Answer with one JSON object and nothing else:
+{{"<shot id>": {{"<person>": [{{"what": "...", "on": "...", "goes_on": "...", "size_cm": 0}}, ...]}}, ...}} with every
+shot id."""
+THING_ON = ("head", "face", "hands", "feet", "body", "held")
 
 
-def wears(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
-    """{shot id: {person: [what they have on beyond their everyday clothes]}}: the director's account, from the whole
-    story (a pilot flew bare-headed in every shot: the story only says he pulled his helmet off after landing).
-    {} when the answer is not usable."""
+def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
+    """{shot id: {person: [{"what", "on", "size_cm"}]}}: the director's account, from the whole story, of what each
+    person has on or carries beyond their everyday clothes (a pilot flew bare-headed in every shot: the story only
+    says he pulled his helmet off after landing). {} when the answer is not usable."""
     sys.path.insert(0, str(HERE))
     import staging_pass as SP
-    lines = "\n".join(f"{i}: " + ", ".join(p["name"] for p in plan[i][0].get("people") or [])
-                      + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}" for i in ids)
-    got = parse(ask(url, WEARS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9), shots=lines), cache))
+    lines = "\n".join(
+        f"{i}: " + "; ".join(p["name"] + (f" (holding: {p['holds']})" if str(p.get("holds") or "").strip() else "")
+                             for p in plan[i][0].get("people") or [])
+        + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}" for i in ids)
+    try:
+        got = parse(ask(url, THINGS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9), shots=lines), cache))
+    except OSError:                         # (no director to ask: no account, and the figures' usual look stands)
+        return {}
     if not isinstance(got, dict):
         return {}
     out = {}
     for i in ids:
         row = got.get(i) if isinstance(got.get(i), dict) else {}
         who = {p["name"] for p in plan[i][0].get("people") or []}
-        out[i] = {n: [str(t).strip() for t in v if str(t).strip()] for n, v in row.items()
-                  if n in who and isinstance(v, list) and any(str(t).strip() for t in v)}
+        out[i] = {}
+        for n, v in row.items():
+            ok = [{"what": str(t["what"]).strip(), "on": str(t.get("on")).strip().lower(),
+                   "goes_on": str(t.get("goes_on") or "").strip().lower() if str(t.get("goes_on") or "").strip().lower()
+                   in THING_ON[:5] else (str(t.get("on")).strip().lower() if str(t.get("on")).strip().lower() in THING_ON[:5] else None),
+                   "size_cm": float(t["size_cm"]) if isinstance(t.get("size_cm"), (int, float)) and 2 <= t["size_cm"] <= 200
+                   else None}
+                  for t in (v if isinstance(v, list) else []) if isinstance(t, dict) and str(t.get("what") or "").strip()]
+            ok = [t for t in ok if t["on"] in THING_ON]
+            if n in who and ok:
+                out[i][n] = ok
     return out
 
 
@@ -313,8 +336,6 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
     if str(out.get("outside") or "").strip() and len(ids) > 1:
         out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
-    if any(plan[i][0].get("people") for i in ids):
-        out["_wears"] = wears(plan, ids, place, timeline, url, cache)
     if faults:
         out["_faults"] = faults
     return out, base

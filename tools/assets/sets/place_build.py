@@ -441,8 +441,6 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
-    if spec.get("_wears"):                                # what each person has on, shot by shot (place_spec.wears)
-        out["wears"] = spec["_wears"]
     if str(spec.get("_director_crowd") or spec.get("crowd") or "").strip():      # the place's crowd, in the director's words
         out["crowd"] = str(spec.get("_director_crowd") or spec["crowd"]).strip()
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
