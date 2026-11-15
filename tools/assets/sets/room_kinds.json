@@ -722,34 +722,26 @@
   "cockpit": {
    "sizes_m": {
     "small": [
-     2.6,
-     3.0,
-     2.9
+     7.0,
+     8.0,
+     4.0
     ],
     "medium": [
-     2.6,
-     3.0,
-     2.9
+     7.0,
+     8.0,
+     4.0
     ],
     "large": [
-     3.4,
-     4.0,
-     2.9
+     9.0,
+     10.0,
+     4.5
     ]
    },
-   "openings": [
-    {
-     "kind": "window",
-     "wall": "north"
-    }
-   ],
-   "outer_walls": [
-    "north"
-   ],
-   "focal": "window",
+   "openings": [],
+   "outer_walls": [],
+   "focal": "door",
    "dressing": [
-    "pilot_seat",
-    "console"
+    "vehicle_cabin"
    ]
   }
  },

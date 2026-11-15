@@ -212,13 +212,13 @@ def with_concept(spec: dict, concept: dict) -> dict:
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     if concept.get("space") == "cockpit":
-        # a cockpit is a small room of its own pieces (its seat, its console) with the view outside its window:
-        # one made cabin model was a closed shell, and the seat found in it was its nose deck (11-14)
-        sp["kind"] = "cockpit"
-        sp["pieces"] = [p for p in sp["pieces"] if p["kind"] != "vehicle_cabin"]
-        ids = {p["id"] for p in sp["pieces"]}
-        sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
-        # what lies outside it: the director's own line for the place when it is an outside place
+        seen = [x["name"] for x in concept.get("seen") or [] if x.get("name") and "view" not in x["name"]]
+        sp.update(kind="cockpit", openings=[], relations=[], pieces=[{
+            "id": "p1", "kind": "vehicle_cabin", "look": CABIN_LOOK + ", ".join(dict.fromkeys(seen)),
+            "phrases": [ph for p in spec.get("pieces") or [] for ph in p.get("phrases") or []], "against": "free",
+            "source": concept.get("concept"), "seats_abreast": int(concept.get("seats_abreast") or 1)}])
+        sp["named_places"] = {ph: "p1" for ph in spec.get("named_places") or {}}
+        # what lies outside the cabin: the director's own line for the place when it is an outside place
         m = re.match(r"\s*outside\s*:\s*(.+)", str(spec.get("_director_room") or ""), re.I | re.S)
         if m:
             sp["outside"] = m.group(1).strip().rstrip(".")
@@ -302,35 +302,69 @@ def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
                                         "facing": [n[0], n[1]]})
 
 
-def window_views(out: dict, lay: dict, spec: dict, library) -> None:
-    """A place with something outside it shows it through its first window: a backdrop for each thing the story
-    sees outside (place_spec's views: the director's account, shot by shot), one behind the other beyond the window;
-    a still shows its own shot's (scenes/ue/scene_job.py hides the rest). With no account, the one general view."""
+def cabin_stage(out: dict, spec: dict, library) -> None:
+    """A cabin with something outside it is filmed in the open, not in a room: no stage walls, ceiling or floor (they
+    were all the canopy showed), the view's backdrop standing beyond its nose, and its light coming from there:
+    a soft key through the canopy in the view's own colour, and the glow of its instruments on the people in it."""
     import config as C
     lib = Path(library or C.LIBRARY)
+    cab = next((f for f in out["fixtures"] + out["props"] if (f.get("name") or "").startswith("vehicle_cabin")), None)
     words = spec.get("outside")
-    win = next((o for o in lay["openings"] if o["kind"] == "window"), None)
-    if not win or not words:
+    if not cab or not words:
         return
-    n, p = NORMAL[win["wall"]], win["point"]              # (the wall's normal points into the room)
-    f = [-n[0], -n[1]]
-    ht = float(out["size_m"][2])
+    rec = json.loads((lib / "prop" / cab["asset"] / "asset.json").read_text())
+    f = [float(v) for v in cab.get("facing", [0, -1])]     # the builder turns the piece's own front onto its facing
+    x, y = cab["position"][:2]
+    ln, ht = float(rec["size_m"][1]), float(rec["size_m"][2])
+    vid = view_id(words)
+    out["structure"] = []
+    # a backdrop for each thing the story sees outside (place_spec's views: the director's account, shot by shot),
+    # one behind the other beyond the nose; a still shows its own shot's (scenes/ue/scene_job.py hides the rest).
+    # With no account, the one general view.
     per_shot = {k: v for k, v in (spec.get("_views") or {}).items() if str(v).strip()}
     each = list(dict.fromkeys(per_shot.values())) or [words]
     names = {}
-    for i, vw in enumerate(each):
+    for n, vw in enumerate(each):
         if not (lib / "prop" / view_id(vw) / "asset.json").exists():
             continue
-        d = VIEW_AHEAD_M + 0.5 * i
-        names[vw] = "outside_view" if not names else f"outside_view_{i}"
+        d = ln / 2 + VIEW_AHEAD_M + 0.5 * n
+        names[vw] = "outside_view" if not names else f"outside_view_{n}"
         out["fixtures"].append({"asset": view_id(vw), "name": names[vw], "outside": True, "view_words": vw,
-                                "position": [round(p[0] + f[0] * d, 3), round(p[1] + f[1] * d, 3),
+                                "position": [round(x + f[0] * d, 3), round(y + f[1] * d, 3),
                                              round(ht / 2 - VIEW_SIZE_M[1] / 2, 3)],
                                 "facing": [round(-f[0], 4), round(-f[1], 4)]})
-    if not names:
-        return
     out["views"] = {"by_shot": {k: names[v] for k, v in per_shot.items() if v in names},
                     "words": {nm: vw for vw, nm in names.items()}, "ahead": [round(f[0], 4), round(f[1], 4)]}
+    # away from the view (behind the cabin and to its sides) is the far dark: a camera looking back at the pilot
+    # saw the stage's void, and the redraw put the view's mountain there
+    fid = view_id(FAR_WORDS)
+    if (lib / "prop" / fid / "asset.json").exists():
+        dd = ln / 2 + VIEW_AHEAD_M
+        lf = [-f[1], f[0]]
+        for nm, (vx, vy) in (("outside_far_back", (-f[0], -f[1])), ("outside_far_left", (lf[0], lf[1])),
+                             ("outside_far_right", (-lf[0], -lf[1]))):
+            out["fixtures"].append({"asset": fid, "name": nm, "outside": True, "view_words": FAR_WORDS,
+                                    "position": [round(x + vx * dd, 3), round(y + vy * dd, 3),
+                                                 round(ht / 2 - VIEW_SIZE_M[1] / 2, 3)],
+                                    "facing": [round(-vx, 4), round(-vy, 4)]})
+    # (a made cabin is a closed shell: a light outside its nose lit nobody, so the view's light is set inside it,
+    # ahead of and above the seats, without shadows)
+    key = {"type": "rect", "size_m": [1.2, 0.6], "lumens": 4200, "kelvin": 5200, "radius_m": 8, "shadows": False,
+           "position": [round(x, 3), round(y, 3), round(ht * 0.72, 3)],
+           "toward": [round(x - f[0] * ln * 0.25, 3), round(y - f[1] * ln * 0.25, 3), 1.1]}
+    pic = lib / "_refs" / vid / "picture.png"
+    if pic.exists():                              # the key takes the view's own colour (its brightest tenth)
+        from PIL import Image
+        px = sorted(Image.open(pic).convert("RGB").resize((64, 32)).getdata(), key=sum)[-205:]
+        m = [sum(c[i] for c in px) / len(px) for i in range(3)]
+        k = 255.0 / max(max(m), 1.0)
+        key.pop("kelvin")
+        key["color"] = "#%02x%02x%02x" % tuple(int(min(255, c * k)) for c in m)
+    glow = {"type": "point", "lumens": 420, "kelvin": 6500, "radius_m": 3, "source_radius_m": 0.15, "shadows": False,
+            "position": [round(x - f[0] * ln * 0.08, 3), round(y - f[1] * ln * 0.08, 3), 0.95]}
+    out["lights"] = [{"type": "sky", "intensity": 0.05, "atmosphere": False}, key, glow]
+    # (what is outside is said shot by shot, by which way the camera looks: redraw.setting_words)
+    out["surfaces_words"] = "The light comes in from outside through the canopy, and the instruments glow."
     out["view"] = view_spec(words)
 
 
@@ -434,7 +468,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         if it.get("look"):
             it["look"] = it["look"].replace(CABIN_LOOK, "")
     wall_faces(out, lay, spec, library)
-    window_views(out, lay, spec, library)
+    cabin_stage(out, spec, library)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
              if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}
