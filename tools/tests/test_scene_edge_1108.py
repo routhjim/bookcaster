@@ -85,7 +85,7 @@ def run(script):
 
     def converse(url, model, messages, max_tokens=5000, effort=""):
         m = messages[-1]["content"]
-        if "SCENES" in m:
+        if "SCENES" in m or m.startswith("Look again at who is in each scene"):   # (the breakdown and its one re-look)
             return json.dumps(BREAK), 0
         asks.append(m)
         first = next(x["content"] for x in messages if x["role"] == "user" and x["content"].startswith("THE SCENE"))
