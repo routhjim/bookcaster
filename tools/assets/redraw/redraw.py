@@ -82,7 +82,7 @@ def people(shot: dict, poses: dict | None = None) -> list:
     scene posed them seated (pose name), the lying words for a lying stance, else "standing"."""
     poses = poses or {}
     out = [(k, v["box"], v.get("head_to_camera_deg", 0.0),
-            "lying in bed on the back, the bedclothes over the body" if "lying" in (poses.get(k) or "") else
+            "lying on the back on top of the made bed, no bedclothes over the body" if "lying" in (poses.get(k) or "") else
             "sitting" if any(w in (poses.get(k) or "") for w in ("sit", "seat")) else "standing",
             v.get("body_to_camera_deg", v.get("head_to_camera_deg", 0.0)), v.get("nearer_shoulder"))
            for k, v in shot["people"].items() if v.get("box") and v.get("area", 0) > 0.002]

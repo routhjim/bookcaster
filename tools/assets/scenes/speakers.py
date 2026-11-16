@@ -354,8 +354,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             # cut: the person's visible part reaches the left or right edge (any of it), or the top edge with the
             # head (a medium's waist at the bottom edge is the shot, not a cut)
             if subjects[k]["measured"].get("lying"):
-                # a lying body runs out of the frame's side, and the cover over it is wider than a close frame is
-                # high: its mask reaches every edge. Only the head's own points say it is cut (frame_facts)
+                # a lying body runs out of the frame's side: its mask can reach every edge. Only the head's own points say it is cut (frame_facts)
                 pass
             else:
                 f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))

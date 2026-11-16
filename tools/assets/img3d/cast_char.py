@@ -204,8 +204,11 @@ def main():
                          "toward -Y")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
-    ap.add_argument("--whole", action="store_true",
-                    help="the whole generated figure (its own head, hair, hands and clothes, one mesh) on the "
+    ap.add_argument("--metahuman", dest="whole", action="store_false",
+                    help="the MetaHuman route: its body and face, wearing the generated outfit (the default since 11-15 "
+                         "is the whole figure below)")
+    ap.add_argument("--whole", dest="whole", action="store_true", default=True,
+                    help="(the default) the whole generated figure (its own head, hair, hands and clothes, one mesh) on the "
                          "MetaHuman's skeleton, the MetaHuman's body and face not shown: no join between a MetaHuman "
                          "head and generated clothes (11-14: the redrawn key from it kept the sheet's own garment)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
@@ -988,8 +991,8 @@ def main():
     # tool's pose steps on the standing pose (the whole body turned onto its back about the hips, head to the head
     # end, the back on the surface; "propped": the chest raised on the pillow, for someone talking in bed); the
     # bed placed in a lab spot of the set, the engine poses and measures the joints, bl_settle.py lays the cloth
-    # with no relaxation and nothing through the mattress, shows the body's skin the cloth leaves open and builds the
-    # bed's cover over the body (set dressing for this stance and bed: head and shoulders out); each is a stance
+    # with no relaxation and nothing through the mattress, shows the body's skin the cloth leaves open. People lie
+    # on top of the made bed, never under a cover (a made cover drew as a stiff slab or a satin bag, 11-15); each is a stance
     # entry <id>_lying_<bed>[_propped] recording the support it was settled on (format agreed with the scene side)
     lie_p = W / "lie.json"
     if a.lie and not done("seats", lie_p):
@@ -1262,60 +1265,6 @@ def lie_frame(spot, sup):
             "facing": f if sgn > 0 else [-f[0], -f[1]], "bed_facing": f, "bed_xy": [x0, y0]}
 
 
-def bed_cover(bed: str, top_z_m: float | None = None) -> dict:
-    """The cover's colour: the bed's own bedding, read where the bed's texture lies on its upward faces at the
-    lying surface (the mattress and bedding, not the frame). {} when the bed has no mesh or texture to read: the
-    cover keeps its plain linen. (Given the character's folder for the library's, it found no texture and every
-    cover stayed off-white beside tan bedding, 11-15.)"""
-    import struct
-    import numpy as np
-    from PIL import Image
-    d = Path(C.LIBRARY) / "prop" / bed
-    tex, glb = d / "textures" / f"T_{bed}_BaseColor.png", d / "export" / f"{bed}.glb"
-    if not (tex.exists() and glb.exists()):
-        return {}
-    b = glb.read_bytes()
-    n = struct.unpack_from("<I", b, 12)[0]
-    j = json.loads(b[20:20 + n])
-    bin_ = b[20 + n + 8:]
-
-    def acc(i, dt, w):
-        a = j["accessors"][i]
-        v = j["bufferViews"][a["bufferView"]]
-        off = v.get("byteOffset", 0) + a.get("byteOffset", 0)
-        step = v.get("byteStride") or np.dtype(dt).itemsize * w
-        raw = np.frombuffer(bin_, np.uint8, count=(a["count"] - 1) * step + np.dtype(dt).itemsize * w, offset=off)
-        if step == np.dtype(dt).itemsize * w:
-            return raw.view(dt).reshape(a["count"], w)
-        return np.stack([raw[k * step:k * step + np.dtype(dt).itemsize * w].view(dt) for k in range(a["count"])])
-    cols = []
-    img = np.asarray(Image.open(tex).convert("RGB"), np.float32) / 255.0
-    for m in j["meshes"]:
-        for pr in m["primitives"]:
-            at = pr["attributes"]
-            if "TEXCOORD_0" not in at or "indices" not in pr:
-                continue
-            P, U = acc(at["POSITION"], np.float32, 3), acc(at["TEXCOORD_0"], np.float32, 2)
-            ct = j["accessors"][pr["indices"]]["componentType"]
-            F = acc(pr["indices"], {5121: np.uint8, 5123: np.uint16, 5125: np.uint32}[ct], 1).reshape(-1, 3)
-            a_, b_, c_ = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
-            nrm = np.cross(b_ - a_, c_ - a_)
-            up = nrm[:, 1] / np.maximum(np.linalg.norm(nrm, axis=1), 1e-9)          # glTF: y is up
-            hy = (a_[:, 1] + b_[:, 1] + c_[:, 1]) / 3
-            top = float(top_z_m) if top_z_m else float(np.percentile(hy[up > 0.8], 70)) if (up > 0.8).any() else None
-            if top is None:
-                continue
-            ok = (up > 0.8) & (np.abs(hy - top) < 0.12)
-            uv = U[F[ok]].mean(1)
-            if len(uv):
-                px = img[np.clip((uv[:, 1] % 1.0) * img.shape[0], 0, img.shape[0] - 1).astype(int),
-                         np.clip((uv[:, 0] % 1.0) * img.shape[1], 0, img.shape[1] - 1).astype(int)]
-                cols.append(px)
-    if not cols:
-        return {}
-    return {"cover_rgb": [round(float(v), 3) for v in np.median(np.concatenate(cols), 0)]}
-
-
 def lie_pose(pelvis_z_cm, top_z_m, variant):
     """the scene tool's pose steps on the standing pose: onto the back about the hips (head to the actor's back,
     face up), the back on the surface; propped: the chest raised and the head forward"""
@@ -1363,7 +1312,7 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     jt = meas["joints"]
     lj = {"combo": str(combo), "joints": jt, "position": c["position"], "facing": c["facing"], "mode": "push",
           "iters": 0, "shoulder_ease_m": 0.0, "thigh_from": 0.0,
-          "lie": dict(fr, top_z_m=top_z, **bed_cover(bed, top_z)), "out": str(W / f"lying_{bed}_{variant}")}
+          "lie": dict(fr, top_z_m=top_z), "out": str(W / f"lying_{bed}_{variant}")}
     jp = W / f"settle_lie_{bed}_{variant}.json"
     jp.write_text(json.dumps(lj, indent=1))
     p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_lie_{bed}_{variant}", "--", "flock",
@@ -1378,23 +1327,13 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     key = ("".join(ch for ch in bed.upper() if ch.isalnum())[:8] + hashlib.sha1(bed.encode()).hexdigest()[:4].upper()
            + variant[:1].upper())
     dest = f"/Game/Char/Outfit{tag}L{key}"
-    whole = bool(cj0.get("whole_figure"))        # (a whole figure lies as it is; only the bed's cover is the settle's)
+    whole = bool(cj0.get("whole_figure"))        # (a whole figure lies as it is)
     if not whole:
         ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
             "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),
             "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "outfit.fbx"),
                               "textures": str(W / f"lying_{bed}_{variant}" / "textures"), "dest": dest,
                               "cloth_slots": False}}, 900)
-    cover = None
-    if (W / f"lying_{bed}_{variant}" / "cover.fbx").exists():
-        ue_job(W, f"import_cover_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
-            "out": str(W / "ue" / f"import_cover_{bed}_{variant}"),
-            "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "cover.fbx"),
-                              "textures": str(W / f"lying_{bed}_{variant}" / "cover_textures"), "dest": dest + "C",
-                              "cloth_slots": False}}, 900)
-        # (the imported mesh is named after its file: the import's own result says where it is)
-        cover = json.loads((W / "ue" / f"import_cover_{bed}_{variant}" / "result.json").read_text())[
-            "import_outfit"]["outfit"]
     # the lie points in the stance's actor frame (metres): x along the actor's left, y forward, z up
     import math as _m
     f_ = c["facing"]
@@ -1408,18 +1347,17 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     st = {"base": a.id, "pose": "lying", "variant": variant,
           "support": {"asset": bed, "posture": "lying", "top_z_m": top_z, "length_m": sup.get("length_m")}}
     ent = dict(cj0, id=lid, garments=([g for g in cj0["garments"] if not g.startswith("@")][:1] if whole
-                                      else [f"{dest}/Outfit/outfit"]) + ([cover] if cover else [])
+                                      else [f"{dest}/Outfit/outfit"])
                + [g for g in cj0["garments"] if g.startswith("@")],
                stance=st, body_pose=c["body_pose"],
                lie={"head_m": to_actor(jt["head"]), "pelvis_m": to_actor(pel), "heels_m": to_actor(heel)},
-               face_up=True, cover={"asset": cover, "over": "chest" if cover else None},
+               face_up=True,
                note=f"Lying only, on {bed} ({variant}): {a.id} on its back with its cloth laid on the mattress "
-                    f"(bl_settle, no relaxation) and the bed's cover over the body (a separate piece, listed in "
-                    f"garments and in cover)")
+                    f"(bl_settle, no relaxation), on top of the made bed: no cover over the body")
     ent.pop("relaxed_arm_steps", None)
     (Path(C.LIBRARY) / "character" / lid).mkdir(parents=True, exist_ok=True)
     (Path(C.LIBRARY) / "character" / lid / "character.json").write_text(json.dumps(ent, indent=1))
-    return {"id": lid, "settle": {k: sr.get(k) for k in ("lie_cloth_lifted", "lie_min_cloth_z_m", "body_skin", "cover",
+    return {"id": lid, "settle": {k: sr.get(k) for k in ("lie_cloth_lifted", "lie_min_cloth_z_m", "body_skin",
                                                          "pose_err_cm")}, "position": c["position"],
             "facing": c["facing"], "bed": spec_bed, "frame": fr}
 

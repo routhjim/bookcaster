@@ -1,7 +1,7 @@
 """A book's shot plan to engine-staged keyframes, every place of it, in one command.
 
     python tools/assets/story_keys.py PLAN.json BOOK_DIR WORK_DIR KEYS_DIR [--prefix ID] [--only PLACE ...]
-                                      [--from STEP] [--until STEP] [--redo STEP ...]
+                                      [--from STEP] [--until STEP] [--redo STEP ...] [--metahuman]
 
 PLAN.json is the shots flow's plan ({shot id: [shot, ...]}), BOOK_DIR the book's folder (its work/video holds the
 look sheet, the cast's reference sheets and LoRAs, the places' concept pictures, and the narration's timeline).
@@ -311,7 +311,7 @@ class Story:
         w.mkdir(parents=True, exist_ok=True)
         return fid, w, [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
                         "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
-                        "--scene-tool", HERE / "scenes"] + (["--whole"] if getattr(self, "whole", False) else [])
+                        "--scene-tool", HERE / "scenes"] + (["--whole"] if getattr(self, "whole", True) else ["--metahuman"])
 
     def _built(self, name) -> bool:
         return name in self.cast and (C.LIBRARY / "character" / self.cast[name] / "character.json").exists()
@@ -677,7 +677,8 @@ def main():
             out.append(x)
         return out
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
-    s.whole = "--whole" in a             # figures as whole generated meshes on the skeleton (cast_char.py --whole)
+    s.whole = "--metahuman" not in a           # figures as whole generated meshes on the skeleton (cast_char.py --whole),
+    #                                      the default since 11-15; --metahuman casts MetaHuman bodies wearing generated outfits
     s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "drawn"), set(many("--redo")))
 
 
