@@ -133,3 +133,23 @@ def test_a_creature_is_said_by_what_of_it_the_frame_shows():
     assert "neck and the upper part of its body" in upper and "seen from below" in upper
     whole = words(shot(0.4, 0.5))
     assert "The whole beast is in the picture" in whole and "seen from" not in whole.split("picture, head to tail.")[1][:40]
+
+
+def test_a_place_picture_that_shows_one_part_is_read_as_part_and_the_land_takes_the_place_words():
+    """The concept reader says whether the picture shows the whole place or one part of it; a place in the open
+    drawn anew as a whole has its land said in the place's own words, the one part after them."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets/scenes"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets/sets"))
+    import concept as CO
+    import place_build as PB
+    def ask(view):
+        return lambda items: {"view": {"view": view}, "space": {"space": "outdoors"}}
+    assert CO.read(Path("x.png"), {"pieces": []}, ask("Part."))["view"] == "part"
+    assert CO.read(Path("x.png"), {"pieces": []}, ask("whole"))["view"] == "whole"
+    spec = {"kind": "outdoors", "period": "not stated", "room": "A yard with a workshop and a shed.",
+            "_director_room": "Outside: A gate in a wall.", "pieces": []}
+    t = [p for p in PB.outdoors({"pieces": []}, spec, {"land": spec["room"], "surfaces": {}})["pieces"]
+         if p["kind"] == "terrain"][0]
+    assert t["land_words"].startswith("A yard with a workshop and a shed. With a gate in a wall")
+    t0 = [p for p in PB.outdoors({"pieces": []}, spec, {"surfaces": {}})["pieces"] if p["kind"] == "terrain"][0]
+    assert t0["land_words"] == "A gate in a wall"

@@ -288,6 +288,8 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     sp.pop("_views", None)
     land = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
                   flags=re.I).strip().rstrip(".")
+    if str(concept.get("land") or "").strip():     # (its picture was drawn anew as the whole place: those words)
+        land = f"{str(concept['land']).strip().rstrip('.')}. With {land[0].lower() + land[1:]}" if land else str(concept["land"]).strip().rstrip(".")
     land = f"{str(spec.get('period') or '').replace('_', ' ')}: {land}".strip(": ") if spec.get("period") != "not stated" \
         else land
     sf = concept.get("surfaces") or {}

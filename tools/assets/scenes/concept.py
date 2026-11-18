@@ -7,6 +7,7 @@ book's art style before anything is built (the shots flow's "hero" picture of th
 what kind of space it is, what its walls, floor and ceiling are, where its light comes from, and what stands in
 it. Here it is asked closed questions, one fact each:
 
+  view       "whole" (the place seen from far enough back) or "part" (a close view of one part of it);
   space      "room" (a room people walk about in), "cockpit" (a cockpit, cab or carriage: too small to walk about
              in, people only sit) or "outdoors";
   walls, floor, ceiling, light   each in a few words (material and colour; where the light comes from);
@@ -37,6 +38,11 @@ ASKS = {
     "ceiling": "In a few words: what is overhead (the ceiling, or a canopy or sky), and what colour is it?",
     "light": "In a few words: where does the light in this picture come from, and what colour is it?",
 }
+# (a place's picture that is a close view of one part of it shows no ground to stand on and nothing of the place:
+# the world made from one such was bare land, and every key there had another background, 11-18)
+VIEW_ASK = ("Does this picture show a place as a whole, seen from far enough back to take in the ground in front and "
+            "what is around it, or a close view of only one part of a place, filling the picture? Answer with exactly "
+            "one word: whole or part.")
 SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large object in this picture, one per line, "
             "as: name; what it is made of and its colour. No people. At most ten lines.")
 
@@ -189,6 +195,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
     answers})."""
     pieces = spec.get("pieces") or []
     items = [{"id": "space", "image": str(concept), "ask": {"space": SPACE_ASK}, "max_new_tokens": 6},
+             {"id": "view", "image": str(concept), "ask": {"view": VIEW_ASK}, "max_new_tokens": 6},
              {"id": "surf", "image": str(concept), "ask": ASKS, "max_new_tokens": 30},
              {"id": "seen", "image": str(concept), "ask": {"seen": SEEN_ASK}, "max_new_tokens": 220}]
     for p in pieces:
@@ -225,7 +232,8 @@ def read(concept: Path, spec: dict, ask) -> dict:
         abreast = 1
     elif abreast < 2 and (a.get("seats") or {}).get("single"):
         abreast = 2
-    return {"concept": str(concept), "space": space, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
+    view = "part" if "part" in re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("view") or "").lower()) else "whole"
+    return {"concept": str(concept), "space": space, "view": view, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
             "light": surf["light"], "seen": seen[:10], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")
             + (f" The light: {surf['light'][0].lower() + surf['light'][1:]}." if surf["light"] else "")}
