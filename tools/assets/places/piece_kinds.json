@@ -1029,7 +1029,8 @@
    "needs": null,
    "placement": "floor",
    "sized_by": "longest",
-   "about": "a large separate thing standing on open ground near the people of a place in the open; its look says what it is, its longest_m how big"
+   "about": "a large separate thing standing on open ground near the people of a place in the open; its look says what it is, its longest_m how big",
+   "front": "auto"
   },
   "work_piece": {
    "synonyms": [

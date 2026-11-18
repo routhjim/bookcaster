@@ -346,7 +346,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     K = K or kinds()
     kind, look = piece["kind"], piece.get("look", "").strip()
     d = K[kind]
-    aid = _asset_id(kind, look + (" " + Path(str(piece["source"])).stem if piece.get("source") else ""))
+    aid = _asset_id(kind, look + (" " + Path(str(piece["source"])).stem if piece.get("source") else "")
+                    + (" front " + str(d["front"]) if d.get("front") else ""))
     tools = Path(tools or HERE.parent)
     work = Path(work or (C.UE_HOME / "lab" / "img3d_props"))
     name = kind.replace("_", " ")
@@ -380,6 +381,12 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
         # ... and it keeps the generator's own front (-Y): the rule that takes a piece's flat end for its back is
         # for furniture, and turned a helmet back to front on the head
         spec.update(longest_m=size[0], size_tolerance=1.0, shape_res=512, yaw_deg=0)
+        if d.get("front") == "auto":
+            # (a thing that stands on the ground with a front, a building: shaped at the finer setting, and its
+            # front found as furniture's is. Kept as the generator turned it, a forge's front wall stood end on to
+            # the yard, a stone pillar in every frame, 11-18)
+            spec.pop("shape_res")
+            spec.pop("yaw_deg")
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]

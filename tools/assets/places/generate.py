@@ -504,7 +504,7 @@ def main():
             rj_["replaced_by"] = o["asset_id"]
             rp_.write_text(json.dumps(rj_, indent=1))
     ww = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("words")
-    if ww and not only:                                  # the place's own wall, as its concept shows it
+    if ww and not only and spec.get("kind") != "outdoors":   # the place's own wall, as its concept shows it
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         out.append(dict(make_face(PB.face_spec(ww), library, seed), kind="wall_face"))

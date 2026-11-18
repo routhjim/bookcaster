@@ -843,7 +843,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]
         out["concept"] = spec["_concept"]["concept"]
-    wall_faces(out, lay, spec, library)
+    if not world:                             # (a place in the open has no walls to face: a ring of wall panels
+        wall_faces(out, lay, spec, library)   # stood round the forge yard's stage, 11-18)
     cabin_stage(out, spec, library)
     staged = world_stage(out, spec0, library) if world else None
     lit = room_light(out, spec)
