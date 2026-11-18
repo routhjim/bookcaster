@@ -334,10 +334,8 @@ WORLD_WORDS = (
     "The far surroundings of this place: {look}. Seen all the way round from eye height in the middle of a wide "
     "stretch of open, bare, nearly level ground: the horizon level straight across the middle of the picture, the "
     "whole sky above it, and below it only that bare ground, straight down and far out on every side. Nothing is "
-    "built and nothing stands on this open ground: whatever the reference picture shows standing close by is left "
-    "out of this picture, and only what lies far off is seen, small, along the horizon. The reference picture is one "
-    "view of this same place: its land, its ground, its light, its colours and its way of painting go on all the way "
-    "round. Empty of life: no people, no figures, no animals anywhere.")
+    "built and nothing stands on this open ground or near it: only what lies far off is seen, small, along the "
+    "horizon. Empty of life: no people, no figures, no animals anywhere.")
 
 
 def generation_request(piece, K=None, python="python", tools=None, work=None):
@@ -347,7 +345,7 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     kind, look = piece["kind"], piece.get("look", "").strip()
     d = K[kind]
     aid = _asset_id(kind, look + (" " + Path(str(piece["source"])).stem if piece.get("source") else "")
-                    + (" front " + str(d["front"]) if d.get("front") else ""))
+                    + (" front " + str(d["front"]) + " wide" if d.get("front") else ""))
     tools = Path(tools or HERE.parent)
     work = Path(work or (C.UE_HOME / "lab" / "img3d_props"))
     name = kind.replace("_", " ")
@@ -387,6 +385,11 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             # the yard, a stone pillar in every frame, 11-18)
             spec.pop("shape_res")
             spec.pop("yaw_deg")
+            # (its front is the side the place's picture shows: as wide as seen there and less deep, which is what
+            # the front rule turns the shape by. Given as a cube, the rule left the wall end on a second time)
+            w_, h_ = (float(seen[0]), float(seen[2])) if seen and len(seen) == 3 else (lng, lng)
+            spec["size_m"] = [round(w_, 3), round(0.6 * w_, 3), round(h_, 3)]
+            spec["longest_m"] = round(max(w_, h_), 3)
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]

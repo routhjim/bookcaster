@@ -379,10 +379,18 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     lp = spec.get("land_places") if isinstance(spec.get("land_places"), dict) else {}
     order = [ph for ph in (spec.get("_phrases") or []) if ph in lp] + [ph for ph in lp if ph not in (spec.get("_phrases") or [])]
     spot = str(lp[order[0]]).strip().rstrip(".") if order else ""
+    # the panorama is drawn from what the picture shows far off, its ground and its sky, in words alone: with the
+    # picture as its reference, or the place's own words, it had the place's buildings in it again, close by
+    far = str(concept.get("far") or "").strip().rstrip(".")
+    per = str(spec.get("period") or "").replace("_", " ")
+    far_look = "; ".join(x for x in (
+        f"{per}: {far}".strip(": ") if per != "not stated" else far,
+        "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")), ("overhead", sf.get("ceiling"))) if v),
+        str(spec.get("_style") or "")) if x) if far else ""
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
-                "look": "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
+                "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
                 **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
-                **({"source": concept["concept"]} if concept.get("concept") else {})})
+                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
     sp["pieces"] = pcs
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     sp["named_places"] = {ph: (v if v in ids else "floor") for ph, v in (spec.get("named_places") or {}).items()}

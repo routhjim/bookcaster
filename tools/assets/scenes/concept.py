@@ -37,6 +37,10 @@ ASKS = {
     "floor": "In a few words: what is the floor made of, and what colour is it?",
     "ceiling": "In a few words: what is overhead (the ceiling, or a canopy or sky), and what colour is it?",
     "light": "In a few words: where does the light in this picture come from, and what colour is it?",
+    # (a place in the open: what its panorama is drawn as. Drawn from the picture itself, the panorama had the
+    # place's buildings in it again, close by, 11-18)
+    "far": "In a few words: what is the land like far off behind and around this place, out to the horizon? Leave "
+           "out everything built and everything standing near.",
 }
 # (a place's picture that is a close view of one part of it shows no ground to stand on and nothing of the place:
 # the world made from one such was bare land, and every key there had another background, 11-18)
@@ -233,7 +237,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
         yes = str(r.get("there") or "").strip().lower().startswith("y")
         lk = re.sub(r"\s+", " ", str(r.get("look") or "")).strip().rstrip(".")
         sc[p["id"]] = {"in_picture": yes, "look": lk if yes and lk.lower() != "none" else ""}
-    words = "; ".join(f"the {k}: {v[0].lower() + v[1:]}" for k, v in surf.items() if k != "light" and v)
+    words = "; ".join(f"the {k}: {v[0].lower() + v[1:]}" for k, v in surf.items() if k not in ("light", "far") and v)
     m_ = re.search(r"\d+", str((a.get("seats") or {}).get("abreast") or ""))
     abreast = max(1, min(4, int(m_.group(0)))) if m_ else 1
     if re.sub(r"[^a-z]", "", str((a.get("seats") or {}).get("single") or "").lower()).startswith("one"):
@@ -242,7 +246,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
         abreast = 2
     view = "part" if "part" in re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("view") or "").lower()) else "whole"
     return {"concept": str(concept), "space": space, "view": view, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
-            "light": surf["light"], "seen": seen[:10], "spec": sc,
+            "light": surf["light"], "far": surf["far"], "seen": seen[:10], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")
             + (f" The light: {surf['light'][0].lower() + surf['light'][1:]}." if surf["light"] else "")}
 
