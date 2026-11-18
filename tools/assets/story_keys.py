@@ -89,6 +89,9 @@ def key_style(style: str) -> str:
     return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
 
 
+ROOM_BG = 0.3                    # how far a room's background may be redrawn from the engine's frame
+
+
 def log(m):
     print(f"[story {time.strftime('%H:%M:%S')}] {m}", flush=True)
 
@@ -763,6 +766,11 @@ class Story:
                    # then painted in every window; the cabin's look reaches the redraw through its pieces)
                    extra_refs=[ss["concept"]] if ss.get("concept") and not (ss.get("views") or {}).get("words") else [],
                    look=key_style(style.read_text()) if style.exists() else "")
+        # a room's own walls and pieces are drawn ones: its background is held nearer the engine's frame than a
+        # place in the open, whose ground and far land are rough. At the open's share a forge's keys moved its
+        # hearth and door and hung lanterns the set does not have (11-18, seven shots at three strengths)
+        if not ss.get("world"):
+            run["strength_bg"] = ROOM_BG
         rp = d / "run.json"
         rp.write_text(json.dumps(run, indent=1))
         tag = self.places[place]["slug"]
