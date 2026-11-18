@@ -269,3 +269,40 @@ def test_a_thing_worn_on_the_head_is_said_with_the_person_and_the_hair_is_not(tm
     f = {"hair_colour": "black", "hair_worn": "short hair", "facial_hair": "none"}
     assert RD.look_words(f, "his")[0] == "short black hair; clean-shaven"
     assert RD.look_words(f, "his", covered=True)[0] == "clean-shaven"
+
+
+def test_what_is_built_in_the_open_is_one_piece_from_the_picture(tmp_path):
+    """The concept reader finds everything built in an open place as one group (its box, its cut-out, its words,
+    its real size); the set builder makes that one piece, in place of every landmark of the plan and the picture,
+    and every phrase of the plan that named one of them lands on it."""
+    import concept as CO
+    from PIL import Image
+    pic = tmp_path / "c.png"
+    Image.new("RGB", (200, 100), (90, 80, 70)).save(pic)
+    spec = {"place": "yard", "kind": "outdoors", "period": "not stated",
+            "pieces": [{"id": "p1", "kind": "landmark", "look": "stone", "phrases": ["at the house"]},
+                       {"id": "p2", "kind": "landmark", "look": "wood", "phrases": ["by the gate"]}],
+            "named_places": {"at the house": "p1", "by the gate": "p2", "out on the field": "floor"}}
+    res = {"space": "outdoors", "spec": {"p1": {"in_picture": True, "look": ""}, "p2": {"in_picture": False, "look": ""}},
+           "seen": [{"name": "tub", "look": "wood"}]}
+
+    def ask(items):
+        if items[0]["id"] == "g":
+            return {"g": {"box": "[50, 100, 900, 800]", "real": "14 6", "words": "A house and a wall."}}
+        if "words" in items[0]["ask"]:
+            return {i["id"]: {"words": "A thing."} for i in items}
+        return {"b:p1": {"box": "[100, 200, 500, 800]"}, "s:0": {"box": "[620, 700, 700, 800]", "kind": "none", "own": "separate"}}
+    CO.pieces_from(pic, spec, res, ask, tmp_path / "crops", "t", ["landmark"])
+    g = res["seen"][-1]
+    assert g["group"] and g["real_m"] == [14.0, 6.0] and g["words"] == "A house and a wall" and Path(g["crop"]).exists()
+    res["depth"] = {"eye": [0.0, -5.0], "things": {"seen:1": {"xy": [0.0, 8.0], "size_m": [7.0, 4.2, 3.0]},
+                                                   "spec:p1": {"xy": [-1.0, 8.0], "size_m": [3.0, 2.0, 3.0]}}}
+    sp = PB.with_concept(spec, dict(res, concept=str(pic), surfaces={}))
+    by = {p["id"]: p for p in sp["pieces"]}
+    assert sorted(by) == ["c2", "t1"] and by["c2"]["look"] == "A house and a wall"
+    assert by["c2"]["phrases"] == ["at the house", "by the gate"] and by["c2"]["_seen_size_m"][0] == 14.0
+    assert sp["named_places"] == {"at the house": "c2", "by the gate": "c2", "out on the field": "floor"}
+    # nothing built in the picture: no group, the plan's own pieces as before
+    res2 = {"space": "outdoors", "spec": {"p1": {"in_picture": False, "look": ""}, "p2": {"in_picture": False, "look": ""}}, "seen": []}
+    CO.pieces_from(pic, spec, res2, lambda items: {"g": {"box": "none"}}, tmp_path / "crops2", "t", ["landmark"])
+    assert not res2["seen"]

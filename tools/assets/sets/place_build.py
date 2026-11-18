@@ -238,7 +238,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
             _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=OPEN_LIKE) for q in kept) and not any(
             _same_part(sn["box"], o.get("box"), like=OPEN_LIKE) for o in (concept.get("seen") or [])[:i]
             if o.get("kind") == "landmark") and sum(1 for q in kept if q["id"].startswith("c")) < OPEN_SEEN_MOST
-        if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin) and sn["kind"] not in OPENING_KINDS:
+        if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin or sn.get("group")) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
                          "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
@@ -402,6 +402,15 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     # (a landmark the plan names that the place's picture does not show is not made from its words alone: the
     # picture is the place, and people sent there stand on the open ground. Two such were a boulder with a hole
     # and a cube of rock, 11-18)
+    # everything built there as one thing (the concept reader's "group"): it stands for every landmark of the
+    # plan and of the picture, and what the plan sends people to at any of them is at it
+    gi = next((i for i, sn in enumerate(concept.get("seen") or []) if sn.get("group")), None)
+    grp = next((p for p in pcs if gi is not None and p["id"] == f"c{gi + 1}"), None)
+    gone = {}
+    if grp:
+        gone = {p["id"]: grp["id"] for p in pcs if p is not grp}
+        grp["phrases"] = list(dict.fromkeys(ph for p in pcs for ph in p.get("phrases") or []))
+        pcs = [grp]
     chk = concept.get("spec") or {}
     pcs = [p for p in pcs if not (p.get("kind") == "landmark" and not p.get("source")
                                   and p["id"] in chk and not chk[p["id"]].get("in_picture"))]
@@ -434,7 +443,8 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
                 **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
     sp["pieces"] = pcs
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
-    sp["named_places"] = {ph: (v if v in ids else "floor") for ph, v in (spec.get("named_places") or {}).items()}
+    sp["named_places"] = {ph: (gone.get(v, v) if gone.get(v, v) in ids else "floor")
+                          for ph, v in (spec.get("named_places") or {}).items()}
     return sp
 
 

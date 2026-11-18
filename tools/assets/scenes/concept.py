@@ -68,6 +68,21 @@ WORDS_ASK = ("Describe the main thing in this picture in one sentence of under 4
 # (a building the picture's edge cuts is cut in its own part of the picture, and made as that part alone)
 CUT_ASK = ("Is any building or large structure in this picture cut off by an edge of the picture, so that part of it "
            "is out of view? Answer yes or no.")
+# (what is built in a place in the open is made as ONE thing, from the picture: cut up into its buildings, each
+# found and named apart, a yard's house and wall were left out and its door was made a thing standing by itself)
+GROUP_BOX_ASK = ("Locate everything built that stands on the ground in this picture, taken together as one group: "
+                 "every building, wall and structure, with what is built onto them and stands against them, from the "
+                 "ground to the highest roof. Not the open ground in front, the sky, plants or the far land. Answer "
+                 "only with the group's bounding box as [x1, y1, x2, y2], each number from 0 to 1000: thousandths of "
+                 "the picture's width (x) and height (y), x1 y1 the top left corner. If nothing built stands in this "
+                 "picture, answer none.")
+GROUP_REAL_ASK = ("About how wide and how tall would everything built in this picture, taken together as one group, "
+                  "be in real life, in metres? Answer with two numbers only: its width, then its height.")
+GROUP_WORDS_ASK = ("Describe everything built in this picture, as one group, in two sentences of under 70 words in "
+                   "all, for a builder who must make it: each building, wall and structure from left to right, its "
+                   "shape, what its sides and its roof are made of, its doors and openings, and what stands against "
+                   "it. Not the open ground, the sky, plants or the far land.")
+GROUP_AREA = 0.04                # a group smaller than this share of the picture is no building to make
 OPEN_PIECE_AREA = 0.003          # in the open the picture is a wide one: a thing standing by a building is small in it
 OPEN_SEEN_MOST = 12
 SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large object in this picture, one per line, "
@@ -227,10 +242,20 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             sn.update(box=b, crop=cut(concept, b, out_dir / f"{tag}_seen{i}.png"))
             if real_of(r.get("real")):
                 sn["real_m"] = real_of(r["real"])
+    if op:
+        g = ask([{"id": "g", "image": str(concept), "max_new_tokens": 160,
+                  "ask": {"box": GROUP_BOX_ASK, "real": GROUP_REAL_ASK, "words": GROUP_WORDS_ASK}}]).get("g") or {}
+        gb = box_of(g.get("box"))
+        if gb and (gb[2] - gb[0]) * (gb[3] - gb[1]) >= GROUP_AREA:
+            res["seen"].append({"name": "everything built there", "kind": "landmark", "group": True, "box": gb,
+                                "look": "", "crop": cut(concept, gb, out_dir / f"{tag}_group.png"),
+                                **({"real_m": real_of(g.get("real"))} if real_of(g.get("real")) else {}),
+                                **({"words": re.sub(r"\s+", " ", str(g.get("words") or "")).strip().rstrip(".")}
+                                   if str(g.get("words") or "").strip() else {})})
     if op:                                   # each thing of the open said whole, from its own part of the picture
         its = [(res["spec"][p["id"]], f"b:{p['id']}") for p in pieces if res["spec"][p["id"]].get("crop")
                and p.get("kind") == "landmark"]
-        its += [(sn, f"s:{i}") for i, sn in enumerate(res.get("seen") or []) if sn.get("kind") == "landmark" and sn.get("crop")]
+        its += [(sn, f"s:{i}") for i, sn in enumerate(res.get("seen") or []) if sn.get("kind") == "landmark" and sn.get("crop") and not sn.get("group")]
         w = ask([{"id": k, "image": t["crop"], "max_new_tokens": 80, "ask": {"words": WORDS_ASK}} for t, k in its]) if its else {}
         for t, k in its:
             ws = re.sub(r"\s+", " ", str((w.get(k) or {}).get("words") or "")).strip().rstrip(".")
