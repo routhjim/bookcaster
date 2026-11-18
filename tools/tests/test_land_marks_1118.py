@@ -246,6 +246,6 @@ def test_a_place_in_the_open_is_said_whole_for_its_picture(tmp_path, monkeypatch
     them, the land), asked once of the director with the story and the shots there."""
     import place_spec as SPc
     asked = []
-    monkeypatch.setattr(SPc, "ask", lambda url, text, cache: (asked.append(text), "A yard.  With a house.")[1])
+    monkeypatch.setattr(SPc, "ask", lambda url, text, cache: (asked.append(text), "1. A yard.  2. With a house.")[1])
     got = SPc.whole("the yard", {"period": "medieval", "room": "A gate."}, ["someone waits"], "The story.", "u", tmp_path)
     assert got == "A yard. With a house." and "medieval" in asked[0] and "- someone waits" in asked[0] and "A gate." in asked[0]

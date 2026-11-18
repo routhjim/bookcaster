@@ -456,7 +456,8 @@ def whole(place: str, spec: dict, acts: list, psg: str, url: str, cache: Path) -
     txt = ask(url, WHOLE_ASK.format(place=place, period=f", as it was in a {per} time" if per and per != "not stated" else "",
                                     story=psg, shots="\n".join(f"- {a}" for a in acts) or "(none)",
                                     room=str(spec.get("room") or "").strip() or "(none)"), cache)
-    return re.sub(r"\s+", " ", re.sub(r"(?s)<think>.*?</think>", "", txt)).strip()
+    txt = re.sub(r"\s+", " ", re.sub(r"(?s)<think>.*?</think>", "", txt)).strip()
+    return re.sub(r"^\d[\.\)]\s*|(?<=[\.\!]\s)\d[\.\)]\s+", "", txt).strip()                # (its sentences only, without their numbers)
 
 
 def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache: Path) -> dict:
