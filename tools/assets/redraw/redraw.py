@@ -44,6 +44,7 @@ away is said to be seen from behind with no face visible.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -458,7 +459,60 @@ def names(ppl: list, cast: dict) -> dict:
     return out
 
 
-def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, speaker: str | None = None) -> str:
+BEAST_HEAD = (0.45, 0.18)    # a creature's head height in the frame: at or over the first, its head alone is the
+                             # picture; at or over the second, its head, neck and upper body; under it, the whole of it
+BEAST_PITCH = 15.0           # the camera looking up or down at it by this many degrees is said
+
+
+def beast_part(v: dict) -> str:
+    """How much of a creature the engine's frame shows, from its measured head in the frame: "head", "upper" or
+    "whole"."""
+    j = (v or {}).get("joints2d") or {}
+    if "chin" in j and "head_top" in j:
+        hh = j["chin"][1] - j["head_top"][1]
+    else:                                   # no measured head: by how much of the frame its box fills
+        b = (v or {}).get("box") or [0, 0, 0, 0]
+        hh = BEAST_HEAD[1] if (b[3] - b[1]) > 0.95 and (b[2] - b[0]) > 0.5 else 0.0
+    return "head" if hh >= BEAST_HEAD[0] else "upper" if hh >= BEAST_HEAD[1] else "whole"
+
+
+def beast_words(noun: str, v: dict, cam: dict | None) -> str:
+    """What of a creature is in the picture, and from where it is seen. A creature said in a person's words
+    ("standing", "from the waist up") with only its head in the engine's frame was redrawn as a rock in one key and
+    a skull in another (11-18)."""
+    part = beast_part(v)
+    out = {"head": f"Only the {noun}'s head is in the picture, large and close, filling much of the frame: its whole "
+                   f"head with its eyes, snout or muzzle and jaws, drawn as on its character sheet; its body is out "
+                   f"of the frame.",
+           "upper": f"The {noun}'s head, its neck and the upper part of its body are in the picture, its head drawn "
+                    f"as on its character sheet; the rest of its body is out of the frame.",
+           "whole": f"The whole {noun} is in the picture, head to tail."}[part]
+    pos, tgt = (cam or {}).get("position"), (cam or {}).get("target")
+    if pos and tgt:
+        pitch = math.degrees(math.atan2(tgt[2] - pos[2], math.hypot(tgt[0] - pos[0], tgt[1] - pos[1]) or 1e-6))
+        if pitch >= BEAST_PITCH:
+            out += f" It is seen from below, the camera looking up at it: the underside of its jaw and its throat show."
+        elif pitch <= -BEAST_PITCH:
+            out += f" It is seen from above, the camera looking down on it."
+    return out
+
+
+def beast_shot(ppl: list, cast: dict, shot: dict | None, outdoors: bool) -> str:
+    """The shot's opening words when everyone in it is a creature: said by what of the creature shows, never as
+    people "from the waist up" or "head and shoulders"."""
+    if not ppl or not shot or not all((cast.get(p[0]) or {}).get("creature") for p in ppl):
+        return ""
+    parts = [beast_part((shot.get("people") or {}).get(p[0])) for p in ppl]
+    part = "head" if "head" in parts else "upper" if "upper" in parts else "whole"
+    n = who_of(cast, ppl[0][0])["noun"] if len(ppl) == 1 else "creature"
+    o, behind = (" out of doors", "the open land and the sky") if outdoors else ("", "the room")
+    return {"head": f"A close shot{o} of a {n}'s head, {behind} behind it soft and out of focus.",
+            "upper": f"A shot{o} of a {n}'s head, neck and upper body, {behind} behind it.",
+            "whole": f"A wide shot{o}: the whole {n} in view, {behind} around it."}[part]
+
+
+def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, speaker: str | None = None,
+                 shot: dict | None = None) -> str:
     if not ppl:
         return ""
     cast = cast or {}
@@ -479,6 +533,11 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
         w = ws[i]
         who = nm[k][0].upper() + nm[k][1:]
         placed = nm[k] != f"the {w['noun']}"           # the name already says where they are
+        if w.get("creature"):               # a creature: what of it shows, where, and how it is turned
+            parts.append(beast_words(w["noun"], ((shot or {}).get("people") or {}).get(k) or {"box": box},
+                                     (shot or {}).get("camera")))
+            parts.append(f"It is {place_words(box).split(',')[0]} and {facing_words(ang, w['pos'])}.")
+            continue
         parts.append(f"{who} is {post} and {facing_words(ang, w['pos'])}." if placed else
                      f"{who} is {post} {place_words(box)} and {facing_words(ang, w['pos'])}.")
         if with_body:
@@ -487,7 +546,9 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
             parts.append(f"{w['subj'].capitalize() if n == 1 else who} sits in {w['seat']}.")
     out = " ".join(parts)
     if speaker and speaker in nm:
-        out += f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, mouth slightly open mid-word."
+        out += (f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, "
+                + ("its jaws a little parted." if (cast.get(speaker) or {}).get("creature")
+                   else "mouth slightly open mid-word."))
     for i, w in enumerate(ws):
         out = out.replace(f"{{T{i}}}", w.get("trigger") or w["noun"])
     return out
@@ -655,8 +716,9 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
                  outdoors: bool = False) -> str:
     cast = cast or {"*": {"trigger": trigger}}
     return " ".join(x for x in [
-        f"A photographed frame from a period film. {(SHOT_OPEN if outdoors else SHOT)[kind]}",
-        people_words(ppl, with_body, cast, speaker),
+        f"A photographed frame from a period film. "
+        f"{beast_shot(ppl, cast, shot, outdoors) or (SHOT_OPEN if outdoors else SHOT)[kind]}",
+        people_words(ppl, with_body, cast, speaker, shot),
         limb_words(ppl, shot, cast) if facts and shot else "",
         wear_words(ppl, wear, wear_back, cast, neck=facts and kind != "wide"),
         # (out of doors the place's words are its land, kept whole: cut at their first colon as a room's list is,

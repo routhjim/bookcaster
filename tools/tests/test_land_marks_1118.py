@@ -107,3 +107,29 @@ def test_a_creature_at_the_edge_is_said_as_itself():
     assert "another person" not in only and "dragon's body" in only
     ppl = [("a", [0, 0, 1, 1], 10.0, "standing", 10.0, None)]
     assert "wears" not in RD.wear_words(ppl, "", None, cast)
+
+
+def test_a_creature_is_said_by_what_of_it_the_frame_shows():
+    """A creature alone in a frame is never said as a person (waist up, standing): its head alone, its upper body or
+    the whole of it, from its measured head in the frame, and from below when the camera looks up at it."""
+    import importlib.util
+    sp = importlib.util.spec_from_file_location("rd_beast", Path(__file__).resolve().parents[1] / "assets/redraw/redraw.py")
+    rd = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(rd)
+    cast = {"a": {"noun": "beast", "trigger": "chr_b", "pos": "its", "subj": "it", "wear": "", "creature": True}}
+
+    def shot(top, chin, cam_z=1.0):
+        return {"people": {"a": {"box": [0.2, 0.0, 1.0, 1.0], "area": 0.5, "head_to_camera_deg": 10.0,
+                                 "body_to_camera_deg": 5.0, "joints2d": {"head_top": [0.5, top, True],
+                                                                         "chin": [0.5, chin, True]}}},
+                "camera": {"position": [4.0, 0.0, cam_z], "target": [0.0, 0.0, 1.0]}}
+    def words(sh):
+        return rd.image_prompt("medium", rd.people(sh, {}), "", "the land", "", cast=cast, with_body=True,
+                               speaker="a", shot=sh, facts=True, outdoors=True)
+    head = words(shot(0.1, 0.8))
+    assert "Only the beast's head is in the picture" in head and "close shot out of doors of a beast's head" in head
+    assert "waist" not in head and "standing" not in head and "mouth" not in head and "wears" not in head
+    upper = words(shot(0.3, 0.6, cam_z=-2.0))
+    assert "neck and the upper part of its body" in upper and "seen from below" in upper
+    whole = words(shot(0.4, 0.5))
+    assert "The whole beast is in the picture" in whole and "seen from" not in whole.split("picture, head to tail.")[1][:40]
