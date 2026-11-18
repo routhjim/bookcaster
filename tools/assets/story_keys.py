@@ -388,9 +388,10 @@ class Story:
             for n in range(CONCEPT_TRIES):
                 pid = f"concept_{self.prefix}_{slug}_v{n}_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
                 pic = C.LIBRARY / "_refs" / pid / "picture.png"
-                line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
-                     [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
-                      "--size", size[0], size[1], "--seed", 11 + n])
+                if not pic.exists():         # (its id is its words: drawn once, a later run reads it again)
+                    line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
+                         [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
+                          "--size", size[0], size[1], "--seed", 11 + n])
                 if not pic.exists():
                     continue
                 shutil.copy2(pic, d / "concept.png")
