@@ -310,3 +310,16 @@ def test_what_is_built_in_the_open_is_one_piece_from_the_picture(tmp_path):
     res2 = {"space": "outdoors", "spec": {"p1": {"in_picture": False, "look": ""}, "p2": {"in_picture": False, "look": ""}}, "seen": []}
     CO.pieces_from(pic, spec, res2, lambda items: {"g": {"box": "none"}}, tmp_path / "crops2", "t", ["landmark"])
     assert not res2["seen"]
+
+
+def test_a_thing_laid_on_the_set_in_a_shot_is_said_by_the_plans_name(tmp_path):
+    """What the staging laid on a piece of the set in a shot is told to the key, by the plan's own name for it."""
+    import redraw as RD
+    place = tmp_path / "place"
+    sd = place / "seq" / "g1"
+    sd.mkdir(parents=True)
+    (place / "carried.json").write_text(json.dumps({"the bar": "thing_01", "mallet": "thing_02"}))
+    (sd / "spec_round0.json").write_text(json.dumps({"cameras": [{"name": "c1", "carried": {"a": [
+        {"asset": "thing_02", "at": "hand"}, {"asset": "thing_01", "at": "on", "xyz": [0, 1, 0.7]}]}}, {"name": "c2"}]}))
+    w = RD.laid_words(sd, "c1", [("a",)])
+    assert "the bar" in w and "mallet" not in w and RD.laid_words(sd, "c2", [("a",)]) == ""

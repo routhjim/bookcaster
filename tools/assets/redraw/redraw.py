@@ -264,6 +264,32 @@ def head_things(sd: Path, cam: str) -> dict:
     return out
 
 
+def laid_words(sd: Path, cam: str, ppl: list) -> str:
+    """The things the staging laid on a piece of the set in this shot (the staged camera's carried things "on"),
+    each by the plan's own name for it: they are in the engine's frame, and unsaid, a key drew another thing
+    in their place or none (a blade on an anvil was a piece of armour in one key and gone in the next, 11-18)."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    try:                                     # (the plan's own name for each made thing: the place's carried.json)
+        made = {v: k for k, v in json.loads((sd.parent.parent / "carried.json").read_text()).items()}
+    except (OSError, ValueError):
+        made = {}
+    inf, names_ = {p[0] for p in ppl}, []
+    for k, xs in (c.get("carried") or {}).items():
+        for x in xs or []:
+            if x.get("at") != "on" or k not in inf:
+                continue
+            nm = str(made.get(str(x.get("asset"))) or "").strip()
+            if nm and nm not in names_:
+                names_.append(nm)
+    if not names_:
+        return ""
+    return (f" Lying where the picture has it, on what it rests on there, in its place and at its size: "
+            f"{', '.join(names_)}; nothing else lies there.")
+
+
 def look_words(f: dict, pos: str, covered: bool = False) -> tuple:
     """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names).
     `covered`: the head has a thing on it in this shot, the hair is not said."""
@@ -957,7 +983,7 @@ def main():
                                                 sh.get("speaker"), sh, run.get("facts", False),
                                                 run.get("outdoors", False)) + edge_words(edge, cast)
                          + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
-                         + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast)
+                         + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast) + laid_words(sd, cam, ppl)
                          + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])
