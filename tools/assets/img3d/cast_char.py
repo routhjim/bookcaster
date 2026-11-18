@@ -644,7 +644,7 @@ def main():
     # ---------------------------------------------------------------- hair: the colour word's whiteness measured
     # a colour word with no measured whiteness in the library's map is measured on this character (calibrate_hair;
     # 11-18: "grey hair" at the table's whiteness rendered as a white cap); a given MetaHuman (--mh) keeps its colour
-    if not a.mh and (a.redo_hair or not done("mh", W / "hair_calibrate.json")):
+    if not a.mh and (a.redo_hair or not a.whole) and (a.redo_hair or not done("mh", W / "hair_calibrate.json")):
         @timed("hair_calibrate")
         def _():
             bp_ = (CH.get("mh_build") or {}).get("blueprint") or f"/Game/MetaHumans/{mh_name}/BP_{mh_name}"

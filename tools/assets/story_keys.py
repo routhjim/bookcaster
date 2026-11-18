@@ -594,9 +594,6 @@ class Story:
                 continue
             fid, w, base = self._cast_cmd(name)
             if self._built(name):
-                # (a figure built before its hair colour was measured on it: that one step, the rest stands)
-                if not (w / "w" / "hair_calibrate.json").exists() and (w / "w" / "choice.json").exists():
-                    sh(base + ["--until", "seats"], w / "run.log")
                 continue
             if (w / "FAILED").exists():
                 log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'})")
