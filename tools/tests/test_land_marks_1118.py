@@ -196,6 +196,10 @@ def test_people_sent_to_a_tall_thing_stand_before_it():
     assert a[1] < 6.0 - 1.1 and b[1] < 6.0 - 1.1 and a != b
     assert all(m[1] < 6.0 for m in F.free_marks(t["center"], [], [t], [28, 28, 6], (0.6, 3.0), front=fr))
     assert F.front_of({"kind": "fixture", "center": [2, 2, 0.5], "half": [1, 1, 0.5]}) is None
+    # ... and clear of its foot by a third of its height, 2 m at most (not under its eaves)
+    assert F.stand_clear(t) == 1.33 and F.stand_clear(dict(t, center=[0, 9, 4.0], half=[6, 4, 4.0])) == 2.0
+    c = F.free_mark(t["center"], [], [t], [28, 28, 6], (0.6, 1.6), fix_r=F.stand_clear(t), front=fr)
+    assert c[1] <= 6.0 - 1.1 - 0.25 - 1.33 + 0.11
     assert F.front_of({"kind": "floor", "center": [2, 2], "half": [0, 0]}) is None
 
 

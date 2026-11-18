@@ -403,7 +403,8 @@ class Story:
                 if got:
                     got["land"] = room             # the land's words: the place's own, not the one part's
                     (d / "concept.json").write_text(json.dumps(got, indent=1))
-                if got.get("view") == "whole" and got.get("space") == "outdoors" and not got.get("cut"):
+                # (a building the edge cuts is still one piece made from the picture: the first whole view is kept)
+                if got.get("view") == "whole" and got.get("space") == "outdoors":
                     break
             else:
                 log(f"{place}: no picture of the whole place in {CONCEPT_TRIES} tries; the last one is kept")

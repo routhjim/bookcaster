@@ -209,6 +209,16 @@ def front_of(thing: dict | None):
     return [-c[0] / n, -c[1] / n] if n > 0.5 else None
 
 
+STAND_CLEAR = (1 / 3, 2.0)   # of a tall thing's height, and at most this many metres
+
+
+def stand_clear(thing: dict | None) -> float:
+    """How far clear of a tall thing's foot people sent to it stand: a third of its height, 2 m at most. Stood at a
+    building's very wall they were under its eaves, in its shadow, and every close shot of them was black (11-18)."""
+    c, hf = (thing or {}).get("center") or [], (thing or {}).get("half") or []
+    return round(min(STAND_CLEAR[1], STAND_CLEAR[0] * (c[2] + hf[2])), 2) if len(c) >= 3 and len(hf) >= 3 else 0.0
+
+
 def before(p: list, target: list, front) -> bool:
     return front is None or (p[0] - target[0]) * front[0] + (p[1] - target[1]) * front[1] > 0.0
 
@@ -837,6 +847,8 @@ def main():
                 if own_r:
                     entry["_r"] = own_r
                 fro = None if (rel and rel in state) or k in crt else front_of(thing)
+                if fro and fix_r is None:
+                    fix_r = stand_clear(thing)
                 entry.update(seat=None, position=free_mark(tgt, others, things, room, near, own_r, fix_r, walled, fro))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
