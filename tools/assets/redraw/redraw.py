@@ -239,12 +239,40 @@ def entry_facts(fig: str | None) -> dict:
     return {}
 
 
-def look_words(f: dict, pos: str) -> tuple:
-    """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names)."""
+def head_things(sd: Path, cam: str) -> dict:
+    """{scene key: [what they have on the head in this shot]} from the staged camera's carried things worn at the
+    head, each by its library record's own first words. The figure wears it in the engine's frame, and the key
+    said the person's hair and usual clothes first and the thing last in a list: it was drawn bareheaded (11-18)."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return {}
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import config as C
+    out = {}
+    for k, xs in (c.get("carried") or {}).items():
+        for x in xs or []:
+            if x.get("at") != "head":
+                continue
+            try:
+                rec = json.loads((Path(C.LIBRARY) / "prop" / str(x.get("asset")) / "asset.json").read_text())
+            except (OSError, ValueError):
+                continue
+            nm = str(rec.get("look") or "").split(";")[0].strip()
+            if nm:
+                out.setdefault(k, []).append(nm)
+    return out
+
+
+def look_words(f: dict, pos: str, covered: bool = False) -> tuple:
+    """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names).
+    `covered`: the head has a thing on it in this shot, the hair is not said."""
     miss = [k for k in LOOK_FACTS if not f.get(k)]
     w = []
     col, worn = f.get("hair_colour"), f.get("hair_worn") or ""
-    if col and "hair" in worn and " " not in col:
+    if covered:
+        pass
+    elif col and "hair" in worn and " " not in col:
         w.append(worn.replace("hair", f"{col} hair", 1))         # "short hair, slicked back" -> "short black hair, .."
     elif col:
         w.append((worn + f", the hair {col}") if worn else f"{col} hair")
@@ -860,6 +888,7 @@ def main():
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
                 cast = run.get("cast") or {}
                 cast = {k: (dict(v, seat=seats[k]) if k in seats else v) for k, v in cast.items()}
+                on_head = head_things(sd, cam)
                 for k, wv in scene_wear(sd).items():       # this scene's wardrobe on top of the cast's
                     if k in cast:
                         c2 = dict(cast[k])
@@ -878,7 +907,11 @@ def main():
                         # holds the keys together against the person's median and re-draws outliers)
                         # (a stand-in figure's hair is not this person's: their own sheet and words say theirs)
                         lw_, miss = ("", []) if c2.get("stand_in") else look_words(
-                            entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his")
+                            entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his",
+                            covered=bool(on_head.get(k)))
+                        if on_head.get(k):   # (said with the person, before the place and the shot)
+                            c2["wear"] = (c2.get("wear", "") + "; on the head, worn over the hair and covering it: "
+                                          + ", ".join(on_head[k]))
                         if lw_:
                             c2["wear"] = c2.get("wear", "") + "; " + lw_
                         if miss:

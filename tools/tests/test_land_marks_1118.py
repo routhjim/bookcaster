@@ -249,3 +249,23 @@ def test_a_place_in_the_open_is_said_whole_for_its_picture(tmp_path, monkeypatch
     monkeypatch.setattr(SPc, "ask", lambda url, text, cache: (asked.append(text), "1. A yard.  2. With a house.")[1])
     got = SPc.whole("the yard", {"period": "medieval", "room": "A gate."}, ["someone waits"], "The story.", "u", tmp_path)
     assert got == "A yard. With a house." and "medieval" in asked[0] and "- someone waits" in asked[0] and "A gate." in asked[0]
+
+
+def test_a_thing_worn_on_the_head_is_said_with_the_person_and_the_hair_is_not(tmp_path, monkeypatch):
+    """A shot's thing worn at the head (the staged camera's carried things) is named from its library record, and
+    the person's hair is left out of their words for that shot."""
+    import redraw as RD
+    import config as C
+    lib = tmp_path / "lib"
+    (lib / "prop" / "hat_01").mkdir(parents=True)
+    (lib / "prop" / "hat_01" / "asset.json").write_text(json.dumps({"look": "a felt hat; the thing alone"}))
+    monkeypatch.setattr(C, "LIBRARY", lib)
+    sd = tmp_path / "sc"
+    sd.mkdir()
+    (sd / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "c1", "carried": {"a": [{"asset": "hat_01", "at": "head"}, {"asset": "x", "at": "hand"}]}},
+        {"name": "c2", "carried": {"a": [{"asset": "x", "at": "hand"}]}}]}))
+    assert RD.head_things(sd, "c1") == {"a": ["a felt hat"]} and RD.head_things(sd, "c2") == {}
+    f = {"hair_colour": "black", "hair_worn": "short hair", "facial_hair": "none"}
+    assert RD.look_words(f, "his")[0] == "short black hair; clean-shaven"
+    assert RD.look_words(f, "his", covered=True)[0] == "clean-shaven"
