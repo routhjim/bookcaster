@@ -72,10 +72,19 @@ def q_set(plan_shot: dict, sets: list) -> dict:
         + "\nWhich set fits the scene best? Answer with the set's id only."), "answer": "set id"}
 
 
+def said_look(t: dict) -> str:
+    """What a thing is, for a thing whose name does not say it (a kind that holds any thing: a landmark, a work
+    piece, named by its kind): asked where a person "in the doorway" stood among "landmark" and "landmark_2", the
+    answer put her behind the building, 11-18."""
+    if str(t.get("short") or "").replace("_", " ") not in ("landmark", "work piece") or not str(t.get("look") or "").strip():
+        return ""
+    return ": " + str(t["look"]).split(";")[0].strip()
+
+
 def q_place(qid: str, person_words: str, set_things: list, people: list) -> dict:
     return {"id": qid, "ask": (
         "A room holds these named things, each with where it stands: "
-        + "; ".join(f"{t['name']} ({t.get('place') or t['kind']})" for t in set_things)
+        + "; ".join(f"{t['name']} ({t.get('place') or t['kind']}{said_look(t)})" for t in set_things)
         + ". The director placed a person: " + person_words + ". Other people placed: " + (", ".join(people) or "none")
         + ". Which named thing is this person at? Are they sitting in it (if it is a seat) or standing beside it, and "
         "on which side of it (front, left, right, behind, as seen from the room's middle)? Answer as JSON: "

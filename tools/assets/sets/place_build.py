@@ -336,6 +336,16 @@ def open_places(pcs: list, concept: dict) -> tuple:
     return out, [side, side, round(tall, 1)]
 
 
+def technique(style: str) -> str:
+    """A book's art style with only its way of painting left (as world.set_picture_prompt): the clause before its
+    colon, without the names of building styles. Its other words are things to draw: given whole to a panorama of
+    bare far land, "cathedral-like stone and iron, candlelit" stood a cathedral with candles on the open ground,
+    11-18."""
+    st = (style.split(":", 1)[0] if ":" in (style or "") else (style or "")).strip().rstrip(".")
+    return re.sub(r"(?i)\b(gothic|baroque|romanesque|victorian|byzantine|art deco|art nouveau|rococo|"
+                  r"neo-?classical|renaissance|medieval)\b\s*", "", st).strip(" ,")
+
+
 def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     """A place in the open (its concept picture shows it outdoors, or its spec says so) is built as a world: the
     land round where its people stand, the sky, and a flat patch of ground under them, all one piece made from a
@@ -386,7 +396,8 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     far_look = "; ".join(x for x in (
         f"{per}: {far}".strip(": ") if per != "not stated" else far,
         "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")), ("overhead", sf.get("ceiling"))) if v),
-        str(spec.get("_style") or "")) if x) if far else ""
+        (f"painted as a {technique(str(spec.get('_style') or ''))}" if technique(str(spec.get("_style") or "")) else "")) if x) \
+        if far else ""
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
                 "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
                 **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
@@ -635,7 +646,9 @@ def world_stage(out: dict, spec: dict, library) -> dict:
     if not rp.exists():
         return {"world": None, "why": f"the place's world {aid} is not made"}
     w = json.loads(rp.read_text()).get("world") or {}
-    st = w.get("spot_m") or w.get("stand_m") or [0.0, 0.0, 0.0]     # (where the plan's part of the land is, found)
+    # (the set's middle is the point under the panorama's eye, where its real ground shows the picture's own ground
+    # best; a part of the land the plan names is drawn a few steps from there)
+    st = w.get("stand_m") or [0.0, 0.0, 0.0]
     out["fixtures"].insert(0, {"asset": aid, "name": "world", "position": [round(-st[0], 3), round(-st[1], 3),
                                                                            round(-st[2], 3)], "facing": [0.0, -1.0],
                                "outside": True, "surface": True, "world": True})
