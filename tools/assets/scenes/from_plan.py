@@ -193,8 +193,28 @@ def clear_of_fixtures(p: list, things: list, r: float = 0.0) -> bool:
                    and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 + r for t in things)
 
 
+TALL_M = 1.8              # a thing whose top is over this hides whoever stands behind it
+
+
+def front_of(thing: dict | None):
+    """For a tall thing of the set (a building, a wall, a great piece): the unit way from its middle to the room's
+    middle, its front as the people and cameras see it; None for a thing people are seen over or a place on the
+    floor. People sent to such a thing stand before it: of two sent to a forge's front, the second was stood
+    behind the building, hidden from every camera, 11-18."""
+    c = (thing or {}).get("center") or []
+    hf = (thing or {}).get("half") or []
+    if len(c) < 3 or len(hf) < 3 or (thing or {}).get("kind") in ("floor", "mark") or c[2] + hf[2] < TALL_M:
+        return None
+    n = math.hypot(c[0], c[1])
+    return [-c[0] / n, -c[1] / n] if n > 0.5 else None
+
+
+def before(p: list, target: list, front) -> bool:
+    return front is None or (p[0] - target[0]) * front[0] + (p[1] - target[1]) * front[1] > 0.0
+
+
 def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12,
-               own_r: float = 0.0, fix_r: float | None = None, walls: bool = True) -> list:
+               own_r: float = 0.0, fix_r: float | None = None, walls: bool = True, front=None) -> list:
     """Every allowed mark for a place given only as a relation or a region ("beside him", "near the desk"): free
     floor points within the place's reach, best first (free_mark's order); the camera rules choose among them."""
     W, D = bounds(room, own_r, walls)
@@ -204,7 +224,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
         r = r10 / 10
         for a in range(0, 360, 20):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r):
+            if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r) or not before(p, target, front):
                 continue
             if not clear_of_fixtures(p, things, fr):
                 continue
@@ -220,7 +240,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
 
 
 def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6), own_r: float = 0.0,
-              fix_r: float | None = None, walls: bool = True) -> list:
+              fix_r: float | None = None, walls: bool = True, front=None) -> list:
     """The nearest free floor point to the target thing's middle, between near[0] and near[1] m from it, clear of
     fixtures (their footprint + 0.25 m) and other people (too_near), inside the room, toward the room's middle; a
     creature (own_r: its reach round its middle) keeps that much more clear of walls and people, and fix_r (by
@@ -234,7 +254,7 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
         r = r10 / 10
         for a in range(0, 360, 10):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D:
+            if abs(p[0]) > W or abs(p[1]) > D or not before(p, target, front):
                 continue
             if too_near(p, others, own_r):
                 continue
@@ -816,11 +836,13 @@ def main():
                 fix_r = 0.5 * min(crt[k]["size_m"][:2]) if k in crt else None
                 if own_r:
                     entry["_r"] = own_r
-                entry.update(seat=None, position=free_mark(tgt, others, things, room, near, own_r, fix_r, walled))
+                fro = None if (rel and rel in state) or k in crt else front_of(thing)
+                entry.update(seat=None, position=free_mark(tgt, others, things, room, near, own_r, fix_r, walled, fro))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
                 entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, things, room, near,
-                                                                              own_r=own_r, fix_r=fix_r, walls=walled)
+                                                                              own_r=own_r, fix_r=fix_r, walls=walled,
+                                                                              front=fro)
                                                         if math.dist(m, entry["position"]) > 0.2]
             state[k] = entry
             placed_now.append(entry)

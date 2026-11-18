@@ -183,3 +183,17 @@ def test_a_place_picture_that_shows_one_part_is_read_as_part_and_the_land_takes_
     assert t["land_words"].startswith("A yard with a workshop and a shed. With a gate in a wall")
     t0 = [p for p in PB.outdoors({"pieces": []}, spec, {"surfaces": {}})["pieces"] if p["kind"] == "terrain"][0]
     assert t0["land_words"] == "A gate in a wall"
+
+
+def test_people_sent_to_a_tall_thing_stand_before_it():
+    """Two people sent to one tall thing of the set (a building's front) both stand on its front side, toward the
+    room's middle; a low thing is still stood round."""
+    import from_plan as F
+    t = {"name": "x", "kind": "fixture", "center": [-1.7, 6.0, 2.0], "half": [1.9, 1.1, 2.0]}
+    fr = F.front_of(t)
+    a = F.free_mark(t["center"], [], [t], [28, 28, 6], (0.6, 1.6), front=fr)
+    b = F.free_mark(t["center"], [a], [t], [28, 28, 6], (0.6, 1.6), front=fr)
+    assert a[1] < 6.0 - 1.1 and b[1] < 6.0 - 1.1 and a != b
+    assert all(m[1] < 6.0 for m in F.free_marks(t["center"], [], [t], [28, 28, 6], (0.6, 3.0), front=fr))
+    assert F.front_of({"kind": "fixture", "center": [2, 2, 0.5], "half": [1, 1, 0.5]}) is None
+    assert F.front_of({"kind": "floor", "center": [2, 2], "half": [0, 0]}) is None
