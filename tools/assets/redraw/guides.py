@@ -43,6 +43,7 @@ JUMP = 0.04             # a depth jump of 4 % between neighbours is an outline
 FLAME_R_M = {"fire": 0.22, "lamp": 0.04}     # half-size of a light's source: a grate's fire, a lamp's flame
 SIDE_DEG = 60.0         # a body turned this far from the camera is side-on: drawn at the lighter tier
 HEADS_ST, HEADS_BG = 0.8, 0.3     # the "heads" mask's two strengths (story_keys' room redraw runs with these)
+HEADS_AWAY = 0.70                 # ... and the head of someone turned away
 HEADS_ROOM, HEADS_BODY = 0.45, 0.60   # what the room and a facing body are redrawn at under that mask
 REGION_PX = 0.06        # a person's own region (their LoRA, their words) reaches this far (frame widths) past them
 JOINTS2D = ("head", "FACIAL_L_Eye", "FACIAL_R_Eye", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l",
@@ -454,11 +455,13 @@ def one_scene(sd: Path, dev, things=None, day=None):
                 away = bd(v) > 100
                 hd[m] = 0.0 if away else gv(HEADS_BODY)
                 j2 = v.get("joints2d") or {}
-                if not away and "chin" in j2 and "head_top" in j2:
+                if "chin" in j2 and "head_top" in j2:
                     hh = max(j2["chin"][1] - j2["head_top"][1], 1e-3)
                     y1 = (j2["chin"][1] + 0.25 * hh) * h                             # (the chin and the neck's top)
                     hm = m & (rows <= y1)
-                    hd[F.max_pool2d(hm.float()[None, None], 9, 1, 4)[0, 0] > 0.5] = 255.0
+                    # (a head seen from behind too, a little less: left at the body's share, a made figure's rough
+                    # hair stayed in the key as a white cap)
+                    hd[F.max_pool2d(hm.float()[None, None], 9, 1, 4)[0, 0] > 0.5] = gv(HEADS_AWAY) if away else 255.0
             save(hd, g / f"{cam}_mask_heads.png")
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")

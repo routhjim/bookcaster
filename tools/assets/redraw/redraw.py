@@ -286,8 +286,9 @@ def laid_words(sd: Path, cam: str, ppl: list) -> str:
                 names_.append(nm)
     if not names_:
         return ""
-    return (f" Lying where the picture has it, on what it rests on there, in its place and at its size: "
-            f"{', '.join(names_)}; nothing else lies there.")
+    # (said only as "lying where the picture has it", a blade on the anvil was drawn in the striker's raised hand)
+    return (f" In nobody's hands, lying flat on the work in front of them where the picture has it, in its place and "
+            f"at its size: {', '.join(names_)}; nothing else lies there.")
 
 
 def look_words(f: dict, pos: str, covered: bool = False) -> tuple:
