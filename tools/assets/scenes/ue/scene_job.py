@@ -460,10 +460,12 @@ def run(job):
         # poses built from the skeleton (pose.py), made while the body still shows its reference pose
         t = time.time()
         PO = _load("scene_pose", os.path.join(HERE, "pose.py"))
-        # a held tool is gripped where its own model says (pose.grip_from_points): its handle, and which end is the head
-        for key, spec in job["characters"].items():
-            pr_ = (spec.get("body_pose") or {}).get("params") or {}
-            cm_ = (job.get("carried") or {}).get(pr_.get("tool_asset"))
+        # every held thing is gripped where its own model says (pose.grip_from_points): its handle, which end is the
+        # working end, a head or a tip (11-18: only a work action's tool was measured; a second thing used the size's
+        # guess)
+
+        def model_grip(asset_):
+            cm_ = (job.get("carried") or {}).get(asset_)
             if cm_ and "grip" not in cm_:
                 cm_["grip"] = None
                 try:
@@ -475,9 +477,15 @@ def run(job):
                         pts_ += [[vs_[n_].x / 100.0, vs_[n_].y / 100.0, vs_[n_].z / 100.0] for n_ in range(0, len(vs_), st_)]
                     cm_["grip"] = PO.grip_from_points(pts_)
                 except Exception as e_:                        # the size's own convention stands (pose.grip_frame)
-                    r.setdefault("notes", []).append(f"tool grip not measured: {e_}")
-            if cm_ and cm_.get("grip"):
-                pr_["tool_grip"] = cm_["grip"]
+                    r.setdefault("notes", []).append(f"grip of {asset_} not measured: {e_}")
+            return (cm_ or {}).get("grip")
+        for key, spec in job["characters"].items():
+            pr_ = (spec.get("body_pose") or {}).get("params") or {}
+            if model_grip(pr_.get("tool_asset")):
+                pr_["tool_grip"] = model_grip(pr_.get("tool_asset"))
+            for h_ in pr_.get("held") or []:
+                if model_grip(h_.get("asset")):
+                    h_["grip"] = model_grip(h_["asset"])
         for key, spec in job["characters"].items():
             bp = spec.get("body_pose")
             if bp and bp.get("pose"):
@@ -689,9 +697,12 @@ def run(job):
                         a_.set_actor_location(unreal.Vector(at_[0] * 100.0, -at_[1] * 100.0, l0.z), False, False)
                         a_.set_actor_rotation(unreal.Rotator(r0.roll, r0.pitch, r0.yaw - turn), False)
             # what the people of this shot wear on the head or carry in a hand (from_plan's "carried"): each made
-            # object set on the head, sized to it, or hung from the right hand; those of other shots hidden
+            # object set on the head, sized to it, or gripped in its hand; those of other shots hidden
             shown = set()
+            on_top_, in_hand_ = {}, []
+            # (a worked thing lies first, so a blow's check finds its top)
             for key, things_ in (c.get("carried") or {}).items():
+                things_ = sorted(things_, key=lambda t_: t_["at"] != "on")
                 m_ = (r["subjects"].get(key) or {}).get("measured")
                 if not m_ or m_.get("lying"):
                     continue
@@ -721,12 +732,16 @@ def run(job):
                         xy_ = [m_["eye_xy"][0] - f_[0] * 0.42 * hh_, m_["eye_xy"][1] - f_[1] * 0.42 * hh_]
                         z_ = m_["head_top_z"] + HEAD_OVER * hh_ - sz_[2] * k_
                     else:
-                        # a worker's tool (pose.py work actions report it): held in the palm of the tool hand, the
-                        # handle along the direction the pose gives (up and back raised, forward and down at the
-                        # blow), its grip point (pose.grip_frame: a short way in from the handle's end) in the palm.
-                        # The palm is the pose's own palm point carried by the measured wrist joint.
-                        tl_ = ((r["subjects"].get(key) or {}).get("pose_build") or {}).get("tool")
-                        j_ = (m_.get("joints") or {}).get(f"hand_{(tl_ or {}).get('hand', 'r')}")
+                        # a thing in a hand (pose.py reports every one it gripped: info["held"], by asset; the older
+                        # info["tool"] for a work tool): held in the palm of its hand, the handle along the direction
+                        # the pose gives, its face where the pose turned it, its grip point in the palm. The palm is
+                        # the pose's own palm point carried by the measured wrist joint. (11-18: anything but a work
+                        # tool hung below the wrist; with a grip reported this fallback is not reached)
+                        pb_ = (r["subjects"].get(key) or {}).get("pose_build") or {}
+                        tl_ = (pb_.get("held") or {}).get(t_["asset"])
+                        if not tl_ and not pb_.get("held"):
+                            tl_ = pb_.get("tool")
+                        j_ = (m_.get("joints") or {}).get(f"hand_{(tl_ or {}).get('hand') or t_.get('hand') or 'r'}")
                         if not j_:
                             continue
                         f_, k_ = m_["facing"], 1.0
@@ -735,7 +750,8 @@ def run(job):
                             w_ = to_ue(j_)
                             palm_ = [w_.x + tl_["palm_ue"][0] - tl_["hand_ue"][0], w_.y + tl_["palm_ue"][1] - tl_["hand_ue"][1],
                                      w_.z + tl_["palm_ue"][2] - tl_["hand_ue"][2]]
-                            grip_ = PO.prop_in_hand(sz_, palm_, tl_["dir_ue"], tl_["face_ue"], grip=cm_.get("grip"))
+                            grip_ = PO.prop_in_hand(sz_, palm_, tl_["dir_ue"], tl_["face_ue"],
+                                                    grip=tl_.get("grip") or cm_.get("grip"))
                     a_ = worn_actors[tag]
                     a_.set_actor_scale3d(unreal.Vector(k_, k_, k_))
                     a_.set_actor_location(to_ue([xy_[0], xy_[1], z_]), False, False)
@@ -753,14 +769,37 @@ def run(job):
                         l_ = a_.get_actor_location()
                         a_.set_actor_location(unreal.Vector(l_.x + want_.x - o_.x, l_.y + want_.y - o_.y,
                                                             l_.z + want_.z - (o_.z - e_.z)), False, False)
+                        o_, e_ = a_.get_actor_bounds(False)
+                        on_top_[key] = [o_.x, o_.y, o_.z + e_.z]       # the worked thing's top: the blow's point
                     elif grip_:
                         a_.set_actor_rotation(unreal.MathLibrary.make_rot_from_xz(V(grip_["x"]), V(grip_["z"])), False)
                         a_.set_actor_location(V(grip_["origin_cm"]), False, False)
                         r["subjects"][key].setdefault("held", {})[t_["asset"]] = {
-                            "grip": grip_["grip"], "origin_ue": [round(v, 2) for v in grip_["origin_cm"]], "palm_ue": [round(v, 2) for v in palm_]}
+                            "grip": grip_["grip"], "origin_ue": [round(v, 2) for v in grip_["origin_cm"]], "palm_ue": [round(v, 2) for v in palm_],
+                            "hand": tl_.get("hand"), "how": tl_.get("how"), "name": t_.get("name") or tl_.get("name")}
+                        in_hand_.append((key, t_, grip_, tl_))
                     else:
                         a_.set_actor_rotation(unreal.Rotator(0, 0, yaw_), False)
                     shown.add(tag)
+            # the staged check of each held thing (pose.held_contact, the old blockout check's numbers): the palm
+            # measured on the posed body's own hand joints against the placed handle's line, and for a blow the
+            # working point against the worked thing's placed top, the face against straight down. Over the limits
+            # its words reach the staging's facts (speakers.staged_facts)
+            for key, t_, grip_, tl_ in in_hand_:
+                body_ = comps(key)[1]
+                hs_ = tl_.get("hand") or "r"
+                bones_ = [f"hand_{hs_}", f"middle_01_{hs_}", f"index_01_{hs_}", f"pinky_01_{hs_}"]
+                hm_ = r["subjects"][key]["held"][t_["asset"]]
+                if all(body_.does_socket_exist(b_) for b_ in bones_):
+                    jv_ = [sock(body_, b_) for b_ in bones_]
+                    palm_m_ = PO.palm_from_joints(*[[v_.x, v_.y, v_.z] for v_ in jv_], hs_)
+                    hm_["palm_measured_ue"] = [round(v, 2) for v in palm_m_]
+                else:
+                    palm_m_ = hm_["palm_ue"]
+                tgt_ = None
+                if tl_.get("target_ue"):                 # a blow: the worked thing's measured top, else the pose's aim
+                    tgt_ = on_top_.get(key) or tl_["target_ue"]
+                hm_["contact"] = PO.held_contact(grip_, palm_m_, tgt_, [0.0, 0.0, 1.0] if tgt_ else None, hm_.get("name"))
             for tag, a_ in worn_actors.items():
                 a_.set_is_temporarily_hidden_in_editor(tag not in shown)
                 a_.set_actor_hidden_in_game(tag not in shown)

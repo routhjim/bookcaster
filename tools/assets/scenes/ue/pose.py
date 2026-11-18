@@ -20,6 +20,10 @@ The work actions set the whole body by its mechanics (see "work: whole-body mech
 bent knees, the trunk turned and folded from the hips, elbows never straight, the centre of mass kept over the feet
 (balance_margin), the head on the work, the tool gripped (grip_frame, prop_in_hand: scene_job puts the held prop in
 the palm from build()'s info["tool"]). The math runs without the engine (Skel.from_joints; tests/test_work_pose_1117).
+Held things (11-18; tests/test_held_props_1118): every thing in params["held"] is gripped after any posture (_hold),
+reported in info["held"] by asset for scene_job to place (prop_in_hand); a blow (striking_down) puts the tool's
+working point (a head's face, else its tip; read from the model by grip_from_points) on params["work_target_ue"],
+and held_contact / contact_why are the staged check on the placed prop.
 """
 
 import math
@@ -133,6 +137,10 @@ class Skel:
         """Actor frame -> UE world (cm): a point (with the actor's location) or a direction."""
         w = qrot(qinv(self.inv_yaw), v)
         return add(w, self.org) if point else w
+
+    def local_pt(self, v):
+        """UE world point (cm) -> actor frame (the inverse of world)."""
+        return qrot(self.inv_yaw, sub(v, self.org))
 
     def subtree(self, bone):
         out, stack = [], [bone]
@@ -305,8 +313,10 @@ def pose_stand_relaxed(s, p):
     out, fwd = p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD)
     _arm_hang(s, "l", out, fwd, 0.22)
     _arm_hang(s, "r", out, fwd, 0.22)
-    _arm_clear(s, p, ("r",) if p.get("hand_at_lapel", True) else ("l", "r"))
-    if p.get("hand_at_lapel", True):
+    # (a left hand that holds something carries it at the side, not at the lapel: 11-18)
+    lapel = p.get("hand_at_lapel", not any(it["hand"] == "l" for it in _held_items(p)))
+    _arm_clear(s, p, ("r",) if lapel else ("l", "r"))
+    if lapel:
         sh = s.pos["clavicle_l"]
         chest = add(s.pos["spine_05"], [3.0, 12.0, -14.0])
         _ik(s, "upperarm_l", "lowerarm_l", "hand_l", chest, add(s.pos["lowerarm_l"], [25.0, -10.0, -20.0]))
@@ -563,14 +573,28 @@ def grip_frame(size_m, two_hand_m=TWO_HANDED_M):
     if two:
         off = list(grip)
         off[i] = start + od
+    # what it works with (11-18), from the size alone: a head (a hammer's, a sledge's) when the second-longest side
+    # is broad against the thinnest and a good share of the length; else the far end is a tip (a sword, a poker).
+    # The head's depth along the handle is taken as the thinnest side, its face at the head's +face-axis end.
+    k = 3 - i - j
+    thin = float(size_m[k])
+    far = start + L
+    head = float(size_m[j]) >= HEAD_WIDE * thin and float(size_m[j]) >= 0.2 * L
+    hc = list(grip)
+    hc[i] = far - thin / 2
+    tip = list(grip)
+    tip[i] = far
     return {"axis": i, "face_axis": j, "len_m": round(L, 4), "grip_m": grip, "off_grip_m": off,
             "grip_from_end_m": round(gd, 4), "off_from_end_m": od, "two_hands": two, "head_m": float(size_m[j]),
-            "handle_end": "bottom (z = 0)" if i == 2 else f"negative {'xyz'[i]} end"}
+            "handle_end": "bottom (z = 0)" if i == 2 else f"negative {'xyz'[i]} end",
+            "work": "head" if head else "tip", "head_c_m": hc, "face_half_m": round(float(size_m[j]) / 2, 4),
+            "face_sign": 1.0, "tip_m": tip, "handle_m": round(min(max(thin, 0.015), 0.06), 4)}
 
 
 HAND_THICK_M = 0.07     # a part a hand closes round is at most this thick ...
 HAND_ROUND = 0.45       # ... and no flatter than this (thin side / thick side): a blade is not a handle
 GRIP_SLICES = 24
+HEAD_WIDE = 2.5         # a far end this many handle thicknesses wide is a head (it strikes with a face); else a tip
 
 
 def grip_from_points(pts_m, two_hand_m=TWO_HANDED_M):
@@ -596,17 +620,19 @@ def grip_from_points(pts_m, two_hand_m=TWO_HANDED_M):
     for p in pts_m:
         sl[min(n - 1, int((p[i] - lo[i]) / L * n))].append(p)
     mass = sum(p[i] for p in pts_m) / len(pts_m)
-    ok, mid = [], []
+    ok, mid, wide = [], [], []
     for q in sl:
         if len(q) < 4:
             ok.append(False)
             mid.append(None)
+            wide.append(0.0)
             continue
         rj = (min(p[j] for p in q), max(p[j] for p in q))
         rk = (min(p[k] for p in q), max(p[k] for p in q))
         thick, thin = max(rj[1] - rj[0], rk[1] - rk[0]), min(rj[1] - rj[0], rk[1] - rk[0])
         ok.append(0.006 <= thick <= HAND_THICK_M and thin / thick >= HAND_ROUND)
         mid.append(((rj[0] + rj[1]) / 2, (rk[0] + rk[1]) / 2))
+        wide.append(thick)
     best, a = None, 0
     while a < n:
         if ok[a]:
@@ -639,10 +665,40 @@ def grip_from_points(pts_m, two_hand_m=TWO_HANDED_M):
     if two:
         off = list(grip)
         off[i] = end + sign * od
-    return {"axis": i, "face_axis": j, "sign": sign, "len_m": round(L, 4), "grip_m": [round(v, 4) for v in grip],
+    # what it works with (11-18), from the model: its far quarter (the end away from the handle) as wide as
+    # HEAD_WIDE handle thicknesses is a head (a hammer's, an axe's), struck with the face at the end of the head's
+    # longer side; else the far end is a tip (a sword's, a poker's). The head is the far quarter's slices at least
+    # 0.6 of its widest; of the head's two ends the one with more of the model at its extreme is the face (a flat
+    # face is broad there, a peen or a claw tapers)
+    gs = min(n - 1, max(0, int((gi - lo[i]) / L * n)))
+    hm = wide[gs] or min([w for w in wide if w > 0] or [0.03])
+    far = hi[i] if sign > 0 else lo[i]
+    outer = [q for q in range(n) if sl[q] and abs(lo[i] + (q + 0.5) * L / n - far) <= 0.25 * L]
+    end_w = max([wide[q] for q in outer] or [0.0])
+    fa, fs, hc, fh = j, 1.0, None, size[j] / 2
+    head = bool(outer) and end_w >= HEAD_WIDE * hm
+    if head:
+        hp = [p for q in outer if wide[q] >= 0.6 * end_w for p in sl[q]]
+        hlo = [min(p[a] for p in hp) for a in range(3)]
+        hhi = [max(p[a] for p in hp) for a in range(3)]
+        hc = [(hlo[a] + hhi[a]) / 2 for a in range(3)]
+        fa = j if hhi[j] - hlo[j] >= hhi[k] - hlo[k] else k
+        sp = hhi[fa] - hlo[fa]
+        fh = sp / 2
+        npl = sum(1 for p in hp if p[fa] >= hhi[fa] - 0.15 * sp)
+        nmi = sum(1 for p in hp if p[fa] <= hlo[fa] + 0.15 * sp)
+        fs = 1.0 if npl >= nmi else -1.0
+    qe = max(outer) if sign > 0 and outer else (min(outer) if outer else (n - 1 if sign > 0 else 0))
+    me = mid[qe] or m
+    tip = [0.0, 0.0, 0.0]
+    tip[i], tip[j], tip[k] = far, me[0], me[1]
+    return {"axis": i, "face_axis": fa, "sign": sign, "len_m": round(L, 4), "grip_m": [round(v, 4) for v in grip],
             "off_grip_m": off, "grip_from_end_m": round(gfe, 4), "off_from_end_m": od, "two_hands": two,
             "head_m": round(size[j], 4), "size_m": [round(v, 4) for v in size],
-            "handle_end": f"{'negative' if sign > 0 else 'positive'} {'xyz'[i]} end", "from": "model"}
+            "handle_end": f"{'negative' if sign > 0 else 'positive'} {'xyz'[i]} end", "from": "model",
+            "work": "head" if head else "tip", "head_c_m": [round(v, 4) for v in hc] if hc else None,
+            "face_half_m": round(fh, 4), "face_sign": fs, "tip_m": [round(v, 4) for v in tip],
+            "handle_m": round(min(max(hm, 0.015), 0.06), 4)}
 
 
 def prop_in_hand(size_m, palm_cm, tool_dir, face_dir, k=1.0, grip=None):
@@ -664,6 +720,110 @@ def prop_in_hand(size_m, palm_cm, tool_dir, face_dir, k=1.0, grip=None):
     for a in range(3):
         o = sub(o, scale(cols[a], gp[a] * 100.0 * k))
     return {"x": cols[0], "y": cols[1], "z": cols[2], "origin_cm": o, "grip": g}
+
+
+# ------------------------------------------------------------------ held things: grip, working point, check (11-18)
+# A hammer hung under an open hand; its face a hand's breadth short of the metal and turned sideways (11-18). Every
+# thing in a hand is now gripped (the hand closed round its handle, in any pose), and a blow puts the thing's working
+# point (a head's face, a long thing's tip) on the worked thing's top, the face flat on it; held_contact measures the
+# placed result like the old blockout check (grip, gap, face angle) and contact_why says what is wrong in words.
+HELD_LIMITS = {"grip_cm": 2.0, "gap_cm": 2.0, "angle_deg": 15.0}
+CURL_RANGE = (45.0, 85.0)   # finger curl (deg): a thin handle closes the fist, a thick one opens it
+STRIKE_TIP_DEG = 35.0       # a tipped thing comes down onto the work this steep below the level
+# the striking elbow's sides tried (out, forward, up), the first the usual: out to the side and a little forward,
+# so the forearm slopes down into the blow and the wrist can turn the face flat (an elbow down and back left the
+# forearm level and the face 27-43 deg off the work)
+STRIKE_POLES = ((0.8, 0.2, -0.1), (0.6, 0.6, -0.1), (1.0, 0.0, 0.1), (0.7, 0.4, 0.0), (0.5, 0.75, -0.05))
+HANDS_AHEAD = 0.12          # at the blow the gripping hand stays this share of the stature ahead of the hips
+
+
+def full_grip(g=None, size_m=None):
+    """A grip report with every field the held-thing math reads: a recorded one (an older run's, without the
+    working-point fields) is completed from the size's convention."""
+    if g and g.get("work") and (g.get("head_c_m") or g["work"] != "head"):
+        return g
+    base = grip_frame(size_m or (g or {}).get("size_m") or [0.04, 0.12, 0.35])
+    return dict(base, **{k: v for k, v in (g or {}).items() if v is not None and k not in
+                         ("work", "head_c_m", "face_half_m", "face_sign", "tip_m", "handle_m")})
+
+
+def work_point_m(g):
+    """The thing's working point in its own mesh axes (metres): a head's face centre, else the far tip."""
+    if g.get("work") == "head" and g.get("head_c_m"):
+        p = list(g["head_c_m"])
+        p[g["face_axis"]] += g.get("face_sign", 1.0) * g["face_half_m"]
+        return p
+    return list(g["tip_m"])
+
+
+def mesh_point(put, p_m, k=1.0):
+    """A point of the placed mesh (its own axes, metres) where prop_in_hand put it (cm)."""
+    o = list(put["origin_cm"])
+    for a, col in enumerate((put["x"], put["y"], put["z"])):
+        o = add(o, scale(col, p_m[a] * 100.0 * k))
+    return o
+
+
+def place_item(g, palm_cm, t, h):
+    """prop_in_hand for a thing whose handle runs along t (grip -> working end) and whose working face points along h
+    (a head's face may sit at the mesh's negative face-axis end: face_sign)."""
+    return prop_in_hand(None, palm_cm, t, scale(h, g.get("face_sign", 1.0)), grip=g)
+
+
+def work_offset(g, t, h):
+    """Where the working point lies from the palm (cm) when the handle runs along t and the face along h."""
+    return mesh_point(place_item(g, [0.0, 0.0, 0.0], t, h), work_point_m(g))
+
+
+def grip_curl(g):
+    """Finger curl (deg) for a handle this thick: 3 cm closes the fingers 70 deg, thicker opens them."""
+    hm = float(g.get("handle_m") or 0.03)
+    return max(CURL_RANGE[0], min(CURL_RANGE[1], 100.0 - 1000.0 * hm))
+
+
+def seg_dist(p, a, b):
+    ab = sub(b, a)
+    t = max(0.0, min(1.0, dot(sub(p, a), ab) / max(dot(ab, ab), 1e-9)))
+    return norm(sub(p, add(a, scale(ab, t))))
+
+
+def held_contact(put, palm, target=None, normal=None, name=None):
+    """The placed thing against the hand and the work (one frame, cm): "grip_cm" the palm point's distance from the
+    handle's line round the grip, and for a blow (target given) "gap_cm" the working point's distance from the
+    target and, for a head with a surface normal, "angle_deg" between the face's outward normal and -normal; "why"
+    the plain words for each over HELD_LIMITS."""
+    g = put["grip"]
+    cols = (put["x"], put["y"], put["z"])
+    gp = mesh_point(put, g["grip_m"])
+    ax = scale(cols[g["axis"]], g.get("sign", 1.0))
+    half = max(float(g.get("grip_from_end_m") or 0.05), 0.03) * 100.0
+    out = {"grip_cm": round(seg_dist(palm, sub(gp, scale(ax, half)), add(gp, scale(ax, half))), 2)}
+    if target is not None:
+        w = mesh_point(put, work_point_m(g))
+        out.update(work=g.get("work"), work_pt=[round(v, 2) for v in w], target=[round(v, 2) for v in target],
+                   gap_cm=round(math.dist(w, target), 2))
+        if g.get("work") == "head" and normal is not None:
+            fn = scale(cols[g["face_axis"]], g.get("face_sign", 1.0))
+            out["angle_deg"] = round(angle_deg(fn, scale(normal, -1.0)), 1)
+    out["why"] = contact_why(out, name)
+    return out
+
+
+def contact_why(c, name=None):
+    """Plain-word reasons a held thing's contact is over HELD_LIMITS ("the hammer's face is 9 cm from the work")."""
+    nm = str(name or "").strip()
+    for a in ("the ", "a ", "an "):
+        if nm.lower().startswith(a):
+            nm = nm[len(a):]
+    nm = f"the {nm}" if nm else "the held thing"
+    why = []
+    if (c.get("grip_cm") or 0.0) > HELD_LIMITS["grip_cm"]:
+        why.append(f"{nm} is not in the hand: its handle is {c['grip_cm']:.0f} cm from the palm")
+    if (c.get("gap_cm") or 0.0) > HELD_LIMITS["gap_cm"]:
+        why.append(f"{nm}'s {'face' if c.get('work') == 'head' else 'tip'} is {c['gap_cm']:.0f} cm from the work")
+    if (c.get("angle_deg") or 0.0) > HELD_LIMITS["angle_deg"]:
+        why.append(f"{nm}'s face is turned {c['angle_deg']:.0f} deg off the work")
+    return why
 
 
 def _restore(s, state):
@@ -758,22 +918,37 @@ def _wrist_limit(f, t, max_deg=WRIST_MAX):
 def palm_point(s, side):
     """Where a handle lies in the hand: 60 % of the way from the wrist to the middle knuckle, off the palm by 28 % of
     that length (palm flesh and the handle's radius)."""
+    return palm_from_joints(s.pos[f"hand_{side}"], s.pos[f"middle_01_{side}"], s.pos[f"index_01_{side}"],
+                            s.pos[f"pinky_01_{side}"], side)
+
+
+def palm_from_joints(hd, m, ix, pk, side):
+    """palm_point from the wrist, middle, index and pinky knuckle joints (any one frame, e.g. measured UE sockets)."""
     sx = 1.0 if side == "l" else -1.0
-    hd, m = s.pos[f"hand_{side}"], s.pos[f"middle_01_{side}"]
     h = sub(m, hd)
     ln = norm(h)
-    k = unit(perp(sub(s.pos[f"index_01_{side}"], s.pos[f"pinky_01_{side}"]), unit(h)))
+    k = unit(perp(sub(ix, pk), unit(h)))
     n = scale(cross(unit(h), k), -sx)               # the palm's side (right hand: h x k; left: k x h)
     return add(hd, add(scale(h, 0.6), scale(n, 0.28 * ln)))
 
 
-def _grip(s, side, t_want):
+def _grip(s, side, t_want, face_want=None):
     """The hand closed round a handle running along t_want (grip -> head, beyond the thumb): the hand's own line is
     the forearm's with the handle's part taken out, the handle bent off the forearm only as far as the wrist goes.
+    With face_want (where a head's face must point, 11-18: a blow's face flat on the work), the hand instead turns
+    about the handle (flexing or extending the wrist) toward it, as far as WRIST_MAX lets the hand leave the forearm.
     -> (handle direction given, hand direction)."""
     f = unit(sub(s.pos[f"hand_{side}"], s.pos[f"lowerarm_{side}"]))
     t = _wrist_limit(f, unit(t_want))
     h = unit(perp(f, t))
+    if face_want is not None and norm(perp(face_want, t)) > 1e-6:
+        e = unit(cross(t, h))                        # h turned a quarter about the handle
+        w = unit(perp(face_want, t))
+        th = math.atan2(dot(w, e), dot(w, h))
+        b = norm(perp(f, t))                         # cos(hand-to-forearm angle) = b cos(th)
+        lim = math.acos(min(1.0, math.cos(math.radians(WRIST_MAX - 0.5)) / max(b, 1e-6)))
+        th = max(-lim, min(lim, th))
+        h = unit(add(scale(h, math.cos(th)), scale(e, math.sin(th))))
     _hand_orient(s, side, h, t)
     return t, h
 
@@ -826,6 +1001,53 @@ def _clav_raise(s, side, tgt_z):
         _rot(s, cl, ax, min(CLAV_MAX, 0.45 * (tgt_z - sh[2])))
 
 
+def _fingers_rest(s, side):
+    """The fingers back to their reference shape against the hand (so a curl is the curl asked for, not added to the
+    posture's own)."""
+    hb = f"hand_{side}"
+    q = qnorm(qmul(s.rot[hb], qinv(s.ref_rot[hb])))
+    for b in s.subtree(hb):
+        if b != hb:
+            s.pos[b] = add(s.pos[hb], qrot(q, sub(s.ref_pos[b], s.ref_pos[hb])))
+            s.rot[b] = qnorm(qmul(q, s.ref_rot[b]))
+            s.changed.add(b)
+
+
+def _aim_item(s, side, g, P, n, pole, H, tilt_deg, face_down, fwd, passes=6):
+    """The held thing's working point (work_point_m: a head's face centre, else its tip) onto P (actor frame), a point
+    on a surface with normal n: the handle in the swing plane (vertical through the shoulder and P), tilt_deg below
+    the surface's level (0 for a face: flat on the surface with the handle across it, as blockout_contact.face_strike
+    does), the face toward -n. Each pass solves the arm for the handle and face the wrist really gives (not the ones
+    wanted: 11-18, the hammer's face landed a hand's breadth short and turned sideways), so the point ends on P.
+    -> (reach share, wrist target, handle dir, face dir, working point, handle dir wanted)."""
+    nn = unit(n)
+    a = math.radians(tilt_deg)
+    face = scale(nn, -1.0) if face_down else None
+    po, t, h = [0.0, 0.0, 0.0], None, None
+    reach = tgt = t_want = None
+    for _ in range(passes):
+        # (a two-handed thing swings in the plane through the middle of the chest, both hands on its handle)
+        sh = s.pos[f"upperarm_{side}"] if not g.get("two_hands") else \
+            scale(add(s.pos["upperarm_l"], s.pos["upperarm_r"]), 0.5)
+        dh = perp(sub(P, sh), nn)
+        dh = unit(dh) if norm(dh) > 1e-6 else unit(perp(fwd, nn))
+        if t is not None:
+            # a long handle whose level grip would come back into the body is raised at the hands as far as needed
+            # (the face then meets the work at the handle's tilt, and the check says so)
+            lw = dot(work_offset(g, t, h), t)
+            room = dot(sub(P, s.pos["pelvis"]), dh) - HANDS_AHEAD * H
+            if lw > 1e-6 and lw * math.cos(a) > room:
+                a = max(a, math.acos(max(0.0, min(1.0, room / lw))))
+        t_want = unit(sub(scale(dh, math.cos(a)), scale(nn, math.sin(a))))
+        if t is None:
+            t = t_want
+            h = face if face is not None else unit(perp([0.0, 0.0, -1.0], t) if abs(t[2]) < 0.9 else perp(fwd, t))
+        reach, tgt = _arm_to(s, side, sub(sub(P, work_offset(g, t, h)), po), pole, H)
+        t, h = _grip(s, side, t_want, face)
+        po = sub(palm_point(s, side), s.pos[f"hand_{side}"])
+    return reach, tgt, t, h, add(palm_point(s, side), work_offset(g, t, h)), t_want
+
+
 def _work_solve(s, c, cfg):
     """One pass of the work stance from the base state with this lean, hip drop and hip shift."""
     H, hs, ot, kind, spec = c["H"], c["hand"], c["other"], c["kind"], c["spec"]
@@ -867,7 +1089,11 @@ def _work_solve(s, c, cfg):
     top, wy, wx = c["top"], c["wy"], c["wx"]
     t_want = unit(add(scale(fwd, spec["tool"][0]), add(scale(up, spec["tool"][1]), scale(out, spec["tool"][2]))))
     g = c["grip"]
-    strike = [wx, wy, top]
+    # the blow's point: the worked thing's top when it is known (scene.py: where it lies, plus its thickness as it
+    # lies), else the work top straight ahead (11-18: a point fwd_cm ahead at the top's height lay 13 cm short of
+    # the bar and inside it)
+    strike = list(c["target"]) if c.get("target") else [wx, wy, top]
+    nrm = c.get("normal") or [0.0, 0.0, 1.0]
     near = c["near"]                                         # the work top's near edge (y), when known
     # a hand rests on the work's top: toward its near edge when the body, folded as far as it goes, falls short
     edge = lambda y: y + cfg["pull"] * (near + 0.02 * H - y) if y > near + 0.02 * H else y      # noqa: E731
@@ -875,38 +1101,65 @@ def _work_solve(s, c, cfg):
     targets, reach, work_hands = {}, {}, []
     pole_top = lambda o: add(scale(o, 0.6), add(scale(fwd, -0.25), [0.0, 0.0, -0.75]))       # noqa: E731
     pole_up = add(scale(out, 0.85), add(scale(fwd, 0.25), [0.0, 0.0, -0.45]))
+    wpt, t = None, t_want
     # the tool hand: where its palm must be
-    if kind == "tool_raised":
-        head_top = s.pos["head"][2] + 0.1 * H
-        _clav_raise(s, hs, head_top + 0.03 * H)
+    if kind == "striking_down":
+        # the working point on the blow's point: a head's face flat on it (the handle level, across the face's
+        # normal), a tipped thing's tip coming down onto it; the elbow out to the side so the forearm slopes down
+        # into the blow and the hand can turn the face down
+        headed = g.get("work") == "head"
+        tilt = 0.0 if headed else STRIKE_TIP_DEG
         sh = s.pos[f"upperarm_{hs}"]
-        # the hand beside the head, the elbow bent near a right angle below it (a hand high over the head on a
-        # straight arm read as a wave, not a wind-up)
-        palm_want = add(sh, add(scale(out, 0.09 * H), scale(fwd, -0.02 * H)))
-        palm_want[2] = s.pos["head"][2] + 0.03 * H
-        tool_pole = pole_up
-    elif kind == "striking_down":
-        palm_want = add(add(strike, [0.0, 0.0, 100.0 * g["head_m"] / 2]), scale(t_want, -100.0 * (g["len_m"] - g["grip_from_end_m"])))
-        tool_pole = pole_top(out)
-    else:
-        palm_want = [wx + sx * 0.05 * H, edge(min(wy - 0.05 * H, near + 0.06 * H)), top + 0.03 * H]
-        tool_pole = pole_top(out)
-    if kind != "tool_raised":
+        best = None
+        for pl in STRIKE_POLES:            # the elbow's side that turns the face flattest, never up off the arm's line
+            pole = add(scale(out, pl[0]), add(scale(fwd, pl[1]), [0.0, 0.0, pl[2]]))
+            got = _aim_item(s, hs, g, strike, nrm, pole, H, tilt, headed, fwd)
+            el, wr = s.pos[f"lowerarm_{hs}"], s.pos[f"hand_{hs}"]
+            up_off = perp(sub(el, sh), unit(sub(wr, sh)))[2]
+            score = (up_off > 0.8, round(angle_deg(got[3], scale(nrm, -1.0)), 1) if headed else 0.0,
+                     round(math.dist(got[4], strike), 1))
+            if best is None or score < best[0]:
+                best = (score, pole)
+        reach[hs], targets[hs], t, h, wpt, t_want = _aim_item(s, hs, g, strike, nrm, best[1], H, tilt, headed, fwd)
         work_hands.append(hs)
-    po = [0.0, 0.0, 0.0]                                   # palm - wrist, refined over the passes
-    t = t_want
-    for _ in range(3):
-        reach[hs], targets[hs] = _arm_to(s, hs, sub(palm_want, po), tool_pole, H)
-        t, h = _grip(s, hs, t_want)
-        po = sub(palm_point(s, hs), s.pos[f"hand_{hs}"])
-    # the other hand: on the handle of a two-handed thing, else on the work's top
+    else:
+        if kind == "tool_raised":
+            head_top = s.pos["head"][2] + 0.1 * H
+            _clav_raise(s, hs, head_top + 0.03 * H)
+            sh = s.pos[f"upperarm_{hs}"]
+            # the hand beside the head, the elbow bent near a right angle below it (a hand high over the head on a
+            # straight arm read as a wave, not a wind-up)
+            palm_want = add(sh, add(scale(out, 0.09 * H), scale(fwd, -0.02 * H)))
+            palm_want[2] = s.pos["head"][2] + 0.03 * H
+            tool_pole = pole_up
+        else:
+            palm_want = [wx + sx * 0.05 * H, edge(min(wy - 0.05 * H, near + 0.06 * H)), top + 0.03 * H]
+            tool_pole = pole_top(out)
+            work_hands.append(hs)
+        po = [0.0, 0.0, 0.0]                                   # palm - wrist, refined over the passes
+        for _ in range(3):
+            reach[hs], targets[hs] = _arm_to(s, hs, sub(palm_want, po), tool_pole, H)
+            t, h = _grip(s, hs, t_want)
+            po = sub(palm_point(s, hs), s.pos[f"hand_{hs}"])
+    # the other hand: on the handle of a two-handed thing, else holding its own thing with its working end on the
+    # work beside the blow, else flat on the work's top
+    off = None
     if g["two_hands"]:
         off_palm = sub(palm_point(s, hs), scale(t, 100.0 * (g["grip_from_end_m"] - g["off_from_end_m"])))
         po2 = [0.0, 0.0, 0.0]
         for _ in range(3):
             reach[ot], targets[ot] = _arm_to(s, ot, sub(off_palm, po2), pole_top(oo), H)
-            _grip(s, ot, t)
+            _grip(s, ot, t, scale(nrm, -1.0) if kind == "striking_down" and g.get("work") == "head" else None)
             po2 = sub(palm_point(s, ot), s.pos[f"hand_{ot}"])
+    elif c.get("off_item"):
+        og = c["off_item"]["grip"]
+        oh = og.get("work") == "head"
+        p2 = add(strike, scale(oo, 0.06 * H))
+        _clav_raise(s, ot, p2[2])
+        reach[ot], targets[ot], t2, h2, w2, _ = _aim_item(s, ot, og, p2, nrm, pole_top(oo), H,
+                                                          0.0 if oh else STRIKE_TIP_DEG, oh, fwd)
+        off = {"dir": t2, "face": h2, "work": w2, "aim": p2}
+        work_hands.append(ot)
     else:
         _clav_raise(s, ot, rest_off[2])
         reach[ot], targets[ot] = _arm_to(s, ot, rest_off, pole_top(oo), H)
@@ -917,13 +1170,44 @@ def _work_solve(s, c, cfg):
     m, com, poly = balance_margin(s.pos) if c["standing"] else (None, None, None)
     return {"reach": max([reach[x] for x in set(work_hands)] or [0.0]), "reach_by_hand": reach, "targets": targets,
             "margin": m, "com": com, "poly": poly, "tool_dir": t, "tool_want": t_want, "face_dir": h,
-            "drop": drop, "look": look}
+            "drop": drop, "look": look, "strike": strike, "normal": nrm, "work_pt": wpt, "off": off}
+
+
+def _held_items(p):
+    """The things in this person's hands: params "held" (scene.py: each {"asset", "hand", "size_m", "grip" measured
+    from its model by scene_job, "name": the plan's}), else the older single work tool (tool_size_m / tool_grip /
+    tool_asset) in the work hand. One thing per hand; a thing whose hand is taken goes to the free one."""
+    raw = [dict(it, grip=full_grip(it.get("grip"), it.get("size_m"))) for it in (p.get("held") or []) if it]
+    if not raw and (p.get("tool_size_m") or p.get("tool_grip")):
+        raw = [{"asset": p.get("tool_asset") or "tool", "hand": p.get("hand", "r"), "size_m": p.get("tool_size_m"),
+                "grip": full_grip(p.get("tool_grip"), p.get("tool_size_m"))}]
+    used, out = set(), []
+    for it in raw:
+        h = it.get("hand") if it.get("hand") in ("l", "r") and it.get("hand") not in used else \
+            next((x for x in ("r", "l") if x not in used), None)
+        if h is not None:
+            used.add(h)
+            out.append(dict(it, hand=h))
+    return out
+
+
+def _held_report(s, side, item, t, h, how, **extra):
+    """s.info["held"][asset]: the hand, palm and wrist points, the handle's direction (grip -> working end) and where
+    the mesh's face axis points (the working face's direction with the model's face_sign applied), for prop_in_hand."""
+    g = item["grip"]
+    r2 = lambda v: [round(q, 2) for q in v]                   # noqa: E731
+    rep = {"hand": side, "how": how, "palm_cm": r2(palm_point(s, side)), "hand_cm": r2(s.pos[f"hand_{side}"]),
+           "dir": [round(q, 4) for q in t], "face": [round(q, 4) for q in scale(h, g.get("face_sign", 1.0))],
+           "grip": g, "work": g.get("work"), "name": item.get("name"), "curl_deg": round(grip_curl(g), 1)}
+    rep.update(extra)
+    s.info.setdefault("held", {})[item.get("asset") or f"held_{side}"] = rep
+    return rep
 
 
 def _work_pose(s, p, kind):
     """The whole-body work stance for a work action (WORK_ACTIONS), solved until every work-top hand is in reach
-    with a bent elbow and the centre of mass is over the feet; the result is reported in s.info["work"] and the held
-    tool in s.info["tool"]."""
+    with a bent elbow and the centre of mass is over the feet; the result is reported in s.info["work"], the held
+    tool in s.info["tool"] and every held thing in s.info["held"]."""
     hs = p.get("hand", "r")
     ot = "l" if hs == "r" else "r"
     standing = p.get("_posture") not in SEATED
@@ -931,13 +1215,27 @@ def _work_pose(s, p, kind):
     floor = min(s.ref_pos["foot_l"][2], s.ref_pos["foot_r"][2]) - p.get("ankle_cm", 8.0)
     H = (s.ref_pos["head"][2] - floor) / 0.9                  # the head joint at ~0.9 of the stature
     hip = s.ref_pos["pelvis"][2] - floor
-    top = floor + float(p["work_top_cm"]) if "work_top_cm" in p else floor + 0.52 * H
+    target = s.local_pt(p["work_target_ue"]) if p.get("work_target_ue") else None
+    top = floor + float(p["work_top_cm"]) if "work_top_cm" in p else (target[2] if target else floor + 0.52 * H)
     low = max(0.0, hip - (top - floor))                       # how far under the hips the work's top lies
     spec = WORK_SPEC[kind]
+    # the work hand takes the thing it works with: to strike or raise, a thing with a head (measured from its model)
+    # before one without; the other hand the other thing (a smith's tongs beside his hammer, 11-18: both had been put
+    # in one palm)
+    items = _held_items(p)
+    tool = next((it for it in items if it["hand"] == hs), None)
+    if kind != "hands_at_work" and (tool is None or tool["grip"].get("work") != "head"):
+        tool = next((it for it in items if it["grip"].get("work") == "head"), tool)
+    tool = tool or (items[0] if items else None)
+    off_item = next((it for it in items if it is not tool), None)
+    grip = tool["grip"] if tool else full_grip(p.get("tool_grip"), p.get("tool_size_m"))
+    if grip["two_hands"] and off_item:                        # the other hand holds its own thing
+        grip = dict(grip, two_hands=False)
     c = {"H": H, "hand": hs, "other": ot, "kind": kind, "spec": spec, "standing": standing, "top": top,
-         "wy": s.ref_pos["pelvis"][1] + float(p.get("work_fwd_cm", 0.27 * H)), "wx": s.ref_pos["pelvis"][0],
+         "wy": target[1] if target else s.ref_pos["pelvis"][1] + float(p.get("work_fwd_cm", 0.27 * H)),
+         "wx": target[0] if target else s.ref_pos["pelvis"][0],
          "near": s.ref_pos["pelvis"][1] + float(p.get("work_near_cm", p.get("work_fwd_cm", 0.27 * H))),
-         "grip": p.get("tool_grip") or grip_frame(p.get("tool_size_m") or [0.04, 0.12, 0.35])}
+         "grip": grip, "target": target, "normal": [0.0, 0.0, 1.0], "off_item": off_item}
     cfg = {"lean": float(p.get("lean_deg", spec["lean"] + spec["lean_cm"] * low)),
            "drop": min(0.08 * H, 0.03 * H + 0.1 * low) if standing else 0.0, "shift": [0.0, 0.0], "pull": 0.0}
     n = 0
@@ -957,8 +1255,15 @@ def _work_pose(s, p, kind):
             cfg["shift"] = [cfg["shift"][i] + 0.6 * (cen[i] - res["com"][i]) for i in range(2)]
             continue
         break
-    for x, deg in ((hs, 70), (ot, 70 if c["grip"]["two_hands"] else 30)):
-        _curl(s, x, deg, 35 if deg > 50 else 12)
+    # fingers closed round each handle by its thickness (11-18: a fixed 70 deg whatever the handle); a free hand
+    # on the work's top lies relaxed
+    og = grip if grip["two_hands"] else (off_item["grip"] if off_item else None)
+    for x, gg in ((hs, grip), (ot, og)):
+        _fingers_rest(s, x)
+        if gg:
+            _curl(s, x, grip_curl(gg), 35)
+        else:
+            _curl(s, x, 30, 12)
     r2 = lambda v: [round(q, 2) for q in v]                   # noqa: E731
     s.info["work"] = {"action": kind, "standing": standing, "top_cm": round(top, 1), "lean_deg": round(cfg["lean"], 1),
                       "hip_drop_cm": round(res["drop"], 1), "hip_shift_cm": r2(cfg["shift"]), "iterations": n,
@@ -966,9 +1271,91 @@ def _work_pose(s, p, kind):
                       "targets": {f"hand_{k}": r2(v) for k, v in res["targets"].items()}, "look_at": r2(res["look"]),
                       "balance_margin_cm": None if res["margin"] is None else round(res["margin"], 1),
                       "com_xy": None if res["com"] is None else r2(res["com"])}
-    s.info["tool"] = {"hand": hs, "palm_cm": r2(palm_point(s, hs)), "hand_cm": r2(s.pos[f"hand_{hs}"]),
-                      "dir": [round(q, 4) for q in res["tool_dir"]], "want_dir": [round(q, 4) for q in res["tool_want"]],
-                      "face": [round(q, 4) for q in res["face_dir"]], "grip": c["grip"]}
+    tool_rep = {"hand": hs, "palm_cm": r2(palm_point(s, hs)), "hand_cm": r2(s.pos[f"hand_{hs}"]),
+                "dir": [round(q, 4) for q in res["tool_dir"]], "want_dir": [round(q, 4) for q in res["tool_want"]],
+                "face": [round(q, 4) for q in scale(res["face_dir"], grip.get("face_sign", 1.0))], "grip": grip,
+                "work": grip.get("work"), "curl_deg": round(grip_curl(grip), 1)}
+    if res["work_pt"] is not None:                         # the blow: where the working point landed
+        tool_rep.update(target_cm=r2(res["strike"]), normal=res["normal"], work_cm=r2(res["work_pt"]),
+                        gap_cm=round(math.dist(res["work_pt"], res["strike"]), 2))
+        if grip.get("work") == "head":
+            tool_rep["face_angle_deg"] = round(angle_deg(res["face_dir"], scale(res["normal"], -1.0)), 1)
+    if tool:
+        tool_rep.update(asset=tool.get("asset"), name=tool.get("name"))
+        s.info.setdefault("held", {})[tool.get("asset") or f"held_{hs}"] = dict(tool_rep, how="work")
+    s.info["tool"] = tool_rep
+    if off_item and res["off"]:
+        o = res["off"]
+        _held_report(s, ot, off_item, o["dir"], o["face"], "work_off", aim_cm=r2(o["aim"]), work_cm=r2(o["work"]))
+
+
+def _item_clear(s, g, palm, t, H, floor):
+    """None when the held thing (its long axis through the palm along t) clears both legs, the trunk and the floor;
+    else what it hits ("leg", "body", "floor")."""
+    L, gfe = 100.0 * g["len_m"], 100.0 * g["grip_from_end_m"]
+    pts = [add(palm, scale(t, -gfe + L * q / 10.0)) for q in range(11)]
+    segs = [(f"thigh_{x}", f"calf_{x}", 0.05 * H, "leg") for x in ("l", "r")] + \
+           [(f"calf_{x}", f"foot_{x}", 0.04 * H, "leg") for x in ("l", "r")] + [("pelvis", "spine_05", 0.075 * H, "body")]
+    for q in pts[2:]:
+        if q[2] < floor + 2.0:
+            return "floor"
+        for a, b, r, what in segs:
+            if seg_dist(q, s.pos[a], s.pos[b]) < r:
+                return what
+    return None
+
+
+def _hold(s, side, item, H, floor):
+    """The hand closed on a held thing's grip after any posture (11-18: outside the work actions a carried hammer
+    hung under an open hand): the handle across the palm, the knuckle line along it, the fingers curled by its
+    thickness. An arm down at the side carries a long thing pointing forward and a little down, and a tool with a
+    head hanging head-down-forward, turned out until it clears the leg and the floor; a raised or forward arm holds
+    the handle across the forearm, the working end up and forward. -> (handle dir, face dir)."""
+    g = item["grip"]
+    sx = 1.0 if side == "l" else -1.0
+    left, fwd = _body_axes(s)
+    out = scale(left, sx)
+    f = unit(sub(s.pos[f"hand_{side}"], s.pos[f"lowerarm_{side}"]))
+    if f[2] < -0.6:                                          # the arm down at the side
+        if g.get("work") == "head":
+            want = unit(add(add(scale(fwd, 0.55), scale(out, 0.15)), [0.0, 0.0, -0.82]))
+        else:
+            want = unit(add(add(scale(fwd, 0.92), scale(out, 0.1)), [0.0, 0.0, -0.36]))
+    else:                                                    # across the forearm, up (forward when it points up)
+        w = perp([0.0, 0.0, 1.0], f)
+        want = unit(w) if norm(w) > 0.3 else unit(perp(fwd, f))
+    t, h = _grip(s, side, want)
+    for _ in range(10):
+        hit = _item_clear(s, g, palm_point(s, side), t, H, floor)
+        if hit is None:
+            break
+        want = unit(add(want, [0.0, 0.0, 0.3] if hit == "floor" else scale(out, 0.3)))
+        t, h = _grip(s, side, want)
+    _fingers_rest(s, side)
+    _curl(s, side, grip_curl(g), 35)
+    return t, h
+
+
+def _hold_all(s, p):
+    """Every held thing not already in a hand from a work action gripped by _hold (its own hand, else the free one)."""
+    items = _held_items(p)
+    if not items:
+        return
+    floor = min(s.ref_pos["foot_l"][2], s.ref_pos["foot_r"][2]) - p.get("ankle_cm", 8.0)
+    H = (s.ref_pos["head"][2] - floor) / 0.9
+    held = s.info.get("held") or {}
+    busy = {v["hand"] for v in held.values()}
+    if (s.info.get("tool") or {}).get("grip", {}).get("two_hands"):
+        busy |= {"l", "r"}
+    for it in items:
+        if (it.get("asset") or f"held_{it['hand']}") in held:
+            continue
+        side = it["hand"] if it["hand"] not in busy else next((x for x in ("r", "l") if x not in busy), None)
+        if side is None:
+            continue
+        t, h = _hold(s, side, it, H, floor)
+        _held_report(s, side, it, t, h, "hold")
+        busy.add(side)
 
 
 def act_tool_raised(s, p):
@@ -994,13 +1381,14 @@ ACTIONS = {"veil_lift": act_veil_lift,     # what a person begins to do as the s
            "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work}
 
 
-def build(actor, body, pose, params, path):
-    """Pose name + parameters -> AnimSequence at `path` (replaced). Returns (anim, info)."""
-    s = Skel(actor, body)
-    POSES[pose](s, params or {})
-    if (params or {}).get("action") in ACTIONS:
-        ACTIONS[params["action"]](s, dict(params, _posture=pose))
-    for step in (params or {}).get("steps", []):
+def pose_skel(s, pose, params):
+    """The pose on a skeleton (engine or Skel.from_joints): the posture, its start action, its extra steps, then
+    every held thing gripped (11-18: last, so no step turns a hand off its handle)."""
+    p = params or {}
+    POSES[pose](s, p)
+    if p.get("action") in ACTIONS:
+        ACTIONS[p["action"]](s, dict(p, _posture=pose))
+    for step in p.get("steps", []):
         if step[0] == "aim":
             s.aim(step[1], step[2], step[3])
         elif step[0] == "move":
@@ -1011,6 +1399,14 @@ def build(actor, body, pose, params, path):
             _ik(s, step[1], step[2], step[3], step[4], step[5])
         elif step[0] == "curl":
             _curl(s, step[1], step[2], step[3] if len(step) > 3 else None)
+    _hold_all(s, p)
+    return s
+
+
+def build(actor, body, pose, params, path):
+    """Pose name + parameters -> AnimSequence at `path` (replaced). Returns (anim, info)."""
+    s = Skel(actor, body)
+    pose_skel(s, pose, params)
     if EAL.does_asset_exist(path):
         EAL.delete_asset(path)
     folder, name = path.rsplit("/", 1)
@@ -1048,12 +1444,23 @@ def build(actor, body, pose, params, path):
 
 
 def world_info(s):
-    """The pose's report (s.info) with the held tool also in UE world terms (cm), for placing the prop in the
-    hand (scene_job): palm point, wrist joint, handle direction (grip -> head) and the head's facing."""
+    """The pose's report (s.info) with the held tool and every held thing also in UE world terms (cm), for placing
+    each prop in its hand (scene_job): palm point, wrist joint, handle direction (grip -> working end), the face's
+    direction, and for a blow its target, the working point and the surface normal."""
+    r2 = lambda v: [round(q, 3) for q in v]          # noqa: E731
+
+    def ue(d):
+        o = dict(d)
+        for k in ("palm", "hand", "target", "work", "aim"):
+            if d.get(k + "_cm"):
+                o[k + "_ue"] = r2(s.world(d[k + "_cm"]))
+        for k in ("dir", "face", "normal"):
+            if isinstance(d.get(k), list):
+                o[k + "_ue"] = r2(s.world(d[k], False))
+        return o
     out = {k: v for k, v in s.info.items()}
-    t = s.info.get("tool")
-    if t:
-        r2 = lambda v: [round(q, 3) for q in v]          # noqa: E731
-        out["tool"] = dict(t, palm_ue=r2(s.world(t["palm_cm"])), hand_ue=r2(s.world(t["hand_cm"])),
-                           dir_ue=r2(s.world(t["dir"], False)), face_ue=r2(s.world(t["face"], False)))
+    if s.info.get("tool"):
+        out["tool"] = ue(s.info["tool"])
+    if s.info.get("held"):
+        out["held"] = {k: ue(v) for k, v in s.info["held"].items()}
     return out

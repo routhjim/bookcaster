@@ -805,7 +805,8 @@ def solve_reach(spec, subjects):
 
 def staged_facts(spec, subjects):
     """What the plan asks of each person that the engine still must hold: the worn state's figure (the variant
-    resolved, its words carried for the redraw) and the action's start pose (measured hands). {key: [failures]}."""
+    resolved, its words carried for the redraw), the action's start pose (measured hands) and each held thing's
+    grip and blow (measured on the placed prop). {key: [failures]}."""
     out = {}
     for k, c in spec["characters"].items():
         bad = []
@@ -847,6 +848,11 @@ def staged_facts(spec, subjects):
                 ds = [math.dist(j[h][:3], chin) for h in ("hand_l", "hand_r")]
                 if not how(d <= lim for d in ds):
                     bad.append(f"action '{act}': hands {min(ds):.2f}-{max(ds):.2f} m from the chin")
+        # each held thing as placed (scene_job's contact, pose.held_contact): the handle in the palm, a blow's face
+        # on the work and flat on it (11-18: a hammer hung under an open hand, its face a hand's breadth short of
+        # the metal and turned sideways, and nothing said so)
+        for _a, hd_ in sorted((((subjects.get(k) or {}).get("held")) or {}).items()):
+            bad += list((((hd_ or {}).get("contact")) or {}).get("why") or [])
         out[k] = bad
     return out
 

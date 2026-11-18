@@ -207,9 +207,11 @@ def test_tool_gripped_in_the_palm_along_the_action(poses, act, top):
     if act == "tool_raised":
         assert up > 0.3 and back < -0.3                          # up and back
     elif act == "striking_down":
-        assert up < -0.2 and back > 0.5                          # forward and down
-        head = PO.add(palm, PO.scale(t["dir"], (g["len_m"] - g["grip_from_end_m"]) * 100))
-        assert abs(head[2] - (top + 100 * g["head_m"] / 2)) < 6.0   # the head comes down on the work's top
+        # (11-18: was "forward and down", the handle sloped 25 deg so the face met the work on its edge; at the blow
+        # a head's handle lies level across the face's normal, the face flat on the work's top)
+        assert abs(up) < 0.05 and back > 0.5                     # forward and level
+        assert t["gap_cm"] < 2.0 and t["face_angle_deg"] < 15.0, t
+        assert abs(t["work_cm"][2] - top) < 2.0                 # the face comes down on the work's top
     # the handle runs across the palm: perpendicular to the hand's own line, beyond the thumb side
     h = PO.sub(m, hd)
     assert abs(PO.dot(PO.unit(h), t["dir"])) < 0.1

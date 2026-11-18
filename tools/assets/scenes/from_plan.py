@@ -443,7 +443,9 @@ def work_place(t: dict, his: list, others: list, things: list, room: list) -> di
         return None
     q, ax, sg, d, _ = best
     return {"position": [round(q[0], 3), round(q[1], 3)], "facing": [-float(sg) if ax == 0 else 0.0, -float(sg) if ax == 1 else 0.0],
-            "top_cm": round((c[2] + h[2]) * 100, 1), "fwd_cm": round(min(d, WORK_REACH_M) * 100, 1),
+            # (11-18: fwd_cm was capped at WORK_REACH_M, so the pose aimed short of a work lying farther; the true
+            # distance goes to the pose, which leans to it, and a worked thing's own top point overrides it there)
+            "top_cm": round((c[2] + h[2]) * 100, 1), "fwd_cm": round(d * 100, 1),
             "near_cm": round(WORK_STAND_M * 100, 1)}
 
 
@@ -1017,9 +1019,22 @@ def main():
                  if n_ in names and t_}
         if worn_:
             cam["wears"] = worn_
-        obj_ = {names[n_]: [{"asset": made_[t_["what"]], "at": "head" if t_["on"] == "head" else "hand"}
-                            for t_ in ts_ if t_["on"] in CARRIED_ON and t_["what"] in made_]
-                for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items() if n_ in names}
+        # each thing in a hand gets its own hand: the first the working (right) hand, a second the other; no third
+        # (11-18: the hammer and the tongs were both put in one palm). The plan's name rides along for the staged
+        # check's words ("the hammer's face is 9 cm from the work")
+        obj_ = {}
+        for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items():
+            if n_ not in names:
+                continue
+            hands_ = iter(("r", "l"))
+            for t_ in ts_:
+                if t_["on"] not in CARRIED_ON or t_["what"] not in made_:
+                    continue
+                if t_["on"] == "head":
+                    obj_.setdefault(names[n_], []).append({"asset": made_[t_["what"]], "at": "head", "name": t_["what"]})
+                elif (h_ := next(hands_, None)):
+                    obj_.setdefault(names[n_], []).append({"asset": made_[t_["what"]], "at": "hand", "hand": h_,
+                                                           "name": t_["what"]})
         # the thing being worked on (the pass's "worked"): a made object lying on the top of the named thing its
         # worker stands at (a smith's bar on his anvil; drawn as a piece of the set, it came out a star, 11-17)
         for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items():
@@ -1028,7 +1043,7 @@ def main():
                         and t["name"] == set_named.get(str((state.get(k_) or {}).get("at") or ""))), None)
             for t_ in ts_:
                 if t_["on"] == "worked" and t_["what"] in made_ and at_ and k_ in state:
-                    obj_.setdefault(k_, []).append({"asset": made_[t_["what"]], "at": "on", "xyz": [
+                    obj_.setdefault(k_, []).append({"asset": made_[t_["what"]], "at": "on", "name": t_["what"], "xyz": [
                         at_["center"][0], at_["center"][1], round(at_["center"][2] + at_["half"][2], 3)]})
         obj_ = {k_: v_ for k_, v_ in obj_.items() if v_}
         if obj_:                              # (scene_job puts each on the person's head or in their hand)

@@ -184,16 +184,39 @@ def resolve(spec, cams_wanted=None):
                     aj = json.loads(ap.read_text())
                     carried[t["asset"]] = {"mesh": aj["ue"]["path"],    # (the model's measured box, when recorded)
                                            "size_m": (aj.get("blender") or {}).get("dims_m") or aj["size_m"]}
-    # a worker's tool: its size goes to the pose (pose.py grips it, reaches its head to the work, and puts the other
-    # hand on the handle of a two-handed one); the first thing in that person's hand in any of the job's shots
+    # every thing in a person's hand goes to the pose (11-18: only a work action's first thing did, and anything
+    # else hung under an open hand): pose.py closes the hand on each one's grip in any pose, puts a second thing in
+    # the other hand, reaches a tool's working point to the work and puts the other hand on the handle of a
+    # two-handed one. Each thing's hand is from_plan's (the first the working hand, a second the other; older specs
+    # by order), its size the model's box; scene_job adds the grip measured from the model. A worked thing lying on
+    # the work top ("at": "on") gives the blow's point: its top, i.e. where it lies plus its thinnest side (it lies
+    # on its broadest face, scene_job), in UE cm (pose.py turns it into the body's own frame)
     for c in cams:
         for key, ts in (c.get("carried") or {}).items():
             bp = (chars.get(key) or {}).get("body_pose") or {}
-            held = next((carried[t["asset"]]["size_m"] for t in ts if t.get("at") == "hand" and t["asset"] in carried), None)
-            if held and (bp.get("params") or {}).get("action") in WORK_POSE_ACTIONS \
-                    and "tool_size_m" not in bp["params"]:
-                asset = next(t["asset"] for t in ts if t.get("at") == "hand" and t["asset"] in carried)
-                chars[key]["body_pose"] = dict(bp, params=dict(bp["params"], tool_size_m=list(held), tool_asset=asset))
+            if not bp.get("pose"):
+                continue
+            pr = dict(bp.get("params") or {})
+            held = list(pr.get("held") or [])
+            for t in ts:
+                if t.get("at") == "hand" and t["asset"] in carried and t["asset"] not in {h["asset"] for h in held} \
+                        and len(held) < 2:
+                    used = {h["hand"] for h in held}
+                    hand = t.get("hand") if t.get("hand") in ("l", "r") and t.get("hand") not in used else \
+                        next(x for x in ("r", "l") if x not in used)
+                    held.append({"asset": t["asset"], "hand": hand, "size_m": list(carried[t["asset"]]["size_m"]),
+                                 "name": t.get("name")})
+            on = next((t for t in ts if t.get("at") == "on" and t.get("xyz") and t["asset"] in carried), None)
+            if held:
+                pr["held"] = held
+            if pr.get("action") in WORK_POSE_ACTIONS:
+                tool = next((h for h in held if h["hand"] == pr.get("hand", "r")), held[0] if held else None)
+                if tool and "tool_size_m" not in pr:
+                    pr.update(tool_size_m=tool["size_m"], tool_asset=tool["asset"])
+                if on and "work_target_ue" not in pr:
+                    x, y, z = on["xyz"]
+                    pr["work_target_ue"] = layout.ue_pt([x, y, z + min(carried[on["asset"]]["size_m"])])
+            chars[key]["body_pose"] = dict(bp, params=pr)
     kl = key_light(lib / "set" / spec["set"] / "spec.json", spec.get("exposure_ev100"))
     return proj, {**({"key_light": kl} if kl else {}), "carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
