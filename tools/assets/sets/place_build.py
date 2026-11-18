@@ -210,7 +210,9 @@ def with_concept(spec: dict, concept: dict) -> dict:
         c = chk.get(p["id"]) or {}
         if not p.get("phrases") and not c.get("in_picture"):
             continue
-        if c.get("look"):
+        if c.get("words") and p.get("kind") == "landmark":
+            p["look"] = c["words"]           # (a thing of the open: what it is, whole, as the picture shows it)
+        elif c.get("look"):
             # (a kind that holds any thing, a work piece or a landmark, is what its own words say: the picture adds
             # its material and colour. A hearth made from "stone, grey" was a block with a pyramid on it, 11-18)
             own = str(p.get("look") or "").strip().rstrip(".")
@@ -231,12 +233,15 @@ def with_concept(spec: dict, concept: dict) -> dict:
             continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
         # (in the open every large thing standing on the ground is built, unless a piece of the spec is that thing:
         # mostly the same part of the picture)
+        # (the same thing, not a small thing standing before a large one: of like size too)
         twin = sn.get("kind") == "landmark" and sn.get("box") and not any(
-            _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box")) for q in kept) and not any(
-            _same_part(sn["box"], o.get("box")) for o in (concept.get("seen") or [])[:i] if o.get("kind") == "landmark")
+            _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=OPEN_LIKE) for q in kept) and not any(
+            _same_part(sn["box"], o.get("box"), like=OPEN_LIKE) for o in (concept.get("seen") or [])[:i]
+            if o.get("kind") == "landmark") and sum(1 for q in kept if q["id"].startswith("c")) < OPEN_SEEN_MOST
         if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
-            kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "look": sn.get("look") or sn["name"], "phrases": [],
+            kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
+                         "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
                          "against": "not stated", "source": sn["crop"]})
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
@@ -283,13 +288,14 @@ def with_concept(spec: dict, concept: dict) -> dict:
     return sp
 
 
-def _same_part(a, b, k: float = 0.6) -> bool:
-    """Two boxes of a picture that are mostly the same part of it (their overlap over the smaller one's area)."""
+def _same_part(a, b, k: float = 0.6, like: float = 0.0) -> bool:
+    """Two boxes of a picture that are mostly the same part of it (their overlap over the smaller one's area), and,
+    with `like`, of like size (the smaller at least that much of the larger)."""
     if not a or not b:
         return False
     w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
-    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
-    return w > 0 and h > 0 and w * h >= k * small
+    aa, ab = (a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])
+    return w > 0 and h > 0 and w * h >= k * min(aa, ab) and min(aa, ab) >= like * max(aa, ab)
 
 
 OPEN_FAR_M = 32.0                # a thing farther than this from the picture's eye, or larger than OPEN_BIG_M, is
@@ -297,6 +303,28 @@ OPEN_BIG_M = 30.0                # part of what lies beyond the set (its panoram
 OPEN_FRONT_M = 4.0               # the set's middle: open ground this far in front of the nearest piece
 OPEN_ROUND_M = 6.0               # ... and the stage reaches this far beyond its pieces on every side
 OPEN_STAGE_M = (16.0, 70.0)      # the stage's side, least and most
+OPEN_LIKE = 0.4                  # two boxes are one thing seen twice only when the smaller is this much of the larger
+OPEN_SEEN_MOST = 8               # the things of the picture built besides the plan's own, at most
+OPEN_SCALE = (0.6, 3.0)          # how far the picture's measured metres may be corrected by its things' real sizes
+
+
+def open_scale(pcs: list, concept: dict) -> float:
+    """The measured picture's metres corrected by how tall its things really are (the judge's "real_m" for each,
+    scenes/concept.py): the middle one of their ratios, within OPEN_SCALE. A whole smithy measured 4 m wide and 3 m
+    tall, and was built so (11-18)."""
+    things = (concept.get("depth") or {}).get("things") or {}
+    chk, seen = concept.get("spec") or {}, concept.get("seen") or []
+    rs = []
+    for p in pcs:
+        i = int(p["id"][1:]) - 1 if p["id"].startswith("c") and p["id"][1:].isdigit() else -1
+        src = chk.get(p["id"]) or (seen[i] if 0 <= i < len(seen) else {})
+        t = things.get(f"spec:{p['id']}") or things.get(f"seen:{i}")
+        if t and src.get("real_m") and t["size_m"][2] > 0.2:
+            rs.append(float(src["real_m"][1]) / float(t["size_m"][2]))
+    if not rs:
+        return 1.0
+    rs.sort()
+    return round(min(OPEN_SCALE[1], max(OPEN_SCALE[0], rs[len(rs) // 2])), 3)
 
 
 def open_places(pcs: list, concept: dict) -> tuple:
@@ -308,12 +336,14 @@ def open_places(pcs: list, concept: dict) -> tuple:
     things, eye = dp.get("things") or {}, (dp.get("eye") or [0.0, 0.0])[:2]
     seen_key = {f"c{i + 1}": f"seen:{i}" for i in range(len(concept.get("seen") or []))}
     at, out = {}, []
+    sc = open_scale(pcs, concept)
     for p in pcs:
         t = things.get(f"spec:{p['id']}") or things.get(seen_key.get(p["id"], ""))
         if not t:
             out.append(p)
             continue
-        x, y = t["xy"][0] - eye[0], t["xy"][1] - eye[1]
+        t = dict(t, size_m=[float(v) * sc for v in t["size_m"]])
+        x, y = (t["xy"][0] - eye[0]) * sc, (t["xy"][1] - eye[1]) * sc
         far = math.hypot(x, y) > OPEN_FAR_M or max(t["size_m"]) > OPEN_BIG_M
         if far and not p.get("phrases"):
             continue                         # (it lies beyond the set: the panorama's)

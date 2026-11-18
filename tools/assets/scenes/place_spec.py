@@ -427,6 +427,38 @@ def loose(spec: dict, acts: list, url: str, cache: Path) -> list:
     return out
 
 
+# (a place in the open whose set sheet names one part of it, a door in a wall: its picture was that part, and the set
+# made from it one arch on bare ground, 11-18. The whole place, said once, for its picture)
+WHOLE_ASK = """A story has a place in the open air named "{place}". A painter who knows nothing else of the story paints one
+wide picture of this whole place from well back, empty of people. Write what the painter needs in three sentences of
+plain words{period}:
+1. What kind of place it is, and every building or built thing that belongs to it: for each, what it is for, how large
+it is, what its walls and its roof are made of, and what is built onto it and into it. A place of bare land has
+none: then say only what the land is.
+2. What else stands on the ground round them: the things a place of this kind has standing about it for its work
+and its living. Bare land has none of these either.
+3. The ground itself, and what lies round the place and beyond it.
+Use what the story and the shots say; for what they leave unsaid, what belongs in such a place. Say every thing by
+what it is and looks like, never by a name the story gave it. No people, no animals, nothing the story's people
+carry, make or bring, no weather.
+
+The story there:
+{story}
+The film's shots there:
+{shots}
+The set sheet's words for it: {room}
+
+Answer with the three sentences only."""
+
+
+def whole(place: str, spec: dict, acts: list, psg: str, url: str, cache: Path) -> str:
+    per = str(spec.get("period") or "").replace("_", " ")
+    txt = ask(url, WHOLE_ASK.format(place=place, period=f", as it was in a {per} time" if per and per != "not stated" else "",
+                                    story=psg, shots="\n".join(f"- {a}" for a in acts) or "(none)",
+                                    room=str(spec.get("room") or "").strip() or "(none)"), cache)
+    return re.sub(r"\s+", " ", re.sub(r"(?s)<think>.*?</think>", "", txt)).strip()
+
+
 def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache: Path) -> dict:
     ids = place_shots(plan, all_ids, place)
     names = {p["name"] for s in all_ids for p in plan[s][0].get("people") or []}
@@ -459,6 +491,8 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
     if str(out.get("outside") or "").strip() and len(ids) > 1:
         out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
+    if out.get("kind") == "outdoors":
+        out["whole"] = whole(place, out, acts, passage(timeline, plan, ids, all_ids), url, cache)
     if faults:
         out["_faults"] = faults
     return out, base

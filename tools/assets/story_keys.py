@@ -27,6 +27,7 @@ read after (a place or a figure made earlier is named there and is not made agai
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -370,20 +371,22 @@ class Story:
                 log(f"{place}: no picture with {want} seat(s) in {CONCEPT_TRIES} tries")
                 return False
         con = json.loads((d / "concept.json").read_text())
-        if (con.get("space") == "outdoors" or spec.get("kind") == "outdoors") and con.get("view") == "part":
+        if (con.get("space") == "outdoors" or spec.get("kind") == "outdoors") and \
+                (con.get("view") == "part" or con.get("cut") or str(spec.get("whole") or "").strip()):
             # (the picture of a place in the open was one door in a wall: the world made from it was bare land with
             # no building, and every key drew another background, 11-18)
             from PIL import Image
             size = Image.open(hero).size
             style = self.book / "art_style.txt"
-            room = str(spec.get("room") or "").strip()
+            # (the whole place in the spec's own words, when it has them: the set sheet's may name one part only)
+            room = str(spec.get("whole") or spec.get("room") or "").strip()
             per = str(spec.get("period") or "").replace("_", " ").strip()
             words = OPEN_WORDS.format(
                 room=(f"{per[0].upper() + per[1:]}: " if per and per != "not stated" else "") + room,
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
                 style=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
             for n in range(CONCEPT_TRIES):
-                pid = f"concept_{self.prefix}_{slug}_v{n}"
+                pid = f"concept_{self.prefix}_{slug}_v{n}_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
                 pic = C.LIBRARY / "_refs" / pid / "picture.png"
                 line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
                      [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
@@ -394,12 +397,12 @@ class Story:
                 (d / "concept.json").unlink()
                 read(f"_v{n}")
                 got = json.loads((d / "concept.json").read_text()) if (d / "concept.json").exists() else {}
-                log(f"{place}: its picture showed one part of it; drawn anew as the whole place, seed {11 + n}: reads "
-                    f"{got.get('space')}, {got.get('view')}")
+                log(f"{place}: drawn as the whole place, seed {11 + n}: reads {got.get('space')}, {got.get('view')}"
+                    f"{', a building cut by the edge' if got.get('cut') else ''}")
                 if got:
                     got["land"] = room             # the land's words: the place's own, not the one part's
                     (d / "concept.json").write_text(json.dumps(got, indent=1))
-                if got.get("view") == "whole" and got.get("space") == "outdoors":
+                if got.get("view") == "whole" and got.get("space") == "outdoors" and not got.get("cut"):
                     break
             else:
                 log(f"{place}: no picture of the whole place in {CONCEPT_TRIES} tries; the last one is kept")

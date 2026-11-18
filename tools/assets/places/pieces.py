@@ -338,6 +338,9 @@ WORLD_WORDS = (
     "horizon. Empty of life: no people, no figures, no animals anywhere.")
 
 
+FINE_FROM_M = 2.5                # a thing of the open this long or longer is shaped at the finer setting
+
+
 def generation_request(piece, K=None, python="python", tools=None, work=None):
     """The dry-run request for a piece the library lacks: {kind, look, size_m, needs} and, under "plan", the jobs
     the existing prop route runs for it, in order. Nothing is started here."""
@@ -383,7 +386,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             # (a thing that stands on the ground with a front, a building: shaped at the finer setting, and its
             # front found as furniture's is. Kept as the generator turned it, a forge's front wall stood end on to
             # the yard, a stone pillar in every frame, 11-18)
-            spec.pop("shape_res")
+            if lng >= FINE_FROM_M:           # (a small thing standing by it keeps the coarser, quicker setting)
+                spec.pop("shape_res")
             spec.pop("yaw_deg")
             # (its front is the side the place's picture shows: as wide as seen there and less deep, which is what
             # the front rule turns the shape by. Given as a cube, the rule left the wall end on a second time)

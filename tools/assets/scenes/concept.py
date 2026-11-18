@@ -48,11 +48,28 @@ VIEW_ASK = ("Does this picture show a place as a whole, seen from far enough bac
             "what is around it, or a close view of only one part of a place, filling the picture? Answer with exactly "
             "one word: whole or part.")
 # (a place in the open: what stands on its ground is built as pieces of the set, each cut from the picture, 11-18)
-SEEN_OPEN_ASK = ("List every separate building, structure and large thing standing on the ground in this picture, one "
-                 "per line, as: name; what it is made of and its colour. Not the ground, the sky or the far land. No "
-                 "people. At most eight lines.")
-OPEN_KIND = (" A built thing or another large thing standing on open ground, that is none of the other kinds, is a "
-             "landmark.")
+# (and the smaller things standing about them: with only its buildings made, a yard was two bare blocks on empty
+# ground, 11-18)
+SEEN_OPEN_ASK = ("List every separate thing standing on the ground in this picture, the largest first: each building "
+                 "and structure, then each other solid thing standing by them or on the open ground. One per line, "
+                 "as: name; what it is made of and its colour. Not the ground, plants, the sky or the far land. No "
+                 "people. At most twelve lines.")
+OPEN_KIND = " A thing standing on open ground that is none of the other kinds is a landmark."
+# (a door, a chimney: listed with the building it is part of, each was made again as a thing of its own)
+OWN_ASK = ("Is the {n} in this picture a separate thing standing on the ground by itself, or a part of something "
+           "larger, built into it or onto it? Answer with exactly one word: separate or part.")
+# (the depth model's metres are near, not exact: a building measured 4 m wide and 3 m high, 11-18)
+REAL_ASK = ("About how wide and how tall would the {n} in this picture be in real life, in metres? Answer with two "
+            "numbers only: its width, then its height.")
+# (a thing of the open made from "stone, grey" was a bare arch: what it is, as its own part of the picture shows it)
+WORDS_ASK = ("Describe the main thing in this picture in one sentence of under 40 words, for a builder who must make "
+             "it: what it is, its shape, what its sides and its top are made of, and what is built into it and onto "
+             "it. Only the thing itself: not the ground, the sky or what stands near it.")
+# (a building the picture's edge cuts is cut in its own part of the picture, and made as that part alone)
+CUT_ASK = ("Is any building or large structure in this picture cut off by an edge of the picture, so that part of it "
+           "is out of view? Answer yes or no.")
+OPEN_PIECE_AREA = 0.003          # in the open the picture is a wide one: a thing standing by a building is small in it
+OPEN_SEEN_MOST = 12
 SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large object in this picture, one per line, "
             "as: name; what it is made of and its colour. No people. At most ten lines.")
 
@@ -103,6 +120,16 @@ BARE = {"walls": "bare stretch of wall with nothing on it or in front of it",
         "floor": "bare stretch of floor with nothing standing on it"}
 
 
+OPEN_NOT = ("door", "window", "fireplace")       # (kinds of opening in a room's wall: in the open, things)
+
+
+def real_of(txt) -> list | None:
+    """[width, height] in metres from the judge's two numbers, when both are there and sane."""
+    m = re.findall(r"\d+(?:\.\d+)?", str(txt or ""))
+    v = [float(x) for x in m[:2]]
+    return v if len(v) == 2 and all(0.1 <= x <= 200 for x in v) else None
+
+
 def box_of(txt) -> list | None:
     """[x0, y0, x1, y1] in 0..1 from the judge's answer, or None when it gave no box of some size."""
     v = [int(x) for x in re.findall(r"\d+", str(txt or ""))[:4]]
@@ -140,13 +167,16 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
     "box", "crop"; "bare": {"walls"|"floor": {"box", "crop", "colour"}})."""
     out_dir.mkdir(parents=True, exist_ok=True)
     pieces = [p for p in spec.get("pieces") or [] if (res["spec"].get(p["id"]) or {}).get("in_picture")]
+    op = res.get("space") == "outdoors"
     items = [{"id": f"b:{p['id']}", "image": str(concept), "max_new_tokens": 30,
-              "ask": {"box": BOX_ASK.format(n=plain_name(p))}} for p in pieces]
+              "ask": {"box": BOX_ASK.format(n=plain_name(p)), **({"real": REAL_ASK.format(n=plain_name(p))} if op else {})}}
+             for p in pieces]
     for i, sn in enumerate(res.get("seen") or []):
         items.append({"id": f"s:{i}", "image": str(concept), "max_new_tokens": 30, "ask": {
             "box": BOX_ASK.format(n=sn["name"]),
             "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds),
-                                    open=OPEN_KIND if res.get("space") == "outdoors" else "")}})
+                                    open=OPEN_KIND if op else ""),
+            **({"own": OWN_ASK.format(n=sn["name"]), "real": REAL_ASK.format(n=sn["name"])} if op else {})}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
     items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
@@ -155,6 +185,8 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         b = box_of((a.get(f"b:{p['id']}") or {}).get("box"))
         if b:
             res["spec"][p["id"]].update(box=b, crop=cut(concept, b, out_dir / f"{tag}_{p['id']}.png"))
+            if real_of((a.get(f"b:{p['id']}") or {}).get("real")):
+                res["spec"][p["id"]]["real_m"] = real_of(a[f"b:{p['id']}"]["real"])
     # two pieces of the spec found in the same part of the picture are one thing seen twice (the forge's sword was
     # "found" on the bench, 11-17): it is the piece whose look the picture gave, else the first; the other is not
     # in the picture
@@ -172,15 +204,18 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         b = box_of(r.get("box"))
         # (a thing that takes under a fiftieth of the picture is a fitting on a wall, not a piece to build: asked
         # for a kind, the judge called a switch panel a bureau)
-        big = bool(b) and (b[2] - b[0]) * (b[3] - b[1]) >= PIECE_AREA
+        big = bool(b) and (b[2] - b[0]) * (b[3] - b[1]) >= (OPEN_PIECE_AREA if op else PIECE_AREA)
+        if op:                               # (in the open: every thing that stands by itself, of whatever kind)
+            part = "part" in re.sub(r"[^a-z]", "", str(r.get("own") or "").lower())
+            kd = None if part else (kd if kd in kinds and kd not in OPEN_NOT else "landmark")
         # (and a thing as wide as the picture is the room's own ceiling, floor or wall: the forge's beams came
         # back a "lantern", 11-17)
         room = bool(b) and b[2] - b[0] >= STRUCTURE_SPAN
         # the block, stump or plinth a spec piece stands on is one piece with it: the piece's cut-out and its foot
         # on the floor take it in (the anvil's box ended at the stump's top, so it measured as a low block standing
         # far back against the wall, 11-17)
-        on = next((p for p in pieces if b and res["spec"][p["id"]].get("box")
-                   and carried_by(res["spec"][p["id"]]["box"], b)), None)
+        on = None if op else next((p for p in pieces if b and res["spec"][p["id"]].get("box")
+                                   and carried_by(res["spec"][p["id"]]["box"], b)), None)
         if on:
             pb = res["spec"][on["id"]]["box"]
             pb = [min(pb[0], b[0]), pb[1], max(pb[2], b[2]), b[3]]
@@ -190,6 +225,17 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         sn["kind"] = kd if kd in kinds and big and not room else None
         if b and sn["kind"]:
             sn.update(box=b, crop=cut(concept, b, out_dir / f"{tag}_seen{i}.png"))
+            if real_of(r.get("real")):
+                sn["real_m"] = real_of(r["real"])
+    if op:                                   # each thing of the open said whole, from its own part of the picture
+        its = [(res["spec"][p["id"]], f"b:{p['id']}") for p in pieces if res["spec"][p["id"]].get("crop")
+               and p.get("kind") == "landmark"]
+        its += [(sn, f"s:{i}") for i, sn in enumerate(res.get("seen") or []) if sn.get("kind") == "landmark" and sn.get("crop")]
+        w = ask([{"id": k, "image": t["crop"], "max_new_tokens": 80, "ask": {"words": WORDS_ASK}} for t, k in its]) if its else {}
+        for t, k in its:
+            ws = re.sub(r"\s+", " ", str((w.get(k) or {}).get("words") or "")).strip().rstrip(".")
+            if ws:
+                t["words"] = ws
     res["bare"] = {}
     for k in BARE:
         b = box_of((a.get(f"w:{k}") or {}).get("box"))
@@ -206,10 +252,10 @@ def read(concept: Path, spec: dict, ask) -> dict:
     answers})."""
     pieces = spec.get("pieces") or []
     items = [{"id": "space", "image": str(concept), "ask": {"space": SPACE_ASK}, "max_new_tokens": 6},
-             {"id": "view", "image": str(concept), "ask": {"view": VIEW_ASK}, "max_new_tokens": 6},
+             {"id": "view", "image": str(concept), "ask": {"view": VIEW_ASK, "cut": CUT_ASK}, "max_new_tokens": 6},
              {"id": "surf", "image": str(concept), "ask": ASKS, "max_new_tokens": 30},
              {"id": "seen", "image": str(concept), "ask": {"seen": SEEN_ASK}, "max_new_tokens": 220},
-             {"id": "seen_open", "image": str(concept), "ask": {"seen": SEEN_OPEN_ASK}, "max_new_tokens": 200}]
+             {"id": "seen_open", "image": str(concept), "ask": {"seen": SEEN_OPEN_ASK}, "max_new_tokens": 300}]
     for p in pieces:
         name = plain_name(p)          # (asked "is there a work piece", the judge never found the anvil, 11-17)
         items.append({"id": f"p:{p['id']}", "image": str(concept), "max_new_tokens": 30, "ask": {
@@ -245,8 +291,10 @@ def read(concept: Path, spec: dict, ask) -> dict:
     elif abreast < 2 and (a.get("seats") or {}).get("single"):
         abreast = 2
     view = "part" if "part" in re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("view") or "").lower()) else "whole"
-    return {"concept": str(concept), "space": space, "view": view, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
-            "light": surf["light"], "far": surf["far"], "seen": seen[:10], "spec": sc,
+    cut_ = re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("cut") or "").lower()).startswith("y")
+    return {"concept": str(concept), "space": space, "view": view, "cut": cut_, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
+            "light": surf["light"], "far": surf["far"],
+            "seen": seen[:OPEN_SEEN_MOST if space == "outdoors" else 10], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")
             + (f" The light: {surf['light'][0].lower() + surf['light'][1:]}." if surf["light"] else "")}
 

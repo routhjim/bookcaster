@@ -197,3 +197,55 @@ def test_people_sent_to_a_tall_thing_stand_before_it():
     assert all(m[1] < 6.0 for m in F.free_marks(t["center"], [], [t], [28, 28, 6], (0.6, 3.0), front=fr))
     assert F.front_of({"kind": "fixture", "center": [2, 2, 0.5], "half": [1, 1, 0.5]}) is None
     assert F.front_of({"kind": "floor", "center": [2, 2], "half": [0, 0]}) is None
+
+
+def test_the_small_things_of_an_open_place_are_built_and_its_metres_are_its_things_real_ones(tmp_path):
+    """In the open the concept reader keeps every thing that stands by itself (a part built into a larger thing is
+    not one; a kind of wall opening is a thing there), says each whole from its own part of the picture, and asks
+    how large it really is; the set builder builds a small thing standing before a large one beside it, and corrects
+    the measured picture by the things' real heights."""
+    import concept as CO
+    from PIL import Image
+    pic = tmp_path / "c.png"
+    Image.new("RGB", (200, 100), (90, 80, 70)).save(pic)
+    spec = {"place": "yard", "pieces": [{"id": "p1", "kind": "landmark", "look": "stone"}]}
+    res = {"space": "outdoors", "spec": {"p1": {"in_picture": True, "look": "stone, grey"}},
+           "seen": [{"name": "big house", "look": "stone"}, {"name": "gate", "look": "wood"},
+                    {"name": "tub", "look": "wood"}, {"name": "pit", "look": "stone"}]}
+
+    def ask(items):
+        if "words" in items[0]["ask"]:
+            return {i["id"]: {"words": "A low house of stone with a roof of slate."} for i in items}
+        return {"b:p1": {"box": "[0, 100, 600, 900]", "real": "12, 7"},
+                "s:0": {"box": "[0, 100, 600, 900]", "kind": "landmark", "own": "separate", "real": "12 7"},
+                "s:1": {"box": "[200, 300, 350, 900]", "kind": "door", "own": "Part."},
+                "s:2": {"box": "[620, 700, 700, 900]", "kind": "none", "own": "separate", "real": "0.8 and 1.0"},
+                "s:3": {"box": "[400, 700, 520, 900]", "kind": "fireplace", "own": "separate"}}
+    CO.pieces_from(pic, spec, res, ask, tmp_path / "crops", "t", ["landmark", "door", "fireplace", "chair"])
+    assert [s.get("kind") for s in res["seen"]] == ["landmark", None, "landmark", "landmark"]
+    assert res["spec"]["p1"]["real_m"] == [12.0, 7.0] and res["seen"][2]["real_m"] == [0.8, 1.0]
+    assert res["spec"]["p1"]["words"].startswith("A low house") and res["seen"][3]["words"]
+    assert CO.read(pic, {"pieces": []}, lambda items: {"view": {"view": "whole", "cut": "Yes."},
+                                                       "space": {"space": "outdoors"}})["cut"] is True
+    # the builder: the house once (its twin in "seen" is the same thing), the tub and the pit beside it
+    res["depth"] = {"eye": [0.0, -5.0], "things": {"spec:p1": {"xy": [0.0, 6.0], "size_m": [6.0, 3.6, 3.5]},
+                                                   "seen:2": {"xy": [4.0, 4.0], "size_m": [0.5, 0.3, 0.5]},
+                                                   "seen:3": {"xy": [-1.0, 3.5], "size_m": [0.8, 0.5, 0.4]}}}
+    full = dict(spec, kind="outdoors", period="not stated", pieces=[dict(spec["pieces"][0], phrases=["at the house"])])
+    sp = PB.with_concept(full, dict(res, concept=str(pic), surfaces={}))
+    by = {p["id"]: p for p in sp["pieces"]}
+    assert sorted(by) == ["c3", "c4", "p1", "t1"]
+    assert by["p1"]["look"].startswith("A low house")
+    # 7 m real over 3.5 m measured: every measure doubled
+    assert by["p1"]["_seen_size_m"] == [12.0, 7.2, 7.0] and by["c3"]["_seen_size_m"][0] == 1.0
+    assert abs((by["c3"]["at_xy"][0] - by["p1"]["at_xy"][0]) - 8.0) < 1e-6
+
+
+def test_a_place_in_the_open_is_said_whole_for_its_picture(tmp_path, monkeypatch):
+    """The place spec of a place in the open carries the whole place in words (its buildings, what stands round
+    them, the land), asked once of the director with the story and the shots there."""
+    import place_spec as SPc
+    asked = []
+    monkeypatch.setattr(SPc, "ask", lambda url, text, cache: (asked.append(text), "A yard.  With a house.")[1])
+    got = SPc.whole("the yard", {"period": "medieval", "room": "A gate."}, ["someone waits"], "The story.", "u", tmp_path)
+    assert got == "A yard. With a house." and "medieval" in asked[0] and "- someone waits" in asked[0] and "A gate." in asked[0]
