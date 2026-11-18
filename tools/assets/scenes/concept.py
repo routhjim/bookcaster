@@ -43,6 +43,12 @@ ASKS = {
 VIEW_ASK = ("Does this picture show a place as a whole, seen from far enough back to take in the ground in front and "
             "what is around it, or a close view of only one part of a place, filling the picture? Answer with exactly "
             "one word: whole or part.")
+# (a place in the open: what stands on its ground is built as pieces of the set, each cut from the picture, 11-18)
+SEEN_OPEN_ASK = ("List every separate building, structure and large thing standing on the ground in this picture, one "
+                 "per line, as: name; what it is made of and its colour. Not the ground, the sky or the far land. No "
+                 "people. At most eight lines.")
+OPEN_KIND = (" A built thing or another large thing standing on open ground, that is none of the other kinds, is a "
+             "landmark.")
 SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large object in this picture, one per line, "
             "as: name; what it is made of and its colour. No people. At most ten lines.")
 
@@ -54,8 +60,8 @@ BOX_ASK = ("Locate the whole {n} in this picture: every part that belongs to it,
            "to 1000: thousandths of the picture's width (x) and height (y), x1 y1 the top left corner.")
 KIND_ASK = ("In this picture there is a {n}. Which one of these kinds of thing is it? {kinds}. A part of the room itself "
             "(its walls, floor, ceiling, roof, beams or rafters) is none of them. A thing people work on or at, that "
-            "is none of the other kinds, is a work piece. Answer with exactly one of those words, or none when it is "
-            "none of them.")
+            "is none of the other kinds, is a work piece.{open} Answer with exactly one of those words, or none when "
+            "it is none of them.")
 
 
 def plain_name(p: dict) -> str:
@@ -135,7 +141,8 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
     for i, sn in enumerate(res.get("seen") or []):
         items.append({"id": f"s:{i}", "image": str(concept), "max_new_tokens": 30, "ask": {
             "box": BOX_ASK.format(n=sn["name"]),
-            "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds))}})
+            "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds),
+                                    open=OPEN_KIND if res.get("space") == "outdoors" else "")}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
     items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
@@ -197,7 +204,8 @@ def read(concept: Path, spec: dict, ask) -> dict:
     items = [{"id": "space", "image": str(concept), "ask": {"space": SPACE_ASK}, "max_new_tokens": 6},
              {"id": "view", "image": str(concept), "ask": {"view": VIEW_ASK}, "max_new_tokens": 6},
              {"id": "surf", "image": str(concept), "ask": ASKS, "max_new_tokens": 30},
-             {"id": "seen", "image": str(concept), "ask": {"seen": SEEN_ASK}, "max_new_tokens": 220}]
+             {"id": "seen", "image": str(concept), "ask": {"seen": SEEN_ASK}, "max_new_tokens": 220},
+             {"id": "seen_open", "image": str(concept), "ask": {"seen": SEEN_OPEN_ASK}, "max_new_tokens": 200}]
     for p in pieces:
         name = plain_name(p)          # (asked "is there a work piece", the judge never found the anvil, 11-17)
         items.append({"id": f"p:{p['id']}", "image": str(concept), "max_new_tokens": 30, "ask": {
@@ -213,7 +221,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
     space = next((k for k in ("cockpit", "outdoors", "room") if k in sp), "room")
     surf = {k: re.sub(r"\s+", " ", str((a.get("surf") or {}).get(k) or "")).strip().rstrip(".") for k in ASKS}
     seen = []
-    for ln in str((a.get("seen") or {}).get("seen") or "").splitlines():
+    for ln in str((a.get("seen_open" if space == "outdoors" else "seen") or {}).get("seen") or "").splitlines():
         ln = re.sub(r"^[\s\-\*\d\.\)]+", "", ln).strip()
         if not ln:
             continue
@@ -261,7 +269,7 @@ def main():
     try:
         spec = json.loads(spec_p.read_text())
         res = read(concept, spec, CH.vl_ask)
-        if res["space"] == "room":             # (a cockpit is one piece made from the whole picture)
+        if res["space"] in ("room", "outdoors"):   # (a cockpit is one piece made from the whole picture)
             kinds = sorted(json.loads((HERE.parent / "places" / "piece_kinds.json").read_text())["kinds"])
             tag = re.sub(r"[^a-z0-9]+", "_", str(spec.get("place") or out.stem).lower()).strip("_")[:24]
             pieces_from(concept, spec, res, CH.vl_ask, out.parent / "concept_crops", tag, kinds)

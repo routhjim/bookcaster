@@ -413,7 +413,7 @@ class Story:
         be measured leaves the builder to the room kind's table and free spots, as before."""
         d = self.d(place)
         con = json.loads((d / "concept.json").read_text())
-        if con.get("space") != "room":
+        if con.get("space") not in ("room", "outdoors"):   # (a place in the open: where what stands on it stands)
             return
         spec = json.loads((d / "place_spec.json").read_text())
         con["_spec_kinds"] = {p["id"]: p.get("kind") for p in spec.get("pieces") or []}

@@ -32,7 +32,7 @@ def test_mark_of_a_thing_ahead():
     mk = PS.mark_of(np.where(ahead, 0.9, 0.05), d, sky)
     assert mk and mk["toward"][1] < -0.95 and abs(mk["toward"][0]) < 0.2
     # people stand on the flat ground toward it, not 20 m off
-    assert abs(np.hypot(*mk["stand"]) - (PS.FLAT_R_M - 1.5)) < 1e-6 and mk["stand"][1] < 0
+    assert abs(np.hypot(*mk["stand"]) - PS.SPOT_MAX_M) < 1e-6 and mk["stand"][1] < 0
     assert mk["near_m"] > 15
 
 
@@ -50,28 +50,58 @@ SPEC = {"kind": "outdoors", "period": "medieval", "room": "Open ground.", "_phra
         "named_places": {"by the arch": "p1", "on the bank": "p2"}, "land_places": {}}
 
 
-def test_terrain_asks_for_its_landmarks():
-    sp = PB.outdoors(dict(SPEC), SPEC, {"concept": "/c/c.png", "surfaces": {}})
-    t = next(p for p in sp["pieces"] if p["kind"] == "terrain")
-    assert t["marks"] == {"p1": "a stone arch", "p2": "a grass bank"}
-    req = P.generation_request(t)
-    spec = next(s for s in req["plan"]["steps"] if s["step"] == "spec")["spec"]
-    assert spec["marks"] == t["marks"]
-    # the world is the same asset with or without them (its panorama is kept; an older build is made again)
-    assert req["asset_id"] == P.generation_request({k: v for k, v in t.items() if k != "marks"})["asset_id"]
+def test_a_landmark_is_a_piece_on_the_set_where_the_picture_has_it():
+    """What stands in a place in the open is built on the set's own ground, each thing where the concept picture
+    measured has it, about a middle on the open ground in front; the world asks for nothing of it; what lies far
+    off is left to the panorama unless the plan sends people there."""
+    con = {"concept": "/c/c.png", "surfaces": {}, "seen": [], "depth": {"eye": [0.0, -5.0], "things": {
+        "spec:p1": {"xy": [-3.0, 7.0], "size_m": [5.0, 4.0, 4.0]},
+        "spec:p2": {"xy": [4.0, 9.0], "size_m": [3.0, 2.0, 1.5]},
+        "spec:p9": {"xy": [0.0, 80.0], "size_m": [40.0, 40.0, 30.0]}}}}
+    spec = dict(SPEC, pieces=SPEC["pieces"] + [{"id": "p9", "kind": "landmark", "look": "a far hill", "phrases": [],
+                                                 "source": "/c/p9.png"}])
+    sp = PB.outdoors(json.loads(json.dumps(spec)), spec, con)
+    by = {p["id"]: p for p in sp["pieces"]}
+    assert "p9" not in by and "marks" not in by["t1"]
+    # the nearest piece's front is 4 m beyond the middle; both keep their places side to side
+    assert by["p1"]["at_xy"] == [-3.5, 6.0] and by["p2"]["at_xy"] == [3.5, 8.0]
+    assert by["p1"]["_seen_size_m"] == [5.0, 4.0, 4.0] and by["p1"]["facing_xy"] == [0.0, -1.0]
+    side = sp["_room_m"][0]
+    assert side >= 2 * (8.0 + 1.0 + PB.OPEN_ROUND_M) - 0.1 and side <= PB.OPEN_STAGE_M[1]
+    assert sp["named_places"] == {"by the arch": "p1", "on the bank": "p2"}
+    # a named landmark the picture was asked about and does not show is the open ground, not a piece from words
+    con2 = dict(con, spec={"p1": {"in_picture": True}, "p2": {"in_picture": False}})
+    sp2 = PB.outdoors(json.loads(json.dumps(SPEC)), SPEC, con2)
+    assert [p["id"] for p in sp2["pieces"]] == ["p1", "t1"] and sp2["named_places"]["on the bank"] == "floor"
+    # with no measure every named piece still stands, placed by the layout
+    sp0 = PB.outdoors(json.loads(json.dumps(SPEC)), SPEC, {"concept": "/c/c.png", "surfaces": {}})
+    assert [p["id"] for p in sp0["pieces"]] == ["p1", "p2", "t1"] and "_room_m" not in sp0
 
 
-def test_world_marks_in_the_sets_frame(tmp_path):
-    sp = PB.outdoors(dict(SPEC), SPEC, {"concept": "/c/c.png", "surfaces": {}})
-    t = next(p for p in sp["pieces"] if p["kind"] == "terrain")
-    d = tmp_path / "prop" / P.generation_request(t)["asset_id"]
-    d.mkdir(parents=True)
-    (d / "asset.json").write_text(json.dumps({"world": {"stand_m": [1.0, -2.0, 40.0], "marks_m": {
-        "p1": {"stand": [1.0, -9.5, 40.0], "toward": [0.0, -1.0], "near_m": 22.0}}}}))
-    got = PB.world_marks(sp, tmp_path)
-    assert list(got) == ["p1"]                               # (the bank is not in the picture: its piece stands)
-    assert got["p1"]["at"] == [0.0, -7.5] and got["p1"]["look"] == "a stone arch"
-    assert PB.world_marks({"pieces": [dict(t, marks={})]}, tmp_path) == {}
+def test_the_worlds_ground_is_real_and_the_panorama_lies_beyond_it():
+    dz, d, dirs = pano(256, 512)
+    sky = dz > 0.02
+    hz = np.sqrt(1 - dz * dz)
+    wall = (dirs[..., 1] < -0.9) & (d * 0 + 5.0 / np.maximum(hz, 1e-3) * dz + 1.6 > 0) & (5.0 / np.maximum(hz, 1e-3) * dz + 1.6 < 3)
+    d = np.where(wall, 5.0 / np.maximum(hz, 1e-3), np.minimum(d, 135.0))
+    sky = sky & ~wall
+    b = PS.backdrop(d, sky)
+    rr, over = b * hz, b * dz + 1.6
+    assert rr[~sky & (over > 0.02)].min() >= PS.FLAT_R_M - 1e-6           # nothing stands nearer than the ground's edge
+    assert np.allclose(over[~sky & (rr < PS.FLAT_R_M - 1) & (over <= 0.02)], -PS.GROUND_UNDER_M)
+    gv, gf, guv = PS.ground_disk([0.0, 0.0, 10.0], 100)
+    assert gf.min() == 100 and np.allclose(gv[:, 2], 10.0 - PS.EYE_STAND_M)
+    n = np.cross(gv[gf[:, 1] - 100] - gv[gf[:, 0] - 100], gv[gf[:, 2] - 100] - gv[gf[:, 0] - 100])
+    assert (n[:, 2] > 0).all() and np.hypot(gv[:, 0], gv[:, 1]).max() >= PS.FLAT_R_M
+    assert guv.min() >= 0 and guv[:, 1].max() <= 0.5                      # (the lower half of the shell's picture)
+    rgb = np.zeros(d.shape + (3,), np.uint8)
+    rgb[..., 1] = 120
+    t = 1.6 / np.maximum(-dz, 1e-3)
+    rgb[(dz < 0) & (dirs[..., 1] * t < -3) & (dirs[..., 1] * t > -5)] = (200, 0, 0)     # a band of the ground ahead
+    tile = np.full((2 * PS.TILE_PX, 2 * PS.TILE_PX, 3), 50, np.uint8)
+    gm = PS.ground_map(rgb, np.minimum(np.where(dz < -1e-3, t, 150.0), 135.0), dz > 0.02, tile)
+    at = lambda x, y: gm[int((y + PS.MAP_R_M) / (2 * PS.MAP_R_M) * PS.MAP_PX), int((x + PS.MAP_R_M) / (2 * PS.MAP_R_M) * PS.MAP_PX)]  # noqa: E731
+    assert tuple(at(0, -4)) == (200, 0, 0) and tuple(at(0, 4)) == (0, 120, 0) and tuple(at(11.5, 11.5)) == (50, 50, 50)
 
 
 def test_a_mark_is_a_place_on_the_ground(tmp_path):

@@ -324,15 +324,20 @@ SHELL_WORDS = (
 
 
 WORLD_WORDS = (
-    # (the place's own look comes from its concept picture, given as the reference: one view of it, continued all
-    # round. No person is named anywhere in these words: said as "the eyes of a person standing" with a part of the
-    # land "in front of that person", nine of nine panoramas had a person in them, 11-16)
+    # (the place's own look comes from its concept picture, given as the reference. No person is named anywhere in
+    # these words: said as "the eyes of a person standing" with a part of the land "in front of that person", nine
+    # of nine panoramas had a person in them, 11-16)
+    # (what lies round the set and beyond it only: what stands in the place is built on the set's own ground as its
+    # pieces; drawn into the panorama too, each stood there twice, and the land near the people was the panorama's
+    # depth seen from the side, 11-18)
     "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join seamlessly. "
-    "{look}. The place seen all the way round from eye height over open ground in it: the horizon level straight "
-    "across the middle of the picture, the whole sky above it, and below it the bare ground straight down, open and "
-    "nearly level for several steps all round, running out to the land beyond. The reference picture is one view of "
-    "this same place: its land, its things, its light, its colours and its way of painting go on all the way round. "
-    "Empty of life: no people, no figures, no animals anywhere.")
+    "The far surroundings of this place: {look}. Seen all the way round from eye height in the middle of a wide "
+    "stretch of open, bare, nearly level ground: the horizon level straight across the middle of the picture, the "
+    "whole sky above it, and below it only that bare ground, straight down and far out on every side. Nothing is "
+    "built and nothing stands on this open ground: whatever the reference picture shows standing close by is left "
+    "out of this picture, and only what lies far off is seen, small, along the horizon. The reference picture is one "
+    "view of this same place: its land, its ground, its light, its colours and its way of painting go on all the way "
+    "round. Empty of life: no people, no figures, no animals anywhere.")
 
 
 def generation_request(piece, K=None, python="python", tools=None, work=None):
@@ -397,7 +402,7 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
              "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{aid}", "--",
                              python, str(tools / "refs" / "ref_draw.py"), "picture", aid, "--desc",
                              WORLD_WORDS.format(look=look.rstrip("."))
-                             + (f" A few steps ahead, close by: {piece['spot']}." if piece.get("spot")
+                             + (f" A few steps ahead, close by, part of the ground itself: {piece['spot']}." if piece.get("spot")
                                 else ""), "--size", "2048", "1024", "--seed", "{seed}"]
                      + (["--sources", str(piece["source"])] if piece.get("source") else []),
              "gate": "nobody in the panorama", "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS}"},

@@ -229,7 +229,12 @@ def with_concept(spec: dict, concept: dict) -> dict:
     for i, sn in enumerate(concept.get("seen") or []):
         if f"seen:{i}" in ((concept.get("depth") or {}).get("off_floor") or {}):
             continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
-        if sn.get("kind") and sn.get("crop") and sn["kind"] not in have and sn["kind"] not in OPENING_KINDS:
+        # (in the open every large thing standing on the ground is built, unless a piece of the spec is that thing:
+        # mostly the same part of the picture)
+        twin = sn.get("kind") == "landmark" and sn.get("box") and not any(
+            _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box")) for q in kept) and not any(
+            _same_part(sn["box"], o.get("box")) for o in (concept.get("seen") or [])[:i] if o.get("kind") == "landmark")
+        if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "look": sn.get("look") or sn["name"], "phrases": [],
                          "against": "not stated", "source": sn["crop"]})
@@ -278,6 +283,59 @@ def with_concept(spec: dict, concept: dict) -> dict:
     return sp
 
 
+def _same_part(a, b, k: float = 0.6) -> bool:
+    """Two boxes of a picture that are mostly the same part of it (their overlap over the smaller one's area)."""
+    if not a or not b:
+        return False
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return w > 0 and h > 0 and w * h >= k * small
+
+
+OPEN_FAR_M = 32.0                # a thing farther than this from the picture's eye, or larger than OPEN_BIG_M, is
+OPEN_BIG_M = 30.0                # part of what lies beyond the set (its panorama), not a piece on it
+OPEN_FRONT_M = 4.0               # the set's middle: open ground this far in front of the nearest piece
+OPEN_ROUND_M = 6.0               # ... and the stage reaches this far beyond its pieces on every side
+OPEN_STAGE_M = (16.0, 70.0)      # the stage's side, least and most
+
+
+def open_places(pcs: list, concept: dict) -> tuple:
+    """Where the pieces of a place in the open stand, from its concept picture measured (img3d/concept_depth.py):
+    each one's place and size as the picture has them, about a middle on the open ground in front of them, its front
+    toward that ground. -> (the pieces that are built, the stage's size or None). A piece the picture does not
+    place stands where the layout finds room, as before."""
+    dp = concept.get("depth") or {}
+    things, eye = dp.get("things") or {}, (dp.get("eye") or [0.0, 0.0])[:2]
+    seen_key = {f"c{i + 1}": f"seen:{i}" for i in range(len(concept.get("seen") or []))}
+    at, out = {}, []
+    for p in pcs:
+        t = things.get(f"spec:{p['id']}") or things.get(seen_key.get(p["id"], ""))
+        if not t:
+            out.append(p)
+            continue
+        x, y = t["xy"][0] - eye[0], t["xy"][1] - eye[1]
+        far = math.hypot(x, y) > OPEN_FAR_M or max(t["size_m"]) > OPEN_BIG_M
+        if far and not p.get("phrases"):
+            continue                         # (it lies beyond the set: the panorama's)
+        k = min(1.0, OPEN_FAR_M / max(math.hypot(x, y), 1e-6))
+        size = [min(float(v), OPEN_BIG_M) for v in t["size_m"]]
+        at[p["id"]] = (x * k, y * k, size)
+        out.append(p)
+    if not at:
+        return out, None
+    ox = sum(v[0] for v in at.values()) / len(at)
+    oy = min(v[1] - v[2][1] / 2 for v in at.values()) - OPEN_FRONT_M
+    half = 0.0
+    for p in out:
+        if p["id"] in at:
+            x, y, size = at[p["id"]]
+            p.update(at_xy=[round(x - ox, 3), round(y - oy, 3)], facing_xy=[0.0, -1.0], _seen_size_m=[round(v, 3) for v in size])
+            half = max(half, abs(x - ox) + size[0] / 2, abs(y - oy) + size[1] / 2)
+    side = round(min(OPEN_STAGE_M[1], max(OPEN_STAGE_M[0], 2 * (half + OPEN_ROUND_M))), 1)
+    tall = max([v[2][2] for v in at.values()] + [6.0])
+    return out, [side, side, round(tall, 1)]
+
+
 def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     """A place in the open (its concept picture shows it outdoors, or its spec says so) is built as a world: the
     land round where its people stand, the sky, and a flat patch of ground under them, all one piece made from a
@@ -296,24 +354,34 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     said = "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")),
                                                                          ("overhead", sf.get("ceiling")),
                                                                          ("the light", concept.get("light"))) if v)
-    # (only what the plan sends people to is built to stand on the ground: everything else the place shows is in its
-    # panorama already, and a far mountain made a piece stood 80 m tall on the stage)
+    # what the plan sends people to and what the place's picture shows standing on its ground is built to stand on
+    # the set's own ground, each where the picture has it (open_places); what lies far off is the panorama's (a far
+    # mountain made a piece stood 80 m tall on the stage)
     pcs = [dict(p, against="free") for p in sp.get("pieces") or [] if p.get("kind") not in ("terrain",)
-           and p.get("phrases")]
+           and (p.get("phrases") or p.get("source"))]
+    # (a landmark the plan names that the place's picture does not show is not made from its words alone: the
+    # picture is the place, and people sent there stand on the open ground. Two such were a boulder with a hole
+    # and a cube of rock, 11-18)
+    chk = concept.get("spec") or {}
+    pcs = [p for p in pcs if not (p.get("kind") == "landmark" and not p.get("source")
+                                  and p["id"] in chk and not chk[p["id"]].get("in_picture"))]
+    pcs, stage = open_places(pcs, concept)
+    if stage:
+        sp["_room_m"] = stage
     ids = {p["id"] for p in pcs}
     # the part of the land the plan sends people to (the director's land_places, the first the shots name): the
     # panorama is drawn with it close in front of the eye, and the stage is set there (world_stage)
+    # (the world is what lies round the set and beyond it: its real ground with the panorama far off. No part of
+    # the land is drawn close in the panorama and no thing is looked for in it: a landmark is a piece on the set,
+    # shaped from its own part of the concept picture)
+    # the part of the land the plan sends people to (the director's land_places, the first the shots name: a
+    # water's edge, a path): the panorama is drawn with it close by, on the ground, and the stage is set there
     lp = spec.get("land_places") if isinstance(spec.get("land_places"), dict) else {}
     order = [ph for ph in (spec.get("_phrases") or []) if ph in lp] + [ph for ph in lp if ph not in (spec.get("_phrases") or [])]
     spot = str(lp[order[0]]).strip().rstrip(".") if order else ""
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
                 "look": "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
                 **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
-                # a landmark is part of the land: where the place's world shows it, people are sent to the ground
-                # before it there, and no piece is stood on the ground for it (a cave in the hillside had a second
-                # cave, a boulder with a hole, and a cube of rock for a ledge standing before it, 11-18)
-                "marks": {p["id"]: str(p.get("look") or "").split(";")[0].strip() for p in pcs
-                          if p.get("kind") == "landmark" and str(p.get("look") or "").strip()},
                 **({"source": concept["concept"]} if concept.get("concept") else {})})
     sp["pieces"] = pcs
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]

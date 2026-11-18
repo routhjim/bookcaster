@@ -273,15 +273,27 @@ def seat_under(eye: list) -> dict:
 # panorama world builders). The depth model's scale on a painted panorama runs small, so the land is scaled to put
 # the ground straight below at a standing eye's height (as tools/world.py's ground fit, "nadir").
 EYE_STAND_M = 1.6           # a standing person's eyes above the ground: the outdoor panorama is drawn from there
-FLAT_R_M = 9.0              # the ground people stand on is flat this far round the point under the eye
+FLAT_R_M = 40.0             # the ground people stand on is flat this far round the point under the eye: the set's
+#                             own real ground (ground_disk), with the panorama only as what lies beyond it. (At 9 m
+#                             the land round the people was the panorama's depth seen from the side: smeared ground
+#                             and things, another background in every key, 11-18)
 FLAT_KEEP_M = 1.0           # a point higher than this over the ground stands on it (a fence, a wall): not flattened
 #                             (low stones by the feet, kept at 0.5 m, were sheets smeared toward every other camera)
-RAMP_R_M = 25.0             # beyond the patch the land rises or falls back to its own height by this distance
+RAMP_R_M = 90.0             # beyond the patch the land rises or falls back to its own height by this distance
+GROUND_UNDER_M = 0.05       # the panorama's own ground lies this far under the set's real ground, out of sight
+TILE_M = 3.0                # the real ground's picture: a square of the panorama's ground this wide, near the eye,
+TILE_PX = 256               # ... seen from straight above at this many points a side, laid mirrored edge to edge
+TILE_NEAR_M = 2.5           # ... its middle this far from the point under the eye
+MAP_R_M = 12.0              # round the point under the eye the real ground shows the panorama's own ground, seen
+MAP_PX = 1024               # from straight above (a square this far each way, this many points a side): its path, its
+MAP_IN_M = 6.0              # water's edge. Beyond MAP_IN_M it fades into the tile, all tile at MAP_R_M (far from the
+#                             eye one point of the panorama is a long streak of ground)
+SPOT_MAX_M = 7.5            # people sent to a part of the land stand at most this far from the point under the eye
 SKY_R_M = 150.0             # the sky's dome: this far from the eye, the land inside it
 LAND_MAX_K = 0.9            # ... no land farther out than this share of the dome
 OUT_STEEP_DEG = 89.0        # far ground is seen nearly edge on from the eye: kept (at 78 degrees it was all dropped)
 SKY_SURE = 0.5              # the segmenter's least sureness for sky
-WORLD_BUILD = 4             # the outdoor shell's build (a library world of an older build is made again)
+WORLD_BUILD = 5             # the outdoor shell's build (a library world of an older build is made again)
 #                             4: the land's own things the plan sends people to are found in it (marks_m)
 
 
@@ -412,6 +424,113 @@ def land(depth: np.ndarray, sky: np.ndarray, eye: float = EYE_STAND_M) -> tuple:
                "sky_share": round(float(sky.mean()), 4), "ground_near_m": round(float(np.median(g[below])) if below.any() else 0.0, 3)}
 
 
+def backdrop(d: np.ndarray, sky: np.ndarray, eye: float = EYE_STAND_M) -> np.ndarray:
+    """The land's distances with nothing of the panorama nearer than the edge of the set's real ground (FLAT_R_M):
+    what the picture shows standing nearer is moved out along its own ray to that distance (the eye sees it where
+    the picture has it, as part of what lies beyond; what really stands on the set is built there as a piece), and
+    the picture's own ground inside it is put just under the real ground."""
+    h, w = d.shape
+    dz = np.broadcast_to(np.cos(np.pi * (np.arange(h) + 0.5) / h)[:, None], (h, w))
+    hz = np.sqrt(np.maximum(1 - dz * dz, 1e-6))
+    rr, over = d * hz, d * dz + eye
+    near = ~sky & (rr < FLAT_R_M)
+    stands = near & (over > 0.02)
+    out = np.where(stands, np.minimum(FLAT_R_M / hz, LAND_MAX_K * SKY_R_M), d)
+    under = near & ~stands & (dz < -1e-3)
+    return np.where(under, (eye + GROUND_UNDER_M) / np.maximum(-dz, 1e-3), out)
+
+
+def ground_tile(rgb: np.ndarray, d: np.ndarray, sky: np.ndarray, eye: float = EYE_STAND_M) -> np.ndarray:
+    """The real ground's picture (2 TILE_PX square, uint8): the panorama's ground seen from straight above, a square
+    TILE_M wide near the point under the eye, on the side where most of it is bare ground, laid mirrored beside and
+    below itself so its edges join when it is repeated."""
+    import scipy.ndimage as ndi
+    import utils3d
+    from moge.utils.panorama import spherical_uv_to_directions
+    h, w = d.shape
+    dirs = spherical_uv_to_directions(utils3d.numpy.image_uv(width=w, height=h))
+    dirs = np.stack([-dirs[..., 1], dirs[..., 0], dirs[..., 2]], -1)
+    down = dirs[..., 2] < -0.2
+    t = eye / np.maximum(-dirs[..., 2], 1e-3)
+    gx, gy = dirs[..., 0] * t, dirs[..., 1] * t                       # where each downward ray meets the ground
+    bare = down & ~sky & (np.abs(d * dirs[..., 2] + eye) < 0.12)      # ... and whether the picture has ground there
+    best = None
+    for k in range(8):
+        cx, cy = TILE_NEAR_M * np.sin(k * np.pi / 4), -TILE_NEAR_M * np.cos(k * np.pi / 4)
+        ix = np.floor((gx - cx + TILE_M / 2) / TILE_M * TILE_PX).astype(int)
+        iy = np.floor((gy - cy + TILE_M / 2) / TILE_M * TILE_PX).astype(int)
+        m = down & (ix >= 0) & (ix < TILE_PX) & (iy >= 0) & (iy < TILE_PX)
+        share = float(bare[m].mean()) if m.any() else 0.0
+        if best is None or share > best[0]:
+            best = (share, ix, iy, m)
+    _, ix, iy, m = best
+    tile = np.zeros((TILE_PX, TILE_PX, 3), np.float64)
+    n = np.zeros((TILE_PX, TILE_PX), np.float64)
+    m = m & bare if (m & bare).sum() > TILE_PX * TILE_PX // 8 else m
+    np.add.at(tile, (iy[m], ix[m]), rgb[m].astype(np.float64))
+    np.add.at(n, (iy[m], ix[m]), 1.0)
+    if not n.any():
+        tile[:] = rgb[down & ~sky].mean(0) if (down & ~sky).any() else 96.0
+    else:
+        got = n > 0
+        tile[got] /= n[got][:, None]
+        near = ndi.distance_transform_edt(~got, return_distances=False, return_indices=True)
+        tile = tile[near[0], near[1]]
+    tile = tile.clip(0, 255).astype(np.uint8)
+    top = np.concatenate([tile, tile[:, ::-1]], 1)
+    return np.concatenate([top, top[::-1]], 0)
+
+
+def ground_map(rgb: np.ndarray, d: np.ndarray, sky: np.ndarray, tile: np.ndarray, eye: float = EYE_STAND_M) -> np.ndarray:
+    """The real ground's picture round the point under the eye (MAP_PX square, uint8; row 0 at -y, ahead): the
+    panorama's own ground seen from straight above where the picture has bare ground there, fading into the tile
+    with distance; the tile where the picture shows something standing."""
+    h, w = d.shape
+    c = (np.arange(MAP_PX) + 0.5) / MAP_PX * 2 * MAP_R_M - MAP_R_M
+    X, Y = np.meshgrid(c, c)
+    n = np.sqrt(X * X + Y * Y + eye * eye)
+    az = -eye / n
+    u = (1 - np.arctan2(-X / n, Y / n) / (2 * np.pi)) % 1.0
+    v = np.arccos(np.clip(az, -1, 1)) / np.pi
+    px, py = np.clip((u * w).astype(int), 0, w - 1), np.clip((v * h).astype(int), 0, h - 1)
+    own = rgb[py, px].astype(np.float64)
+    bare = ~sky[py, px] & (np.abs(d[py, px] * az + eye) < 0.12)
+    T, k = 2 * TILE_M, tile.shape[0]
+    tl = tile[np.clip(((1 - (Y / T) % 1.0) * k).astype(int), 0, k - 1), np.clip((((X / T) % 1.0) * k).astype(int), 0, k - 1)]
+    r = np.sqrt(X * X + Y * Y)
+    wt = np.where(bare, np.clip((r - MAP_IN_M) / (MAP_R_M - MAP_IN_M), 0.0, 1.0), 1.0)[..., None]
+    return (own * (1 - wt) + tl * wt).clip(0, 255).astype(np.uint8)
+
+
+def ground_disk(eye: list, n0: int) -> tuple:
+    """The set's real ground: a flat round FLAT_R_M out from the point under the eye; its middle one square showing
+    the ground map (MAP_R_M each way), round it squares each showing the ground tile once. -> (vertices in the asset
+    frame, faces looking up, uv into the lower half of the shell's picture: the map at its left, the tile right of
+    it)."""
+    T = 2 * TILE_M
+    k = int(np.ceil(FLAT_R_M / T))
+    m = int(round(MAP_R_M / T))
+    z = eye[2] - EYE_STAND_M
+    e = 2.0 / 2048
+    vtx, uv, faces = [], [], []
+
+    def quad(x0, y0, x1, y1, u0, v0, u1, v1):
+        b = n0 + len(vtx)
+        for x, y, u, v in ((x0, y0, u0, v0), (x1, y0, u1, v0), (x1, y1, u1, v1), (x0, y1, u0, v1)):
+            vtx.append([eye[0] + x, eye[1] + y, z])
+            uv.append([u, v])
+        faces.extend([[b, b + 1, b + 2], [b, b + 2, b + 3]])
+    quad(-MAP_R_M, -MAP_R_M, MAP_R_M, MAP_R_M, e, 0.5 - e, 0.5 - e, e)   # (the map's row 0, at -y, is its top)
+    for i in range(-k, k):
+        for j in range(-k, k):
+            if -m <= i < m and -m <= j < m:
+                continue
+            if np.hypot((i + 0.5) * T, (j + 0.5) * T) > FLAT_R_M + T / 2:
+                continue
+            quad(i * T, j * T, (i + 1) * T, (j + 1) * T, 0.5 + e, 0.25 + e, 0.75 - e, 0.5 - e)
+    return np.array(vtx), np.array(faces), np.array(uv)
+
+
 def sun_of(rgb: np.ndarray, sky: np.ndarray) -> dict | None:
     """Where the picture's light comes from: the brightest part of its sky (the sun, the moon, the bright side of
     the clouds), its direction (asset frame), its colour and how bright the sky is (0..1). None without a sky."""
@@ -446,7 +565,7 @@ def spot_of(prob: np.ndarray, d: np.ndarray, sky: np.ndarray) -> list | None:
     r = np.hypot(p[:, 0], p[:, 1])
     i = int(np.argmin(r))
     u = p[i, :2] / max(r[i], 1e-6)
-    far = min(max(r[i] - SPOT_BACK_M, 0.0), FLAT_R_M - 1.5)
+    far = min(max(r[i] - SPOT_BACK_M, 0.0), SPOT_MAX_M)
     return [round(float(u[0] * far), 3), round(float(u[1] * far), 3)]
 
 
@@ -473,7 +592,7 @@ def mark_of(prob: np.ndarray, d: np.ndarray, sky: np.ndarray) -> dict | None:
         return None
     u = u / n
     near = float(np.percentile(r, 5))
-    far = min(max(near - SPOT_BACK_M, 0.0), FLAT_R_M - 1.5)
+    far = min(max(near - SPOT_BACK_M, 0.0), SPOT_MAX_M)
     return {"stand": [round(float(u[0] * far), 3), round(float(u[1] * far), 3)],
             "toward": [round(float(u[0]), 4), round(float(u[1]), 4)], "near_m": round(near, 2),
             "sure": round(top, 3), "share": round(float(at.mean()), 5)}
@@ -496,7 +615,18 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
         mk = mark_of(seg_prob(im, device, [words, "the sky", "the ground"]), d, sky)
         if mk:
             found[mid] = dict(mk, words=words)
-    vtx, faces, uv, eye = shell(d, np.zeros(d.shape, bool), grid, steep_deg=OUT_STEEP_DEG, lowest=True)
+    # the set's real ground (a flat round FLAT_R_M out, in the panorama's own ground seen from above) with the
+    # panorama as what lies beyond it: nothing of the picture is built nearer than the ground's edge
+    tile = ground_tile(rgb, d, sky)
+    vtx, faces, uv, eye = shell(backdrop(d, sky), np.zeros(d.shape, bool), grid, steep_deg=OUT_STEEP_DEG, lowest=True)
+    uv = np.stack([uv[:, 0], 0.5 + uv[:, 1] / 2], -1)                 # (the panorama: the upper half of the picture)
+    gv, gf, guv = ground_disk(eye, len(vtx))
+    vtx, faces, uv = np.concatenate([vtx, gv]), np.concatenate([faces, gf]), np.concatenate([uv, guv])
+    gm = ground_map(rgb, d, sky, tile)
+    t4 = np.concatenate([np.concatenate([tile, tile], 1)] * 2, 0)
+    low = np.concatenate([np.asarray(Image.fromarray(gm).resize((1024, 1024), Image.LANCZOS)),
+                          np.asarray(Image.fromarray(t4).resize((1024, 1024), Image.LANCZOS))], 1)
+    im = Image.fromarray(np.concatenate([np.asarray(im.resize((2048, 1024), Image.LANCZOS)), low], 0))
     for mk in found.values():                # (asset frame, as stand_m and spot_m are)
         mk["stand"] = [round(eye[0] + mk["stand"][0], 3), round(eye[1] + mk["stand"][1], 3), round(eye[2] - EYE_STAND_M, 3)]
     lo, hi = vtx.min(0), vtx.max(0)
