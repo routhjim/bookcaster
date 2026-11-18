@@ -973,6 +973,14 @@ def main():
         ft = (state.get(line_subj) or {}).get("facing_thing") if sh.get("kind") == "action" and line_subj else None
         # someone seated at a desk or a table: it is in the frame of any shot wider than a close (11-12: 23 shots of a
         # man at his desk and no desk in any of them)
+        # someone at work on a thing of the set with a tool in the hand, in an action shot the plan frames close:
+        # the shot is of the work, so it is framed as a medium one with the thing in it. Framed on the head, a close
+        # of a smith striking at his anvil was the back of his bowed head and a raised hammer, no anvil (11-18)
+        st0 = state.get(subj) or {}
+        if kind == "close" and sh.get("kind") == "action" and st0.get("named_at") and st0.get("face_target") == AT_THING \
+                and any(str(p_.get("holds") or "").strip().lower() not in ("", "nothing", "none")
+                        for p_ in sh.get("people") or [] if names.get(p_.get("name")) == subj):
+            kind = "medium"
         at_thing = (state.get(subj) or {}).get("at_thing") if kind != "close" else None
         # someone standing at a named thing of the set in an action shot, turned to it (the pass: the thing they
         # work at, not a cave a beast lies before): it is in the
