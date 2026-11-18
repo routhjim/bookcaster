@@ -311,7 +311,7 @@ READ_DEG = 65.0              # a named person's head turned at most this far fro
 READ_FACE = 0.5              # and this share of their face points seen on the still (a three-quarter face reads;
                              # the speaker's own bar is MIN_FACE_VISIBLE)
 FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
-BACK_AREA = 0.45             # the shot's own subject, seen from behind with nobody leading, covers at most this share
+BACK_AREA = 0.25             # the shot's own subject, seen from behind with nobody leading, covers at most this share
 SEATED = ("sit", "seat")
 
 

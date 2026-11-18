@@ -146,6 +146,19 @@ def heads_out(res: dict, cam: str) -> set:
     return out
 
 
+EDGE_MIN = 0.03              # someone at the frame's edge, head out, is said when this share of the frame is theirs
+
+
+def seen_share(sd: Path, cam: str) -> dict:
+    """Each person's own share of a camera's still (the staging check's depth-pass mask), {} when not recorded."""
+    try:
+        h = (json.loads((sd / "speakers.json").read_text()).get("shots") or {}).get(cam, {}).get("history") or []
+    except (OSError, ValueError):
+        return {}
+    ff = (h[-1].get("frame_facts") or {}) if h else {}
+    return {k: f["mask"]["area"] for k, f in ff.items() if isinstance(f.get("mask"), dict) and "area" in f["mask"]}
+
+
 def edge_words(edge: list, cast: dict | None = None) -> str:
     """Someone at the frame's edge with the head out of it: only a shoulder and clothes, said as that person's own
     clothes (told only "clothes", the redraw dressed a man in armour in the velvet of the person beside him)."""
@@ -627,8 +640,8 @@ def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = 
         who = w["subj"].capitalize() if len(ppl) == 1 else nm[k][0].upper() + nm[k][1:]
         if same and len(ppl) > 1 and not wb:
             return f"Each wears {wr}."
-        if not wb and not str(wr or "").strip():        # (a creature wears nothing: "It wears ." was said of one)
-            continue
+        if not str((wb if wb and max(ang, bdeg) > 100 else wr) or "").strip():
+            continue                             # (a creature wears nothing: "It wears ." was said of one)
         out.append(f"{who} is seen from behind: we see only {wb}." if wb and max(ang, bdeg) > 100
                    else f"{who} wears {wr}.")
         if neck and max(ang, bdeg) <= 100 and w.get("wear"):
@@ -765,6 +778,10 @@ def main():
             out_heads = heads_out(res, cam)
             edge = [x for x in ppl if x[0] in out_heads and len(ppl) > 1]
             ppl = [x for x in ppl if x not in edge]
+            # (a sliver of someone at the edge is not said: told of a dress at the edge where 1.5% of a woman showed
+            # beside a beast's head, the redraw painted the dress over the beast, 11-18)
+            seen = seen_share(sd, cam)
+            edge = [x for x in edge if seen.get(x[0], 1.0) >= EDGE_MIN]
             seats = seats_of(ppl, sh)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
