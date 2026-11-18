@@ -38,6 +38,7 @@ ap.add_argument("--clips", default="", help="comma list of clip folder names to 
 ap.add_argument("--holdout", type=int, default=0, help="hold out every Nth frame (never the first) for PSNR")
 ap.add_argument("--app-opt", type=int, default=1, help="per-frame colour gain/bias")
 ap.add_argument("--mesh-renders", type=int, default=1)
+ap.add_argument("--init-recon", default="", help="start from the masked depth points of this recon (pred.npz + masks)")
 a = ap.parse_args()
 t0 = time.time()
 dev = "cuda"
@@ -101,6 +102,32 @@ bw = torch.cat([1 - s1, s1 * (1 - r2), s1 * r2], 1)
 means = (tri[pick] * bw[..., None]).sum(1)
 cols = (C[Fc[pick]] * bw[..., None]).sum(1)
 spacing = math.sqrt(float(area.sum()) / a.init_n)
+if a.init_recon:
+    # every masked depth pixel of the training frames, in the asset frame (fuse.py's transform)
+    RP = np.load(Path(a.init_recon) / "pred.npz")
+    Bm = torch.tensor(fj["B"], device=dev, dtype=torch.float32)
+    cen = torch.tensor(fj["centre"], device=dev, dtype=torch.float32)
+    off = torch.tensor(fj["offset"], device=dev, dtype=torch.float32)
+    pts_, cols_ = [], []
+    for f in frames:
+        i_ = f["i"]
+        d_ = torch.from_numpy(RP["depth"][i_]).to(dev)
+        m_ = torch.from_numpy(np.asarray(Image.open(Path(a.masks) / f"m_{i_:03d}.png"))).to(dev) > 127
+        Kp = torch.from_numpy(RP["K"][i_]).to(dev)
+        w2c_ = torch.eye(4, device=dev)
+        w2c_[:3] = torch.from_numpy(RP["w2c"][i_]).to(dev)
+        c2w_ = torch.linalg.inv(w2c_)
+        vv_, uu_ = torch.nonzero(m_, as_tuple=True)
+        z_ = d_[vv_, uu_]
+        xc = torch.stack([(uu_ + 0.5 - Kp[0, 2]) / Kp[0, 0] * z_, (vv_ + 0.5 - Kp[1, 2]) / Kp[1, 1] * z_, z_], -1)
+        Xw = xc @ c2w_[:3, :3].T + c2w_[:3, 3]
+        pts_.append(((Xw - cen) @ Bm.T - off) * fj["m_per_unit"])
+        cols_.append(torch.from_numpy(RP["img"][i_]).to(dev)[vv_, uu_].float() / 255)
+    P_ = torch.cat(pts_)
+    C_ = torch.cat(cols_)
+    sel_ = torch.randperm(len(P_), device=dev)[:a.init_n]
+    means, cols = P_[sel_], C_[sel_]
+    del RP, pts_, cols_, P_, C_
 scene = float((V.max(0).values - V.min(0).values).max())
 SH0 = 0.28209479177387814
 params = torch.nn.ParameterDict({
@@ -194,6 +221,17 @@ for step in range(a.iters):
     loss = loss + 1e-3 * dpose.pow(2).mean() + 1e-3 * app.pow(2).mean()
     strategy.step_pre_backward(params, opts, sstate, step, info)
     loss.backward()
+    # the ROCm port's backward leaves non-finite gradients on some splats (measured in the toy fit: culled and
+    # tiny ones); their true gradient is zero, so zero them before Adam and the densifier read them
+    nonfinite = 0
+    for p_ in list(params.values()) + [dpose, app]:
+        if p_.grad is not None:
+            bad_ = ~torch.isfinite(p_.grad)
+            nonfinite += int(bad_.any(-1).sum()) if p_.grad.dim() > 1 else int(bad_.sum())
+            p_.grad.nan_to_num_(0.0, 0.0, 0.0)
+    for k_ in ("means2d", "gradient_2dgs"):
+        if k_ in info and getattr(info[k_], "grad", None) is not None:
+            info[k_].grad.nan_to_num_(0.0, 0.0, 0.0)
     for o_ in opts.values():
         o_.step()
         o_.zero_grad(set_to_none=True)
@@ -202,7 +240,8 @@ for step in range(a.iters):
     sched.step()
     strategy.step_post_backward(params, opts, sstate, step, info, packed=False)
     if step % 500 == 0 or step == a.iters - 1:
-        msg = f"step {step} loss {float(loss):.4f} l1 {float(l1):.4f} n {len(params['means'])} {time.time() - t0:.0f}s"
+        msg = (f"step {step} loss {float(loss):.4f} l1 {float(l1):.4f} n {len(params['means'])} "
+               f"nonfinite-grad rows {nonfinite} {time.time() - t0:.0f}s")
         print(msg, flush=True)
         log.append(msg)
 t_train = time.time() - t0 - t_setup

@@ -24,9 +24,11 @@ ap = argparse.ArgumentParser()
 ap.add_argument("recon")
 ap.add_argument("out")
 ap.add_argument("--res", type=int, default=384, help="voxels along the longest axis")
-ap.add_argument("--length-m", type=float, default=10.0, help="the subject's length in metres")
+ap.add_argument("--length-m", type=float, default=11.7, help="the subject's length (asset Y) in metres")
 ap.add_argument("--drop-frac", type=float, default=0.1, help="drop this fraction of the least consistent frames")
-ap.add_argument("--carve-votes", type=int, default=3, help="a voxel is carved when this many views see it outside")
+ap.add_argument("--carve-votes", type=int, default=0, help="a voxel is carved when this many views see it outside")
+ap.add_argument("--carve-frac", type=float, default=0.2,
+                help="... or this fraction of the views that see it (tolerates a subject that moves; used when votes=0)")
 ap.add_argument("--trunc-vox", type=float, default=4.0)
 ap.add_argument("--use-depth", type=int, default=1)
 ap.add_argument("--smooth", type=int, default=8)
@@ -151,21 +153,65 @@ gp = torch.stack([rel @ e1, rel @ e2], -1)
 ev, evec = torch.linalg.eigh(gp.T @ gp)
 ax = evec[:, 1]
 xa = ax[0] * e1 + ax[1] * e2
+# the head: the taller end of the long axis; the asset frame (the chain's) has the front at -Y
+xs_ = rel @ xa
+lo_e, hi_e = torch.quantile(xs_[::3], 0.15), torch.quantile(xs_[::3], 0.85)
+if float(h[xs_ < lo_e].max()) > float(h[xs_ > hi_e].max()):
+    xa = -xa
 ya = torch.cross(up, xa, dim=0)
-B = torch.stack([xa, ya, up])                                        # rows: asset axes in world
+B = torch.stack([ya, -xa, up])                                       # rows: asset axes in world (head -> -Y)
 loc = rel @ B.T
-lo = torch.quantile(loc[::3], 0.002, dim=0)
-hi = torch.quantile(loc[::3], 0.998, dim=0)
-pad = (hi - lo) * 0.08
-lo, hi = lo - pad, hi + pad
+lo = torch.quantile(loc[::3], 0.01, dim=0)
+hi = torch.quantile(loc[::3], 0.99, dim=0)
 lo[2] = cams["floor_h"] - float(centre @ up) - 0.002 * float(hi[2] - lo[2])
-vox = float((hi - lo).max()) / a.res
-dims = ((hi - lo) / vox).ceil().long() + 1
-nx, ny, nz = [int(x) for x in dims]
-gx = lo[0] + vox * torch.arange(nx, device=dev)
-gy = lo[1] + vox * torch.arange(ny, device=dev)
-gz = lo[2] + vox * torch.arange(nz, device=dev)
-print(f"grid {nx}x{ny}x{nz}, voxel {vox:.4f} world units", flush=True)
+def build(lo, hi, res, use_depth):
+    """visual-hull votes and the depth TSDF on a grid over the box lo..hi (asset-local axes, world units)"""
+    global gx, gy, gz, nx, ny, nz, vox, tau
+    vox = float((hi - lo).max()) / res
+    dims = ((hi - lo) / vox).ceil().long() + 1
+    nx, ny, nz = [int(x) for x in dims]
+    gx = lo[0] + vox * torch.arange(nx, device=dev)
+    gy = lo[1] + vox * torch.arange(ny, device=dev)
+    gz = lo[2] + vox * torch.arange(nz, device=dev)
+    print(f"grid {nx}x{ny}x{nz}, voxel {vox:.4f} world units", flush=True)
+
+
+    tau = a.trunc_vox * vox
+    tsdf = torch.zeros(nx, ny, nz, device=dev)
+    wsum = torch.zeros(nx, ny, nz, device=dev)
+    outv = torch.zeros(nx, ny, nz, device=dev, dtype=torch.int16)
+    seen = torch.zeros(nx, ny, nz, device=dev, dtype=torch.int16)
+    slab = max(1, int(4e6 // (ny * nz)))
+    for s0 in range(0, nx, slab):
+        ix = torch.arange(s0, min(nx, s0 + slab), device=dev)
+        X = world_of(ix)
+        ts = torch.zeros(len(X), device=dev)
+        ws = torch.zeros(len(X), device=dev)
+        ov = torch.zeros(len(X), device=dev, dtype=torch.int16)
+        sn = torch.zeros(len(X), device=dev, dtype=torch.int16)
+        for i in keep:
+            u, v, z = project(X, i)
+            m, ok = sample(mask_d, i, u, v)
+            ok = ok & (z > 0)
+            sn += ok.short()
+            ov += (ok & ~m).short()
+            if use_depth:
+                d, _ = sample(depth, i, u, v)
+                mm, _ = sample(mask, i, u, v)
+                c, _ = sample(conf, i, u, v)
+                sdf = d - z
+                use = ok & mm & (sdf > -tau)
+                w = wf_t[i] * c.clamp(max=10) * (3.0 if i == 0 else 1.0)
+                ts += torch.where(use, sdf.clamp(max=tau) * w, 0)
+                ws += torch.where(use, w, 0)
+        sl = (slice(s0, s0 + len(ix)),)
+        tsdf[sl] = (ts / ws.clamp(min=1e-6)).view(len(ix), ny, nz)
+        wsum[sl] = ws.view(len(ix), ny, nz)
+        outv[sl] = ov.view(len(ix), ny, nz)
+        seen[sl] = sn.view(len(ix), ny, nz)
+    lim = a.carve_votes if a.carve_votes else (a.carve_frac * seen.float()).clamp(min=1)
+    hull = (outv < lim) & (seen > len(keep) * 0.3)
+    return tsdf, wsum, hull
 
 
 def world_of(ix_slab):
@@ -175,40 +221,15 @@ def world_of(ix_slab):
     return L @ B + centre
 
 
-tau = a.trunc_vox * vox
-tsdf = torch.zeros(nx, ny, nz, device=dev)
-wsum = torch.zeros(nx, ny, nz, device=dev)
-outv = torch.zeros(nx, ny, nz, device=dev, dtype=torch.int16)
-seen = torch.zeros(nx, ny, nz, device=dev, dtype=torch.int16)
-slab = max(1, int(4e6 // (ny * nz)))
-for s0 in range(0, nx, slab):
-    ix = torch.arange(s0, min(nx, s0 + slab), device=dev)
-    X = world_of(ix)
-    ts = torch.zeros(len(X), device=dev)
-    ws = torch.zeros(len(X), device=dev)
-    ov = torch.zeros(len(X), device=dev, dtype=torch.int16)
-    sn = torch.zeros(len(X), device=dev, dtype=torch.int16)
-    for i in keep:
-        u, v, z = project(X, i)
-        m, ok = sample(mask_d, i, u, v)
-        ok = ok & (z > 0)
-        sn += ok.short()
-        ov += (ok & ~m).short()
-        if a.use_depth:
-            d, _ = sample(depth, i, u, v)
-            mm, _ = sample(mask, i, u, v)
-            c, _ = sample(conf, i, u, v)
-            sdf = d - z
-            use = ok & mm & (sdf > -tau)
-            w = wf_t[i] * c.clamp(max=10) * (3.0 if i == 0 else 1.0)
-            ts += torch.where(use, sdf.clamp(max=tau) * w, 0)
-            ws += torch.where(use, w, 0)
-    sl = (slice(s0, s0 + len(ix)),)
-    tsdf[sl] = (ts / ws.clamp(min=1e-6)).view(len(ix), ny, nz)
-    wsum[sl] = ws.view(len(ix), ny, nz)
-    outv[sl] = ov.view(len(ix), ny, nz)
-    seen[sl] = sn.view(len(ix), ny, nz)
-hull = (outv < a.carve_votes) & (seen > len(keep) * 0.3)
+# coarse pass over a generous box, then the fine grid over the hull's own box
+pad = (hi - lo) * 0.3
+_, _, hull_c = build(lo - pad, hi + pad, 96, False)
+nzv = torch.nonzero(hull_c).float()
+lo2 = (lo - pad) + vox * (torch.quantile(nzv, 0.0005, dim=0) - 2)
+hi2 = (lo - pad) + vox * (torch.quantile(nzv, 0.9995, dim=0) + 2)
+lo2[2] = max(float(lo2[2]), float(lo[2]))
+tsdf, wsum, hull = build(lo2, hi2, a.res, a.use_depth)
+lo = lo2
 # field: negative inside. Hull alone gives -tau inside, +tau outside; the depth TSDF refines it where observed.
 field = torch.where(hull, -tau * torch.ones_like(tsdf), tau * torch.ones_like(tsdf))
 if a.use_depth:
@@ -348,7 +369,7 @@ seen_v = cw > 0
 t_col = time.time() - t0 - t_cons - t_fuse - t_mesh
 
 # ---------------- asset frame: metres, Z up, origin on the floor under the centre, X along the long axis
-length = float(V[:, 0].max() - V[:, 0].min())
+length = float(V[:, 1].max() - V[:, 1].min())
 mpu = a.length_m / length
 Va = (V - torch.tensor([float((V[:, 0].max() + V[:, 0].min()) / 2), float((V[:, 1].max() + V[:, 1].min()) / 2),
                         float(lo[2])], device=dev)) * mpu

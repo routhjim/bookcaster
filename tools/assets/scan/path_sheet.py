@@ -10,6 +10,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import matplotlib.patches  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -33,7 +34,9 @@ for name, colr in (("L", "tab:blue"), ("R", "tab:orange")):
 s = ~np.isin(clip, ["L", "R"])
 ax.plot(c[s, 0], c[s, 1], "*", color="k", ms=14, label="drawing")
 ax.plot(c[~kept, 0], c[~kept, 1], "x", color="r", ms=8, label="dropped")
-ax.plot([-5, 5], [0, 0], "-", color="g", lw=4, label="subject long axis (10 m)")
+ex = cj["extent_m"]
+ax.add_patch(matplotlib.patches.Rectangle((-ex[0] / 2, -ex[1] / 2), ex[0], ex[1], color="g", alpha=0.5,
+                                          label=f"subject box {ex[0]:.1f} x {ex[1]:.1f} m (head at -Y)"))
 ax.set_aspect("equal")
 ax.legend()
 ax.set_title("camera centres, top view (m)")

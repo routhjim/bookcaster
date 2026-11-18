@@ -186,7 +186,7 @@ def load_records(library=None):
                      "description": d.get("description", ""), "size_m": d.get("size_m"),
                      "dims_m": (d.get("blender") or {}).get("dims_m"), "_replaced_by": d.get("replaced_by"),
                      "seat": d.get("seat"), "lie": d.get("lie"), "variant_of": d.get("variant_of"),
-                     "placement": d.get("placement"),
+                     "placement": d.get("placement"), "panorama_people": d.get("panorama_people"),
                      "variant": d.get("variant"), "look": d.get("look", ""), "piece_kind": d.get("piece_kind"),
                      "source": d.get("source", ""), "replaces": d.get("replaces") or spec.get("replaces"),
                      "ok": "not_passed" not in status and "delete" not in status,
@@ -222,11 +222,25 @@ def _lab_of_words(tokens):
     return tuple(sum(c[i] for c in labs) / len(labs) for i in range(3))
 
 
+SEEN_SIZE_K = (0.5, 1.8)           # a piece's size from its concept picture is kept within this much of its kind's
+
+
 def _size_class(size_m, default):
     if not size_m or not default:
         return None
     r = max(size_m) / max(default)
     return "small" if r < 0.8 else "large" if r > 1.25 else "medium"
+
+
+SHELL_SPAN_K = 1.5                      # a cabin shell may be at most this much longer than its kind's box
+
+
+def shell_too_big(size_m, want_m) -> bool:
+    """A cabin shell's longest floor side more than SHELL_SPAN_K times the size asked for. A shell takes its size
+    from its panorama's depth, and a panorama drawn with more in it than the one seat (a second seat ahead with
+    someone in it, 11-15) gave a cabin 7 m long that no stage held."""
+    return bool(size_m and want_m and len(size_m) >= 2 and len(want_m) >= 2
+                and max(size_m[:2]) > SHELL_SPAN_K * max(want_m[:2]))
 
 
 def score_record(piece, rec, K=None, table=None, allow_scripted=False):
@@ -242,6 +256,8 @@ def score_record(piece, rec, K=None, table=None, allow_scripted=False):
     # a thing made to hang on a wall does not stand on a table or the floor (11-12: a drop-dial wall clock stood on
     # the desk in front of the sitter); the record says how the asset is placed, the kind how the piece is
     if rec.get("placement") == "wall" and K[kind].get("placement") != "wall":
+        return None
+    if K[kind].get("made_as") == "shell" and shell_too_big(rec.get("size_m"), K[kind].get("size_m")):
         return None
     look_toks = [t for t in _tokens(piece.get("look", "")) if t not in _STOP]
     rec_toks = set(_tokens(" ".join([rec.get("description", ""), rec.get("look", ""), rec.get("variant") or ""]
@@ -294,15 +310,29 @@ NEED_WORDS = {"lie": "(a single tier: one mattress at knee height, open to the c
 
 
 SHELL_WORDS = (
+    # (no person is named anywhere in these words: told whose head the view was from, what they work at and where
+    # their elbows come, the drawing put that person in the cabin in four of four panoramas, 11-15)
     "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join seamlessly. "
-    "The inside of a {name}, seen from the head of the person sitting in {seat}: {look}. In the middle of the "
-    "picture, straight ahead and within arm's reach: what that person works at, and above it large panes of glass "
-    "in a heavy frame that they look out through. To the left and to the right: low consoles along the sides up to "
-    "the sitter's elbows, and above them more large panes in the same heavy frame, up to the roof. At the far left "
-    "and far right edges of the picture, which is directly behind the seat: the rear wall, solid from floor to "
-    "roof and wider than the seat, plainly seen with what is fitted to it, and low in front of it the top of the "
-    "seat's own small headrest. At the top the frame's ribs and the roof; at the bottom the seat's edge and the "
-    "floor. Empty: no people. Through every pane of glass only a plain even darkness, nothing else outside.")
+    "The inside of an empty {name}, seen from the eye point just above {seat}: {look}. In the middle of the "
+    "picture, straight ahead and within arm's reach of that seat: the controls it faces, and above them large panes "
+    "of glass in a heavy frame. To the left and to the right: low consoles along the sides at armrest height, and "
+    "above them more large panes in the same heavy frame, up to the roof. At the far left and far right edges of the "
+    "picture, which is directly behind the seat: the rear wall, solid from floor to roof and wider than the seat, "
+    "plainly seen with what is fitted to it, and low in front of it the top of the seat's own small headrest. At the "
+    "top the frame's ribs and the roof; at the bottom the seat's empty cushion and the floor. Nobody is in the "
+    "cabin: every seat is empty. Through every pane of glass only a plain even darkness, nothing else outside.")
+
+
+WORLD_WORDS = (
+    # (the place's own look comes from its concept picture, given as the reference: one view of it, continued all
+    # round. No person is named anywhere in these words: said as "the eyes of a person standing" with a part of the
+    # land "in front of that person", nine of nine panoramas had a person in them, 11-16)
+    "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join seamlessly. "
+    "{look}. The place seen all the way round from eye height over open ground in it: the horizon level straight "
+    "across the middle of the picture, the whole sky above it, and below it the bare ground straight down, open and "
+    "nearly level for several steps all round, running out to the land beyond. The reference picture is one view of "
+    "this same place: its land, its things, its light, its colours and its way of painting go on all the way round. "
+    "Empty of life: no people, no figures, no animals anywhere.")
 
 
 def generation_request(piece, K=None, python="python", tools=None, work=None):
@@ -324,10 +354,16 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
         desc = desc.replace(f"One single {name}", f"One single {name} "
                             + " ".join(NEED_WORDS[n] for n in needs if n in NEED_WORDS), 1)
     size = list(d["size_m"])
+    seen = piece.get("_seen_size_m")
+    if seen and len(seen) == 3 and d.get("sized_by") != "longest":
+        # as big as the place's concept picture has it (img3d/concept_depth.py), within reason of its kind's size
+        # (the depth model's metres are near, not exact; a box that took in a neighbour is not a size)
+        size = [round(min(SEEN_SIZE_K[1] * k, max(SEEN_SIZE_K[0] * k, float(v))), 3) for v, k in zip(seen, size)]
     if d.get("sized_by") == "longest":
         # a thing a person wears or carries: known only by its words and how long it is (the director's), so it is
         # drawn as those words say and made that long, whatever way up the shape comes
-        lng = float(piece.get("longest_m") or max(size))
+        # (as long as the place's concept picture shows it, when it does: the director's number is a guess)
+        lng = float((max(seen) if seen and len(seen) == 3 else None) or piece.get("longest_m") or max(size))
         size = [lng, lng, lng]
         desc = f"One single object, alone: {look}. The whole object in view on a plain floor, nothing else in the picture."
     spec = {"id": aid, "class": "prop", "description": f"{name}: {look}. Front -Y." if look else f"{name}. Front -Y.",
@@ -342,6 +378,38 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
+    if d.get("made_as") == "world":
+        # a place in the open is made from where its people stand: one panorama of it from a standing eye, drawn with
+        # the place's concept picture as its reference, then a shell of the land with a sky dome and a flat ground
+        # patch under the eye (img3d/pano_shell.py --outdoor). Its size is the shell's own.
+        spec["made_as"] = "world"
+        if piece.get("spot"):
+            spec["spot"] = piece["spot"]
+        if piece.get("marks"):               # the land's own things the plan sends people to: found in the panorama
+            spec["marks"] = dict(piece["marks"])
+        aid = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
+                        + (" " + piece["spot"] if piece.get("spot") else "")
+                        + (" " + str(piece["source"]) if piece.get("source") else ""))
+        spec["id"] = aid
+        steps = [
+            {"step": "draw", "what": "one panorama of the place from a standing eye", "station": C.IMAGE_STATION,
+             "kind": "refs", "picture": "picture.png",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{aid}", "--",
+                             python, str(tools / "refs" / "ref_draw.py"), "picture", aid, "--desc",
+                             WORLD_WORDS.format(look=look.rstrip("."))
+                             + (f" A few steps ahead, close by: {piece['spot']}." if piece.get("spot")
+                                else ""), "--size", "2048", "1024", "--seed", "{seed}"]
+                     + (["--sources", str(piece["source"])] if piece.get("source") else []),
+             "gate": "nobody in the panorama", "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS}"},
+            {"step": "spec", "what": "the piece's source spec", "write": f"<library>/prop/{aid}/source/spec.json",
+             "spec": spec},
+            {"step": "shape", "what": "the panorama's depth as the land, a sky dome and the ground under the eye, then "
+             "the asset chain", "station": C.IMAGE_STATION, "kind": "shape",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "shape", "--id", f"gen_shape_{aid}", "--log",
+                             str(work / f"{aid}.log"), "--", python, str(tools / "img3d" / "shell_one.py"), aid],
+             "result_id": f"{aid}_tr", "gate": "the asset's own checks pass", "on_fail": "re-draw with the next seed"}]
+        return {"kind": kind, "look": look, "size_m": d["size_m"], "needs": needs, "asset_id": f"{aid}_tr",
+                "dry_run": True, "plan": {"draw_id": aid, "max_redraws": MAX_REDRAWS, "steps": steps}}
     if d.get("made_as") == "shell":
         # a thing people sit inside is made from within: one panorama of its inside from its seat, then a shell of
         # what that shows (img3d/pano_shell.py). Its size and its seat are the shell's own, not the kind's.
@@ -428,14 +496,24 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
             row.update(status="unresolved", reason=f"kind {p.get('kind')!r} is not in PIECE_KINDS")
         else:
             hits = lookup(p, records, K, threshold, allow_scripted)
-            if p.get("source") or K[p["kind"]].get("sized_by") == "longest":
+            if K[p["kind"]].get("made_as") == "shell":
+                # a cabin shell is drawn from the look's words, not from the place's concept picture: a shell made
+                # for the same kind and look serves, so a re-planned place keeps the cabin it was staged in (a
+                # director's re-wording of the same cockpit drew a new cabin each time, 11-15). Only shells, and
+                # none that shows someone in its panorama.
+                hits = [h for h in hits if "panorama_shell" in (next((r for r in records
+                        if r["asset_id"] == h["asset_id"]), {}).get("tags") or [])
+                        and not next((r for r in records if r["asset_id"] == h["asset_id"]), {}).get("panorama_people")]
+            elif p.get("source") or K[p["kind"]].get("sized_by") == "longest" or K[p["kind"]].get("made_as") == "world":
                 # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
                 # the asset already made from that same picture serves, never a near match by words. So is a thing
                 # worn or carried: a kind that holds any object, where a near match by words is another object
                 want = generation_request(p, K)["asset_id"]
                 hits = [h for h in hits if h["asset_id"] == want] or \
                     [{"asset_id": want, "score": 1.0, "why": "made from this piece's own picture", "others": []}
-                     for r in records if r["asset_id"] == want][:1]
+                     for r in records if r["asset_id"] == want
+                     and not (K[p["kind"]].get("made_as") == "shell"
+                              and shell_too_big(r.get("size_m"), K[p["kind"]].get("size_m")))][:1]
             if hits:
                 row.update(status="library", asset_id=hits[0]["asset_id"], score=hits[0]["score"],
                            why=hits[0]["why"], others=[{"asset_id": h["asset_id"], "score": h["score"]}

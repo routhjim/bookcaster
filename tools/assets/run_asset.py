@@ -452,7 +452,8 @@ def sched_env():
     # the line sets ASSETS_LINE_* and ASSETS_IMAGE_DEVICE for the tools it runs, and tools have their own
     # ASSETS_TRELLIS_* settings: none of them is a chain setting, so a tool that submits a job from inside a line
     # entry still reaches the line instead of running privately
-    skip = ("ASSETS_SCHED", "ASSETS_UE_JOB", "ASSETS_IMAGE_DEVICE")
+    # (ASSETS_SHELL_PY too: the interpreter the shell/world shape step runs, passed into its line job, 11-17)
+    skip = ("ASSETS_SCHED", "ASSETS_UE_JOB", "ASSETS_IMAGE_DEVICE", "ASSETS_SHELL_PY")
     return {k: v for k, v in sorted(os.environ.items())
             if (k.startswith("ASSETS_") or k == "BLENDER") and k not in skip
             and not k.startswith(("ASSETS_LINE_", "ASSETS_TRELLIS_"))}

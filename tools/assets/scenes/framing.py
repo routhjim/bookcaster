@@ -149,6 +149,27 @@ def shot(subject, kind, focal_mm, res=(1152, 640), az=0.0, el=0.0, screen_x=0.5)
             "focal_mm": focal_mm, "distance_m": round(dist, 3), "frame_h_m": round(fh, 3)}
 
 
+KEY_SIDE_DEG = 40.0         # a place in the open: the key (its sun) comes from this far round the camera's side
+KEY_EL_DEG = (20.0, 35.0)   # ... at the world's own sun height, held between these (low: no eye sockets in shade)
+
+
+def key_toward(cam_pos, eye, sun_toward, side_deg=KEY_SIDE_DEG, el_deg=KEY_EL_DEG, flip=False):
+    """A place in the open is lit by its world's sun, which the panorama puts where its sky is brightest: most often
+    in the view the cameras look into, so the people were lit from behind in most shots (11-17). For each shot the
+    key comes from the camera's side instead, side_deg round from the lens axis toward the side the world's sun is
+    on (the shadow side stays the world's), at the sun's own height held in el_deg. flip: round the lens axis's
+    other side, away from the world sun's (a shot whose face was in a body's shadow from that side: speakers.py
+    face_light_why). -> unit vector toward the light (set frame)."""
+    ca = math.atan2(cam_pos[1] - eye[1], cam_pos[0] - eye[0])
+    sa = math.atan2(sun_toward[1], sun_toward[0])
+    turn = (sa - ca + math.pi) % (2 * math.pi) - math.pi
+    a = ca + math.copysign(math.radians(side_deg), turn if abs(turn) > 1e-9 else 1.0) * (-1.0 if flip else 1.0)
+    n = math.sqrt(sum(x * x for x in sun_toward)) or 1.0
+    el = math.degrees(math.asin(max(-1.0, min(1.0, sun_toward[2] / n))))
+    e = math.radians(max(el_deg[0], min(el_deg[1], el)))
+    return [round(math.cos(a) * math.cos(e), 5), round(math.sin(a) * math.cos(e), 5), round(math.sin(e), 5)]
+
+
 def project(cam, p, res=(1152, 640)):
     """Set-frame point -> (u, v, depth): u, v in 0..1 from the frame's top-left; depth along the view (m)."""
     d0 = [cam["target"][i] - cam["position"][i] for i in range(3)]

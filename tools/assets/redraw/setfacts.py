@@ -30,7 +30,10 @@ def _size(lib: Path, asset: str) -> list:
     for cls in ("prop", "set", "character"):
         p = lib / cls / asset / "asset.json"
         if p.exists():
-            return json.loads(p.read_text()).get("size_m") or [0.5, 0.5, 0.5]
+            # a made model's measured box (its recorded size is only the cube it was asked to fit in: an anvil
+            # 0.86 m high was stood at and reached for as 1.0 m high and 1.0 m deep)
+            j = json.loads(p.read_text())
+            return (j.get("blender") or {}).get("dims_m") or j.get("size_m") or [0.5, 0.5, 0.5]
     return [0.5, 0.5, 0.5]
 
 
@@ -86,6 +89,10 @@ def things(set_dir) -> list:
                  "on": f.get("on"), "lit": False, "fire": False}
             out.append(t)
             by_name[f["name"]] = t
+    for mk in spec.get("marks", []):         # a thing of the land itself (a place in the open): a place on the ground
+        out.append({"name": mk["name"], "asset": None, "kind": "mark", "short": mk.get("look") or mk["name"],
+                    "look": mk.get("look") or "", "center": [mk["position"][0], mk["position"][1], 0.0],
+                    "half": [0.0, 0.0, 0.0], "toward": mk.get("toward"), "on": None, "lit": False, "fire": False})
     for w in spec.get("structure", []):
         if w.get("kind") != "wall":
             continue

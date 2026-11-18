@@ -9,6 +9,7 @@ Spec keys:
     "rough"        [lo, hi]: roughness from luminance, bright -> lo, dark -> hi              [0.45, 0.8]
     "keep_uvs": true (the port's atlas is non-overlapping and inside 0-1)
     "seen_from_inside": true for a shell whose faces look inward (img3d/pano_shell.py): its winding is kept
+    "emit_texture" strength: the texture also as emission (an outdoor place's land and sky give their own light)
 
 The port gives base colour only. A normal map and a roughness map are derived here as node maths on the colour (a
 bump from its luminance, roughness from its luminance) and the harness bakes them on its GPU like any material.
@@ -186,6 +187,9 @@ if bump_m > 0:
     nt.links.new(bp.outputs["Normal"], pr.inputs["Normal"])
 pr.inputs["Specular IOR Level"].default_value = 0.4
 pr.inputs["Metallic"].default_value = 0.0
+if SPEC.get("emit_texture"):            # a place's land and sky that give their own picture's light (img3d/shell_one.py)
+    nt.links.new(tx.outputs["Color"], pr.inputs["Emission Color"])
+    pr.inputs["Emission Strength"].default_value = float(SPEC["emit_texture"])
 ob.data.materials.clear()
 ob.data.materials.append(m)
 for p in ob.data.polygons:

@@ -187,11 +187,24 @@ if JOB.get("stills", True):
     lo = np.array([min(v[i] for v in xyz) for i in range(3)])
     hi = np.array([max(v[i] for v in xyz) for i in range(3)])
     c = (lo + hi) / 2
-    dist = float(np.linalg.norm(hi - lo)) * 1.05
+    cam.data.lens = 40
+    # the rest pose's bounding box, grown by "frame_margin" for limbs that leave it, inside both the width and the
+    # height of the picture: per box corner, the distance at which it sits on the picture's edge
+    px_ = JOB.get("px", [768, 512])
+    tw = 18.0 / cam.data.lens
+    th = tw * px_[1] / px_[0]
     d = Vector(JOB.get("view_dir", (0.9, -0.8, 0.35))).normalized()   # from the creature's front-left
+    right = d.cross(Vector((0, 0, 1))).normalized()
+    up = right.cross(d).normalized()
+    mg = float(JOB.get("frame_margin", 1.1))
+    dist = 0.0
+    for cx in (lo[0], hi[0]):
+        for cy in (lo[1], hi[1]):
+            for cz in (lo[2], hi[2]):
+                q = (Vector((cx, cy, cz)) - Vector(c)) * mg
+                dist = max(dist, q.dot(d) + abs(q.dot(right)) / tw, q.dot(d) + abs(q.dot(up)) / th)
     cam.location = Vector(c) + d * dist
     cam.rotation_euler = (Vector(c) - cam.location).to_track_quat("-Z", "Y").to_euler()
-    cam.data.lens = 40
     for f, pz in enumerate(poses, start=1):
         sc.frame_set(f)
         sc.render.filepath = os.path.join(OUT, f"pose_{f - 1}_{pz['name']}.png")

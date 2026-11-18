@@ -144,6 +144,8 @@ def build(set_id, level, scene):
         cache[a["path"]] = sm
         x = act.spawn_actor_from_class(unreal.StaticMeshActor, V(a["c"]), unreal.Rotator(0, 0, a["yaw"]))
         x.static_mesh_component.set_static_mesh(sm)
+        if a.get("no_shadow"):               # (a world shell: lit by its own picture, it shades nobody)
+            x.static_mesh_component.set_editor_property("cast_shadow", False)
         x.set_actor_label(a["name"])
         x.set_folder_path(a["f"])
     t["assets"] = round(time.time() - t1, 2)

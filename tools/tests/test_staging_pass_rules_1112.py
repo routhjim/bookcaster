@@ -179,7 +179,7 @@ def test_the_start_action_question_offers_none_first_and_no_gaze(scene, monkeypa
     assert opts[0] == "none" and opts[-1] == P.NOT
     assert "Most shots begin with no special action" in q
     assert not any("look" == o or o.startswith("look ") for o in opts) and "look" not in P.POSES
-    assert set(P.POSES) <= set(opts)
+    assert set(P.POSES) <= {o.split(" (")[0] for o in opts}          # (each offered with its plain words)
 
 
 def test_presence_changes_only_on_a_stated_exit_and_entrance(scene, monkeypatch):
@@ -285,3 +285,19 @@ def test_worn_and_carried_things_are_kept_as_the_director_gives_them_and_checked
     assert [t["what"] for t in got["s1"]["Ann"]] == ["hat", "lamp"] and "Bob" not in got["s1"]   # (a place's part, a blank and a stranger are out)
     assert got["s1"]["Ann"][1]["goes_on"] is None and got["s1"]["Ann"][0]["goes_on"] == "head"
     assert got["s2"]["Ann"][0] == {"what": "hat", "on": "held", "goes_on": "head", "size_cm": None}  # (no usable size)
+
+
+def test_a_held_part_of_a_fixed_thing_is_no_prop_and_a_held_thing_gets_its_look_alone(tmp_path, monkeypatch):
+    import place_spec as PS
+    plan = {"s1": ({"people": [{"name": "Ann"}], "action": "Ann pumps."}, None)}
+    def fake(url, text, cache):
+        if text.startswith("In a scene this happens"):
+            return "part" if "handle" in text else "whole"
+        if "A prop maker must make" in text:
+            return "A short grey bar with a crack across one face."
+        return json.dumps({"s1": {"Ann": [{"what": "pump handle", "on": "held", "size_cm": 30},
+                                          {"what": "bar", "on": "worked", "size_cm": 40}]}})
+    monkeypatch.setattr(PS, "ask", fake)
+    got = PS.things(plan, ["s1"], "a shed", [], "http://x", tmp_path)
+    assert [t["what"] for t in got["s1"]["Ann"]] == ["bar"]
+    assert got["s1"]["Ann"][0]["look"].startswith("A short grey bar")

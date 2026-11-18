@@ -323,3 +323,16 @@ def test_subject_shown_with_others_may_be_in_profile():
     assert SP.subject_face_why({"camera": c}, "b", side, RES, shared=True) == []
     away = {"b": S.person([0, 0], facing=[0, 1])}                     # the back of her head: never
     assert any("turned from the camera" in x for x in SP.subject_face_why({"camera": c}, "b", away, RES, shared=True))
+
+
+def test_a_leaderless_shots_subject_may_not_be_a_back_filling_the_frame(tmp_path):
+    # (11-18) nobody leads the shot; its subject seen from behind, the camera a step behind their head
+    subj = {"a": S.person([0, 3.0]), "d": S.person([0, 0], facing=[0, 1])}
+    near = S.cam([0.0, -0.45, 1.6], [0.0, 3.0, 1.5], 50)
+    sh = _shot(tmp_path, near, subj, "near")
+    w, facts = SP.framing_why(near, "medium", None, None, False, None, subj, RES, sh, {"subject": "d"})
+    assert facts["d"]["mask"]["area"] > SP.BACK_AREA and any("d, turned away, covers" in x for x in w)
+    far = S.cam([0.0, -3.5, 1.6], [0.0, 3.0, 1.5], 50)       # their back in a modest share: a staging choice
+    sh2 = _shot(tmp_path, far, subj, "far")
+    w2, f2 = SP.framing_why(far, "medium", None, None, False, None, subj, RES, sh2, {"subject": "d"})
+    assert f2["d"]["mask"]["area"] <= SP.BACK_AREA and not any("turned away, covers" in x for x in w2)

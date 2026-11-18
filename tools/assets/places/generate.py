@@ -42,19 +42,131 @@ def record(aid: str, library: Path) -> Path | None:
     return p if p.exists() else None
 
 
+LINE_ENV = ("ASSETS_TRELLIS_OMP", "ASSETS_SHELL_PY")   # what a shape job needs from this run's environment
+
+
+def line_env() -> list:
+    """`env K=V ...` for a line job: the line runs jobs in its own environment, so the shape step's settings are
+    passed in the command (without ASSETS_SHELL_PY an outdoor world ran under a python with no trimesh, 11-17)."""
+    kv = [f"{k}={os.environ[k]}" for k in LINE_ENV if os.environ.get(k)]
+    return ["env"] + kv if kv else []
+
+
 def _clear(did: str, aid: str, library: Path) -> None:
     """A try that failed its gate is taken away whole: the next seed draws and shapes afresh."""
     import shutil
     for d in (REFS / did, library / "prop" / did, library / "prop" / aid):
         shutil.rmtree(d, ignore_errors=True)
     for f in (C.UE_HOME / "lab" / "img3d_props").glob(f"{did}*"):
-        f.unlink() if f.is_file() else shutil.rmtree(f, ignore_errors=True)
+        if f.is_file() and ".failed" in f.name:
+            continue
+        if f.is_file() and f.suffix == ".log":           # (the failed try's log is kept, renamed, to read why)
+            f.replace(f.with_name(f"{f.stem}.failed{int(time.time())}.log"))
+        else:
+            f.unlink() if f.is_file() else shutil.rmtree(f, ignore_errors=True)
 
 
 def tiered(aid: str, library: Path) -> bool:
     """The made bed has a tier above its mattress (its measured lying support says so)."""
     rp = record(aid, library)
     return bool(rp) and any(x.get("posture") == "lying" and x.get("tiers") for x in json.loads(rp.read_text()).get("supports") or [])
+
+
+COUNT_SH = Path(os.environ.get("STORY_COUNT_SH", C.UE_HOME / "lab" / "redraw5" / "count.sh"))
+
+
+def people_in(pics: dict, run, work: Path) -> dict:
+    """{id: how many people each picture shows} (redraw/count_people.py through the line, one job for them all);
+    {} when the count could not be made."""
+    work.mkdir(parents=True, exist_ok=True)
+    cj = work / "count.json"
+    cj.write_text(json.dumps({"out": str(work / "people.json"),
+                              "items": [{"id": k, "path": str(v)} for k, v in pics.items()]}, indent=1))
+    (work / "people.json").unlink(missing_ok=True)
+    r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", C.IMAGE_STATION, "check", "--id",
+             f"count_{work.name}", "--log", str(work / "count.log"), "--", "bash", str(COUNT_SH), str(cj)])
+    if r.returncode or not (work / "people.json").exists():
+        return {}
+    return {k: len(v.get("boxes") or []) for k, v in json.loads((work / "people.json").read_text()).items()}
+
+
+def nobody_seen(did: str, pic: Path, run) -> bool:
+    """True when the vision judge sees a person in a place's panorama (scenes/concept.py --nobody, through the line).
+    A person drawn into the panorama becomes a smeared sheet standing in the place (11-16: a man on the path of a
+    river bank's panorama, with the people count not to hand)."""
+    r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", "igpu", "choose", "--id",
+             f"gen_nobody_{did}", "--", str(os.environ.get("STORY_VENV_PY") or sys.executable),
+             str(HERE.parent / "scenes" / "concept.py"), "--nobody", str(pic)])
+    log(f"{did}: someone in the panorama: {'yes' if r.returncode == 1 else 'no' if r.returncode == 0 else 'not judged'}")
+    return r.returncode == 1
+
+
+def count_shells(library: Path, run) -> None:
+    """Every cabin shell in the library whose panorama has not been counted gets its count ("panorama_people" in
+    its record): the lookup passes over a shell that shows someone (a person drawn into the panorama is built into
+    the cabin, a second pilot in every shot staged in it)."""
+    todo = {}
+    for rp in sorted((library / "prop").glob("*/asset.json")):
+        rec = json.loads(rp.read_text())
+        if "panorama_shell" in (rec.get("tags") or []) and "panorama_people" not in rec:
+            pic = REFS / rp.parent.name.removesuffix("_tr") / "picture.png"
+            if pic.exists():
+                todo[rp.parent.name] = pic
+    if not todo:
+        return
+    got = people_in(todo, run, C.UE_HOME / "lab" / "img3d_props" / "count_shells")
+    for aid, n in got.items():
+        rp = library / "prop" / aid / "asset.json"
+        rec = json.loads(rp.read_text())
+        rec["panorama_people"] = n
+        rp.write_text(json.dumps(rec, indent=1))
+        log(f"{aid}: {n} people in its panorama")
+
+
+def reshape_shell(aid: str, library: Path, run) -> dict:
+    """A library cabin shell of an older build (img3d/pano_shell.py SHELL_BUILD), made again from its own panorama:
+    same picture, same seat, the current build's shell (the backing hull that closes its tears, 11-15). Its record
+    keeps what was learned about it (kind, look, seats, the people count)."""
+    import shutil
+    sys.path.insert(0, str(HERE.parent / "img3d"))
+    import pano_shell
+    rp = record(aid, library)
+    rec = json.loads(rp.read_text()) if rp else {}
+    if rec.get("shell_build", 1) >= pano_shell.SHELL_BUILD:
+        return {"asset_id": aid, "ok": True, "why": "the current build"}
+    did = aid.removesuffix("_tr")
+    keep = {k: rec[k] for k in ("piece_kind", "look", "seats_abreast", "panorama_people") if k in rec}
+    for f in (C.UE_HOME / "lab" / "img3d_props").glob(f"{did}.*"):
+        f.unlink()                                       # (the shell's mesh and facts: made again)
+    shutil.rmtree(library / "prop" / aid, ignore_errors=True)
+    env = line_env()
+    r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", C.IMAGE_STATION, "shape", "--id",
+             f"gen_reshape_{did}", "--log", str(C.UE_HOME / "lab" / "img3d_props" / f"{did}.log"), "--"] + env
+            + [sys.executable, str(HERE.parent / "img3d" / "shell_one.py"), did])
+    t_end = time.time() + CHAIN_WAIT_S
+    while not record(aid, library) and time.time() < t_end:
+        time.sleep(10)
+    if r.returncode or not record(aid, library):
+        return {"asset_id": aid, "ok": False, "why": "the shell could not be made again"}
+    rp = record(aid, library)
+    rec = json.loads(rp.read_text())
+    rec.update(keep, shell_build=pano_shell.SHELL_BUILD)
+    rp.write_text(json.dumps(rec, indent=1))
+    run(MEASURE["seat"] + [str(library / "prop" / aid), "--write"])
+    log(f"{aid}: made again from its panorama as shell build {pano_shell.SHELL_BUILD}")
+    return {"asset_id": aid, "ok": True, "why": f"made again as shell build {pano_shell.SHELL_BUILD}"}
+
+
+def shell_too_big(req: dict, library: Path) -> str:
+    """Why a made cabin shell is not the cabin asked for (pieces.shell_too_big), or ""."""
+    rp = record(req["asset_id"], library)
+    steps = {s_["step"]: s_ for s_ in (req.get("plan") or {}).get("steps") or []}
+    if not rp or steps.get("spec", {}).get("spec", {}).get("made_as") != "shell":
+        return ""
+    got, want = json.loads(rp.read_text()).get("size_m") or [], req.get("size_m") or []
+    if not P.shell_too_big(got, want):
+        return ""
+    return f"the shell is {max(got[:2]):.1f} m long, more than {P.SHELL_SPAN_K} times the {max(want[:2]):.1f} m asked for"
 
 
 def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> dict:
@@ -70,14 +182,22 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         log(f"{did}: drawing seed {seed} rc={r.returncode}")
     if not pic.exists():
         return {"asset_id": aid, "ok": False, "why": f"no drawing ({pic.name})"}
+    shell = steps["spec"]["spec"].get("made_as") == "shell"
+    world = steps["spec"]["spec"].get("made_as") == "world"
+    if shell or world:
+        n = people_in({did: pic}, run, C.UE_HOME / "lab" / "img3d_props" / f"count_{did}").get(did)
+        if n:
+            return {"asset_id": aid, "ok": False, "why": f"its panorama shows {n} person(s) in the "
+                                                         f"{'place' if world else 'cabin'}"}
+    if world and nobody_seen(did, pic, run):
+        return {"asset_id": aid, "ok": False, "why": "the vision judge sees someone in its panorama"}
     sp = library / "prop" / did / "source" / "spec.json"
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(steps["spec"]["spec"], indent=1))
     argv = list(steps["shape"]["argv"])
-    omp = os.environ.get("ASSETS_TRELLIS_OMP")          # the line runs the job in its own environment
-    if omp and "--" in argv:
+    if line_env() and "--" in argv:                     # the line runs the job in its own environment
         i = argv.index("--") + 1
-        argv[i:i] = ["env", f"ASSETS_TRELLIS_OMP={omp}"]
+        argv[i:i] = line_env()
     r = run(argv)
     log(f"{did}: shape rc={r.returncode}")
     if r.returncode:
@@ -87,9 +207,22 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         time.sleep(10)
     if not record(aid, library):
         return {"asset_id": aid, "ok": False, "why": "no library record after the bake and import chain"}
+    big = shell_too_big(req, library)
+    if big:
+        return {"asset_id": aid, "ok": False, "why": big}
     rp0 = record(aid, library)                      # what it was made as, before anything is measured on it
     rec0 = json.loads(rp0.read_text())
     rec0.update(piece_kind=req["kind"], look=req.get("look", ""))
+    if shell:                                       # (the engine's record does not carry the shell's own facts)
+        facts = C.UE_HOME / "lab" / "img3d_props" / f"{did}.json"
+        rec0["panorama_people"] = 0
+        rec0["shell_build"] = json.loads(facts.read_text()).get("shell_build", 1) if facts.exists() else 1
+    if world:                                       # (where people stand in it, and where its light comes from)
+        facts = C.UE_HOME / "lab" / "img3d_props" / f"{did}.json"
+        fj = json.loads(facts.read_text()) if facts.exists() else {}
+        rec0["panorama_people"] = 0
+        rec0["world"] = {k: fj.get(k) for k in ("eye_m", "stand_m", "spot_m", "spot", "marks_m", "flat_r_m", "sky_r_m", "sun",
+                                                "world_build", "land")}
     if steps["spec"]["spec"].get("seats_abreast"):
         rec0["seats_abreast"] = steps["spec"]["spec"]["seats_abreast"]
     rp0.write_text(json.dumps(rec0, indent=1))
@@ -284,24 +417,51 @@ def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run, sty
     return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
 
 
+def stale_world(req: dict, library: Path) -> bool:
+    """A place's world (made_as "world") of an older build (img3d/pano_shell.py WORLD_BUILD) is taken out of the
+    library, its panorama kept: it is made again from the same picture."""
+    import shutil
+    steps = {s_["step"]: s_ for s_ in (req.get("plan") or {}).get("steps") or []}
+    rp = record(req["asset_id"], library)
+    if not rp or steps.get("spec", {}).get("spec", {}).get("made_as") != "world":
+        return False
+    sys.path.insert(0, str(HERE.parent / "img3d"))
+    import pano_shell
+    if ((json.loads(rp.read_text()).get("world") or {}).get("world_build") or 1) >= pano_shell.WORLD_BUILD:
+        return False
+    did = req["plan"]["draw_id"]
+    for d in (library / "prop" / did, library / "prop" / req["asset_id"]):
+        shutil.rmtree(d, ignore_errors=True)
+    for f in (C.UE_HOME / "lab" / "img3d_props").glob(f"{did}*"):
+        if f.is_file() and f.suffix in (".glb", ".json", ".png"):
+            f.unlink()
+    log(f"{req['asset_id']}: a world of an older build; made again from its panorama")
+    return True
+
+
 def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     """One request -> {"asset_id", "ok", "why", "seed"}: drawn, shaped and measured; a try that fails a gate is
     made again from the next seed's drawing, at most the plan's max_redraws tries. `run` starts a process."""
     aid, plan = req["asset_id"], req["plan"]
-    if record(aid, library) and not ("lie" in (req.get("needs") or []) and tiered(aid, library)):
+    stale_world(req, library)
+    big = shell_too_big(req, library)
+    if record(aid, library) and not big and not ("lie" in (req.get("needs") or []) and tiered(aid, library)):
         return {"asset_id": aid, "ok": True, "why": "already in the library"}
     out, why = {}, ""
     if record(aid, library):
         _clear(plan["draw_id"], aid, library)
-        why = "it has a tier above its mattress"
-    for n in range(plan.get("max_redraws", 3)):
+        why = big or "it has a tier above its mattress"
+        log(f"{aid}: in the library, but {why}; made again")
+    # (a shell made too big is drawn again from the next seed: the same seed draws the same panorama)
+    first = 1 if big else 0
+    for n in range(first, first + plan.get("max_redraws", 3)):
         # (after a try with a tier above the mattress, the next is drawn without the piece's own picture: the
         # picture is what shows the tiers)
         out = dict(_try(req, library, seed + n, run, unsourced="tier" in why), seed=seed + n)
         why = out.get("why", "") or why
         if out["ok"]:
             return out
-        log(f"{aid}: {out['why']}; the try is cleared" + ("" if n + 1 >= plan.get("max_redraws", 3) else ", next seed"))
+        log(f"{aid}: {out['why']}; the try is cleared" + ("" if n + 1 >= first + plan.get("max_redraws", 3) else ", next seed"))
         _clear(plan["draw_id"], aid, library)
     return out
 
@@ -313,6 +473,12 @@ def main():
     library = Path(a[a.index("--library") + 1]) if "--library" in a else C.LIBRARY
     seed = int(a[a.index("--seed") + 1]) if "--seed" in a else 11
     only = set(a[a.index("--only") + 1:]) - {"--dry"} if "--only" in a else None
+    if "--dry" not in a:
+        count_shells(library, subprocess.run)            # (before the lookup, which passes over shells with people)
+    if "--dry" not in a:                                 # (a world of an older build is made again)
+        for p in spec.get("pieces") or []:
+            if (P.kinds().get(p.get("kind")) or {}).get("made_as") == "world":
+                stale_world(P.generation_request(p), library)
     res = P.resolve(spec.get("pieces") or [], P.load_records(library))
     todo = [p for p in res["pieces"] if p["status"] == "generate" and (not only or p["kind"] in only)]
     # a bed of the library that has a tier above its mattress is made again as the one asked for
@@ -325,6 +491,9 @@ def main():
     if "--dry" in a:
         return 0
     out = []
+    for p in res["pieces"]:                              # a cabin shell found in the library, of an older build
+        if p["status"] == "library" and P.kinds()[p["kind"]].get("made_as") == "shell":
+            out.append(dict(reshape_shell(p["asset_id"], library, subprocess.run), kind=p["kind"]))
     for p in todo:
         o = dict(make(p["request"], library, seed), kind=p["kind"])
         out.append(o)

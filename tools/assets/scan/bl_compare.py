@@ -89,9 +89,12 @@ for name, spec in items:
     ob.parent = None
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     me = ob.data
-    V = np.zeros(len(me.vertices) * 3)
-    me.vertices.foreach_get("co", V)
-    V = V.reshape(-1, 3)
+    def verts():
+        buf = np.zeros(len(me.vertices) * 3)
+        me.vertices.foreach_get("co", buf)
+        return buf.reshape(-1, 3)
+
+    V = verts()
     c = V[:, :2].mean(0)
     ev, evec = np.linalg.eigh(np.cov((V[:, :2] - c).T))
     ax = evec[:, 1]
@@ -104,8 +107,7 @@ for name, spec in items:
     Rf = Matrix.Rotation(math.pi if flip else 0, 4, "Z")
     ob.matrix_world = Rf @ Rz @ Matrix.Translation(Vector((-c[0], -c[1], -V[:, 2].min())))
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    me.vertices.foreach_get("co", V)
-    V = V.reshape(-1, 3)
+    V = verts()
     s = length / (V[:, 0].max() - V[:, 0].min())
     xc = (V[:, 0].max() + V[:, 0].min()) / 2
     ob.matrix_world = Matrix.Scale(s, 4) @ Matrix.Translation(Vector((-xc, -(V[:, 1].max() + V[:, 1].min()) / 2, 0)))
@@ -119,8 +121,7 @@ for name, spec in items:
     else:
         me.materials.clear()
         me.materials.append(vcol_mat(me.color_attributes[0].name))
-    me.vertices.foreach_get("co", V)
-    V = V.reshape(-1, 3)
+    V = verts()
     ext = V.max(0) - V.min(0)
     zc = ext[2] / 2
     views = {"front": (0, 0), "left": (90, 0), "back": (180, 0), "right": (270, 0), "top3q": (35, 35)}

@@ -76,7 +76,20 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             st.append(dict(w, material=kit.get("chimney_breast_material", kit["wall_material_ns"])))
         else:
             st.append(w)
-    st.append(dict(kit["ceiling"], height_m=H))
+    if spec.get("_roof") == "rafters" and "panel_raised" in kit["materials"]:
+        # an open roof of timber (the concept shows beams overhead): rafters across the room's short side under a
+        # ceiling of dark planks, instead of the period's plaster
+        # a pitched timber roof on the walls' tops: a tie beam across the short side at each truss, two rafters up
+        # to the ridge, a post under it; dark boards over them, above the ridge. No columns, no lattice (the first
+        # try was a factory's trusses 0.4 m under a flat ceiling: a low red frame over everyone's head)
+        span = min(W, D)
+        rise = round(max(0.9, 0.32 * span), 2)
+        st.append({"kind": "trusses", "span_axis": "x" if W <= D else "y", "spacing_m": 1.4, "bottom_m": round(H - 0.1, 2),
+                   "top_m": round(H - 0.02, 2), "rise_m": rise, "chord_m": [0.18, 0.14], "web_m": 0.1,
+                   "panel_m": round(span / 2, 2), "columns": False, "material": "panel_wood"})
+        st.append(dict(kit["ceiling"], height_m=round(H + rise + 0.2, 2), material="panel_wood"))
+    else:
+        st.append(dict(kit["ceiling"], height_m=H))
     out["structure"] = st
     fixtures, props = list(ss["fixtures"]), list(ss["props"])
     lights = [dict(kit["lights"]["sky"])]
@@ -121,6 +134,14 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             dx, dy, dz = kit["lights"]["fire_offset_m"]
             lights.append(dict(kit["lights"]["fire"], position=[round(f["position"][0] - fx * dy, 3),
                                                               round(f["position"][1] - fy * dy, 3), dz]))
+    # a piece that burns or glows (the director's "gives_light": a hearth standing in the room, a brazier) lights the
+    # room round it from its top, as a fireplace does from its grate: a forge's hearth stood dark, 11-16
+    lit = {p.get("id") for p in spec.get("pieces") or [] if p.get("gives_light") is True}
+    for lp in layout.get("pieces") or []:
+        if lp.get("id") in lit and lp.get("position"):
+            top = float((lp.get("size_m") or [0, 0, 0.9])[2])
+            lights.append(dict(kit["lights"]["fire"], position=[round(lp["position"][0], 3), round(lp["position"][1], 3),
+                                                              round(top + 0.15, 3)]))
     # a piece people sit inside (a cabin) is lit inside: the room's light does not reach under its roof (the pilot
     # in his cockpit was staged in the dark)
     for it in fixtures + props:
@@ -172,6 +193,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 
+WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
 
 
@@ -189,7 +211,11 @@ def with_concept(spec: dict, concept: dict) -> dict:
         if not p.get("phrases") and not c.get("in_picture"):
             continue
         if c.get("look"):
-            p["look"] = c["look"]
+            # (a kind that holds any thing, a work piece or a landmark, is what its own words say: the picture adds
+            # its material and colour. A hearth made from "stone, grey" was a block with a pyramid on it, 11-18)
+            own = str(p.get("look") or "").strip().rstrip(".")
+            p["look"] = f"{own}; {c['look']}" if p.get("kind") in ("work_piece", "landmark") and own \
+                and c["look"] not in own else c["look"]
         if c.get("crop"):                    # its own part of the concept picture: the drawing it is shaped from
             p["source"] = c["crop"]
         kept.append(p)
@@ -201,6 +227,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
     for i, sn in enumerate(concept.get("seen") or []):
+        if f"seen:{i}" in ((concept.get("depth") or {}).get("off_floor") or {}):
+            continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
         if sn.get("kind") and sn.get("crop") and sn["kind"] not in have and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "look": sn.get("look") or sn["name"], "phrases": [],
@@ -208,6 +236,22 @@ def with_concept(spec: dict, concept: dict) -> dict:
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
+    dp = concept.get("depth") or {}
+    if dp.get("room_m") and concept.get("space") == "room":
+        # the room as the concept picture shows it (img3d/concept_depth.py): its size, and each piece the picture
+        # shows where it stands there, against the wall it stands against (11-17: the forge was laid out as a hall
+        # 2.8 m wide, the hearth in the middle of the floor, from the kind's table and free spots)
+        sp["_room_m"] = list(dp["room_m"])
+        # (the picture's top edge cuts the room off: what it measures overhead is the least the walls can be)
+        sp["_room_m"][2] = max(float(sp["_room_m"][2]), WALL_MIN_M)
+        seen_key = {f"c{i + 1}": f"seen:{i}" for i in range(len(concept.get("seen") or []))}
+        for p in kept:
+            t = (dp.get("things") or {}).get(f"spec:{p['id']}") or (dp.get("things") or {}).get(seen_key.get(p["id"], ""))
+            if t:
+                p.update(at_xy=t["xy"], facing_xy=t["facing"], against="wall" if t.get("against") else "free")
+                p["_seen_size_m"] = t["size_m"]
+    if re.search(r"\b(beam|beams|rafter|rafters|timber|timbers|roof|thatch)\b", str((concept.get("surfaces") or {}).get("ceiling") or ""), re.I):
+        sp["_roof"] = "rafters"              # the picture's overhead: an open roof on timber, not a plastered ceiling
     if concept.get("space") == "cockpit":
         seen = [x["name"] + (f" ({x['look']})" if x.get("look") else "") for x in concept.get("seen") or []
                 if x.get("name") and "view" not in x["name"]]
@@ -228,7 +272,50 @@ def with_concept(spec: dict, concept: dict) -> dict:
             sp["outside"] = m.group(1).strip().rstrip(".")
         elif str(spec.get("outside") or "").strip():         # (else what the place spec says is seen outside it)
             sp["outside"] = str(spec["outside"]).strip().rstrip(".")
-    sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare")}
+    if concept.get("space") == "outdoors" or spec.get("kind") == "outdoors":
+        sp = outdoors(sp, spec, concept)
+    sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
+    return sp
+
+
+def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
+    """A place in the open (its concept picture shows it outdoors, or its spec says so) is built as a world: the
+    land round where its people stand, the sky, and a flat patch of ground under them, all one piece made from a
+    panorama of the place drawn from the concept picture (pieces "terrain", made_as "world"); the pieces the plan
+    names stand free on that ground. No walls, openings or views outside; a phrase that lands on no piece is the open
+    ground."""
+    sp = dict(sp, kind="outdoors", openings=[], outside="")
+    sp.pop("_views", None)
+    land = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
+                  flags=re.I).strip().rstrip(".")
+    land = f"{str(spec.get('period') or '').replace('_', ' ')}: {land}".strip(": ") if spec.get("period") != "not stated" \
+        else land
+    sf = concept.get("surfaces") or {}
+    said = "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")),
+                                                                         ("overhead", sf.get("ceiling")),
+                                                                         ("the light", concept.get("light"))) if v)
+    # (only what the plan sends people to is built to stand on the ground: everything else the place shows is in its
+    # panorama already, and a far mountain made a piece stood 80 m tall on the stage)
+    pcs = [dict(p, against="free") for p in sp.get("pieces") or [] if p.get("kind") not in ("terrain",)
+           and p.get("phrases")]
+    ids = {p["id"] for p in pcs}
+    # the part of the land the plan sends people to (the director's land_places, the first the shots name): the
+    # panorama is drawn with it close in front of the eye, and the stage is set there (world_stage)
+    lp = spec.get("land_places") if isinstance(spec.get("land_places"), dict) else {}
+    order = [ph for ph in (spec.get("_phrases") or []) if ph in lp] + [ph for ph in lp if ph not in (spec.get("_phrases") or [])]
+    spot = str(lp[order[0]]).strip().rstrip(".") if order else ""
+    pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
+                "look": "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
+                **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
+                # a landmark is part of the land: where the place's world shows it, people are sent to the ground
+                # before it there, and no piece is stood on the ground for it (a cave in the hillside had a second
+                # cave, a boulder with a hole, and a cube of rock for a ledge standing before it, 11-18)
+                "marks": {p["id"]: str(p.get("look") or "").split(";")[0].strip() for p in pcs
+                          if p.get("kind") == "landmark" and str(p.get("look") or "").strip()},
+                **({"source": concept["concept"]} if concept.get("concept") else {})})
+    sp["pieces"] = pcs
+    sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
+    sp["named_places"] = {ph: (v if v in ids else "floor") for ph, v in (spec.get("named_places") or {}).items()}
     return sp
 
 
@@ -254,6 +341,13 @@ def view_spec(words: str) -> dict:
             "cameras": [{"name": "front", "position": [0.0, -w * 1.2, h / 2], "target": [0.0, 0.0, h / 2], "focal": 28}]}
 
 
+# a floor as a concept picture's words name it -> the surface it is built with (its colour is the picture's own)
+FLOOR_OF = {
+    "stone|flag|slab|cobble|paving|paved|rock": {"preset": "worn_concrete", "panel_m": [0.7, 0.55, 0], "joint_m": 0.025,
+                                                  "joint_darken": 0.45, "variation": 0.12, "grime": 0.4,
+                                                  "roughness": [0.7, 0.95]},
+    "earth|dirt|soil|mud|clay|sand": {"preset": "worn_concrete", "panel_m": [0, 0, 0], "variation": 0.15, "grime": 0.5},
+}
 FACE_M = 3.0                     # a wall face's panel: this wide and this high
 
 
@@ -367,6 +461,8 @@ def with_beds(spec: dict) -> dict:
     """Every place of the plan where someone lies has a bed. A lying phrase that lands on a piece nobody can lie on
     (an alcove written as its curtain) gets a bed of its own beside that piece, the phrase moved onto it, and the
     room the next size up for it (grandfather was laid in the family's one bunk, three and four to a bed)."""
+    if spec.get("kind") == "outdoors":   # (in the open, whoever lies down lies on the ground)
+        return spec
     K = json.loads((HERE.parent / "places" / "piece_kinds.json").read_text())["kinds"]
     kind = {p["id"]: p["kind"] for p in spec.get("pieces") or []}
     named = spec.get("named_places") or {}
@@ -432,12 +528,217 @@ def with_crowd(spec: dict) -> dict:
     return sp
 
 
+WORLD_SUN_LUX = 120.0            # the key light of a place in the open at a bright sky (scaled by the sky's own
+#                                  brightness): measured against the land's own light (img3d/shell_one.py WORLD_EMIT)
+WORLD_SKY = 1.0                  # the sky light: it captures the land and the sky dome, so the people take their light
+
+
+def kelvin_of(hex_colour: str) -> int:
+    """A light's colour temperature from its colour (bluer is higher), 2500 to 12000 K."""
+    r, g, b = (int(hex_colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    return int(min(12000, max(2500, round(6500 * (max(b, 1) / max(r, 1)) ** 1.2, -2))))
+
+
+def world_stage(out: dict, spec: dict, library) -> dict:
+    """A place in the open (with_concept: outdoors): no structure; the place's world (its terrain piece, made from
+    its panorama) set so the point under the panorama's eye is the set's origin, the ground people stand on at
+    z 0; lit by the world's own land and sky (a sky light that captures them) and a key from where the picture's
+    light comes (the brightest of its sky), in that light's colour. -> what was done, for the report."""
+    import config as C
+    lib = Path(library or C.LIBRARY)
+    t = next((p for p in spec.get("pieces") or [] if p.get("kind") == "terrain"), None)
+    out["structure"] = []
+    out["interior"] = False
+    out["tags"] = ["outdoors"]
+    if not t:
+        return {"world": None, "why": "no terrain piece"}
+    aid = P.generation_request(t)["asset_id"]
+    rp = lib / "prop" / aid / "asset.json"
+    if not rp.exists():
+        return {"world": None, "why": f"the place's world {aid} is not made"}
+    w = json.loads(rp.read_text()).get("world") or {}
+    st = w.get("spot_m") or w.get("stand_m") or [0.0, 0.0, 0.0]     # (where the plan's part of the land is, found)
+    out["fixtures"].insert(0, {"asset": aid, "name": "world", "position": [round(-st[0], 3), round(-st[1], 3),
+                                                                           round(-st[2], 3)], "facing": [0.0, -1.0],
+                               "outside": True, "surface": True, "world": True})
+    sun = w.get("sun")
+    lights = [{"type": "sky", "intensity": WORLD_SKY, "atmosphere": False}]
+    if sun:
+        lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
+                          "lux": round(WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or 0.3))), 1),
+                          "kelvin": kelvin_of(sun.get("color") or "#ffffff"), "volumetric": 0.0})
+    out["lights"] = lights
+    # what the redraw is told of the place: the open land and what stands on it, its ground, sky and light (a
+    # room's "walls" and "ceiling" are not said of it)
+    held = str(out.get("words") or "").partition(": ")[2].strip().rstrip(".")
+    if t.get("land_words"):
+        out["words"] = f"In the open air, {t['land_words']}" + (f"; standing there: {held}" if held else "") + "."
+    if t.get("surface_words"):
+        sw = str(t["surface_words"])
+        out["surfaces_words"] = sw[0].upper() + sw[1:] + "."
+    out["world"] = {"asset": aid, "flat_r_m": w.get("flat_r_m"), "sun": sun, "spot": t.get("spot"),
+                    "at_spot": bool(w.get("spot_m"))}
+    out["validation"] = {"figures": [{"position": [0.0, 0.0], "facing": [0, -1]}]}
+    return {"world": aid, "why": "placed"}
+
+
+def world_marks(spec: dict, library) -> dict:
+    """The landmarks of a place in the open that its made world shows (img3d/pano_shell.py mark_of), by piece id:
+    where people sent to each stand, in the set's frame (the world is set with its spot at the origin, world_stage),
+    which way the thing lies from there, and its look. {} for a place with no world or none found in it."""
+    import config as C
+    t = next((p for p in spec.get("pieces") or [] if p.get("kind") == "terrain"), None)
+    if not t or not t.get("marks"):
+        return {}
+    rp = Path(library or C.LIBRARY) / "prop" / P.generation_request(t)["asset_id"] / "asset.json"
+    if not rp.exists():
+        return {}
+    w = json.loads(rp.read_text()).get("world") or {}
+    st = w.get("spot_m") or w.get("stand_m") or [0.0, 0.0, 0.0]
+    looks = {p["id"]: p.get("look") or "" for p in spec.get("pieces") or []}
+    return {pid: {"at": [mk["stand"][0] - st[0], mk["stand"][1] - st[1]], "toward": mk["toward"], "look": looks.get(pid, "")}
+            for pid, mk in (w.get("marks_m") or {}).items() if pid in t["marks"] and pid in looks}
+
+
+def kit_for(period) -> dict:
+    """The period's kit; a period without one takes the kit of the period it is most like (period_kits.json
+    "_periods_like"; the knight story's medieval rooms fell to no kit lights at all, 11-16), else victorian."""
+    kits = json.loads((HERE / "period_kits.json").read_text())
+    p = period if period in kits else (kits.get("_periods_like") or {}).get(period)
+    return kits.get(p) or kits["victorian"]
+
+
+ROOM_LM_M2 = 300.0               # a room whose own lights give less than this (lumens a square metre of floor; a
+ROOM_LIGHT_LM = 600              # fire inside a forge's hood lit nothing) gets soft lights over its floor, each at
+ROOM_LIGHT_GAP_M = 3.0           # least this, this far apart. (At 150 the forge's stills averaged 12 to 20 of 255
+#                                  and its faces were lost in the redraw, 11-17)
+FIRE_ROOM_SHARE = 0.25           # a fire's light counts this much toward the room's own: it burns low, in a grate or
+#                                  under a hood, and lights the hearth more than the faces round the room
+
+
+def light_of(picture) -> str:
+    """The colour of a picture's light: its brightest hundredth, as #rrggbb at full brightness ("" without one)."""
+    try:
+        from PIL import Image
+        px = sorted(Image.open(picture).convert("RGB").resize((96, 54)).getdata(), key=sum)[-52:]
+    except (OSError, ValueError, TypeError):
+        return ""
+    m = [sum(c[i] for c in px) / len(px) for i in range(3)]
+    k = 255.0 / max(max(m), 1.0)
+    return "#%02x%02x%02x" % tuple(int(min(255, c * k)) for c in m)
+
+
+def is_fire(light: dict) -> bool:
+    """A fire's light (the kit's fire: a low warm point), not a lamp or the room's own fittings."""
+    return light.get("type") == "point" and float(light.get("kelvin") or 6500) <= 2000 and \
+        float((light.get("position") or [0, 0, 9])[2]) < 1.5
+
+
+def room_light(out: dict, spec: dict) -> bool:
+    """Every room is lit inside: a closed room without daylight whose kit and pieces gave it too little light of its
+    own (a sky light does not reach in) gets a grid of soft lights under its ceiling, in the colour of its concept
+    picture's light. Every still of three such sets was black, 11-16. -> whether added."""
+    if not any(w.get("kind") == "ceiling" for w in out.get("structure") or []):
+        return False
+    ls = out.get("lights") or []
+    if any(l.get("type") in ("sun", "strip_lights") for l in ls):        # (daylight through its windows; a strip)
+        return False
+    W, D, H = out["size_m"]
+    own = sum(float(l.get("lumens") or 0) * (FIRE_ROOM_SHARE if is_fire(l) else 1.0)
+              for l in ls if l.get("type") in ("point", "spot", "rect"))
+    want = ROOM_LM_M2 * W * D
+    if own >= want:
+        return False
+    nx, ny = max(1, round(W / ROOM_LIGHT_GAP_M)), max(1, round(D / ROOM_LIGHT_GAP_M))
+    each = max(ROOM_LIGHT_LM, (want - own) / (nx * ny))
+    col = light_of((spec.get("_concept") or {}).get("concept") or "")
+    for i in range(nx):
+        for j in range(ny):
+            l = {"type": "point", "lumens": round(each), "radius_m": round(max(6.0, 2.5 * H), 1),
+                 "source_radius_m": 0.3, "shadows": True,
+                 "position": [round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2), round(H - 0.4, 2)]}
+            l.update({"kelvin": kelvin_of(col)} if col else {"kelvin": 3200})
+            out["lights"].append(l)
+    return True
+
+
+HANG_CLEAR_M = 0.9               # a hung thing with no opening named for it keeps this far along its wall from any
+HANG_OVER_M = 0.1                # over an opening: this far above its head
+
+
+def hang(lay: dict, hung: list, rec: dict) -> None:
+    """The hung pieces put on their walls, into the layout's pieces: over the opening they are against (above its
+    head), else on the first stretch of wall clear of the openings and of the pieces standing against it; the back
+    on the wall, the front into the room, the lowest point "hangs_m" above the floor."""
+    W, D, H = lay["size_m"]
+    ops = {o["id"]: o for o in lay.get("openings") or []}
+    for p in hung:
+        r = rec.get(p["id"])
+        if not r:
+            continue
+        sx, sy, sz = r["size_m"]
+        z = float(p["hangs_m"])
+        o = ops.get(str(p.get("against") or "").replace("opening:", ""))
+        if o:
+            n, pt = o["normal"], o["point"]
+            z = max(z, float(o.get("head_m") or 0.0) + HANG_OVER_M)
+        else:
+            n = pt = None
+            for side, nn in NORMAL.items():
+                L_ = W if side in ("north", "south") else D
+                for t in (0.0, L_ / 4, -L_ / 4):
+                    c = [t, -nn[1] * D / 2] if side in ("north", "south") else [-nn[0] * W / 2, t]
+                    busy = [q["point"] for q in ops.values() if q.get("wall") == side] + \
+                           [q["position"] for q in lay["pieces"] if q.get("wall") == side or q.get("hang")]
+                    if all(math.dist(c, b[:2]) >= HANG_CLEAR_M + sx / 2 for b in busy):
+                        n, pt = nn, c
+                        break
+                if n:
+                    break
+            if not n:
+                continue
+        z = min(z, max(0.0, H - sz))
+        c = [round(pt[0] + n[0] * (sy / 2 + 0.01), 3), round(pt[1] + n[1] * (sy / 2 + 0.01), 3)]
+        hx, hy = (sx / 2, sy / 2) if abs(n[1]) > abs(n[0]) else (sy / 2, sx / 2)
+        lay["pieces"].append({"id": p["id"], "name": f"{p['kind']}_{p['id']}", "kind": p["kind"], "asset": r["asset"],
+                              "position": c, "facing": [n[0], n[1]], "size_m": [sx, sy, sz], "flat": False,
+                              "seat": False, "rect": [round(c[0] - hx, 3), round(c[1] - hy, 3), round(c[0] + hx, 3),
+                                                      round(c[1] + hy, 3)],
+                              "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3)})
+
+
 def build(spec: dict, set_id: str, library=None) -> tuple:
     rec, res = records_for(spec, library)
-    lay = L.solve_recover(spec, rec)          # solve, then the ladder (never drops a piece the plan names)
-    ss = L.to_set_spec(spec, lay)
-    kit = json.loads((HERE / "period_kits.json").read_text()).get(spec.get("period")) or \
-        json.loads((HERE / "period_kits.json").read_text())["victorian"]
+    spec0, world = spec, spec.get("kind") == "outdoors"
+    marks = world_marks(spec, library) if world else {}
+    if world:                                 # (the place's world is not laid out: it holds the whole stage)
+        # ... nor is a landmark the world itself shows (world_marks): it is a place on the ground there
+        spec = dict(spec, pieces=[p for p in spec.get("pieces") or [] if p.get("kind") != "terrain" and p["id"] not in marks],
+                    relations=[r for r in spec.get("relations") or [] if not {r.get("a"), r.get("b"), r.get("c")} & set(marks)],
+                    named_places={ph: v for ph, v in (spec.get("named_places") or {}).items() if v not in marks})
+    data = None
+    if world:
+        # the stage in the open holds what stands on it: each size made wide enough for the largest piece with
+        # room all round it and for people beside it (a 20 m landmark found no place on a 12 m stage)
+        data = L.load_data()
+        big = max([max(rec[p["id"]]["size_m"][:2]) for p in spec.get("pieces") or [] if p["id"] in rec] + [0.0])
+        rk = json.loads(json.dumps(data["room_kinds"]["outdoors"]))
+        for k, v in rk["sizes_m"].items():
+            side = max(v[0], round(big + v[0] / 2 + 2.0, 1))
+            rk["sizes_m"][k] = [side, side, max(v[2], round(big, 1))]
+        data["room_kinds"]["outdoors"] = rk
+    # a thing fixed up on a wall or over an opening ("hangs_m") takes no floor: the room is laid out without it
+    # and it is hung afterwards (a sword over the door was a piece with "no free position on a wall", 11-17)
+    hung = [p for p in spec.get("pieces") or [] if isinstance(p.get("hangs_m"), (int, float))]
+    floor_spec = spec if not hung else dict(
+        spec, pieces=[p for p in spec["pieces"] if p not in hung],
+        relations=[r for r in spec.get("relations") or []
+                   if not {r.get("a"), r.get("b"), r.get("c")} & {p["id"] for p in hung}],
+        named_places={ph: v for ph, v in (spec.get("named_places") or {}).items() if v not in {p["id"] for p in hung}})
+    lay = L.solve_recover(floor_spec, rec, data)    # solve, then the ladder (never drops a piece the plan names)
+    hang(lay, hung, rec)
+    ss = L.to_set_spec(spec, lay, data)
+    kit = kit_for(spec.get("period"))
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
@@ -446,6 +747,19 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
     if bare and out.get("structure"):
         mats = json.loads(json.dumps(out["materials"]))
+        if bare.get("walls"):
+            # the walls are the picture's: the period's own wall dressing (dado, rails, skirting, panels) comes off
+            # them (a white rail ran round the forge's stone walls and through every key, 11-17)
+            for w in out["structure"]:
+                if w.get("kind") == "wall":
+                    for k in ("dado", "trim", "plates"):
+                        w.pop(k, None)
+        said = str(((spec.get("_concept") or {}).get("surfaces") or {}).get("floor") or "").lower()
+        how = next((v for k, v in FLOOR_OF.items() if re.search(rf"\b({k})", said)), None)
+        if how:                              # the floor the picture shows, where the period's is another
+            for w in out["structure"]:
+                if w.get("kind") == "floor" and w.get("material") in mats:
+                    mats[w["material"]] = dict(how)
         used = {"walls": {w.get("material") for w in out["structure"] if w.get("kind") == "wall"}
                 | {(w.get("dado") or {}).get("material") for w in out["structure"] if w.get("kind") == "wall"},
                 "floor": {w.get("material") for w in out["structure"] if w.get("kind") == "floor"}}
@@ -461,6 +775,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         out["concept"] = spec["_concept"]["concept"]
     wall_faces(out, lay, spec, library)
     cabin_stage(out, spec, library)
+    staged = world_stage(out, spec0, library) if world else None
+    lit = room_light(out, spec)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
              if o.get("name") and o.get("wall") and o["kind"] in ("window", "door")}
@@ -468,10 +784,24 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     for ph, v in (spec.get("named_places") or {}).items():       # (the open floor is a place with no piece)
         if v == "floor":
             ss["named_places"][ph] = "floor"
+    if marks:                                 # the land's own things: places on the ground, named as their pieces were
+        half = min(out["size_m"][:2]) / 2 - 1.0
+        out["marks"] = []
+        for pid, mk in marks.items():
+            x, y = mk["at"]
+            r = math.hypot(x, y)
+            if r > half > 0:                  # (kept on the stage)
+                x, y = x * half / r, y * half / r
+            out["marks"].append({"name": f"land_{pid}", "position": [round(x, 3), round(y, 3)], "toward": mk["toward"],
+                                 "look": mk["look"]})
+        for ph, v in (spec0.get("named_places") or {}).items():
+            if v in marks:
+                ss["named_places"][ph] = f"land_{v}"
     report = {"pieces": res["summary"], "left_out": [p for p in res["pieces"] if p["status"] != "library"],
               "layout_ok": lay["ok"], "unmet": lay["unmet"], "status": lay.get("status"),
               "ladder": lay.get("ladder"), "dropped": lay.get("dropped"), "reask": lay.get("reask"), "checks": L.check_layout(lay, spec),
-              "named_places": ss["named_places"],
+              "named_places": ss["named_places"], **({"world": staged} if staged else {}),
+              **({"room_light": "a grid of soft lights: the room had no light of its own"} if lit else {}),
               "unresolved_phrases": [ph for ph in spec.get("_phrases") or [] if ph not in ss["named_places"]]}
     return out, ss["named_places"], report
 

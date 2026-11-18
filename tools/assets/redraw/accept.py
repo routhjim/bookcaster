@@ -347,6 +347,7 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
                                                       sd / "guides" / f"{m['cam']}_mask_{p['key']}.png")
             c = cast.get(p["key"]) or {}
             ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun"),
+                            creature=bool(c.get("creature")),
                             mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png"), named=p["key"] in named,
                             action=acts.get(p["key"]) if acts.get(p["key"]) in ACTION_SEEN else None))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")

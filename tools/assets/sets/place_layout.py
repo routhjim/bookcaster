@@ -227,6 +227,8 @@ class Ctx:
         self.R = rules or pc.load_rules()
         self.rk = data["room_kinds"][spec["kind"]]
         size = self.rk["sizes_m"][spec.get("size") if spec.get("size") in self.rk["sizes_m"] else "medium"]
+        # a room measured from the place's own concept picture (img3d/concept_depth.py): its size, not the kind's
+        size = spec.get("_room_m") or size
         self.W, self.D, self.H = [float(x) for x in size]
         self.rng = random.Random(seed)
         self.rel = data["relations"]
@@ -580,6 +582,15 @@ def rug_place(ctx: Ctx, placed: dict) -> tuple:
 
 
 def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool = True) -> list:
+    pin = ctx.pieces[pid].get("at_xy")
+    if pin:
+        # where the place's concept picture has it (concept_depth.py): that spot and facing only, kept inside the
+        # room; the picture is the place's look, so it stands there even where a rule would want it elsewhere
+        h = half_extents(ctx.size(pid), tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0)))
+        c = (max(-ctx.W / 2 + h[0], min(ctx.W / 2 - h[0], pin[0])), max(-ctx.D / 2 + h[1], min(ctx.D / 2 - h[1], pin[1])))
+        cand = make(ctx, pid, c, tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0)))
+        cand["pinned"] = True
+        return [cand]
     mode, at = ctx.mode(pid)
     size, rule = ctx.size(pid), ctx.rule(pid)
     W, D = ctx.W, ctx.D
@@ -844,7 +855,10 @@ def order_of(ctx: Ctx) -> list:
         r = rank.get(mode, 1)
         if r < 2 and ctx.rule(pid).get("prefer_beside") and not at:
             r = 2
-        return (r, 0 if at else 1, -round(size[0] * size[1], 3), -len(ctx.partners.get(pid, ())), pid)
+        # (a piece the concept picture places stands first: the others find their room round it. Placed after its
+        # companion, the forge's anvil came down inside the bellows, 11-17)
+        return (0 if ctx.pieces[pid].get("at_xy") else 1, r, 0 if at else 1, -round(size[0] * size[1], 3),
+                -len(ctx.partners.get(pid, ())), pid)
 
     return sorted(ctx.pieces, key=key)
 
@@ -1097,6 +1111,7 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
             log.append({"step": "room stepped up one size class", "gave_up": "nothing (already the largest)",
                         "ok": False, "unmet": list(lay["unmet"]), "skipped": True})
     dropped = []
+    kept_k, kept_lay = copy.deepcopy(spec_k), lay
     if not lay["ok"]:
         rank = {k: i for i, k in enumerate(lad["drop_order"])}
         for _ in range(int(lad["max_drops"])):
@@ -1111,6 +1126,12 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
             lay = attempt("an unnamed piece dropped", f"{gone['kind']} {gone['id']} (the text does not name it)")
             if lay["ok"]:
                 break
+        if not lay["ok"]:
+            # a drop that did not make the room work gives nothing: the pieces stand again (the forge lost its
+            # bench for a relation the bench had no part in)
+            spec_k, lay, dropped = kept_k, kept_lay, []
+            log.append({"step": "dropped pieces put back", "gave_up": "nothing (dropping them did not help)",
+                        "ok": False, "unmet": list(lay["unmet"])})
     lay = dict(lay)
     lay["ladder"] = log
     lay["dropped"] = dropped
@@ -1276,6 +1297,8 @@ def to_set_spec(spec: dict, layout: dict, data: dict | None = None) -> dict:
             item["look"] = p["look"]
         if p.get("on"):
             item["on"], item["on_z_m"] = p["on"], p["on_z_m"]
+        if p.get("hang"):                        # (place_build.hang: fixed up on a wall, its lowest point at z_m)
+            item["hang"], item["position"] = True, list(p["position"][:2]) + [p["z_m"]]
         (props if p.get("flat") or p.get("on") else fixtures).append(item)
         if p.get("generate"):
             gen.append({"name": p["name"], "id": p["id"], "kind": p["kind"], "look": p.get("look"),

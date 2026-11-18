@@ -122,6 +122,28 @@ def measure(key, body, face, spec, head_top_off):
     return out
 
 
+def creature_measure(a, f):
+    """A rigged creature as a subject (framing.py): its feet at its posed bounds' bottom, its head read as a face from
+    the head joint (scenes/creature.py head_measure), the frame's chest at the neck's base, its middle the bounds'."""
+    CRE = _load("scene_creature", os.path.join(os.path.dirname(HERE), "creature.py"))
+    c = a.skeletal_mesh_component
+    o, e = a.get_actor_bounds(False)
+    lo, hi = to_set(o - e), to_set(o + e)
+    feet, top = min(lo[2], hi[2]), max(lo[2], hi[2])
+    s_ = float(f.get("scale") or 1.0)
+    jt = lambda n: to_set(c.get_socket_location(n)) if c.does_socket_exist(n) else None      # noqa: E731
+    head = jt("head")
+    hm = CRE.head_measure(f["position"], f["facing"], top - feet, head, jt("jaw"), float(f.get("head_len_m") or 0.5) * s_)
+    mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2]
+    neck = jt("neck_0") or head
+    out = dict(hm, feet_z=round(feet, 4), waist_z=round(feet + 0.5 * (hm["eye_z"] - feet), 4),
+               chest_xy=[round(x, 4) for x in (neck or mid)[:2]], pelvis_xy=[round(x, 4) for x in mid],
+               facing=list(f["facing"]), height_m=round(top - feet, 4), bounds_set=[lo, hi], creature=True,
+               feet_above_floor_m=round(feet - f["position"][2], 4))
+    out["joints"] = {}
+    return out
+
+
 def attach_check(body, face, tol_cm):
     """The head must sit on the neck: the head joint seen by the face skeleton and by the body skeleton agree."""
     d = {}
@@ -287,6 +309,7 @@ def run(job):
     temp = []
     hidden = []
     post_old = None
+    sun_old = None
     CR = None
     framing = _load("scene_framing", os.path.join(os.path.dirname(HERE), "framing.py"))
     try:
@@ -437,6 +460,24 @@ def run(job):
         # poses built from the skeleton (pose.py), made while the body still shows its reference pose
         t = time.time()
         PO = _load("scene_pose", os.path.join(HERE, "pose.py"))
+        # a held tool is gripped where its own model says (pose.grip_from_points): its handle, and which end is the head
+        for key, spec in job["characters"].items():
+            pr_ = (spec.get("body_pose") or {}).get("params") or {}
+            cm_ = (job.get("carried") or {}).get(pr_.get("tool_asset"))
+            if cm_ and "grip" not in cm_:
+                cm_["grip"] = None
+                try:
+                    mesh_ = EAL.load_asset(cm_["mesh"])
+                    pts_ = []
+                    for sec_ in range(mesh_.get_num_sections(0)):
+                        vs_ = unreal.ProceduralMeshLibrary.get_section_from_static_mesh(mesh_, 0, sec_)[0]
+                        st_ = max(1, len(vs_) // 6000)
+                        pts_ += [[vs_[n_].x / 100.0, vs_[n_].y / 100.0, vs_[n_].z / 100.0] for n_ in range(0, len(vs_), st_)]
+                    cm_["grip"] = PO.grip_from_points(pts_)
+                except Exception as e_:                        # the size's own convention stands (pose.grip_frame)
+                    r.setdefault("notes", []).append(f"tool grip not measured: {e_}")
+            if cm_ and cm_.get("grip"):
+                pr_["tool_grip"] = cm_["grip"]
         for key, spec in job["characters"].items():
             bp = spec.get("body_pose")
             if bp and bp.get("pose"):
@@ -446,6 +487,9 @@ def run(job):
                 r["subjects"][key]["pose_build"] = info
 
         def pose_all():
+            for key, f in (job.get("figures") or {}).items():     # a rigged figure holds its clip's frame
+                if f.get("anim"):
+                    FG.pose(figs[key], f)
             for key, spec in job["characters"].items():
                 a, body, face = comps(key)
                 bp = spec.get("body_pose")
@@ -554,7 +598,8 @@ def run(job):
                 r["subjects"][key]["measured"]["inside"] = True
                 r["subjects"][key]["measured"]["open_walls"] = spec["_inside"] == "open"
         for key, f in (job.get("figures") or {}).items():
-            r["subjects"][key] = {"measured": FG.measure(figs[key], f), "figure": f.get("id") or f["mesh"]}
+            m_ = creature_measure(figs[key], f) if f.get("creature") else FG.measure(figs[key], f)
+            r["subjects"][key] = {"measured": m_, "figure": f.get("id") or f["mesh"]}
         r["times_s"]["pose"] = round(time.time() - t, 2)
         # cameras
         cams = []
@@ -585,6 +630,18 @@ def run(job):
             cam = cine(c["name"], cs["position"], cs["target"], cs["focal_mm"], ap, focus, res)
             temp.append(cam)
             cams.append((c, cs, chk, cam, everyone))
+        # a place in the open (scene.py "key_light"): its sun turned for each still to come from the camera's side
+        # (framing.key_toward), at the job's strength; put back as it was at the end
+        kl, sun_a = job.get("key_light"), None
+        if kl:
+            sun_a = next((a for a in act.get_all_level_actors() if isinstance(a, unreal.DirectionalLight)
+                          and a.get_actor_label() == "Sun"), None)
+            if sun_a is not None:
+                sc_ = sun_a.get_component_by_class(unreal.DirectionalLightComponent)
+                sun_old = (sun_a, sun_a.get_actor_rotation(), sc_.get_editor_property("intensity"))
+                sc_.set_editor_property("intensity", float(kl["lux"]))
+            else:
+                r["notes"].append("key_light: the level has no Sun")
         # stills
         worn_actors = {}                 # (person, library prop) -> its actor: what people wear on the head or carry
         t_r = time.time()
@@ -650,7 +707,11 @@ def run(job):
                     if tag not in worn_actors:
                         continue
                     sz_ = cm_["size_m"]
-                    if t_["at"] == "head":
+                    grip_ = None
+                    if t_["at"] == "on":         # the thing being worked on, lying on the top of what they work at
+                        f_, k_ = m_["facing"], 1.0
+                        xy_, z_ = t_["xyz"][:2], t_["xyz"][2]
+                    elif t_["at"] == "head":
                         f_ = m_.get("head_fwd_xy") or m_["facing"]
                         n_ = math.hypot(f_[0], f_[1]) or 1.0
                         f_ = [f_[0] / n_, f_[1] / n_]
@@ -660,19 +721,55 @@ def run(job):
                         xy_ = [m_["eye_xy"][0] - f_[0] * 0.42 * hh_, m_["eye_xy"][1] - f_[1] * 0.42 * hh_]
                         z_ = m_["head_top_z"] + HEAD_OVER * hh_ - sz_[2] * k_
                     else:
-                        j_ = (m_.get("joints") or {}).get("hand_r")
+                        # a worker's tool (pose.py work actions report it): held in the palm of the tool hand, the
+                        # handle along the direction the pose gives (up and back raised, forward and down at the
+                        # blow), its grip point (pose.grip_frame: a short way in from the handle's end) in the palm.
+                        # The palm is the pose's own palm point carried by the measured wrist joint.
+                        tl_ = ((r["subjects"].get(key) or {}).get("pose_build") or {}).get("tool")
+                        j_ = (m_.get("joints") or {}).get(f"hand_{(tl_ or {}).get('hand', 'r')}")
                         if not j_:
                             continue
                         f_, k_ = m_["facing"], 1.0
                         xy_, z_ = [j_[0], j_[1]], j_[2] - sz_[2] - 0.02
+                        if tl_ and tl_.get("palm_ue"):
+                            w_ = to_ue(j_)
+                            palm_ = [w_.x + tl_["palm_ue"][0] - tl_["hand_ue"][0], w_.y + tl_["palm_ue"][1] - tl_["hand_ue"][1],
+                                     w_.z + tl_["palm_ue"][2] - tl_["hand_ue"][2]]
+                            grip_ = PO.prop_in_hand(sz_, palm_, tl_["dir_ue"], tl_["face_ue"], grip=cm_.get("grip"))
                     a_ = worn_actors[tag]
                     a_.set_actor_scale3d(unreal.Vector(k_, k_, k_))
                     a_.set_actor_location(to_ue([xy_[0], xy_[1], z_]), False, False)
-                    a_.set_actor_rotation(unreal.Rotator(0, 0, -(math.degrees(math.atan2(f_[1], f_[0])) + 90.0)), False)
+                    yaw_ = -(math.degrees(math.atan2(f_[1], f_[0])) + 90.0)
+                    if t_["at"] == "on":
+                        # a thing on a work top lies on its broadest face, not on end (a bar's model came out
+                        # upright: a slab standing on the anvil taller than the anvil), its middle over the top's
+                        # (the model's own measured box says which way is thin: the job's size is only its longest side)
+                        a_.set_actor_rotation(unreal.Rotator(0, 0, 0), False)
+                        _, e0_ = a_.get_actor_bounds(False)
+                        thin_ = min(range(3), key=lambda i_: (e0_.x, e0_.y, e0_.z)[i_])
+                        a_.set_actor_rotation(unreal.Rotator(90.0 if thin_ == 1 else 0.0, 90.0 if thin_ == 0 else 0.0, yaw_), False)
+                        o_, e_ = a_.get_actor_bounds(False)
+                        want_ = to_ue([xy_[0], xy_[1], z_])
+                        l_ = a_.get_actor_location()
+                        a_.set_actor_location(unreal.Vector(l_.x + want_.x - o_.x, l_.y + want_.y - o_.y,
+                                                            l_.z + want_.z - (o_.z - e_.z)), False, False)
+                    elif grip_:
+                        a_.set_actor_rotation(unreal.MathLibrary.make_rot_from_xz(V(grip_["x"]), V(grip_["z"])), False)
+                        a_.set_actor_location(V(grip_["origin_cm"]), False, False)
+                        r["subjects"][key].setdefault("held", {})[t_["asset"]] = {
+                            "grip": grip_["grip"], "origin_ue": [round(v, 2) for v in grip_["origin_cm"]], "palm_ue": [round(v, 2) for v in palm_]}
+                    else:
+                        a_.set_actor_rotation(unreal.Rotator(0, 0, yaw_), False)
                     shown.add(tag)
             for tag, a_ in worn_actors.items():
                 a_.set_is_temporarily_hidden_in_editor(tag not in shown)
                 a_.set_actor_hidden_in_game(tag not in shown)
+            if sun_a is not None:
+                sm_ = r["subjects"][c["subject"]]["measured"] if c.get("subject") else None
+                eye_ = [sm_["eye_xy"][0], sm_["eye_xy"][1], sm_["eye_z"]] if sm_ else cs["target"]
+                k_ = framing.key_toward(cs["position"], eye_, kl["toward_sun"], flip=bool(c.get("key_flip")))
+                # (UE: y flipped; a directional light points along its x, away from the light)
+                sun_a.set_actor_rotation(unreal.MathLibrary.make_rot_from_x(V([-k_[0], k_[1], -k_[2]])), False)
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()
@@ -743,6 +840,13 @@ def run(job):
             try:
                 a.set_is_temporarily_hidden_in_editor(False)
                 a.set_actor_hidden_in_game(False)
+            except Exception:
+                pass
+        if sun_old:
+            try:
+                sun_old[0].set_actor_rotation(sun_old[1], False)
+                sun_old[0].get_component_by_class(unreal.DirectionalLightComponent).set_editor_property(
+                    "intensity", sun_old[2])
             except Exception:
                 pass
         if post_old:

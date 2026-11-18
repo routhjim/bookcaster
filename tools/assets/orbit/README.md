@@ -17,6 +17,6 @@ Everything that computes runs on a GPU; each step takes its card with `card.sh` 
 | 8 view positions | `bl_views.py` | XTX (Cycles) | per camera, the surface point at every pixel (1 spp, no filter) |
 | 9 skin | `project.py` | XTX | per texel: visible views, weights (facing, density, distance from silhouettes and depth steps), each clip skins its own half (`sides`, blended over `band_m` at the mid-plane), low/high bands, per-view gain match, unseen texels from the nearest seen surface, detail normal + roughness from the high-pass |
 | 10 chain | `run_asset.py SPEC model_orbit_skin.py` | chain | spec keys `source_blend` (step 7's blend), `skin_dir` (step 9's maps), `keep_uvs: true` |
-| rig | `rig_fit.py`, `bl_rig.py`, `ue_rig_poses.py` | XTX / UE editor | skeleton from a Reeb graph of the surface (geodesic bands from the snout tip), weights per graph node, test poses as one action, FBX into UE through `run_asset.py --ue-job` |
+| rig | `rig_fit.py`, `bl_rig.py`, `ue_rig_poses.py` | XTX / UE editor | skeleton from a Reeb graph of the surface (geodesic bands from the snout tip; left/right from the shape's mirror plane; neck base and leg roots where the cross-sections grow into the trunk), weights per graph node, test poses as one action, FBX into UE through `run_asset.py --ue-job` |
 
 The scripts take every location as an argument; nothing story- or user-specific is stored here.

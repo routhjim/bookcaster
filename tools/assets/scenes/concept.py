@@ -41,16 +41,48 @@ SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large o
             "as: name; what it is made of and its colour. No people. At most ten lines.")
 
 
-BOX_ASK = ("Locate the {n} in this picture. Answer only with its bounding box as [x1, y1, x2, y2], each number from 0 "
+# (the whole of it: asked plainly, a thing with a part over it, built as one with it, came back as its lower part
+# alone, and was made without the upper, 11-18)
+BOX_ASK = ("Locate the whole {n} in this picture: every part that belongs to it, from its lowest part to its highest, "
+           "whatever is built over it as one with it included. Answer only with its bounding box as [x1, y1, x2, y2], each number from 0 "
            "to 1000: thousandths of the picture's width (x) and height (y), x1 y1 the top left corner.")
-KIND_ASK = ("In this picture there is a {n}. Which one of these kinds of thing is it? {kinds}. Answer with exactly one "
-            "of those words, or none when it is none of them.")
+KIND_ASK = ("In this picture there is a {n}. Which one of these kinds of thing is it? {kinds}. A part of the room itself "
+            "(its walls, floor, ceiling, roof, beams or rafters) is none of them. A thing people work on or at, that "
+            "is none of the other kinds, is a work piece. Answer with exactly one of those words, or none when it is "
+            "none of them.")
+
+
+def plain_name(p: dict) -> str:
+    """A spec piece as the picture is asked about it: a kind that holds any thing (a work piece, a landmark: its
+    look begins with the thing's own name) by that name; else the kind's own words."""
+    if p.get("kind") in ("work_piece", "landmark") and str(p.get("look") or "").strip():
+        return str(p["look"]).split(",")[0].strip().lower()
+    return (p.get("kind") or "").replace("_", " ")
 PIECE_AREA = 0.02
+STRUCTURE_SPAN = 0.9       # a "thing" this much of the picture's width or more is the room itself (a ceiling, a floor)
+CARRY_WIDER = 1.4          # a thing under a piece carries it (a block, a stump, a plinth) when at most this much wider
+
+
+def same_place(a: list, b: list, k: float = 0.6) -> bool:
+    """Two boxes that are mostly the same part of the picture (their overlap over the smaller one's area)."""
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return w > 0 and h > 0 and w * h >= k * small
+
+
+def carried_by(b: list, sb: list) -> bool:
+    """Whether the thing in box `sb` carries the piece in box `b`: it starts under the piece's top and reaches
+    below the piece's foot, its middle is under the piece, and it is not much wider than the piece (a stump under an
+    anvil; a table under a lamp is not: the lamp stands on a far wider thing, which is a piece of its own)."""
+    return (b[1] < sb[1] <= b[3] + 0.03 and sb[3] > b[3] + 0.03 and b[0] <= (sb[0] + sb[2]) / 2 <= b[2]
+            and sb[2] - sb[0] <= CARRY_WIDER * (b[2] - b[0]))
 WALL_ASK = ("Describe only the surface of the walls in this picture, as a builder would: what it is made of, the size and "
             "shape of its plates, panels, boards or blocks, how they are joined and fastened, its colour and its wear. "
             "One sentence. Do not mention furniture, doors, pipes, lights or anything that stands on or against it.")
 CLEAN_ASK = ("Does this picture show anything other than one flat wall surface seen straight on: any furniture, "
              "cabinet, door, floor, ceiling, pipe, cable or other object? Answer yes or no.")
+NOBODY_ASK = ("Is there any person anywhere in this picture, however small or far off, or a figure standing or sitting? "
+              "Answer yes or no.")
 BARE = {"walls": "bare stretch of wall with nothing on it or in front of it",
         "floor": "bare stretch of floor with nothing standing on it"}
 
@@ -93,7 +125,7 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
     out_dir.mkdir(parents=True, exist_ok=True)
     pieces = [p for p in spec.get("pieces") or [] if (res["spec"].get(p["id"]) or {}).get("in_picture")]
     items = [{"id": f"b:{p['id']}", "image": str(concept), "max_new_tokens": 30,
-              "ask": {"box": BOX_ASK.format(n=(p.get("kind") or "").replace("_", " "))}} for p in pieces]
+              "ask": {"box": BOX_ASK.format(n=plain_name(p))}} for p in pieces]
     for i, sn in enumerate(res.get("seen") or []):
         items.append({"id": f"s:{i}", "image": str(concept), "max_new_tokens": 30, "ask": {
             "box": BOX_ASK.format(n=sn["name"]),
@@ -106,6 +138,17 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         b = box_of((a.get(f"b:{p['id']}") or {}).get("box"))
         if b:
             res["spec"][p["id"]].update(box=b, crop=cut(concept, b, out_dir / f"{tag}_{p['id']}.png"))
+    # two pieces of the spec found in the same part of the picture are one thing seen twice (the forge's sword was
+    # "found" on the bench, 11-17): it is the piece whose look the picture gave, else the first; the other is not
+    # in the picture
+    got = [p for p in pieces if res["spec"][p["id"]].get("box")]
+    for i, p in enumerate(got):
+        for q in got[i + 1:]:
+            bp, bq = res["spec"][p["id"]].get("box"), res["spec"][q["id"]].get("box")
+            if bp and bq and same_place(bp, bq):
+                lose = p if (res["spec"][q["id"]].get("look") and not res["spec"][p["id"]].get("look")) else q
+                res["spec"][lose["id"]] = {"in_picture": False, "look": "", "same_as": (q if lose is p else p)["id"]}
+    pieces = [p for p in pieces if res["spec"][p["id"]].get("in_picture")]
     for i, sn in enumerate(res.get("seen") or []):
         r = a.get(f"s:{i}") or {}
         kd = re.sub(r"[^a-z ]", "", str(r.get("kind") or "").lower()).strip().replace(" ", "_")
@@ -113,7 +156,21 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         # (a thing that takes under a fiftieth of the picture is a fitting on a wall, not a piece to build: asked
         # for a kind, the judge called a switch panel a bureau)
         big = bool(b) and (b[2] - b[0]) * (b[3] - b[1]) >= PIECE_AREA
-        sn["kind"] = kd if kd in kinds and big else None
+        # (and a thing as wide as the picture is the room's own ceiling, floor or wall: the forge's beams came
+        # back a "lantern", 11-17)
+        room = bool(b) and b[2] - b[0] >= STRUCTURE_SPAN
+        # the block, stump or plinth a spec piece stands on is one piece with it: the piece's cut-out and its foot
+        # on the floor take it in (the anvil's box ended at the stump's top, so it measured as a low block standing
+        # far back against the wall, 11-17)
+        on = next((p for p in pieces if b and res["spec"][p["id"]].get("box")
+                   and carried_by(res["spec"][p["id"]]["box"], b)), None)
+        if on:
+            pb = res["spec"][on["id"]]["box"]
+            pb = [min(pb[0], b[0]), pb[1], max(pb[2], b[2]), b[3]]
+            res["spec"][on["id"]].update(box=pb, crop=cut(concept, pb, out_dir / f"{tag}_{on['id']}.png"))
+            sn.update(kind=None, carries=on["id"])
+            continue
+        sn["kind"] = kd if kd in kinds and big and not room else None
         if b and sn["kind"]:
             sn.update(box=b, crop=cut(concept, b, out_dir / f"{tag}_seen{i}.png"))
     res["bare"] = {}
@@ -135,7 +192,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
              {"id": "surf", "image": str(concept), "ask": ASKS, "max_new_tokens": 30},
              {"id": "seen", "image": str(concept), "ask": {"seen": SEEN_ASK}, "max_new_tokens": 220}]
     for p in pieces:
-        name = (p.get("kind") or "").replace("_", " ")
+        name = plain_name(p)          # (asked "is there a work piece", the judge never found the anvil, 11-17)
         items.append({"id": f"p:{p['id']}", "image": str(concept), "max_new_tokens": 30, "ask": {
             "there": f"Is there a {name} in this picture? Answer yes or no.",
             "look": f"If there is a {name} in this picture, say in a few words what it is made of and its colour; "
@@ -183,6 +240,14 @@ def main():
             CH.vl_close()
         ans = str((r.get("c") or {}).get("other") or "").strip().lower()
         print(json.dumps({"picture": sys.argv[2], "other_things": ans}))
+        sys.exit(0 if ans.startswith("n") else 1)
+    if sys.argv[1] == "--nobody":            # concept.py --nobody PICTURE: exit 0 when it shows nobody
+        try:
+            r = CH.vl_ask([{"id": "c", "image": sys.argv[2], "max_new_tokens": 4, "ask": {"who": NOBODY_ASK}}])
+        finally:
+            CH.vl_close()
+        ans = str((r.get("c") or {}).get("who") or "").strip().lower()
+        print(json.dumps({"picture": sys.argv[2], "someone": ans}))
         sys.exit(0 if ans.startswith("n") else 1)
     concept, spec_p, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     try:

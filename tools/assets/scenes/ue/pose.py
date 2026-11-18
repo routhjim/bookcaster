@@ -14,15 +14,23 @@ target), ["curl", side, deg, thumb_deg] (relaxed fingers).
 
 Named poses (POSES) are functions of the measured skeleton plus a few parameters (seat and shelf heights, which
 leg takes the weight, head and chest turns): stand, stand_relaxed, stand_hand_on_mantel, gesture_point, seated,
-sit_armchair_relaxed. Feet keep their standing positions (two-bone IK) when the hips move.
+sit_armchair_relaxed. Feet keep their standing positions (two-bone IK) when the hips move. Start actions over a
+posture (ACTIONS): veil_lift, and the work actions any task maps onto: tool_raised, striking_down, hands_at_work.
+The work actions set the whole body by its mechanics (see "work: whole-body mechanics"): a staggered stance with
+bent knees, the trunk turned and folded from the hips, elbows never straight, the centre of mass kept over the feet
+(balance_margin), the head on the work, the tool gripped (grip_frame, prop_in_hand: scene_job puts the held prop in
+the palm from build()'s info["tool"]). The math runs without the engine (Skel.from_joints; tests/test_work_pose_1117).
 """
 
 import math
 
-import unreal
+try:
+    import unreal
+except ImportError:         # the pose math is plain Python: tests drive it on a synthetic skeleton (Skel.from_joints)
+    unreal = None
 
-EAL = unreal.EditorAssetLibrary
-AT = unreal.AssetToolsHelpers.get_asset_tools()
+EAL = unreal.EditorAssetLibrary if unreal else None
+AT = unreal.AssetToolsHelpers.get_asset_tools() if unreal else None
 
 
 # ------------------------------------------------------------------ quaternions (x, y, z, w)
@@ -101,6 +109,30 @@ class Skel:
         self.ref_pos = dict(self.pos)
         self.ref_rot = dict(self.rot)
         self.changed = set()
+        self.info = {}                     # what a pose step reports (work stance, balance, the held tool)
+
+    @classmethod
+    def from_joints(cls, pos, parent):
+        """A skeleton from joint positions alone (actor frame, cm; parent: bone -> parent or None), reference
+        rotations identity: the pose math off the engine (tests)."""
+        s = cls.__new__(cls)
+        s.body, s.inv_yaw, s.org = None, (0.0, 0.0, 0.0, 1.0), [0.0, 0.0, 0.0]
+        s.names = list(pos)
+        s.parent = {nm: parent.get(nm) for nm in s.names}
+        s.children = {nm: [] for nm in s.names}
+        for nm, p in s.parent.items():
+            if p:
+                s.children[p].append(nm)
+        s.pos = {nm: list(v) for nm, v in pos.items()}
+        s.rot = {nm: (0.0, 0.0, 0.0, 1.0) for nm in s.names}
+        s.ref_pos, s.ref_rot = dict(s.pos), dict(s.rot)
+        s.changed, s.info = set(), {}
+        return s
+
+    def world(self, v, point=True):
+        """Actor frame -> UE world (cm): a point (with the actor's location) or a direction."""
+        w = qrot(qinv(self.inv_yaw), v)
+        return add(w, self.org) if point else w
 
     def subtree(self, bone):
         out, stack = [], [bone]
@@ -143,7 +175,10 @@ def q_axis(axis, deg):
 
 def _rot(s, bone, axis, deg):
     """Turn `bone` and everything below it by deg about an actor-frame axis through the bone."""
-    q = q_axis(axis, deg)
+    _rot_q(s, bone, q_axis(axis, deg))
+
+
+def _rot_q(s, bone, q):
     piv = s.pos[bone]
     for b in s.subtree(bone):
         s.pos[b] = add(piv, qrot(q, sub(s.pos[b], piv)))
@@ -175,10 +210,12 @@ def _curl(s, side, deg, thumb_deg=None, fingers=FINGERS):
     """Relaxed fingers: each finger joint turned toward the palm about the knuckle line (index -> pinky)."""
     k = unit(sub(s.pos[f"pinky_01_{side}"], s.pos[f"index_01_{side}"]))
     # palm side: the curl that moves the middle fingertip toward the thumb base is the closing one
+    # (judged on a small turn: at a deep curl the tip swings past the thumb on either side and the test chose
+    # the opening way, a tool hand's fingers bent back flat)
     sign = 1.0
     tip, base = f"middle_03_{side}", f"thumb_01_{side}"
     if tip in s.pos and base in s.pos:
-        q = q_axis(k, deg)
+        q = q_axis(k, 12.0)
         piv = s.pos[f"middle_01_{side}"]
         moved = add(piv, qrot(q, sub(s.pos[tip], piv)))
         if math.dist(moved, s.pos[base]) > math.dist(s.pos[tip], s.pos[base]):
@@ -372,7 +409,589 @@ def act_veil_lift(s, p):
         _curl(s, side, 45, 20)
 
 
-ACTIONS = {"veil_lift": act_veil_lift}      # what a person begins to do as the shot starts, over any posture
+# ------------------------------------------------------------------ work: whole-body mechanics (11-17)
+# A person at work stands in a working stance, not to attention: the foot opposite the tool hand a step forward, the
+# feet about shoulder width apart and turned out a little, the hips lowered over bent knees, pelvis and chest turned
+# (wound up toward the tool side to strike, squared over the work at the blow), the lean spread over the hips and the
+# spine, the head looking at the work. No arm is ever straight: a hand the body cannot reach with a bent elbow brings
+# the body to it (more lean, lower hips) and the elbows bend down and out. The centre of mass (body-segment table) is
+# kept over the feet by moving the hips. The tool hand holds the tool (grip_frame / prop_in_hand): its handle across
+# the palm, its head beyond the thumb, the wrist bent no more than WRIST_MAX.
+
+def dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def scale(v, k):
+    return [c * k for c in v]
+
+
+def norm(v):
+    return math.sqrt(dot(v, v))
+
+
+def perp(v, axis):
+    """v without its part along the unit axis."""
+    return sub(v, scale(axis, dot(v, axis)))
+
+
+def angle_deg(a, b):
+    return math.degrees(math.acos(max(-1.0, min(1.0, dot(unit(a), unit(b))))))
+
+
+SEATED = ("seated", "sit_armchair_relaxed")
+WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")
+REACH = 0.92            # a hand target farther than this share of the arm's length is reached with the body
+WRIST_MAX = 60.0        # degrees the hand may bend off the forearm's line
+KNEE_REACH = 0.97       # each leg at most this share of its length from hip to ankle: the knees always bend
+BALANCE_MARGIN_CM = 3.0  # the centre of mass this far inside the feet's support polygon
+TWO_HANDED_M = 0.9      # a held thing longer than this is held with both hands
+CLAV_MAX = 20.0         # degrees the shoulder girdle lifts when the hand goes above the shoulder
+LEAN_MAX = 80.0         # the deepest forward fold (hips and spine together) for a low work top
+DROP_MAX = 0.2          # the lowest the hips go (share of stature, a deep squat) before the arms fall short
+# stance, in shares of the stature H (a 1.75 m figure: front foot +12 cm, back foot -17.5 cm, hips down 5-14 cm)
+STANCE_FRONT, STANCE_BACK = 0.09, 0.08
+TOE_OUT_FRONT, TOE_OUT_BACK = 10.0, 18.0
+# per action: pelvis turn and chest twist toward the tool side (deg; negative turns back toward square), the lean at
+# a work top at hip height plus per cm the top lies under the hips, and the tool's direction (grip -> head) in the
+# chest's frame as (forward, up, out toward the tool side)
+WORK_SPEC = {
+    "tool_raised": {"pelvis": 14.0, "chest": 16.0, "lean": 8.0, "lean_cm": 0.25, "tool": (-0.75, 0.6, 0.25)},
+    "striking_down": {"pelvis": 8.0, "chest": -8.0, "lean": 16.0, "lean_cm": 0.45, "tool": (0.85, -0.42, -0.2)},
+    "hands_at_work": {"pelvis": 6.0, "chest": -6.0, "lean": 12.0, "lean_cm": 0.45, "tool": (0.45, -0.1, -0.88)},
+}
+
+# body-segment masses (Winter 2009, after Dempster): (share of body mass, proximal joint, distal joint, the segment's
+# centre of mass as a fraction of the way from proximal to distal). The head's centre lies past the head joint
+# (the skull's middle, ~0.6 of the neck's length above it); the trunk is pelvis, abdomen and thorax.
+SEGMENTS = [(0.081, "neck_01", "head", 1.6), (0.216, "spine_03", "neck_01", 0.5),
+            (0.139, "spine_01", "spine_03", 0.5), (0.142, "pelvis", "spine_01", 0.0)]
+for _x in ("l", "r"):
+    SEGMENTS += [(0.028, f"upperarm_{_x}", f"lowerarm_{_x}", 0.436), (0.016, f"lowerarm_{_x}", f"hand_{_x}", 0.43),
+                 (0.006, f"hand_{_x}", f"middle_01_{_x}", 0.5), (0.100, f"thigh_{_x}", f"calf_{_x}", 0.433),
+                 (0.0465, f"calf_{_x}", f"foot_{_x}", 0.433), (0.0145, f"foot_{_x}", f"ball_{_x}", 0.5)]
+
+
+def centre_of_mass(pos):
+    """Whole-body centre of mass from joint positions (any frame, z up) by the segment table."""
+    tot, c = 0.0, [0.0, 0.0, 0.0]
+    for m, a, b, f in SEGMENTS:
+        if a in pos and b in pos:
+            p = add(pos[a], scale(sub(pos[b], pos[a]), f))
+            c = add(c, scale(p, m))
+            tot += m
+    return scale(c, 1.0 / tot)
+
+
+def foot_print(pos, side):
+    """A foot's outline on the floor (xy) from its ankle and ball joints: heel behind the ankle, toe past the ball."""
+    a, b = pos[f"foot_{side}"], pos[f"ball_{side}"]
+    u = [b[0] - a[0], b[1] - a[1]]
+    ln = math.hypot(*u) or 1.0
+    u = [u[0] / ln, u[1] / ln]
+    w = [-u[1], u[0]]
+    hw = 0.33 * ln
+
+    def at(base, along, wide):
+        return [base[0] + u[0] * along + w[0] * wide, base[1] + u[1] * along + w[1] * wide]
+    return [at(a, -0.45 * ln, hw * 0.8), at(a, -0.45 * ln, -hw * 0.8), at(b, 0.0, hw * 1.1), at(b, 0.0, -hw * 1.1),
+            at(b, 0.55 * ln, hw * 0.5), at(b, 0.55 * ln, -hw * 0.5)]
+
+
+def convex_hull(pts):
+    """Counter-clockwise hull (monotone chain) of 2D points."""
+    p = sorted(set((round(x, 6), round(y, 6)) for x, y in pts))
+    if len(p) < 3:
+        return [list(q) for q in p]
+
+    def turn(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for q in p:
+        while len(lo) >= 2 and turn(lo[-2], lo[-1], q) <= 0:
+            lo.pop()
+        lo.append(q)
+    for q in reversed(p):
+        while len(hi) >= 2 and turn(hi[-2], hi[-1], q) <= 0:
+            hi.pop()
+        hi.append(q)
+    return [list(q) for q in lo[:-1] + hi[:-1]]
+
+
+def polygon_margin(pt, poly):
+    """How far a point lies inside a counter-clockwise convex polygon (its distance to the nearest edge line):
+    positive inside, negative outside."""
+    m = float("inf")
+    for i in range(len(poly)):
+        a, b = poly[i], poly[(i + 1) % len(poly)]
+        e = [b[0] - a[0], b[1] - a[1]]
+        ln = math.hypot(*e) or 1.0
+        m = min(m, (e[0] * (pt[1] - a[1]) - e[1] * (pt[0] - a[0])) / ln)
+    return m
+
+
+def balance_margin(pos):
+    """-> (margin cm, centre of mass xy, support polygon): the centre of mass projected to the floor against the
+    convex hull of both feet's outlines (both feet carry weight). Pure: joint positions in, numbers out."""
+    poly = convex_hull(foot_print(pos, "l") + foot_print(pos, "r"))
+    c = centre_of_mass(pos)
+    return polygon_margin(c[:2], poly), c[:2], poly
+
+
+def grip_frame(size_m, two_hand_m=TWO_HANDED_M):
+    """Where a held prop is gripped, from its recorded size alone (metres, mesh axes x, y, z; origin at the bottom
+    centre). The handle lies along the longest axis. Which end is the handle cannot be told from a size, so by
+    convention: an upright model (longest axis z) is held at its BOTTOM end and its head is the top (a tool is
+    modelled and pictured head up, standing on its handle's end); a lying one (longest axis x or y) at its negative
+    end. The hand grips a short way in from that end (15 % of the length, at least 5 cm so the hand stays on it);
+    a two-handed thing (longer than two_hand_m) is held by the leading hand at 30 % and the other hand at 7 %. The
+    second-longest axis is the head's own length: the way a striking face points (along the hand, wrist to knuckles)."""
+    i = max(range(3), key=lambda a: size_m[a])
+    j = max((a for a in range(3) if a != i), key=lambda a: size_m[a])
+    L = float(size_m[i])
+    two = L > two_hand_m
+    gd = 0.30 * L if two else min(max(0.15 * L, 0.05), 0.4 * L)
+    od = max(0.05, 0.07 * L) if two else None
+    start = 0.0 if i == 2 else -L / 2
+    grip = [0.0, 0.0, float(size_m[2]) / 2]          # the handle's line: through the middle of the other two axes
+    grip[i] = start + gd
+    off = None
+    if two:
+        off = list(grip)
+        off[i] = start + od
+    return {"axis": i, "face_axis": j, "len_m": round(L, 4), "grip_m": grip, "off_grip_m": off,
+            "grip_from_end_m": round(gd, 4), "off_from_end_m": od, "two_hands": two, "head_m": float(size_m[j]),
+            "handle_end": "bottom (z = 0)" if i == 2 else f"negative {'xyz'[i]} end"}
+
+
+HAND_THICK_M = 0.07     # a part a hand closes round is at most this thick ...
+HAND_ROUND = 0.45       # ... and no flatter than this (thin side / thick side): a blade is not a handle
+GRIP_SLICES = 24
+
+
+def grip_from_points(pts_m, two_hand_m=TWO_HANDED_M):
+    """Where a held prop is gripped, from its model's own points (metres, mesh axes): the same report as grip_frame,
+    with "sign" (+1 / -1: the head lies toward the positive / negative end of the long axis). The model is cut in
+    slices along its longest axis; the handle is the longest run of slices a hand can close round (HAND_THICK_M,
+    HAND_ROUND); of that run's two ends the one farther from the model's middle of mass is the free end, and the
+    hand sits a short way in from it (15 % of the length, at most the run's middle). With no such run the hand
+    takes the end farther from the middle of mass. None with too few points."""
+    if not pts_m or len(pts_m) < 50:
+        return None
+    lo = [min(p[a] for p in pts_m) for a in range(3)]
+    hi = [max(p[a] for p in pts_m) for a in range(3)]
+    size = [hi[a] - lo[a] for a in range(3)]
+    i = max(range(3), key=lambda a: size[a])
+    j = max((a for a in range(3) if a != i), key=lambda a: size[a])
+    k = 3 - i - j
+    L = size[i]
+    if L < 1e-4:
+        return None
+    n = GRIP_SLICES
+    sl = [[] for _ in range(n)]
+    for p in pts_m:
+        sl[min(n - 1, int((p[i] - lo[i]) / L * n))].append(p)
+    mass = sum(p[i] for p in pts_m) / len(pts_m)
+    ok, mid = [], []
+    for q in sl:
+        if len(q) < 4:
+            ok.append(False)
+            mid.append(None)
+            continue
+        rj = (min(p[j] for p in q), max(p[j] for p in q))
+        rk = (min(p[k] for p in q), max(p[k] for p in q))
+        thick, thin = max(rj[1] - rj[0], rk[1] - rk[0]), min(rj[1] - rj[0], rk[1] - rk[0])
+        ok.append(0.006 <= thick <= HAND_THICK_M and thin / thick >= HAND_ROUND)
+        mid.append(((rj[0] + rj[1]) / 2, (rk[0] + rk[1]) / 2))
+    best, a = None, 0
+    while a < n:
+        if ok[a]:
+            b = a
+            while b + 1 < n and ok[b + 1]:
+                b += 1
+            if best is None or b - a > best[1] - best[0]:
+                best = (a, b)
+            a = b + 1
+        else:
+            a += 1
+    two = L > two_hand_m
+    want = 0.30 * L if two else min(max(0.15 * L, 0.05), 0.4 * L)
+    if best and best[1] - best[0] >= 1:
+        r0, r1 = lo[i] + best[0] * L / n, lo[i] + (best[1] + 1) * L / n
+        free = r0 if abs(r0 - mass) > abs(r1 - mass) else r1
+        gd = min(want, (r1 - r0) / 2)
+        gi = free + gd * (1.0 if free == r0 else -1.0)
+    else:
+        free = lo[i] if abs(lo[i] - mass) > abs(hi[i] - mass) else hi[i]
+        gi = free + want * (1.0 if free == lo[i] else -1.0)
+    sign = 1.0 if mass >= gi else -1.0
+    end = lo[i] if sign > 0 else hi[i]                       # the handle's own end of the model
+    m = mid[min(n - 1, max(0, int((gi - lo[i]) / L * n)))] or ((lo[j] + hi[j]) / 2, (lo[k] + hi[k]) / 2)
+    grip = [0.0, 0.0, 0.0]
+    grip[i], grip[j], grip[k] = gi, m[0], m[1]
+    gfe = abs(gi - end)
+    od = max(0.05, 0.07 * L) if two else None
+    off = None
+    if two:
+        off = list(grip)
+        off[i] = end + sign * od
+    return {"axis": i, "face_axis": j, "sign": sign, "len_m": round(L, 4), "grip_m": [round(v, 4) for v in grip],
+            "off_grip_m": off, "grip_from_end_m": round(gfe, 4), "off_from_end_m": od, "two_hands": two,
+            "head_m": round(size[j], 4), "size_m": [round(v, 4) for v in size],
+            "handle_end": f"{'negative' if sign > 0 else 'positive'} {'xyz'[i]} end", "from": "model"}
+
+
+def prop_in_hand(size_m, palm_cm, tool_dir, face_dir, k=1.0, grip=None):
+    """A held prop's placement: its handle axis along tool_dir (grip -> head), its head's length along face_dir,
+    its grip point at palm_cm. All in one proper frame (UE world, or the actor frame; cm). -> {"x", "y", "z": where
+    the mesh's own axes point, "origin_cm": where its origin goes, "grip": grip_frame}. A proper rotation: axis k is
+    the cross product of the other two in cyclic order."""
+    g = grip or grip_frame(size_m)
+    i, j = g["axis"], g["face_axis"]
+    t = scale(unit(tool_dir), g.get("sign", 1.0))            # where the mesh's long axis points
+    h = perp(face_dir, t)
+    h = unit(h) if norm(h) > 1e-6 else unit(perp([0.0, 0.0, 1.0] if abs(t[2]) < 0.9 else [1.0, 0.0, 0.0], t))
+    cols = [None, None, None]
+    cols[i], cols[j] = t, h
+    kk = 3 - i - j
+    cols[kk] = cross(cols[i], cols[j]) if (j - i) % 3 == 1 else cross(cols[j], cols[i])
+    gp = g["grip_m"]
+    o = list(palm_cm)
+    for a in range(3):
+        o = sub(o, scale(cols[a], gp[a] * 100.0 * k))
+    return {"x": cols[0], "y": cols[1], "z": cols[2], "origin_cm": o, "grip": g}
+
+
+def _restore(s, state):
+    s.pos, s.rot = dict(state[0]), dict(state[1])
+
+
+def _yaw_foot(s, side, yaw_deg):
+    """The foot flat as in the reference pose, turned yaw_deg about the vertical (positive: toward the right)."""
+    f = f"foot_{side}"
+    want = qmul(q_axis([0, 0, 1], yaw_deg), s.ref_rot[f])
+    _rot_q(s, f, qnorm(qmul(want, qinv(s.rot[f]))))
+
+
+def _legs(s, ankles, yaws, knee_reach=KNEE_REACH):
+    """Both feet planted at their ankle targets (actor frame, on the floor), the hips lowered until no leg is
+    straighter than knee_reach of its length, the knees bending forward over the toes. -> extra drop (cm)."""
+    drop = 0.0
+    for x in ("l", "r"):
+        L = s.length(f"thigh_{x}", f"calf_{x}") + s.length(f"calf_{x}", f"foot_{x}")
+        hp, a = s.pos[f"thigh_{x}"], ankles[x]
+        hz = math.hypot(hp[0] - a[0], hp[1] - a[1])
+        need = (knee_reach * L) ** 2 - hz * hz
+        if need > 0:
+            drop = max(drop, (hp[2] - a[2]) - math.sqrt(need))
+    if drop > 0:
+        s.move("pelvis", [0.0, 0.0, -drop])
+    for x in ("l", "r"):
+        sx = 1.0 if x == "l" else -1.0
+        r = sub(s.ref_pos[f"ball_{x}"], s.ref_pos[f"foot_{x}"])
+        toe = unit(qrot(q_axis([0, 0, 1], yaws[x]), [r[0], r[1], 0.0]))
+        hip = s.pos[f"thigh_{x}"]
+        mid = scale(add(hip, ankles[x]), 0.5)
+        pole = add(mid, add(scale(toe, 50.0), [sx * 8.0, 0.0, 0.0]))
+        _ik(s, f"thigh_{x}", f"calf_{x}", f"foot_{x}", ankles[x], pole)
+        _yaw_foot(s, x, yaws[x])
+    return drop
+
+
+def _clear_torso(s, tgt, r):
+    """A hand target inside the trunk (a capsule from the pelvis to the upper chest, radius r) pushed out of it."""
+    a, b = s.pos["pelvis"], s.pos["spine_05"]
+    ab = sub(b, a)
+    t = max(0.0, min(1.0, dot(sub(tgt, a), ab) / max(dot(ab, ab), 1e-6)))
+    c = add(a, scale(ab, t))
+    d = sub(tgt, c)
+    if norm(d) >= r:
+        return tgt
+    d = d if norm(d) > 1e-6 else [0.0, 1.0, 0.0]
+    return add(c, scale(unit(d), r))
+
+
+def _arm_to(s, side, tgt, pole_dir, H):
+    """The hand (wrist joint) to tgt, the elbow toward pole_dir; never straight: a target past REACH of the arm is
+    taken at REACH along the same line (the caller brings the body nearer). -> (reach share asked for, target
+    wanted, clear of the trunk)."""
+    sh = s.pos[f"upperarm_{side}"]
+    L = s.length(f"upperarm_{side}", f"lowerarm_{side}") + s.length(f"lowerarm_{side}", f"hand_{side}")
+    tgt = _clear_torso(s, tgt, 0.075 * H)
+    d = sub(tgt, sh)
+    n = norm(d)
+    use = add(sh, scale(d, REACH * L / n)) if n > REACH * L else tgt
+    pole = add(scale(add(sh, use), 0.5), scale(unit(pole_dir), L))
+    _ik(s, f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", use, pole)
+    return n / L, tgt
+
+
+def _hand_orient(s, side, h, k):
+    """The hand's wrist -> middle knuckle along h and its knuckle line (pinky -> index) along k (perpendicular)."""
+    s.aim(f"hand_{side}", f"middle_01_{side}", h)
+    ix, pk = f"index_01_{side}", f"pinky_01_{side}"
+    if ix not in s.pos or pk not in s.pos:
+        return
+    h = unit(h)
+    a, b = perp(sub(s.pos[ix], s.pos[pk]), h), perp(k, h)
+    if norm(a) < 1e-6 or norm(b) < 1e-6:
+        return
+    _rot(s, f"hand_{side}", h, math.degrees(math.atan2(dot(h, cross(a, b)), dot(a, b))))
+
+
+def _wrist_limit(f, t, max_deg=WRIST_MAX):
+    """A handle direction the wrist can give: the hand bends off the forearm by 90 deg less the forearm-to-handle
+    angle, so that angle is kept within [90 - max, 90 + max]."""
+    c = dot(f, t)
+    lim = math.cos(math.radians(90.0 - max_deg))
+    if abs(c) <= lim:
+        return t
+    w = perp(t, f)
+    w = unit(w) if norm(w) > 1e-6 else unit(perp([0.0, 0.0, 1.0] if abs(f[2]) < 0.9 else [1.0, 0.0, 0.0], f))
+    return unit(add(scale(f, math.copysign(lim, c)), scale(w, math.sqrt(1 - lim * lim))))
+
+
+def palm_point(s, side):
+    """Where a handle lies in the hand: 60 % of the way from the wrist to the middle knuckle, off the palm by 28 % of
+    that length (palm flesh and the handle's radius)."""
+    sx = 1.0 if side == "l" else -1.0
+    hd, m = s.pos[f"hand_{side}"], s.pos[f"middle_01_{side}"]
+    h = sub(m, hd)
+    ln = norm(h)
+    k = unit(perp(sub(s.pos[f"index_01_{side}"], s.pos[f"pinky_01_{side}"]), unit(h)))
+    n = scale(cross(unit(h), k), -sx)               # the palm's side (right hand: h x k; left: k x h)
+    return add(hd, add(scale(h, 0.6), scale(n, 0.28 * ln)))
+
+
+def _grip(s, side, t_want):
+    """The hand closed round a handle running along t_want (grip -> head, beyond the thumb): the hand's own line is
+    the forearm's with the handle's part taken out, the handle bent off the forearm only as far as the wrist goes.
+    -> (handle direction given, hand direction)."""
+    f = unit(sub(s.pos[f"hand_{side}"], s.pos[f"lowerarm_{side}"]))
+    t = _wrist_limit(f, unit(t_want))
+    h = unit(perp(f, t))
+    _hand_orient(s, side, h, t)
+    return t, h
+
+
+def _flat_hand(s, side, fwd, out_side):
+    """A hand resting on a top: fingers forward and a little down, palm down, the wrist within WRIST_MAX."""
+    sx = 1.0 if side == "l" else -1.0
+    f = unit(sub(s.pos[f"hand_{side}"], s.pos[f"lowerarm_{side}"]))
+    h = unit(add(scale(fwd, 0.85), add(scale(out_side, -0.15), [0.0, 0.0, -0.45])))
+    a = angle_deg(f, h)
+    if a > WRIST_MAX - 5:                      # bent back toward the forearm's line
+        w = unit(perp(h, f))
+        th = math.radians(WRIST_MAX - 5)
+        h = unit(add(scale(f, math.cos(th)), scale(w, math.sin(th))))
+    k = scale(cross([0.0, 0.0, -1.0], h), -sx)    # knuckle line for a palm facing down
+    _hand_orient(s, side, h, k)
+
+
+def _look_at(s, pt, H, max_deg=75.0):
+    """Neck and head turned so the face looks at pt (the neck takes 40 %); the reference face looks along +y."""
+    for b, f in (("neck_01", 0.4), ("head", 1.0)):
+        dq = qmul(s.rot["head"], qinv(s.ref_rot["head"]))
+        fw = qrot(dq, [0.0, 1.0, 0.0])
+        eye = add(s.pos["head"], qrot(dq, [0.0, 0.05 * H, 0.03 * H]))
+        d = unit(sub(pt, eye))
+        ax = cross(fw, d)
+        if norm(ax) < 1e-6:
+            return
+        _rot(s, b, ax, min(angle_deg(fw, d), max_deg) * f)
+
+
+def face_forward(s):
+    return qrot(qmul(s.rot["head"], qinv(s.ref_rot["head"])), [0.0, 1.0, 0.0])
+
+
+def _body_axes(s):
+    """Horizontal left and forward of the shoulders (unit, actor frame)."""
+    l_ = sub(s.pos["upperarm_l"], s.pos["upperarm_r"])
+    l_ = unit([l_[0], l_[1], 0.0])
+    return l_, [-l_[1], l_[0], 0.0]
+
+
+def _clav_raise(s, side, tgt_z):
+    sh, cl = s.pos[f"upperarm_{side}"], f"clavicle_{side}"
+    if tgt_z <= sh[2] or cl not in s.pos:
+        return
+    v = sub(sh, s.pos[cl])
+    ax = cross(v, [0.0, 0.0, 1.0])
+    if norm(ax) > 1e-6:
+        _rot(s, cl, ax, min(CLAV_MAX, 0.45 * (tgt_z - sh[2])))
+
+
+def _work_solve(s, c, cfg):
+    """One pass of the work stance from the base state with this lean, hip drop and hip shift."""
+    H, hs, ot, kind, spec = c["H"], c["hand"], c["other"], c["kind"], c["spec"]
+    sx = 1.0 if hs == "l" else -1.0
+    turn = -sx                                           # positive about z turns toward the right
+    lean = cfg["lean"]
+    if c["standing"]:
+        A = {x: list(s.ref_pos[f"foot_{x}"]) for x in ("l", "r")}
+        cx, cy = (A["l"][0] + A["r"][0]) / 2, (A["l"][1] + A["r"][1]) / 2
+        half = max(abs(A["l"][0] - cx), 0.5 * abs(s.ref_pos["upperarm_l"][0] - s.ref_pos["upperarm_r"][0]))
+        ank, yaw = {}, {}
+        for x, fy, toe in ((ot, STANCE_FRONT, TOE_OUT_FRONT), (hs, -STANCE_BACK, TOE_OUT_BACK)):
+            xs = 1.0 if x == "l" else -1.0
+            ank[x] = [cx + xs * half, cy + fy * H, A[x][2]]
+            yaw[x] = -xs * toe                                 # toes out: the left foot turns left
+        trunk = s.ref_pos["neck_01"][2] - s.ref_pos["pelvis"][2]
+        hinge = 0.2 * trunk * math.sin(math.radians(lean))     # the hips go back as the trunk folds forward
+        pel = s.pos["pelvis"]
+        s.move("pelvis", [(ank["l"][0] + ank["r"][0]) / 2 + cfg["shift"][0] - pel[0],
+                          (ank["l"][1] + ank["r"][1]) / 2 - hinge + cfg["shift"][1] - pel[1], -cfg["drop"]])
+        _rot(s, "pelvis", [0, 0, 1], turn * spec["pelvis"])
+        # most of the fold at the hips, the rest spread up the spine (a hinge, not a hunch)
+        shares = (("pelvis", 0.5), ("spine_01", 0.125), ("spine_02", 0.125), ("spine_03", 0.125), ("spine_04", 0.125))
+    else:
+        shares = (("spine_01", 0.3), ("spine_02", 0.25), ("spine_03", 0.25), ("spine_04", 0.2))
+    for b, f in shares:
+        _rot(s, b, [1, 0, 0], -lean * f)
+    for b, nx, f in (("spine_02", "spine_03", 0.3), ("spine_03", "spine_04", 0.35), ("spine_04", "spine_05", 0.35)):
+        ax = sub(s.pos[nx], s.pos[b])
+        if norm(ax) > 1e-6:
+            _rot(s, b, ax, turn * spec["chest"] * f)
+    drop = cfg["drop"]
+    if c["standing"]:
+        drop += _legs(s, ank, yaw)
+    left, fwd = _body_axes(s)
+    up = [0.0, 0.0, 1.0]
+    out = scale(left, sx)                                    # toward the tool side
+    oo = scale(out, -1.0)
+    top, wy, wx = c["top"], c["wy"], c["wx"]
+    t_want = unit(add(scale(fwd, spec["tool"][0]), add(scale(up, spec["tool"][1]), scale(out, spec["tool"][2]))))
+    g = c["grip"]
+    strike = [wx, wy, top]
+    near = c["near"]                                         # the work top's near edge (y), when known
+    # a hand rests on the work's top: toward its near edge when the body, folded as far as it goes, falls short
+    edge = lambda y: y + cfg["pull"] * (near + 0.02 * H - y) if y > near + 0.02 * H else y      # noqa: E731
+    rest_off = [wx + (1.0 if ot == "l" else -1.0) * 0.06 * H, edge(min(wy - 0.03 * H, near + 0.035 * H)), top + 0.025 * H]
+    targets, reach, work_hands = {}, {}, []
+    pole_top = lambda o: add(scale(o, 0.6), add(scale(fwd, -0.25), [0.0, 0.0, -0.75]))       # noqa: E731
+    pole_up = add(scale(out, 0.85), add(scale(fwd, 0.25), [0.0, 0.0, -0.45]))
+    # the tool hand: where its palm must be
+    if kind == "tool_raised":
+        head_top = s.pos["head"][2] + 0.1 * H
+        _clav_raise(s, hs, head_top + 0.03 * H)
+        sh = s.pos[f"upperarm_{hs}"]
+        # the hand beside the head, the elbow bent near a right angle below it (a hand high over the head on a
+        # straight arm read as a wave, not a wind-up)
+        palm_want = add(sh, add(scale(out, 0.09 * H), scale(fwd, -0.02 * H)))
+        palm_want[2] = s.pos["head"][2] + 0.03 * H
+        tool_pole = pole_up
+    elif kind == "striking_down":
+        palm_want = add(add(strike, [0.0, 0.0, 100.0 * g["head_m"] / 2]), scale(t_want, -100.0 * (g["len_m"] - g["grip_from_end_m"])))
+        tool_pole = pole_top(out)
+    else:
+        palm_want = [wx + sx * 0.05 * H, edge(min(wy - 0.05 * H, near + 0.06 * H)), top + 0.03 * H]
+        tool_pole = pole_top(out)
+    if kind != "tool_raised":
+        work_hands.append(hs)
+    po = [0.0, 0.0, 0.0]                                   # palm - wrist, refined over the passes
+    t = t_want
+    for _ in range(3):
+        reach[hs], targets[hs] = _arm_to(s, hs, sub(palm_want, po), tool_pole, H)
+        t, h = _grip(s, hs, t_want)
+        po = sub(palm_point(s, hs), s.pos[f"hand_{hs}"])
+    # the other hand: on the handle of a two-handed thing, else on the work's top
+    if g["two_hands"]:
+        off_palm = sub(palm_point(s, hs), scale(t, 100.0 * (g["grip_from_end_m"] - g["off_from_end_m"])))
+        po2 = [0.0, 0.0, 0.0]
+        for _ in range(3):
+            reach[ot], targets[ot] = _arm_to(s, ot, sub(off_palm, po2), pole_top(oo), H)
+            _grip(s, ot, t)
+            po2 = sub(palm_point(s, ot), s.pos[f"hand_{ot}"])
+    else:
+        _clav_raise(s, ot, rest_off[2])
+        reach[ot], targets[ot] = _arm_to(s, ot, rest_off, pole_top(oo), H)
+        _flat_hand(s, ot, fwd, oo)
+        work_hands.append(ot)
+    look = strike if kind != "hands_at_work" else [wx, wy - 0.04 * H, top]
+    _look_at(s, look, H)
+    m, com, poly = balance_margin(s.pos) if c["standing"] else (None, None, None)
+    return {"reach": max([reach[x] for x in set(work_hands)] or [0.0]), "reach_by_hand": reach, "targets": targets,
+            "margin": m, "com": com, "poly": poly, "tool_dir": t, "tool_want": t_want, "face_dir": h,
+            "drop": drop, "look": look}
+
+
+def _work_pose(s, p, kind):
+    """The whole-body work stance for a work action (WORK_ACTIONS), solved until every work-top hand is in reach
+    with a bent elbow and the centre of mass is over the feet; the result is reported in s.info["work"] and the held
+    tool in s.info["tool"]."""
+    hs = p.get("hand", "r")
+    ot = "l" if hs == "r" else "r"
+    standing = p.get("_posture") not in SEATED
+    base = (dict(s.ref_pos), dict(s.ref_rot)) if standing else (dict(s.pos), dict(s.rot))
+    floor = min(s.ref_pos["foot_l"][2], s.ref_pos["foot_r"][2]) - p.get("ankle_cm", 8.0)
+    H = (s.ref_pos["head"][2] - floor) / 0.9                  # the head joint at ~0.9 of the stature
+    hip = s.ref_pos["pelvis"][2] - floor
+    top = floor + float(p["work_top_cm"]) if "work_top_cm" in p else floor + 0.52 * H
+    low = max(0.0, hip - (top - floor))                       # how far under the hips the work's top lies
+    spec = WORK_SPEC[kind]
+    c = {"H": H, "hand": hs, "other": ot, "kind": kind, "spec": spec, "standing": standing, "top": top,
+         "wy": s.ref_pos["pelvis"][1] + float(p.get("work_fwd_cm", 0.27 * H)), "wx": s.ref_pos["pelvis"][0],
+         "near": s.ref_pos["pelvis"][1] + float(p.get("work_near_cm", p.get("work_fwd_cm", 0.27 * H))),
+         "grip": p.get("tool_grip") or grip_frame(p.get("tool_size_m") or [0.04, 0.12, 0.35])}
+    cfg = {"lean": float(p.get("lean_deg", spec["lean"] + spec["lean_cm"] * low)),
+           "drop": min(0.08 * H, 0.03 * H + 0.1 * low) if standing else 0.0, "shift": [0.0, 0.0], "pull": 0.0}
+    n = 0
+    for n in range(1, 25):
+        _restore(s, base)
+        res = _work_solve(s, c, cfg)
+        if res["reach"] > REACH and n < 24 and (cfg["lean"] < LEAN_MAX or cfg["pull"] < 1.0):
+            if cfg["lean"] < LEAN_MAX:
+                cfg["lean"] = min(LEAN_MAX, cfg["lean"] + 4.0)
+                if standing:
+                    cfg["drop"] = min(DROP_MAX * H, cfg["drop"] + 0.008 * H)
+            else:
+                cfg["pull"] = min(1.0, cfg["pull"] + 0.25)
+            continue
+        if standing and res["margin"] < BALANCE_MARGIN_CM and n < 24:
+            cen = [sum(q[0] for q in res["poly"]) / len(res["poly"]), sum(q[1] for q in res["poly"]) / len(res["poly"])]
+            cfg["shift"] = [cfg["shift"][i] + 0.6 * (cen[i] - res["com"][i]) for i in range(2)]
+            continue
+        break
+    for x, deg in ((hs, 70), (ot, 70 if c["grip"]["two_hands"] else 30)):
+        _curl(s, x, deg, 35 if deg > 50 else 12)
+    r2 = lambda v: [round(q, 2) for q in v]                   # noqa: E731
+    s.info["work"] = {"action": kind, "standing": standing, "top_cm": round(top, 1), "lean_deg": round(cfg["lean"], 1),
+                      "hip_drop_cm": round(res["drop"], 1), "hip_shift_cm": r2(cfg["shift"]), "iterations": n,
+                      "reach": {k: round(v, 3) for k, v in res["reach_by_hand"].items()},
+                      "targets": {f"hand_{k}": r2(v) for k, v in res["targets"].items()}, "look_at": r2(res["look"]),
+                      "balance_margin_cm": None if res["margin"] is None else round(res["margin"], 1),
+                      "com_xy": None if res["com"] is None else r2(res["com"])}
+    s.info["tool"] = {"hand": hs, "palm_cm": r2(palm_point(s, hs)), "hand_cm": r2(s.pos[f"hand_{hs}"]),
+                      "dir": [round(q, 4) for q in res["tool_dir"]], "want_dir": [round(q, 4) for q in res["tool_want"]],
+                      "face": [round(q, 4) for q in res["face_dir"]], "grip": c["grip"]}
+
+
+def act_tool_raised(s, p):
+    """A tool raised high, wound up to come down on the work in front: the tool hand above the head and back on its
+    own side, elbow bent out, the handle up and back; pelvis and chest turned toward the tool side; the other hand
+    on the work (or on the handle of a two-handed tool); looking at where the blow lands."""
+    _work_pose(s, p, "tool_raised")
+
+
+def act_striking_down(s, p):
+    """The blow landing: the tool's head on the work, the handle forward and down from a hand low over it, elbow
+    bent; squared over the work, leaning over it, the other hand on the work beside it (or on the handle)."""
+    _work_pose(s, p, "striking_down")
+
+
+def act_hands_at_work(s, p):
+    """Both hands forward on the work, the tool hand holding its tool along the top, the other on the work,
+    leaning toward it."""
+    _work_pose(s, p, "hands_at_work")
+
+
+ACTIONS = {"veil_lift": act_veil_lift,     # what a person begins to do as the shot starts, over any posture
+           "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work}
 
 
 def build(actor, body, pose, params, path):
@@ -380,7 +999,7 @@ def build(actor, body, pose, params, path):
     s = Skel(actor, body)
     POSES[pose](s, params or {})
     if (params or {}).get("action") in ACTIONS:
-        ACTIONS[params["action"]](s, params)
+        ACTIONS[params["action"]](s, dict(params, _posture=pose))
     for step in (params or {}).get("steps", []):
         if step[0] == "aim":
             s.aim(step[1], step[2], step[3])
@@ -424,4 +1043,17 @@ def build(actor, body, pose, params, path):
     info = {"pose": pose, "keyed_bones": keyed,
             "pelvis_z_cm": round(s.pos["pelvis"][2], 1),
             "feet_z_cm": round(min(s.pos[b][2] for b in ("foot_l", "foot_r", "ball_l", "ball_r")), 1)}
+    info.update(world_info(s))
     return anim, info
+
+
+def world_info(s):
+    """The pose's report (s.info) with the held tool also in UE world terms (cm), for placing the prop in the
+    hand (scene_job): palm point, wrist joint, handle direction (grip -> head) and the head's facing."""
+    out = {k: v for k, v in s.info.items()}
+    t = s.info.get("tool")
+    if t:
+        r2 = lambda v: [round(q, 3) for q in v]          # noqa: E731
+        out["tool"] = dict(t, palm_ue=r2(s.world(t["palm_cm"])), hand_ue=r2(s.world(t["hand_cm"])),
+                           dir_ue=r2(s.world(t["dir"], False)), face_ue=r2(s.world(t["face"], False)))
+    return out

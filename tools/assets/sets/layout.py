@@ -597,7 +597,7 @@ def asset_items(S, spec, assets, key):
                 p[2] = it["on_z_m"]
             out.append({"asset": it["asset"], "position": p, "facing": it.get("facing", [0, -1]),
                         "name": it.get("name", it["asset"]), "on": it.get("on"), "hang": bool(it.get("hang")),
-                        "outside": bool(it.get("outside"))})
+                        "outside": bool(it.get("outside")), "world": bool(it.get("world"))})
     for o in out:
         a = assets[o["asset"]]
         yaw = yaw_from_facing(o["facing"])
@@ -605,7 +605,11 @@ def asset_items(S, spec, assets, key):
             yaw += math.degrees(math.atan2(a["front"][1], a["front"][0])) + 90.0
         S.assets.append({"id": o["asset"], "name": o["name"], "path": a["ue_path"], "c": ue_pt(o["position"]),
                          "yaw": round(yaw, 3), "f": f"{key.capitalize()}",
-                         **({"glb": a["glb"]} if a.get("glb") else {})})
+                         **({"glb": a["glb"]} if a.get("glb") else {}),
+                         # a place's world (its land and the sky dome round it) casts no shadow: it enclosed the
+                         # stage, and the per-shot key from the camera's side never reached a face (every talk of an
+                         # outdoor place was a black silhouette against the sky, 11-17)
+                         **({"no_shadow": True} if o.get("world") else {})})
     return out
 
 
@@ -692,6 +696,8 @@ def check(spec, assets, placed):
     probs = []
     fps = [(p, *footprint(p, assets)) for p in placed]
     for p, (x0, y0, x1, y1), (z0, z1) in fps:
+        if p.get("world"):                      # a place in the open: its land holds the whole stage
+            continue
         if p.get("outside"):                    # beyond the walls on purpose (a backdrop seen through a window)
             if not (x1 < -W / 2 or x0 > W / 2 or y1 < -D / 2 or y0 > D / 2):
                 probs.append(f"{p['name']}: marked outside, but it reaches into the room")

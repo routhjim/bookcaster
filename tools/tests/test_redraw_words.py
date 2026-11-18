@@ -103,7 +103,7 @@ def test_what_a_person_holds_is_told_except_in_a_close_shot(tmp_path):
         {"name": "c1", "holds": {"a": "helmet (a dark rounded pilot helmet)"}}, {"name": "c2"}]}))
     ppl = [("a", [0.3, 0.1, 0.6, 1.0], 10.0, "standing", 10.0, None)]
     w = redraw.holds_words(tmp_path, "c1", ppl, {}, "medium")
-    assert "holds in the hands, not worn: helmet (a dark rounded pilot helmet)." in w
+    assert "holds in the hands, not worn: helmet (a dark rounded pilot helmet); it is in the hand" in w
     assert redraw.holds_words(tmp_path, "c1", ppl, {}, "close") == ""        # the hands are out of a close shot
     assert redraw.holds_words(tmp_path, "c2", ppl, {}, "medium") == ""
 

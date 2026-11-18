@@ -4,7 +4,8 @@ pose action), give it the static asset's material, and shoot each pose of the ac
 Job {"fbx": path, "dest": "/Game/Assets/Creatures/<id>_rig", "material": material path or null,
      "poses": n (frames of the action: 0 = rest), "fps": 24, "spacing_m": 14.0, "out": folder, "id": name,
      "res": [1152, 640], "shots": [{"name", "az", "el", "focal", "fill"}] (around the row of poses),
-     "per_pose": {"az", "el", "focal"} (also one shot of every pose alone), "warm_frames": 90, "settle_frames": 30}
+     "per_pose": {"az", "el", "focal"} (also one shot of every pose alone), "warm_frames": 90, "settle_frames": 30,
+     "map": level to load first (optional, e.g. /Game/AssetStage/L_AssetStage)}
 run(job) is a generator (one step per editor tick) and returns {"ok", "mesh", "anim", "shots": [...]}.
 """
 import math
@@ -32,8 +33,14 @@ def import_fbx(fbx, dest):
     ui.import_materials = False
     ui.import_textures = False
     ui.mesh_type_to_import = unreal.FBXImportType.FBXIT_SKELETAL_MESH
-    ui.skeletal_mesh_import_data.import_morph_targets = False
-    ui.anim_sequence_import_data.animation_length = unreal.FBXAnimationLengthImportType.FBXALIT_EXPORTED_TIME
+    # property names move between engine versions: set what this one has
+    for obj, key, val in ((ui.skeletal_mesh_import_data, "import_morph_targets", False),
+                          (ui.anim_sequence_import_data, "animation_length",
+                           unreal.FBXAnimationLengthImportType.FBXALIT_EXPORTED_TIME)):
+        try:
+            obj.set_editor_property(key, val)
+        except Exception as e:
+            unreal.log_warning(f"fbx import option {key} not set: {e}")
     t.options = ui
     at.import_asset_tasks([t])
     sk, an = None, None
@@ -87,16 +94,25 @@ def run(job):
     out = job["out"]
     os.makedirs(out, exist_ok=True)
     r = {"ok": False, "shots": []}
+    if job.get("map"):              # a clean stage (the resident editor may hold another job's level)
+        les.load_level(job["map"])
+        for _ in range(10):
+            yield
     sk, anim = import_fbx(job["fbx"], job["dest"])
     r["mesh"], r["anim"] = sk.get_path_name(), anim.get_path_name() if anim else None
     if anim is None:
         raise RuntimeError("no animation imported")
-    if job.get("material") and EAL.does_asset_exist(job["material"]):
-        mat = EAL.load_asset(job["material"])
-        mats = sk.get_editor_property("materials")
+    mat = None
+    if job.get("material"):
+        mat = EAL.load_asset(job["material"].split(".")[0])
+        if mat is None:
+            raise RuntimeError(f"material not found: {job['material']}")
+        mats = list(sk.get_editor_property("materials"))
         for m in mats:
             m.set_editor_property("material_interface", mat)
         sk.set_editor_property("materials", mats)
+        EAL.save_loaded_asset(sk)
+        r["material"] = mat.get_path_name()
     n = int(job["poses"])
     fps = float(job.get("fps", 24))
     sp = float(job.get("spacing_m", 14.0)) * 100
@@ -107,6 +123,9 @@ def run(job):
         a.set_actor_label(f"pose_{i}")
         c = a.skeletal_mesh_component
         c.set_skinned_asset_and_update(sk)
+        if mat is not None:                         # also on the component: the asset's slots may not refresh
+            for si in range(max(1, c.get_num_materials())):
+                c.set_material(si, mat)
         actors.append(a)
     bb = sk.get_bounds()
     ext = bb.box_extent
@@ -126,7 +145,9 @@ def run(job):
             a_, e_ = math.radians(pp["az"]), math.radians(pp["el"])
             tgt = unreal.Vector(xs[i], 0, H * 0.45)
             hf = 2 * math.atan(18.0 / pp["focal"])
-            dist = max(ext.x, ext.y, ext.z) * 2 / 2 / math.tan(hf / 2) * float(pp.get("fill", 1.1))
+            vf = 2 * math.atan(18.0 * res[1] / res[0] / pp["focal"])
+            # the whole creature: its bounding sphere inside the narrower of the two picture angles
+            dist = math.sqrt(ext.x ** 2 + ext.y ** 2 + ext.z ** 2) / math.sin(min(hf, vf) / 2) * float(pp.get("fill", 1.1))
             loc = tgt + unreal.Vector(math.sin(a_) * math.cos(e_), math.cos(a_) * math.cos(e_), math.sin(e_)) * dist
             cams.append((f"pose{i}", camera(res, loc, tgt, pp["focal"])))
     # a paused single-node pose shows from the second application: apply, wait, apply again

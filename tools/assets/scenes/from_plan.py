@@ -46,6 +46,7 @@ import config as C  # noqa: E402
 import seating  # noqa: E402
 import lying  # noqa: E402
 import stature  # noqa: E402
+import creature  # noqa: E402
 import setfacts  # noqa: E402
 
 FRAMING = {"wide": "full", "full": "full", "medium": "medium", "close": "close", "two": "medium",
@@ -165,19 +166,38 @@ PERSON_GAP_M = 1.1        # standing people keep this between them (at 0.7 m, no
                           # show a face past the other's head; at 1.1 m, four in six: measured on a failed pair)
 
 
-def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12) -> list:
+def too_near(p: list, others: list, own_r: float = 0.0) -> bool:
+    """Closer to another person than PERSON_GAP_M; an other given as [x, y, r] (a creature) keeps r more clear of
+    its middle, and a placed creature (own_r) its own reach more."""
+    return any(math.dist(p, o[:2]) < PERSON_GAP_M + own_r + (o[2] if len(o) > 2 else 0.0) for o in others)
+
+
+def bounds(room: list, own_r: float = 0.0, walls: bool = True) -> tuple:
+    """How far from the middle a placed middle may go: inside the walls by 0.35 m and, with walls, by a creature's
+    reach too. A place in the open has no walls: a creature's body may reach past the stage's edge onto the ground
+    round it (on a 13 m stage a 5 m reach left it no free point, and it was stood on a fallback beside a man, 11-16)."""
+    return room[0] / 2 - 0.35 - (own_r if walls else 0.0), room[1] / 2 - 0.35 - (own_r if walls else 0.0)
+
+
+def clear_of_fixtures(p: list, things: list, r: float = 0.0) -> bool:
+    return not any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25 + r
+                   and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 + r for t in things)
+
+
+def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12,
+               own_r: float = 0.0, fix_r: float | None = None, walls: bool = True) -> list:
     """Every allowed mark for a place given only as a relation or a region ("beside him", "near the desk"): free
     floor points within the place's reach, best first (free_mark's order); the camera rules choose among them."""
-    W, D = room[0] / 2 - 0.35, room[1] / 2 - 0.35
+    W, D = bounds(room, own_r, walls)
+    fr = own_r if fix_r is None else fix_r
     out = []
     for r10 in range(int(near[0] * 10), int(near[1] * 10) + 1, 2):
         r = r10 / 10
         for a in range(0, 360, 20):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or any(math.dist(p, o) < PERSON_GAP_M for o in others):
+            if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r):
                 continue
-            if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
-                   and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
+            if not clear_of_fixtures(p, things, fr):
                 continue
             out.append((r + 0.3 * math.hypot(*p) / max(W, D), [round(p[0], 3), round(p[1], 3)]))
     out.sort(key=lambda x: x[0])
@@ -190,10 +210,14 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
     return picked
 
 
-def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6)) -> list:
+def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6), own_r: float = 0.0,
+              fix_r: float | None = None, walls: bool = True) -> list:
     """The nearest free floor point to the target thing's middle, between near[0] and near[1] m from it, clear of
-    fixtures (their footprint + 0.25 m) and other people (0.55 m), inside the room, toward the room's middle."""
-    W, D = room[0] / 2 - 0.35, room[1] / 2 - 0.35
+    fixtures (their footprint + 0.25 m) and other people (too_near), inside the room, toward the room's middle; a
+    creature (own_r: its reach round its middle) keeps that much more clear of walls and people, and fix_r (by
+    default the same) more clear of fixtures."""
+    W, D = bounds(room, own_r, walls)
+    fr = own_r if fix_r is None else fix_r
     best = None
     # widened until a point is free: as far as the room goes (a thing bigger than the old 3 m reach, a craft in a
     # hangar, left no free point and everyone sent to it was stood on one fallback spot, 11-13)
@@ -203,19 +227,103 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
             if abs(p[0]) > W or abs(p[1]) > D:
                 continue
-            if any(math.dist(p, o) < PERSON_GAP_M for o in others):
+            if too_near(p, others, own_r):
                 continue
-            if any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25
-                   and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 for t in things):
+            if not clear_of_fixtures(p, things, fr):
                 continue
             # nearer the thing, then nearer the middle; and with whoever is already at the place rather than across
             # it (two men sent to one craft stood on opposite sides of it, the craft between them)
-            score = r + 0.3 * math.hypot(*p) / max(W, D) + 0.15 * min((math.dist(p, o) for o in others), default=0.0)
+            score = r + 0.3 * math.hypot(*p) / max(W, D, 0.1) + 0.15 * min((math.dist(p, o[:2]) for o in others),
+                                                                         default=0.0)
             if best is None or score < best[0]:
                 best = (score, p, r)
         if best and r >= best[2] + 1.0:                           # a metre past the first free ring, then the best
             break
-    return [round(best[1][0], 3), round(best[1][1], 3)] if best else [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
+    if best:
+        return [round(best[1][0], 3), round(best[1][1], 3)]
+    # nowhere is free. The people's clearance is the last thing given up (a body standing in a body is no staging):
+    # first a creature's wider berth from the set's things (its body's breadth; its footprint still kept), then
+    # the point with the most room from the others. (The old fallback, 0.6 of the way to the target, stood a 10 m
+    # beast in the middle of the two people it was placed near, its neck through one of them, 11-18)
+    if fr > 0.0:
+        return free_mark(target, others, things, room, near, own_r, 0.0, walls)
+    best = None
+    for r10 in range(int(near[0] * 10), int(max(near[1], 3.0, math.hypot(room[0], room[1])) * 10) + 1, 2):
+        r = r10 / 10
+        for a in range(0, 360, 10):
+            p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
+            if abs(p[0]) > W or abs(p[1]) > D or not clear_of_fixtures(p, things):
+                continue
+            room_ = min((math.dist(p, o[:2]) - PERSON_GAP_M - own_r - (o[2] if len(o) > 2 else 0.0) for o in others),
+                        default=0.0)
+            if best is None or room_ > best[0] + 1e-9:
+                best = (room_, p)
+    if best:
+        return [round(best[1][0], 3), round(best[1][1], 3)]
+    return [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
+
+
+AT_THING = "the thing they are at"     # the pass's answer for someone facing what they work at (staging_pass)
+TALL_THING_M = 1.5        # a thing whose top is above a standing person's eyes: a wall of it, nothing to work on top of
+WALL_NEAR_M = 1.2         # standing this near its footprint, turned to it, a person's face is a hand from its face
+WALL_OPEN_DEG = 60.0      # ... so they stand open to the floor, turned this far off it
+
+
+def open_from_wall(pos: list, facing: list, thing: dict, others: list) -> list:
+    """A standing person turned to a tall thing they stand at (a rock face, a cliff, a cabinet: its top above their
+    eyes) stands open to the floor, turned WALL_OPEN_DEG off it toward the others (else the place's middle): squared
+    up to it from a step away, every camera on their face stood inside it. (A woman on a ledge "at" a 3 m rock, turned
+    to it 0.3 m from its face, showed only her back or a wall of rock in every try, 11-18.) A low thing (a desk, an
+    anvil) or a far one -> the facing as it is."""
+    c, h = thing.get("center") or [], thing.get("half") or []
+    if len(c) < 3 or len(h) < 3 or c[2] + h[2] < TALL_THING_M:
+        return facing
+    gap = math.hypot(max(0.0, abs(pos[0] - c[0]) - h[0]), max(0.0, abs(pos[1] - c[1]) - h[1]))
+    if gap > WALL_NEAR_M:
+        return facing
+    to = [sum(o[0] for o in others) / len(others), sum(o[1] for o in others) / len(others)] if others else [0.0, 0.0]
+    cross = facing[0] * (to[1] - pos[1]) - facing[1] * (to[0] - pos[0])
+    a = math.radians(WALL_OPEN_DEG) * (1.0 if cross >= 0 else -1.0)
+    return [round(facing[0] * math.cos(a) - facing[1] * math.sin(a), 4),
+            round(facing[0] * math.sin(a) + facing[1] * math.cos(a), 4)]
+STRIKE_FAR_M = 2.5        # past a creature's reach: whoever it fights stands at most this much further off (a step
+                          # or two from its snout), at least PERSON_GAP_M
+FIGHT_CLEAR_M = 3.0       # and, where the floor allows, this far from anyone else and from the set's things (a camera
+                          # on the fight can then leave out someone the shot does not list, and stand behind him: with
+                          # a cave mouth at his back every camera on the beast's face was framed past the rock, 11-17)
+
+
+def strike_place(cpos: list, reach: float, ppos: list, others: list, things: list, room: list,
+                 walls: bool = True) -> list | None:
+    """Where a person who fights a creature stands: at striking distance from its middle (its reach, from its record,
+    and a gap past it: PERSON_GAP_M to STRIKE_FAR_M), on the side they are already on as near as the floor allows,
+    clear of fixtures and of the others (FIGHT_CLEAR_M where the floor allows), inside the place. None when they
+    already stand so (or nowhere is free). A man was jammed 1.6 m from a beast with a 5 m reach, and another stood
+    10 m off (11-16)."""
+    lo, hi = reach + PERSON_GAP_M, reach + STRIKE_FAR_M
+    d0 = math.dist(cpos, ppos)
+    if lo - 1e-6 <= d0 <= hi + 1e-6 and all(math.dist(ppos, o[:2]) >= FIGHT_CLEAR_M for o in others) and \
+            clear_of_fixtures(ppos, things, FIGHT_CLEAR_M):
+        return None
+    W, D = bounds(room, 0.0, walls)
+    a0 = math.atan2(ppos[1] - cpos[1], ppos[0] - cpos[0]) if d0 > 1e-6 else -math.pi / 2
+    best = None
+    for r in (lo + 0.1, (lo + hi) / 2, hi - 0.1):
+        for da in range(0, 181, 10):
+            for sgn in ((1,) if da in (0, 180) else (1, -1)):
+                a = a0 + sgn * math.radians(da)
+                q = [cpos[0] + r * math.cos(a), cpos[1] + r * math.sin(a)]
+                if abs(q[0]) > W or abs(q[1]) > D or not clear_of_fixtures(q, things):
+                    continue
+                if too_near(q, others):
+                    continue
+                # clear of the others first, then the side they are on, then near the reach
+                crowd = sum(1 for o in others if math.dist(q, o[:2]) < FIGHT_CLEAR_M) + \
+                    (0 if clear_of_fixtures(q, things, FIGHT_CLEAR_M) else 1)    # (room behind him for a camera)
+                score = 1000 * crowd + da + 2.0 * abs(r - (lo + 0.6))
+                if best is None or score < best[0]:
+                    best = (score, [round(q[0], 3), round(q[1], 3)])
+    return best[1] if best else None
 
 
 DIST = {"touching": 0.45, "near": 0.8, "a few steps": 1.5}
@@ -249,11 +357,77 @@ def place_from(ans: dict, things: list, seats: dict, room: list, others: list, t
     return {"pose": "standing", "seat": None, "position": free_mark(tgt, others, things, room, (0.0, 0.8))}
 
 
+WORK_STAND_M = 0.38       # a person working at a piece stands this far from its face (a smith at the anvil)
+WORK_REACH_M = 0.62       # and their hands reach at most this far forward of their hips
+
+
+WORK_TOP_M = (0.35, 1.3)  # a piece whose top lies in this band is one a standing person works on with their hands
+WORK_NEAR_M = 1.2         # with no piece named, the work is the nearest such piece within this of where they stand
+
+
+def work_thing(v: dict, things: list) -> dict | None:
+    """The piece of the set a person at work works at: the thing they face, else the thing their place names (the
+    pass's "<side> <thing>"), else the nearest piece with a top at working height."""
+    tall = [x for x in things if len(x.get("center") or []) > 2 and len(x.get("half") or []) > 2
+            and WORK_TOP_M[0] <= x["center"][2] + x["half"][2] <= WORK_TOP_M[1]]
+    at = str(v.get("at") or "")
+    for x in tall:
+        if x["name"] == v.get("facing_thing") or at == x["name"] or at.endswith(" " + x["name"]):
+            return x
+    near = [(math.dist(v["position"], x["center"][:2]) - max(x["half"][:2]), i) for i, x in enumerate(tall)]
+    near = [n for n in near if n[0] <= WORK_NEAR_M]
+    return tall[min(near)[1]] if near else None
+
+
+def work_place(t: dict, his: list, others: list, things: list, room: list) -> dict | None:
+    """Where a person stands to work at a piece of the set with their hands (a start action of WORK_ACTIONS): at
+    one of its faces, WORK_STAND_M off it and turned to it, the face nearest where they were that is inside the room,
+    clear of the other pieces and people. -> {"position", "facing", "top_cm" (the piece's top above the floor),
+    "fwd_cm" (how far forward of their hips the work lies), "near_cm" (how far its near face is)}; None when the
+    piece has no free face or no height."""
+    if len(t.get("center") or []) < 3 or len(t.get("half") or []) < 3:
+        return None
+    c, h = t["center"], t["half"]
+    W, D = bounds(room)
+    rest = [x for x in things if x is not t]
+    best = None
+    for ax, sg in ((0, 1), (0, -1), (1, 1), (1, -1)):
+        d = h[ax] + WORK_STAND_M
+        q = [c[0] + (sg * d if ax == 0 else 0.0), c[1] + (sg * d if ax == 1 else 0.0)]
+        if abs(q[0]) > W or abs(q[1]) > D or not clear_of_fixtures(q, rest, -0.1) or too_near(q, others):
+            continue
+        # at its long side before an end (the work lies across in front of both hands), then the nearest
+        rank = (h[ax] > h[1 - ax] * 1.15, math.dist(q, his))
+        if best is None or rank < best[4]:
+            best = (q, ax, sg, d, rank)
+    if best is None:
+        return None
+    q, ax, sg, d, _ = best
+    return {"position": [round(q[0], 3), round(q[1], 3)], "facing": [-float(sg) if ax == 0 else 0.0, -float(sg) if ax == 1 else 0.0],
+            "top_cm": round((c[2] + h[2]) * 100, 1), "fwd_cm": round(min(d, WORK_REACH_M) * 100, 1),
+            "near_cm": round(WORK_STAND_M * 100, 1)}
+
+
 VARIANT = {"usual": None}
 
 
 STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
-ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm")
+WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing work over what is in front (pose.py)
+ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + WORK_ACTIONS
+
+
+WORN_KEYS = ("wear_add", "face_covered", "wear_set", "wear_back_set", "worn_sheet")
+
+
+def own_variant(library: Path, base: str, var: str | None) -> str | None:
+    """The library figure built for this worn state of base (recorded "variant_of": base), else None."""
+    if not var:
+        return None
+    p = library / "character" / f"{base}_{var}" / "character.json"
+    try:
+        return p.parent.name if p.exists() and json.loads(p.read_text()).get("variant_of") == base else None
+    except ValueError:
+        return None
 
 
 def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: list) -> str | None:
@@ -261,7 +435,7 @@ def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: 
     sitting, a hand on the mantel away from the fireplace, a veil lifted that is not down, a reach with nobody
     seated in the shot to reach."""
     sitting = v.get("pose") == "sitting"
-    if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") and sitting:
+    if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") + WORK_ACTIONS and sitting:
         return f"{k} is sitting"
     if pz == "stand_hand_on_mantel":
         fire = [t for t in things if t.get("fire")]
@@ -291,6 +465,66 @@ def reach_place(tgt: dict, his: list, things: list, room: list, gap: float = 0.5
         cand = (bad, math.dist(p, his), [round(p[0], 3), round(p[1], 3)], side)
         best = cand if best is None or cand[:2] < best[:2] else best
     return best[2], best[3]
+
+
+def acts_in(sh: dict, name: str, looks: dict, cast: dict) -> bool:
+    """The shot's own action line names this person (by name, or by the look phrase the director's lines use)."""
+    from shot_people import phrase as look_phrase_of
+    line = str(sh.get("action") or "").lower()
+    ph = (look_phrase_of(looks.get(name, ""), cast.get(name)) or "").lower()
+    return bool(line) and (name.lower() in line or bool(ph and ph in line))
+
+
+INSERT_DIST = {"close": 1.6, "medium": 2.6, "full": 4.0, "wide": 5.0}
+VARY = [(0.0, 0.0), (40.0, 0.0), (-40.0, -8.0), (70.0, 5.0), (-70.0, 0.0)]   # (az, el) deg for action shots in a row
+
+
+def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str, sid: str) -> dict:
+    """A camera for a shot with nobody of the cast in it: on the set's thing the shot's words name (its own name,
+    or a place phrase of the set that shares the most words with them), else the room's middle; from the room's
+    side of it, at standing eye height, kept inside the room. -> camera (with "_on": what it is on)."""
+    w = words(" ".join(str(sh.get(k) or "") for k in ("action", "picture", "keyshot", "setting")))
+    best, on = None, "the room's middle"
+    for ph, item in (set_named or {}).items():
+        t = next((x for x in things if x["name"] == item), None)
+        sc = len(words(ph) & w - {"the", "a", "an", "at", "on", "in", "of", "to", "by", "toward", "left", "right"})
+        if t and sc and (best is None or sc > best[0]):
+            best = (sc, t)
+    if best is None:
+        t_, _ = thing_for(" ".join(sorted(w)), things, {})
+        best = (1, t_) if t_ else None
+    kind = FRAMING.get(sh.get("framing") or "medium", "medium")
+    if best:
+        t = best[1]
+        c, top = list(t["center"][:2]), float(t["center"][2] + t["half"][2]) if len(t["center"]) > 2 else 1.0
+        on = t["name"]
+    else:
+        c, top = [0.0, 0.0], 1.2
+    v = [-c[0], -c[1]]
+    n_ = math.hypot(*v)
+    v = [v[0] / n_, v[1] / n_] if n_ > 0.3 else [0.0, -1.0]
+    W, D = room[0] / 2 - 0.4, room[1] / 2 - 0.4
+    d = INSERT_DIST.get(kind, 2.6)
+    p = None
+    # the standpoint: on the room's side of the thing, turned a little at a time and stepped back, the first one
+    # inside the room and clear of every standing thing (one set inside a hearth photographed its inside, 11-17)
+    for dd in (d, d * 1.3, d * 0.75, d * 1.7):
+        for da in (0, 20, -20, 40, -40, 60, -60, 90, -90):
+            ca, sa = math.cos(math.radians(da)), math.sin(math.radians(da))
+            u = [v[0] * ca - v[1] * sa, v[0] * sa + v[1] * ca]
+            q = [c[0] + u[0] * dd, c[1] + u[1] * dd]
+            if abs(q[0]) <= W and abs(q[1]) <= D and clear_of_fixtures(q, [t for t in things if t is not (best or [0, None])[1]], 0.05):
+                p = [q[0], q[1], 1.5]
+                break
+        if p:
+            break
+    p = p or [max(-W, min(W, c[0] + v[0] * d)), max(-D, min(D, c[1] + v[1] * d)), 1.5]
+    return {"name": name, "plan_id": sid, "kind": kind, "subject": None, "speaker": None, "show": None,
+            "listed": None, "shot_kind": sh.get("kind"), "insert": True, "position": [round(x, 3) for x in p],
+            "target": [round(c[0], 3), round(c[1], 3), round(max(0.5, top * 0.7), 3)],
+            "focal_mm": FOCAL.get(kind, 50), "_on": on, "_looks": {}, "_poses": {}, "_worn": {},
+            # the director's own words for what the shot shows (the redraw draws what the set has no piece for)
+            **({"setting": sh["setting"]} if sh.get("setting") else {})}
 
 
 def mark_move(cam: dict, f: dict, k: str, st: dict, thing: str | None = None, landmark: str | None = None):
@@ -328,7 +562,7 @@ def main():
     # the book's look file: each person's look phrase, as the director's lines name people ("the man in the ...")
     look_txt = (json.loads(Path(a[a.index("--looks") + 1]).read_text()).get("characters") or {}) if "--looks" in a else {}
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from shot_people import look_phrase
+    from shot_people import phrase as look_phrase_of
     library = Path(C.LIBRARY)
     first = plan[ids[0]][0]
     questions, facts = [], {}
@@ -343,19 +577,31 @@ def main():
     set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
     set_spec_ = json.loads((set_dir / "spec.json").read_text())
     room = set_spec_["size_m"]
+    walled = bool(set_spec_.get("structure"))       # (a place in the open has none: no walls round its stage)
     views_ = set_spec_.get("views") or {}          # a cabin's backdrops, one for each thing the story sees outside
     seats = seating.seats(library, set_dir)
     beds = lying.beds(library, set_dir)
     for n, s_ in seats.items():
         s_["name"] = n
     names = {nm: v["key"] for nm, v in cast.items()}
+    # the cast's creatures (a library creature with its rig, creature.py): staged standing on the ground in a pose
+    # of their own clip, never seated or bedded; everyone keeps their reach clear of them
+    crt = {v["key"]: r_ for v in cast.values() if v.get("creature") and (r_ := creature.rig(library, v["id"]))}
+    cpose = {}                  # creature key -> the pose the pass chose last (carried while no shot says another)
+    run_ = [None, 0]            # the people of the last action shot, and how many action shots in a row had them
+
+    def ring(k, placed=()):
+        """Where the others stand, a creature as [x, y, its reach] (too_near)."""
+        out_ = [list(v["position"][:2]) + ([crt[kk]["radius_m"]] if kk in crt else [])
+                for kk, v in state.items() if kk != k]
+        return out_ + [list(e["position"][:2]) + ([e["_r"]] if e.get("_r") else []) for e in placed]
     named = [t for t in things if t["kind"] in ("fixture", "window", "door")]
     state: dict = {}            # key -> {"at", "pose", "position", "facing", "seat", "facing_words"}
     groups, cur, cur_sig = [], [], None
     worn: dict = {}
 
     def apply_place(k, pa, why):
-        others = [v["position"] for kk, v in state.items() if kk != k]
+        others = ring(k)
         taken = {v.get("seat") for kk, v in state.items() if kk != k}
         pl = place_from(pa, things, seats, room, others, taken)
         if pl:
@@ -382,10 +628,37 @@ def main():
                 if any(q.get("name") == x for q in plan[ids[k]][0].get("people") or []):
                     j = k
             gone_from.setdefault(j + 1, []).append(x)
+    # a return to this place after the story was elsewhere is a new visit: only the people its own shots name are
+    # there (11-16: a mother seated on a bed in the evening scene was still staged there in the night scene hours
+    # later, with only the father and daughter in it, covering a third of the frame)
+    order_ = [k_ for k_ in plan if not str(k_).startswith("_")]
+    pos_ = {k_: i_ for i_, k_ in enumerate(order_)}
+    visit, v_ = [], 0
+    for i_, sid_ in enumerate(ids):
+        if i_ and sid_ in pos_ and ids[i_ - 1] in pos_ and any(
+                (plan[order_[j_]][0].get("place") or "") != (plan[sid_][0].get("place") or "")
+                for j_ in range(pos_[ids[i_ - 1]] + 1, pos_[sid_])):
+            v_ += 1
+        visit.append(v_)
+    named_in = {}
+    for i_, sid_ in enumerate(ids):
+        named_in.setdefault(visit[i_], set()).update(
+            names[q["name"]] for q in plan[sid_][0].get("people") or [] if q.get("name") in names)
     for n, sid in enumerate(ids, 1):
         sh = plan[sid][0]
         sp = sp or {}
+        for nm, w in ((sp.get("worn_plan") or {}).get(sid) or {}).items():     # the book's wardrobe changes here
+            if nm in names and w not in NOTS:
+                worn[names[nm]] = w
+        if n > 1 and visit[n - 1] != visit[n - 2]:
+            for k_ in [k_ for k_ in state if k_ not in named_in[visit[n - 1]]]:
+                state.pop(k_)
         pa = {"camera": (sp.get("camera") or {}).get(sid), "pose": (sp.get("pose") or {}).get(sid) or {}}
+        for nm_, pz_ in ((sp.get("creature_pose") or {}).get(sid) or {}).items():     # a creature's pose, carried
+            if names.get(nm_) in crt and pz_ in crt[names[nm_]]["poses"]:
+                cpose[names[nm_]] = pz_
+        if cpose:
+            pa["pose"] = dict(pa["pose"], **{nm_: cpose[k_] for nm_, k_ in names.items() if k_ in cpose})
         used = []
         # presence: a person leaves only on an exit the passage states in this shot's own span, and comes back on a
         # stated entrance, at the place they left from; a pass without exit answers (only "who is in the room")
@@ -416,8 +689,9 @@ def main():
                 k = names.get(nm)
                 if not k or k in state or th in NOTS or any(q["name"] == nm for q in sh.get("people") or []):
                     continue
-                if apply_place(k, {"thing": th, "sitting": th in seats, "side": "front", "distance": "near"}, "pass"):
-                    state[k]["pose"] = "sitting" if th in seats else "standing"
+                sit_ = th in seats and k not in crt
+                if apply_place(k, {"thing": th, "sitting": sit_, "side": "front", "distance": "near"}, "pass"):
+                    state[k]["pose"] = "sitting" if sit_ else "standing"
                     state[k].setdefault("facing_words", None)
                     used.append(f"{k} is already in the place when the scene opens ({th}, the passage)")
         for p in sh.get("people") or []:
@@ -428,10 +702,26 @@ def main():
             # a person the passage sent out stays out until it brings them back, whatever the plan's list says
             # (the plan kept a woman by the fire through the scene after she had left; the pass never sends out
             # someone who still has a line to speak in the scene)
-            if k in away:
+            # ... unless the shot's own action line has them act in it (by name or look phrase): then they are there,
+            # back by an entrance the passage left unsaid (a smith sent out by one line was kept out of the six
+            # shots of him at the anvil that followed, and none of them could be staged, 11-16)
+            if k in away and not acts_in(sh, p["name"], look_txt, cast):
                 used.append(f"{k} is listed by the plan but has gone out (the passage)")
                 continue
+            if k in away:
+                away.pop(k)
+                used.append(f"{k} is back: the shot's action has them in it")
+            if k in crt:                         # a creature: on the ground, its posture is its pose (the pass's)
+                p = dict(p, pose="standing")
             prev = state.get(k)
+            # lying where another person of this shot lies by the same words ("in the bunk bed", both): that
+            # person's bed, shared (a bed taken by one sent the other to the next bed, 2 m away, 11-16)
+            mate = next((names[q["name"]] for q in sh.get("people") or [] if q is not p and q.get("name") in names
+                         and names[q["name"]] != k and q.get("pose") == "lying" == p.get("pose")
+                         and (q.get("at") or "").strip().lower() == (p.get("at") or "").strip().lower()
+                         and (state.get(names[q["name"]]) or {}).get("bed")), None)
+            if prev and mate and prev.get("bed") != state[mate]["bed"]:
+                prev = None                      # (placed again: into the mate's bed)
             if prev and prev["at"] == p.get("at") and prev["pose"] == p.get("pose"):
                 prev["facing_words"] = p.get("facing")
                 continue
@@ -465,7 +755,9 @@ def main():
                 f["defaults"].append(f"{k}: place from the set's named places ({stated})")
             else:
                 f["defaults"].append(f"{k}: place by name match ({(thing or {}).get('name') or rel})")
-            entry = {"at": p.get("at"), "pose": p.get("pose"), "facing_words": p.get("facing")}
+            entry = {"at": p.get("at"), "pose": p.get("pose"), "facing_words": p.get("facing"),
+                     # placed at a named thing of the set (not the open floor, not beside someone): an exact place
+                     "named_at": bool(ans or (stated and stated != "floor"))}
             if p.get("pose") == "sitting":
                 anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
                 # (a seat with several places, a sofa or a bed's edge, is free until every place is sat on)
@@ -484,7 +776,7 @@ def main():
                 else:
                     # no seat is free in the place: they stand by it (reported), the scene is not lost for it (two
                     # sisters "sitting" in a bedroom with one chair stopped every shot of their talk)
-                    others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
+                    others = ring(k, placed_now)
                     entry.update(seat=None, pose="standing", position=free_mark(anchor[:2], others, things, room))
                     f["defaults"].append(f"{k}: no free seat in the place; standing")
             elif p.get("pose") == "lying" and beds:
@@ -493,7 +785,12 @@ def main():
                 taken_b = {v.get("bed") for kk, v in state.items() if kk != k}
                 cands = [b_ for b_ in beds.values() if b_["name"] not in taken_b] or list(beds.values())
                 own = [b_ for b_ in cands if thing and b_["name"] == thing.get("name")]
-                bed = own[0] if own else min(cands, key=lambda b_: math.dist(b_["pos"], anchor[:2]))
+                # placed against someone who lies in a bed ("tucked against her father"): that same bed, beside
+                # them (lying.plan lays them side by side, or gives the next bed when it is too narrow); one bed
+                # each put a girl 2 m from the father she lay against, 11-16
+                shared = beds.get((state.get(rel) or {}).get("bed") or "") if rel else None
+                shared = shared or (beds.get(state[mate]["bed"]) if mate else None)
+                bed = shared or (own[0] if own else min(cands, key=lambda b_: math.dist(b_["pos"], anchor[:2])))
                 entry.update(seat=None, bed=bed["name"], position=[round(x, 3) for x in bed["frame"]["centre_xy"]])
             else:
                 if rel and rel in state:
@@ -503,11 +800,18 @@ def main():
                     tgt = (thing or {}).get("center") or [0, 0]
                     near = ((2.0, 5.0) if thing.get("with") else (0.0, 1.6)) if (thing or {}).get("kind") == "floor" \
                         else (0.6, 1.6)
-                others = [v["position"] for kk, v in state.items() if kk != k] + [e["position"] for e in placed_now]
-                entry.update(seat=None, position=free_mark(tgt, others, things, room, near))
+                others = ring(k, placed_now)
+                own_r = (crt.get(k) or {}).get("radius_m", 0.0)
+                # (a creature keeps its reach from people; from fixtures its body's half breadth: a rock or a cave
+                # mouth may stand by its flank, and by its whole reach a 13 m stage with two rocks held no place)
+                fix_r = 0.5 * min(crt[k]["size_m"][:2]) if k in crt else None
+                if own_r:
+                    entry["_r"] = own_r
+                entry.update(seat=None, position=free_mark(tgt, others, things, room, near, own_r, fix_r, walled))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
-                entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, things, room, near)
+                entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, things, room, near,
+                                                                              own_r=own_r, fix_r=fix_r, walls=walled)
                                                         if math.dist(m, entry["position"]) > 0.2]
             state[k] = entry
             placed_now.append(entry)
@@ -516,22 +820,60 @@ def main():
         # where someone stands, never which way they face. A person faced is kept as "facing_to": the staging
         # re-aims the body when anyone moves (11-12: the men turned to the glass after she was moved)
         focus = next((names[q["name"]] for q in sh.get("people") or [] if q["name"] in names), None)
+        # whom each listed person faces, the pass's answer by name (the plan's facing words are screen directions);
+        # kept for the shots after that do not list them, until a shot that lists them says otherwise
+        face_ = {names[a_]: (names[b_] if b_ in names else AT_THING) for a_, b_ in
+                 ((sp.get("face") or {}).get(sid) or {}).items() if a_ in names and (b_ in names or b_ == AT_THING)
+                 and a_ != b_}
+        for q in sh.get("people") or []:
+            if names.get(q.get("name")) in state:
+                state[names[q["name"]]]["face_target"] = face_.get(names[q["name"]])
+        # a creature and whoever squares up to it in this shot (both listed, each facing the other): at striking
+        # distance by its reach (the person moves; the creature holds its place). Only someone placed on the open
+        # floor or by a relation moves: a person the plan puts at a named thing (a ledge) stays there
+        here_ = {names[q["name"]] for q in sh.get("people") or [] if q.get("name") in names}
+        for kc in [x for x in state if x in crt and x in here_]:
+            for kp, v in state.items():
+                if kp in crt or kp not in here_ or v.get("pose") != "standing" or v.get("named_at") or \
+                        v.get("face_target") != kc or state[kc].get("face_target") != kp:
+                    continue
+                q = strike_place(state[kc]["position"], crt[kc]["radius_m"], v["position"],
+                                 [list(o["position"][:2]) for kk, o in state.items() if kk not in (kp, kc)],
+                                 things, room, walled)
+                if q:
+                    used.append(f"{kp} at striking distance from {kc} ({math.dist(q, state[kc]['position']):.1f} m)")
+                    v["position"] = q
+                    v.pop("marks", None)
         for k, v in state.items():
             fw = v.get("facing_words") or ""
             _, rel = thing_for(fw, things, {nm: kk for nm, kk in names.items() if kk != k})
             thing, _ = thing_for(fw, things, {})
+            if v.get("face_target") in state and v["face_target"] != k:      # the pass's answer: whom, by name
+                rel, thing = v["face_target"], None
+            elif v.get("face_target") == AT_THING:                            # ... or the thing they work at
+                at_t = next((t for t in things if t["name"] == set_named.get(v.get("at") or "")), None) or \
+                    thing_for(v.get("at") or "", things, {})[0]
+                if at_t:
+                    rel, thing = None, at_t
             if not fw.strip() and not rel and focus and focus != k and focus in state:
                 rel = focus
             v["facing_to"] = rel if rel in state and rel != k else None
-            v["facing_thing"] = thing["name"] if (thing and not v["facing_to"] and fw.strip()) else None
+            # (turned to the thing they work at is no turn of the shot: that thing is framed as where they work)
+            v["facing_thing"] = thing["name"] if (thing and not v["facing_to"] and fw.strip()
+                                                  and v.get("face_target") != AT_THING) else None
             tgt = (state.get(rel) or {}).get("position") if rel else (thing or {}).get("center")
             if tgt is None and len(state) > 1:                # "the camera", a group: toward the others' middle
                 o = [vv["position"] for kk, vv in state.items() if kk != k]
                 tgt = [sum(x[0] for x in o) / len(o), sum(x[1] for x in o) / len(o)]
             tgt = tgt or [0.0, 0.0]
             d = [tgt[0] - v["position"][0], tgt[1] - v["position"][1]]
-            nd = math.hypot(*d) or 1.0
-            v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
+            nd = math.hypot(*d)
+            # (standing on what it would face, a facing is kept from before, else toward the room's front)
+            v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)] if nd > 1e-6 else \
+                (v.get("facing") if any(v.get("facing") or []) else [0.0, -1.0])
+            if not rel and thing and v.get("pose") != "sitting":
+                v["facing"] = open_from_wall(v["position"], v["facing"], thing,
+                                             [vv["position"] for kk, vv in state.items() if kk != k])
         spk = names.get(sh.get("speaker")) if sh.get("speaker") else None
         lis = names.get(sh.get("listener")) if sh.get("listener") else None
         if sh.get("kind") == "talk" and spk in state:
@@ -547,9 +889,28 @@ def main():
             if tgt is not None:
                 v["facing_thing"] = None
                 d = [tgt[0] - v["position"][0], tgt[1] - v["position"][1]]
-                nd = math.hypot(*d) or 1.0
-                v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
+                nd = math.hypot(*d)
+                if nd > 1e-6:
+                    v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
         listed = [names[p["name"]] for p in sh.get("people") or [] if p["name"] in names]
+        if not (spk or listed or state):
+            # nobody of the cast is in this shot (a place or a thing seen alone, someone the book has no figure
+            # for): an insert of the set, its camera on the set's thing the shot's words name, staged with nobody
+            # (every shot ends with an engine key, 11-17; it used to get no camera and no key)
+            ins = insert_camera(sh, things, set_named, room, f"s{n:02d}_{sid.split('-')[0]}", sid)
+            f["missing"].append(f"nobody of the cast in the shot: an insert of the set ({ins['_on']})")
+            ins.pop("_on")
+            facts[sid] = dict(f, camera=dict(ins))
+            if cur:
+                groups.append(cur)
+            groups.append([(ins, {})])
+            cur, cur_sig = [], None
+            continue
+        listed = [x for x in listed if x in state]          # (someone the plan lists who is out of the room)
+        if spk not in state:
+            spk = None
+        if lis not in state:                 # (a listener out of the room is nobody's listener here)
+            lis = None
         subj = spk or (listed[0] if listed else next(iter(state)))
         kind = FRAMING.get(sh.get("framing") or "medium", "medium")
         if sh.get("tight") and kind != "close":
@@ -560,7 +921,8 @@ def main():
         must = [names[x[0]] for x in (pa.get("must_show") or []) if isinstance(x, list) and x and x[0] in names]
         # whom the shot's line is about: the person named (by name or look phrase) first in its action line
         line = (sh.get("action") or "").lower()
-        at = {k_: min([i for i in (line.find(nm.lower()), line.find((look_phrase(look_txt.get(nm, "")) or "\0").lower()))
+        at = {k_: min([i for i in (line.find(nm.lower()),
+                                   line.find((look_phrase_of(look_txt.get(nm, ""), cast.get(nm)) or "\0").lower()))
                        if i >= 0] or [10 ** 6]) for nm, k_ in names.items() if k_ in state}
         line_subj = min(at, key=at.get) if at and min(at.values()) < 10 ** 6 else None
         # an action shot's subject turning toward a named thing: that thing is in the frame (04:58: he turned to
@@ -569,10 +931,28 @@ def main():
         # someone seated at a desk or a table: it is in the frame of any shot wider than a close (11-12: 23 shots of a
         # man at his desk and no desk in any of them)
         at_thing = (state.get(subj) or {}).get("at_thing") if kind != "close" else None
+        # someone standing at a named thing of the set in an action shot, turned to it (the pass: the thing they
+        # work at, not a cave a beast lies before): it is in the
+        # frame of any shot wider than a close (six shots of a smith striking at his anvil showed a wall, 11-17)
+        if not at_thing and kind != "close" and sh.get("kind") == "action" and (state.get(subj) or {}).get("named_at") \
+                and (state.get(subj) or {}).get("face_target") == AT_THING:    # (the pass: they work at it)
+            st_ = state[subj]
+            th_ = next((t for t in things if t["kind"] == "fixture" and t["name"] == set_named.get(st_.get("at") or "")), None)
+            at_thing = th_["name"] if th_ else None
         cam = {"name": f"s{n:02d}_{sid.split('-')[0]}", "plan_id": sid, "kind": kind, "subject": subj,
                "line_subject": line_subj, "face_thing": ft, "at_thing": at_thing,
                "speaker": spk, "focal_mm": FOCAL[kind], "show": sorted(set(listed + must)) or None,
+               # the people the plan lists for the shot: anyone else present stays out of its frame (speakers.py)
+               "listed": sorted(set(listed + must)) if listed else None,
                "shot_kind": sh.get("kind")}
+        # action shots in a row of the same people: each from another side (the same wide five times over, 11-17);
+        # the scene tool's aimed camera turns round its subject by az and looks from el
+        if sh.get("kind") == "action" and not spk:
+            sig_ = tuple(sorted(listed))
+            run_ = [sig_, run_[1] + 1] if run_[0] == sig_ else [sig_, 0]
+            az_, el_ = VARY[run_[1] % len(VARY)]
+            if az_ or el_:
+                cam.update(az=az_, el=el_)
         if sh.get("setting"):                 # the director's own words for what this shot shows of the place
             cam["setting"] = sh["setting"]
         if views_.get("words"):               # what is outside in this shot: its backdrop, its words, the way ahead
@@ -589,6 +969,16 @@ def main():
         obj_ = {names[n_]: [{"asset": made_[t_["what"]], "at": "head" if t_["on"] == "head" else "hand"}
                             for t_ in ts_ if t_["on"] in CARRIED_ON and t_["what"] in made_]
                 for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items() if n_ in names}
+        # the thing being worked on (the pass's "worked"): a made object lying on the top of the named thing its
+        # worker stands at (a smith's bar on his anvil; drawn as a piece of the set, it came out a star, 11-17)
+        for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items():
+            k_ = names.get(n_)
+            at_ = next((t for t in things if t["kind"] == "fixture"
+                        and t["name"] == set_named.get(str((state.get(k_) or {}).get("at") or ""))), None)
+            for t_ in ts_:
+                if t_["on"] == "worked" and t_["what"] in made_ and at_ and k_ in state:
+                    obj_.setdefault(k_, []).append({"asset": made_[t_["what"]], "at": "on", "xyz": [
+                        at_["center"][0], at_["center"][1], round(at_["center"][2] + at_["half"][2], 3)]})
         obj_ = {k_: v_ for k_, v_ in obj_.items() if v_}
         if obj_:                              # (scene_job puts each on the person's head or in their hand)
             cam["carried"] = obj_
@@ -605,13 +995,30 @@ def main():
             cam["holds"] = held
         if lis:
             cam["listener"] = lis
+            # the director's own picture of the shot has the listener in it (by name or look phrase): the camera
+            # keeps them, never trading them for a clean single of the speaker (14 of 17 two-person talk keys showed
+            # the speaker alone, the picture asking for the listener beyond, 11-17)
+            pic = str(sh.get("picture") or sh.get("keyshot") or "").lower()
+            lnm = sh.get("listener") or ""
+            lph = (look_phrase_of(look_txt.get(lnm, ""), cast.get(lnm)) or "\0").lower()
+            if lnm and (lnm.lower() in pic or lph in pic):
+                cam["keep_listener"] = True
         if spk and ck == "over_the_shoulder" and lis:
             cam["ots"] = lis
-        if spk and ck == "single":
+        if spk and ck == "single" and not cam.get("keep_listener"):   # (the director's picture has them both)
             cam["single"] = True
             cam.pop("listener", None)
         looks = {}
         poses = {names[a_]: b_ for a_, b_ in (pa.get("pose") or {}).items() if a_ in names and b_ not in NOTS}
+        # someone at work or holding a tool in an action shot: their working hand is in the frame and seen (in a
+        # close of a smith the hammer and tongs the redraw was told of had nowhere to go but his head: "ears", a red
+        # mask, 11-17)
+        if sh.get("kind") == "action":
+            hold_ = {k_ for k_, v_ in held.items() if v_.split(" (")[0].strip().lower() not in ("nothing", "none", "")}
+            hj_ = [[k_, "hand_r"] for k_ in sorted(hold_ | {k_ for k_, pz_ in poses.items() if pz_ in WORK_ACTIONS})
+                   if k_ in state and k_ not in crt]          # (a creature has no hand: what it holds is in its claws)
+            if hj_:
+                cam["show_joints"] = hj_
         f["pass"] = {"used": used, "camera": ck, "pose": poses, "worn": dict(worn)}
         cam["_looks"] = looks
         cam["_poses"] = poses
@@ -635,7 +1042,7 @@ def main():
         if "--no-lookahead" not in a and sh.get("kind") == "action":
             for p in sh.get("people") or []:
                 nm, k = p["name"], names.get(p["name"])
-                if not k or pe.get(nm) in (None, p.get("pose")):
+                if not k or k in crt or pe.get(nm) in (None, p.get("pose")):
                     continue
                 nxt = next((q for sid2 in ids[n:] for q in plan[sid2][0].get("people") or [] if q["name"] == nm), None)
                 if nxt and nxt.get("pose") == pe.get(nm):
@@ -657,7 +1064,7 @@ def main():
                             f.setdefault("pass", {}).setdefault("used", []).append(f"{k} ends where the plan next "
                                                                                     f"lists them: {nxt.get('at')}")
         for nm, th in ((sp.get("move_end") or {}).get(sid) or {}).items():     # where a move during this shot ends
-            if nm in names:
+            if nm in names and names[nm] not in crt:
                 k = names[nm]
                 was = (state.get(k) or {}).get("seat") or ""
                 sitting = (pe.get(nm) or (state.get(k) or {}).get("pose")) == "sitting"
@@ -698,13 +1105,21 @@ def main():
             cv = next(c for c in cast.values() if c["key"] == k)
             w = (cam0.get("_worn") or {}).get(k)
             var = None if w in (None, "usual") else w.replace(" ", "_")
+            if k in crt:                 # a creature: its library model in the pose of its clip the pass chose
+                pz = (cam0.get("_poses") or {}).get(k)
+                chars[k] = {"asset": crt[k]["asset"], "creature": True, "position": v["position"],
+                            "facing": v["facing"], "facing_to": v.get("facing_to"),
+                            "pose": pz if pz in crt[k]["poses"] else crt[k]["poses"][0]}
+                continue
+            # a wardrobe variant built as its own figure (its own stances made from it): staged from that figure
+            vfig = own_variant(library, cv.get("base") or cv["id"], var)
             if v["pose"] == "sitting":
-                c = {"seated_from": cv.get("base") or cv["id"], "seat": v.get("seat") or True,
+                c = {"seated_from": vfig or cv.get("base") or cv["id"], "seat": v.get("seat") or True,
                      "position": v["position"], "facing": v["facing"], "body_pose": json.loads(json.dumps(SEAT_POSE))}
-                if var:
+                if var and not vfig:
                     c["variant"] = var
             elif v["pose"] == "lying" and v.get("bed"):
-                c = {"lying_from": cv.get("base") or cv["id"], "bed": v["bed"], "position": v["position"],
+                c = {"lying_from": vfig or cv.get("base") or cv["id"], "bed": v["bed"], "position": v["position"],
                      "facing": v["facing"], "body_pose": {"pose": "lying", "params": {}}}   # (lying.py: the stance's)
             else:
                 base = cv.get("id") or cv["base"]
@@ -734,6 +1149,18 @@ def main():
                     c["body_pose"]["pose"] = pz
                 else:
                     c["body_pose"].setdefault("params", {})["action"] = pz
+                if pz in WORK_ACTIONS:
+                    # the work places them: at the piece they work at, a step off its face and turned to it, their
+                    # hands on its top (11-17: the smith stood a metre off the anvil, upright, hands in the air)
+                    wt = work_thing(v, things)
+                    oth = [st[kk]["position"] for kk in st if kk != k]
+                    wp = work_place(wt, v["position"], oth, things, room) if wt else None
+                    if wp:
+                        c.update(position=wp["position"], facing=wp["facing"], work_at=wt["name"])
+                        c["body_pose"]["params"].update(work_top_cm=wp["top_cm"], work_fwd_cm=wp["fwd_cm"],
+                                                        work_near_cm=wp["near_cm"])
+                        c.pop("marks", None)
+                        c["facing_to"] = None
                 if pz == "reach_to_forearm" and v["pose"] != "sitting":
                     # the reach places him: beside the person he reaches, at the forearm nearer him (the action's own
                     # place, not a camera move); the arm is solved on the measured bodies (speakers.py)
@@ -753,7 +1180,7 @@ def main():
             if var:
                 c["worn"] = var                          # checked on the staged figure (speakers.staged_facts)
             wd = ((cv.get("worn") or {}).get(w) or {}) if w else {}
-            for kk in ("wear_add", "face_covered"):      # the worn state's own words (the cast file's)
+            for kk in WORN_KEYS:                         # the worn state's own words (the cast file's)
                 if kk in wd:
                     c[kk] = wd[kk]
             chars[k] = c
