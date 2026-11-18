@@ -42,6 +42,8 @@ CREASE_DEG = 35.0
 JUMP = 0.04             # a depth jump of 4 % between neighbours is an outline
 FLAME_R_M = {"fire": 0.22, "lamp": 0.04}     # half-size of a light's source: a grate's fire, a lamp's flame
 SIDE_DEG = 60.0         # a body turned this far from the camera is side-on: drawn at the lighter tier
+HEADS_ST, HEADS_BG = 0.8, 0.3     # the "heads" mask's two strengths (story_keys' room redraw runs with these)
+HEADS_ROOM, HEADS_BODY = 0.45, 0.60   # what the room and a facing body are redrawn at under that mask
 REGION_PX = 0.06        # a person's own region (their LoRA, their words) reaches this far (frame widths) past them
 JOINTS2D = ("head", "FACIAL_L_Eye", "FACIAL_R_Eye", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l",
             "lowerarm_r", "hand_l", "hand_r", "thigh_l", "thigh_r")
@@ -438,6 +440,26 @@ def one_scene(sd: Path, dev, things=None, day=None):
                         m = F.max_pool2d(m.float()[None, None], 9, 1, 4)[0, 0] > 0.5
                         tier[m] = val
             save(tier, g / f"{cam}_mask_tiered.png")
+            # "heads": the room and the bodies held near the engine's frame, each facing person's head redrawn in
+            # full (the face and hair are the person's own, from their sheet and model; the body, the hands and
+            # what they hold are the staging's). Greys for strengths HEADS_ST (white) down to HEADS_BG (black).
+            # With the whole body at the people's strength a key moved the tool and what it struck; with all of
+            # it low the head kept the figure's own rough hair and face (11-18, seven shots at three strengths)
+            gv = lambda t: 255.0 * (t - HEADS_BG) / (HEADS_ST - HEADS_BG)            # noqa: E731
+            hd = torch.full_like(d, gv(HEADS_ROOM))
+            rows = torch.arange(h, device=dev, dtype=torch.float32)[:, None].expand(h, w)
+            for key, v in people.items():
+                m = torch.from_numpy(cv2.imread(str(g / f"{cam}_mask_{key}.png"), 0) > 127).to(dev)
+                m = F.max_pool2d(m.float()[None, None], 9, 1, 4)[0, 0] > 0.5
+                away = bd(v) > 100
+                hd[m] = 0.0 if away else gv(HEADS_BODY)
+                j2 = v.get("joints2d") or {}
+                if not away and "chin" in j2 and "head_top" in j2:
+                    hh = max(j2["chin"][1] - j2["head_top"][1], 1e-3)
+                    y1 = (j2["chin"][1] + 0.25 * hh) * h                             # (the chin and the neck's top)
+                    hm = m & (rows <= y1)
+                    hd[F.max_pool2d(hm.float()[None, None], 9, 1, 4)[0, 0] > 0.5] = 255.0
+            save(hd, g / f"{cam}_mask_heads.png")
         lines = F.max_pool2d(lines.float()[None, None], 3, 1, 1)[0, 0] > 0.5     # 3 px lines
         save(lines.float() * 255, g / f"{cam}_lines.png")
         truth["shots"][cam] = {"still": sh["path"], "kind": sh.get("kind"), "camera": sh["camera"], "people": people,

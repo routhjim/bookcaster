@@ -323,3 +323,15 @@ def test_a_thing_laid_on_the_set_in_a_shot_is_said_by_the_plans_name(tmp_path):
         {"asset": "thing_02", "at": "hand"}, {"asset": "thing_01", "at": "on", "xyz": [0, 1, 0.7]}]}}, {"name": "c2"}]}))
     w = RD.laid_words(sd, "c1", [("a",)])
     assert "the bar" in w and "mallet" not in w and RD.laid_words(sd, "c2", [("a",)]) == ""
+
+
+def test_a_piece_that_burns_is_drawn_lit_and_its_fire_shines():
+    """A piece the director says gives light is drawn burning, its made shape's fire-coloured parts give light,
+    and it is another asset than the same piece unlit."""
+    p = {"id": "p3", "kind": "work_piece", "look": "a stone hearth with a hood", "longest_m": 1.6}
+    a, b = P.generation_request(dict(p)), P.generation_request(dict(p, gives_light=True))
+    assert a["asset_id"] != b["asset_id"]
+    spec = lambda r: next(s["spec"] for s in r["plan"]["steps"] if s["step"] == "spec")      # noqa: E731
+    draw = lambda r: " ".join(map(str, next(s["argv"] for s in r["plan"]["steps"] if s["step"] == "draw")))  # noqa: E731
+    assert "regions" not in spec(a) and spec(b)["regions"][0]["material"] == "emit"
+    assert "burning" in draw(b) and "burning" not in draw(a)

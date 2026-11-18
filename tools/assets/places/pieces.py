@@ -338,6 +338,12 @@ WORLD_WORDS = (
     "horizon. Empty of life: no people, no figures, no animals anywhere.")
 
 
+# a piece that burns or glows is drawn lit, and the parts of its made shape that are painted as fire (bright, strongly
+# coloured red to yellow) give light of their own (img3d/model_img3d.py's regions). A forge's hearth was a grey
+# block with dark coals under a warm lamp, and a key drew its fire only when a shot's words named it (11-18)
+LIT_WORDS = " It is lit: its fire is burning now, with glowing orange coals and low bright flames."
+FIRE_REGION = {"name": "fire", "material": "emit", "hsv": [[0.0, 0.14], [0.5, 1], [0.55, 1]],
+               "color": [1.0, 0.4, 0.1], "strength": 12}
 FINE_FROM_M = 2.5                # a thing of the open this long or longer is shaped at the finer setting
 
 
@@ -347,8 +353,9 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     K = K or kinds()
     kind, look = piece["kind"], piece.get("look", "").strip()
     d = K[kind]
+    lit = piece.get("gives_light") is True           # (the director's: it burns or glows)
     aid = _asset_id(kind, look + (" " + Path(str(piece["source"])).stem if piece.get("source") else "")
-                    + (" front " + str(d["front"]) + " wide" if d.get("front") else ""))
+                    + (" front " + str(d["front"]) + " wide" if d.get("front") else "") + (" lit" if lit else ""))
     tools = Path(tools or HERE.parent)
     work = Path(work or (C.UE_HOME / "lab" / "img3d_props"))
     name = kind.replace("_", " ")
@@ -373,6 +380,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
         lng = float((max(seen) if seen and len(seen) == 3 else None) or piece.get("longest_m") or max(size))
         size = [lng, lng, lng]
         desc = f"One single object, alone: {look}. The whole object in view on a plain floor, nothing else in the picture."
+    if lit:                                           # drawn burning: what of it is painted as fire is made to shine
+        desc += LIT_WORDS
     spec = {"id": aid, "class": "prop", "description": f"{name}: {look}. Front -Y." if look else f"{name}. Front -Y.",
             "tags": sorted({kind, *([d["parent"]] if d.get("parent") else []), "generated-on-request"}),
             "tier": "mid", "size_m": size, "size_tolerance": 0.35, "placement": d["placement"],
@@ -394,6 +403,8 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             w_, h_ = (float(seen[0]), float(seen[2])) if seen and len(seen) == 3 else (lng, lng)
             spec["size_m"] = [round(w_, 3), round(0.6 * w_, 3), round(h_, 3)]
             spec["longest_m"] = round(max(w_, h_), 3)
+    if lit:
+        spec["regions"] = [dict(FIRE_REGION)]
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]

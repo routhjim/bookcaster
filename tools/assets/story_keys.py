@@ -770,7 +770,7 @@ class Story:
         # place in the open, whose ground and far land are rough. At the open's share a forge's keys moved its
         # hearth and door and hung lanterns the set does not have (11-18, seven shots at three strengths)
         if not ss.get("world"):
-            run["strength_bg"] = ROOM_BG
+            run.update(strength_bg=ROOM_BG, mask_people="heads")   # (redraw/guides.py HEADS_*: these two strengths)
         rp = d / "run.json"
         rp.write_text(json.dumps(run, indent=1))
         tag = self.places[place]["slug"]

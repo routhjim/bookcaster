@@ -83,8 +83,8 @@ def main():
                        "through trellis.cpp (MIT)",
                size_tolerance=1.0 if spec.get("longest_m") else 0.35, height_m=spec["size_m"][2], yaw_deg=extra.get("yaw_deg", spec.get("yaw_deg", "auto")),
                tags=list(keep.get("tags", [])) + ["img3d", "trellis2"], replaces=a.id)
-    if extra.get("regions"):
-        new["regions"] = extra["regions"]
+    if extra.get("regions") or spec.get("regions"):        # (the table's by hand, else the piece's own spec's)
+        new["regions"] = extra.get("regions") or spec["regions"]
     sp = WORK / f"{a.id}_tr.json"
     sp.write_text(json.dumps(new, indent=1))
     if a.no_chain:
