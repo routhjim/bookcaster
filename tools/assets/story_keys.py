@@ -75,6 +75,20 @@ REDRAW = {"seed": 7, "method": "image", "strengths": [0.8], "control": {"type": 
           "facts": True, "regions": True, "seeds": [7], "max_piece_refs": 2}
 
 
+STYLE_CONTENT = re.compile(r"\b(cathedral|church|chapel|temple|castle|spire|arch\w*|stone|iron|window|sky|skies|"
+                           r"candle\w*|ruins?|tower)\b", re.I)
+
+
+def key_style(style: str) -> str:
+    """A book's art style as a key is told it: its way of painting only (as shot_flow._key_style), its clauses that
+    name things to draw left out. Told the style whole, "moody stormy skies", a key of the inside of a forge had a
+    storm sky for its back wall (11-18)."""
+    head, _, rest = (style or "").strip().partition(":")
+    head = re.sub(r"(?i)\b(gothic|baroque|romanesque|victorian|byzantine|rococo|renaissance|medieval)\b\s*", "", head)
+    keep = [re.sub(r"(?i)\bgothic\s*", "", c).strip().rstrip(".") for c in rest.split(",") if c.strip() and not STYLE_CONTENT.search(c)]
+    return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
+
+
 def log(m):
     print(f"[story {time.strftime('%H:%M:%S')}] {m}", flush=True)
 
@@ -748,7 +762,7 @@ class Story:
                    # (a cabin with views outside: its concept picture shows one view of its own, which the redraw
                    # then painted in every window; the cabin's look reaches the redraw through its pieces)
                    extra_refs=[ss["concept"]] if ss.get("concept") and not (ss.get("views") or {}).get("words") else [],
-                   look=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
+                   look=key_style(style.read_text()) if style.exists() else "")
         rp = d / "run.json"
         rp.write_text(json.dumps(run, indent=1))
         tag = self.places[place]["slug"]
