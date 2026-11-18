@@ -150,6 +150,133 @@ def ue_job(work, name, script, job, timeout=1800):
     return json.loads(Path(job["result"]).read_text())
 
 
+HAIR_GRID = (0.15, 0.3, 0.45, 0.6, 0.75)     # whiteness values rendered when a colour word has no measured value
+CLOSE_LIGHT = {"map": "/Engine/Maps/Templates/Template_Default", "warm_frames": 120, "settle_frames": 30,
+               "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5}     # the faces jobs' studio portrait
+
+
+def hair_colours():
+    """choose_mh.py's COLOURS (word -> melanin, redness, whiteness), read from its source: that module needs torch,
+    this one runs on the plain interpreter."""
+    import ast
+    tree = ast.parse((ASSETS / "characters" / "choose_mh.py").read_text())
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "COLOURS" for t in n.targets):
+            return ast.literal_eval(n.value)
+    raise RuntimeError("choose_mh.py: no COLOURS table")
+
+
+def set_groom_colour(W, mh_name, name, melanin, redness, whiteness):
+    """The hair colour on the built character's own groom materials (char_groom_colour.py, one engine job)."""
+    return ue_job(W, name, str(ASSETS / "characters" / "char_groom_colour.py"), {
+        "folder": f"/Game/MetaHumans/{mh_name}", "melanin": melanin, "redness": redness, "whiteness": whiteness}, 600)
+
+
+def calibrate_hair(W, ch, mh_name, blueprint, map_path, tag, grid=HAIR_GRID, force=False):
+    """The whiteness of the chosen hair colour word measured on the built character itself, when the library's map
+    (<library>/presets/hair_colour.json, read by choose_mh.py) has no value for the word (11-18: "grey hair" built
+    with the table's whiteness 0.75 rendered pure white, and viewers and the image redraw read it as a white cap).
+
+    The rule, for any word whose table whiteness is above 0 (a dark colour has no grey to search): the built
+    character's head is rendered close (the faces jobs' studio portrait, of the assembled Blueprint, whose groom
+    materials carry the colour) at each whiteness of the grid and the table's own value; hair_calibrate.py has the
+    vision model name each render's hair colour from the same closed word list, with the drawn sheet head as the
+    target (the model's own word for the drawn hair); the smallest value named with the target word is merged into
+    the map and set on the grooms, the character's record and choice.json (a rebuild uses it). No value named so:
+    the table's value is kept and set back (the grooms hold the last render's value), and the miss is logged.
+    A word already measured in the map: its value is used, nothing rendered (FORCE: measured again, old renders
+    removed).
+    Returns the record (also written to W/hair_calibrate.json)."""
+    W = Path(W)
+    sc = ch.setdefault("scores", {})
+    word = sc.get("hair_colour")
+    hp = dict((ch.get("params") or {}).get("Bindings/Hair/") or {})
+    table = hair_colours()
+    rec = {"word": word}
+    if not word or word not in table or not hp:
+        rec["skipped"] = "no chosen colour word or no hair parameters"
+    elif table[word][2] <= 0:
+        rec["skipped"] = "a colour with no whiteness: nothing to search"
+    if "skipped" in rec:
+        (W / "hair_calibrate.json").write_text(json.dumps(rec, indent=1))
+        return rec
+    mel, red = hp.get("Melanin", table[word][0]), hp.get("Redness", table[word][1])
+    built = float(hp.get("Whiteness", table[word][2]))
+    map_path = Path(map_path)
+    mp = json.loads(map_path.read_text()) if map_path.exists() else {}
+    have = None if force else (mp.get(word) or {}).get("whiteness")
+    if have is not None:
+        # measured before: use it (choose_mh.py already did, unless the map got the word after this choice)
+        rec.update({"in_map": True, "whiteness": float(have)})
+        if abs(float(have) - built) > 1e-6:
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, float(have))
+            rec["materials"] = len(r_.get("set") or {})
+            pick = float(have)
+        else:
+            pick = None
+    else:
+        pdir = W / "ue" / "hair_portraits"
+        pdir.mkdir(parents=True, exist_ok=True)
+        if force:
+            for old in pdir.glob("*.png"):
+                old.unlink()
+        values = sorted(set([float(v) for v in grid] + [built]))
+        for i, v in enumerate(values):
+            png = pdir / f"{word}_{v:g}.png"
+            if png.exists():
+                continue
+            set_groom_colour(W, mh_name, f"hair_colour_{i}", mel, red, v)
+            ue_job(W, f"hair_shot_{i}", str(ASSETS / "characters" / "char_render.py"), dict(CLOSE_LIGHT, **{
+                "out": str(pdir), "characters": {"a": {"path": blueprint}},
+                "shots": [{"name": f"hair_{i}", "char": "a", "frame": "close", "az": 0}]}), 1200)
+            shot = pdir / f"hair_{i}.png"
+            if not shot.exists():
+                raise RuntimeError(f"hair calibration: no close portrait at whiteness {v:g} ({shot})")
+            shot.replace(png)                 # hair_calibrate.py reads <word>_<value>.png
+        # the search's own map in the work folder: the library map gets a word only with a measured value
+        out = W / "hair_calibrate_map.json"
+        p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_hair_cal", "--", "bash", CARD, "05", HY_PY, "-I",
+                  str(ASSETS / "characters" / "hair_calibrate.py"), "portraits", str(pdir), "--word", word,
+                  "--values", *[f"{v:g}" for v in values], "--out", str(out), "--sheet", str(W / "sheet_head.png"),
+                  "--vl-python", QWEN_PY], W / "hair_calibrate.log")
+        if p.returncode or not out.exists():
+            raise RuntimeError(f"hair calibration failed: {(p.stdout or '')[-800:]}")
+        got = json.loads(out.read_text()).get(word) or {}
+        rec.update({"values": values, "target_answer": got.get("target_answer"), "answers": got.get("answers")})
+        pick = got.get("whiteness")
+        if pick is None:
+            rec["whiteness"] = built
+            rec["no_hit"] = True
+            log(f"hair colour '{word}': no whiteness of {values} was named '{got.get('target_answer') or word}' "
+                f"(answers {got.get('answers')}): the table's {built:g} kept")
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, built)
+            rec["materials"] = len(r_.get("set") or {})
+        else:
+            pick = float(pick)
+            rec["whiteness"] = pick
+            mp = json.loads(map_path.read_text()) if map_path.exists() else {}
+            mp[word] = dict(got, whiteness=pick, measured_on=W.name)
+            map_path.parent.mkdir(parents=True, exist_ok=True)
+            map_path.write_text(json.dumps(mp, indent=1))
+            log(f"hair colour '{word}': whiteness {pick:g} (table {built:g}) measured, into {map_path}")
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, pick)
+            rec["materials"] = len(r_.get("set") or {})
+    if pick is not None:
+        # every groom binding wears the colour (choose_mh.py sets all four alike)
+        for k, b in (ch.get("params") or {}).items():
+            if k.startswith("Bindings/") and isinstance(b, dict) and "Whiteness" in b:
+                b["Whiteness"] = pick
+        sc["hair_measured"] = {"melanin": mel, "redness": red, "whiteness": pick}
+        cp = W / "choice.json"
+        if cp.exists():
+            cj = json.loads(cp.read_text())
+            cj["params"] = ch.get("params")
+            cj.setdefault("scores", {})["hair_measured"] = sc["hair_measured"]
+            cp.write_text(json.dumps(cj, indent=1))
+    (W / "hair_calibrate.json").write_text(json.dumps(rec, indent=1))
+    return rec
+
+
 def legs_apart(png):
     """Measured on the drawing: is there background between the legs at shin height (trousers), or one
     run of figure (a floor-length skirt)? Also: does the cloth below the hips stand off the legs (a coat's skirt)?"""
@@ -222,6 +349,10 @@ def main():
     ap.add_argument("--skin-age", action="store_true",
                     help="the face texture index nearest the drawn face's age, from the measured table "
                          "(<library>/presets/face_texture_age.json, skin_age_calibrate.py); set before the rig")
+    ap.add_argument("--redo-hair", action="store_true",
+                    help="measure the hair colour word's whiteness on the built character again (renders at the grid's "
+                         "values, the vision model's names, the map entry replaced); the steps after it are skipped "
+                         "when their outputs exist")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
@@ -510,6 +641,19 @@ def main():
             if "face_blend" in face_extra and not mk_.get("coeff_set"):
                 raise RuntimeError("FACE BLEND: the built character's make did not set the blend")
             groom_colour()
+    # ---------------------------------------------------------------- hair: the colour word's whiteness measured
+    # a colour word with no measured whiteness in the library's map is measured on this character (calibrate_hair;
+    # 11-18: "grey hair" at the table's whiteness rendered as a white cap); a given MetaHuman (--mh) keeps its colour
+    if not a.mh and (a.redo_hair or not done("mh", W / "hair_calibrate.json")):
+        @timed("hair_calibrate")
+        def _():
+            bp_ = (CH.get("mh_build") or {}).get("blueprint") or f"/Game/MetaHumans/{mh_name}/BP_{mh_name}"
+            rec = calibrate_hair(W, ch, mh_name, bp_, Path(C.LIBRARY) / "presets" / "hair_colour.json", tag,
+                                 force=a.redo_hair)
+            CH["hair_calibrate"] = rec
+            if "materials" in rec:
+                CH["groom_colour"] = {"values": (ch.get("params") or {}).get("Bindings/Hair/"),
+                                      "materials": rec["materials"], "measured": not rec.get("no_hit")}
     # ---------------------------------------------------------------- draw, gate, shape, mesh gate
     draw = W / "draw"
     draw.mkdir(exist_ok=True)

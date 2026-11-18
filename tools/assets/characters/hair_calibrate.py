@@ -5,8 +5,9 @@ whose rendered hair the vision model names with that word, asked the same questi
         --out MAP.json [--vl-python PY]
 
 DIR holds <word>_<value>.png: neutral studio portraits of one preset wearing the word's hair at each whiteness
-(char_render make + close shot; cast_char builds none of these, this is run once per word). The mapping is merged
-into MAP.json ({word: {"whiteness": v, "answers": {...}}}), which choose_mh.py reads over its built-in values.
+(char_render make + close shot). The mapping is merged into MAP.json ({word: {"whiteness": v, "answers": {...}}}),
+which choose_mh.py reads over its built-in values. cast_char.py runs this on its own built character for a word the
+library map lacks (calibrate_hair, 11-18), with --sheet the drawn head.
 """
 from __future__ import annotations
 
