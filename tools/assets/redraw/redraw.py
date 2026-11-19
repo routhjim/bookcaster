@@ -791,13 +791,20 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
+FACE_SEEN_DEG = 115          # a head turned less than this from the camera shows its face
+FACE_SHEET_HEAD = 0.09       # a face this tall in the frame or taller (crown to chin, of the frame's height) is read
+
+
 def sheet_ref(w: dict, worn: str | None, with_lora: bool = False) -> str | None:
     """The sheet given as a person's reference picture in a job, or None. Someone drawn by their own LoRA in their
     usual look needs none: the LoRA is their face, build and usual clothes, and every reference picture is paid for
     in each drawing (a job with one took 6.5 s, with two 11.7 s, three 15.3 s, four 19.4 s, and with more than one
     the card had no room to keep the references between steps, 11-19). Their sheet is given when they wear what the
     LoRA never saw (an outfit's own sheet, a sheet of the thing they have on), or when they have no LoRA.
-    with_lora: the usual sheet beside the LoRA all the same (run "sheet_with_lora")."""
+    with_lora: the usual sheet beside the LoRA all the same: asked for the whole run ("sheet_with_lora"), or for
+    this person in this shot because their face is turned to the camera and large enough to read (FACE_SHEET_HEAD).
+    From her LoRA alone a woman of seventy was drawn as one of fifty in every shot that showed her face; the man
+    beside her was himself either way (11-19). Small, turned away or far off, nobody's sheet is paid for."""
     if worn:
         return worn
     if w.get("_outfit_sheet") or not w.get("lora") or with_lora:
@@ -973,8 +980,12 @@ def main():
                 worn_now = cam_wears(sd, cam)
                 if cast:          # each person's own LoRA on their own region; their sheets as references
                     loras, sheets = [], []
-                    for k, b, *_ in ppl:
+                    for k, b, *rest_ in ppl:
                         w = who_of(cast, k)
+                        j2_ = (sh["people"].get(k) or {}).get("joints2d") or {}
+                        hh_ = (j2_["chin"][1] - j2_["head_top"][1]) if "chin" in j2_ and "head_top" in j2_ else None
+                        face_big = (rest_[0] if rest_ else 0) < FACE_SEEN_DEG and (
+                            hh_ >= FACE_SHEET_HEAD if hh_ is not None else (b[3] - b[1]) >= 0.6)
                         if w.get("lora"):
                             pad = run.get("lora_pad", 0.06)
                             reg = (sh["people"].get(k) or {}).get("region")
@@ -990,7 +1001,7 @@ def main():
                             loras.append([w["lora"], float(w.get("lora_w", lora_by_head(lw, run, hh, len(ppl)))), area])
                         # (wearing something the book has a sheet of them in, that sheet is their reference here:
                         # told in words alone that a pilot had his helmet on, no key drew it, 11-15)
-                        ws = sheet_ref(w, worn_sheet(w, worn_now.get(k)), bool(run.get("sheet_with_lora")))
+                        ws = sheet_ref(w, worn_sheet(w, worn_now.get(k)), bool(run.get("sheet_with_lora")) or face_big)
                         if ws and ws not in sheets:
                             sheets.append(ws)
                 else:
