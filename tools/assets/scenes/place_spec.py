@@ -328,8 +328,10 @@ LOOK_ALONE_ASK = ("A prop maker is given this sentence to make one object from: 
 GLOW_ASK = ("In a scene this happens: {act}\nA thing in it: {what}\nAt that moment, is this thing glowing, burning or "
             "shining with its own heat or light: because the words say so, or because what is being done to it "
             "can only be done to it hot from a fire? Answer with exactly one word: yes or no.")
-GLOW_COLOUR_ASK = ("In a scene this happens: {act}\nA thing in it glows with its own heat or light: {what}\nWhat colour "
-                   "is its glow? Answer with one or two plain words and nothing else.")
+GLOW_COLOUR_ASK = ("In a scene these things happen, in order:\n{acts}\nA thing in it glows with its own heat or light: "
+                   "{what}\nWhat colour is its glow while it glows, as these words have it; and where they do not "
+                   "say, the colour such a thing glows when it is as hot as that? Answer with one or two plain "
+                   "words for the one colour and nothing else.")
 LOOK_ASK = """A story is told below, whole.
 
 The story:
@@ -418,6 +420,7 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
     # a worked thing that glows of itself in a shot (hot from a fire): asked shot by shot from the shot's own words,
     # and it rides with the thing ("glow": the colour) to the staging's light and the key's words. (The thing's
     # look is the story's cold one: a bar being hammered lay dark on the anvil in every key, 11-18)
+    glows = {}                               # the thing -> its shots where it glows
     for i in ids:
         a = (plan[i][0].get("action") or "").strip()
         for ts in out[i].values():
@@ -425,14 +428,21 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
                 if t["on"] in ("worked", "held") and a:
                     # (asked in one question, "its colour, or no", a bar the shot's words called glowing was no)
                     try:
-                        g = ""
                         if ask(url, GLOW_ASK.format(act=a, what=t["what"]), cache).strip().lower().startswith("yes"):
-                            g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_COLOUR_ASK.format(act=a, what=t["what"]),
-                                                             cache).strip().lower()).strip()
+                            glows.setdefault(t["what"], []).append((i, t))
                     except OSError:
-                        g = ""
-                    if g and len(g.split()) <= 3:
-                        t["glow"] = g
+                        pass
+    # its colour is asked once for the thing, over all the shots it glows in: asked shot by shot, a blade the
+    # first shot called orange was blue in the next, whose words named no colour, and "no colour" in a third
+    for what, rows in glows.items():
+        acts_ = "\n".join(dict.fromkeys(f"- {(plan[i][0].get('action') or '').strip()}" for i, _ in rows))
+        try:
+            g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_COLOUR_ASK.format(acts=acts_, what=what), cache).strip().lower()).strip()
+        except OSError:
+            g = ""
+        if g and len(g.split()) <= 3 and not g.startswith("no"):
+            for _, t in rows:
+                t["glow"] = g
     # a thing a person has in the shot before and in the shot after, the same way, they have in between too (the
     # account left a helmet off for one shot of a flight)
     for a_, b_, c_ in zip(ids, ids[1:], ids[2:]):
