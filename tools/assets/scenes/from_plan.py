@@ -464,6 +464,24 @@ def work_place(t: dict, his: list, others: list, things: list, room: list) -> di
             "near_cm": round(WORK_STAND_M * 100, 1)}
 
 
+def give_way(spot: list, t: dict, others: dict) -> dict | None:
+    """Where the people standing by go when a person takes spot to work at piece t: each one nearer the spot than
+    PERSON_GAP_M to their nearest mark that is clear of it and no nearer the piece's middle than the worker (not
+    between them and the work). -> {key: mark}, {} when nobody is in the way, None when one of them has nowhere."""
+    out, taken = {}, [list(spot)]
+    reach = math.dist(spot, t["center"][:2])
+    for k, v in others.items():
+        if not too_near(v["position"], [spot]):
+            taken.append(list(v["position"]))
+            continue
+        ok = [m for m in v.get("marks") or [] if not too_near(m, taken) and math.dist(m, t["center"][:2]) >= reach]
+        if not ok:
+            return None
+        out[k] = min(ok, key=lambda m: math.dist(m, v["position"]))
+        taken.append(list(out[k]))
+    return out
+
+
 VARIANT = {"usual": None}
 
 
@@ -1173,7 +1191,7 @@ def main():
     reached = {}                     # key -> (where the plan had them, where a reach put them, facing there)
     for gi, g in enumerate(groups, 1):
         st = g[0][1]
-        chars = {}
+        chars, way = {}, {}
         cam0 = g[0][0]
         for k in list(reached):      # still where the plan had them before the reach, standing: they did not move
             if k in st and st[k]["position"] == reached[k][0] and st[k]["pose"] != "sitting" and \
@@ -1246,6 +1264,19 @@ def main():
                     wt = work_thing(v, things)
                     oth = [st[kk]["position"] for kk in st if kk != k]
                     wp = work_place(wt, v["position"], oth, things, room) if wt else None
+                    # the work takes its place first: a person standing by who has another mark steps to it (an
+                    # onlooker's mark at the anvil's long side put the smith at its end, the work 77 cm off, and he
+                    # folded 34 deg to reach it, 11-19)
+                    pzs = cam0.get("_poses") or {}
+                    stay = [kk for kk in st if kk != k and (pzs.get(kk) in WORK_ACTIONS or st[kk]["pose"] == "sitting"
+                                                           or not st[kk].get("marks"))]
+                    wp_free = work_place(wt, v["position"], [st[kk]["position"] for kk in stay], things, room) \
+                        if wt and len(stay) < len(st) - 1 else None
+                    if wp_free and (not wp or wp_free["fwd_cm"] < wp["fwd_cm"] - 1.0):
+                        step = give_way(wp_free["position"], wt, {kk: st[kk] for kk in st if kk != k and kk not in stay})
+                        if step is not None:
+                            wp = wp_free
+                            way.update(step)
                     if wp:
                         c.update(position=wp["position"], facing=wp["facing"], work_at=wt["name"])
                         c["body_pose"]["params"].update(work_top_cm=wp["top_cm"], work_fwd_cm=wp["fwd_cm"],
@@ -1275,6 +1306,11 @@ def main():
                 if kk in wd:
                     c[kk] = wd[kk]
             chars[k] = c
+        for kk, m in way.items():                        # those who stepped aside for the work, at their other mark
+            if kk in chars and "work_at" not in chars[kk]:
+                chars[kk]["position"] = list(m)
+                if chars[kk].get("marks"):
+                    chars[kk]["marks"] = [list(m)] + [q for q in chars[kk]["marks"] if math.dist(q, m) >= 0.05]
         for c_, _ in g:
             for kk in ("_looks", "_poses", "_worn"):
                 c_.pop(kk, None)
