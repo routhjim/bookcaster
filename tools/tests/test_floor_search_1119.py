@@ -54,3 +54,12 @@ def test_last_resort_alone_is_straight_before_the_face():
     S.SOLIDS[:] = []
     q = S.fallback_camera([_m(0.0, 0.0, (0.0, 1.0))], [12.0, 12.0, 3.0])
     assert q and q["position"][1] > 1.0 and abs(q["position"][0]) < 0.2
+
+
+def test_a_shot_missing_the_same_way_try_after_try_is_not_tried_again():
+    import speakers as S
+    same = [{"why": ["x is not in the picture"]}] * S.SAME_MISS_ROUNDS
+    assert S.same_miss(same)
+    assert not S.same_miss(same[:-1])
+    assert not S.same_miss(same[:-1] + [{"why": ["y is cut by the frame's edge"]}])
+    assert not S.same_miss([{"why": []}] * S.SAME_MISS_ROUNDS)

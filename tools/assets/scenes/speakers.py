@@ -1585,6 +1585,15 @@ FALLBACK_MM = 24             # the last resort wide's lens
 FALLBACK_CLEAR_M = 0.45      # the last resort's line to its first person passes this clear of the others
 
 
+SAME_MISS_ROUNDS = 4         # a shot that misses the same way this many tries running is not tried again
+
+
+def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
+    """Whether a shot's last n tries all missed for the same reasons."""
+    last = [tuple(sorted(h.get("why") or [])) for h in (history or [])[-n:]]
+    return len(last) == n and bool(last[0]) and len(set(last)) == 1
+
+
 def fallback_camera(ms: list, room, tried=()) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
@@ -2178,7 +2187,10 @@ def main():
                 todo = [c["name"] for c in spec["cameras"]]
                 continue
             pending = None
-        if not fails or rnd == a.rounds:
+        if not fails or rnd == a.rounds or all(same_miss(report["shots"][c["name"]]["history"]) for c in fails):
+            # (... or every shot still failing has missed the same way SAME_MISS_ROUNDS tries running: more tries
+            # find nothing new. One shot missed one way 13 rounds running, twenty seconds each, in five scene
+            # groups of one place: 25 minutes of its staging, 11-19)
             for c in fails:
                 give_up(c)
             break
@@ -2339,6 +2351,26 @@ def main():
                 keep = {kk: s_.get(kk) for kk in ("framing_miss", "least_bad", "tried_stills", "speaker",
                                                    "speaker_check")}
                 master["shots"][i_] = dict(new[s_["name"]], **keep)
+                lb = keep.get("least_bad") or {}
+                if lb.get("fallback"):
+                    # the last-resort wide is another picture than the try its misses were read from: it is read
+                    # itself (four wides that held everyone were counted unreadable by the misses of the tries
+                    # before them, and staged again for nothing, 11-19)
+                    c_ = next(x for x in spec["cameras"] if x["name"] == s_["name"])
+                    try:
+                        chk_ = check_shot(master["shots"][i_], c_.get("speaker"), master["subjects"], res, c_["kind"],
+                                          line, est_side, listener_of(c_, keys, c_.get("speaker")), bool(c_.get("ots")),
+                                          c_.get("show"),
+                                          bool((spec["characters"].get(c_.get("speaker") or "") or {}).get("face_covered"))
+                                          or c_.get("speaker") in head_worn(c_), cam_opts(spec, c_))
+                        why_ = still_why(master["shots"][i_], chk_) + list(chk_["why"])
+                    except (KeyError, TypeError, ValueError) as e_:
+                        why_ = lb.get("misses") or []
+                        log(f"{s_['name']}: the last-resort wide could not be read ({e_})")
+                    lb = dict(lb, misses=why_, before=lb.get("misses"))
+                    master["shots"][i_].update(least_bad=lb, framing_miss=why_)
+                # (the kept try and what it missed, in the report the flow counts its shots from)
+                report["shots"].setdefault(s_["name"], {}).update(least_bad=lb, framing_miss=master["shots"][i_].get("framing_miss"))
         log(f"least-bad tries as keys: {least_bad}")
     report["staged_facts"] = staged_facts(spec, master["subjects"])
     for sh in master["shots"]:

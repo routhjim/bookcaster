@@ -157,6 +157,18 @@ def over_time(step: str, shots: int, ran_s: float) -> bool:
     return ran_s > OVER_TIMES * (a + b * shots)
 
 
+
+def staging_miss(st: dict) -> list:
+    """What a shot's kept staging missed, from its row of a scene group's report (speakers.json): nothing when it
+    passed; what its last-resort wide itself misses when that was taken (it is another picture than the tries
+    before it); else the kept try's misses, else the last try's."""
+    if not st or st.get("ok"):
+        return []
+    lb = st.get("least_bad") or {}
+    if lb.get("fallback") and "before" in lb:
+        return list(map(str, lb.get("misses") or []))
+    return list(map(str, lb.get("misses") or (st.get("history") or [{}])[-1].get("why") or st.get("why") or []))
+
 class Watch:
     """Tells the log when a running step is past its usual time (a thread; with: around the step)."""
     def __init__(self, what: str, step: str, shots: int, every_s: float = 30.0):
@@ -972,9 +984,7 @@ class Story:
                 # every shot ends with an engine key (the user's rule, 11-17): a staging that failed its own checks
                 # gives the least-bad try speakers.py kept, flagged with what it missed; a redraw that failed its
                 # checks gives its best drawing, flagged; with no drawing at all, the engine still itself, flagged
-                miss = [] if not st or st.get("ok") else list(map(str, (st.get("least_bad") or {}).get("misses")
-                                                                   or (st.get("history") or [{}])[-1].get("why")
-                                                                   or st.get("why") or []))
+                miss = staging_miss(st)
                 a = next((v for k, v in acc.items() if k.startswith(f"{g.name}__{c['name']}__")), None)
                 flag = {"staging_miss": miss} if miss else {}
                 if a and a.get("no_key"):

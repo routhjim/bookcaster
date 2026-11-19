@@ -93,3 +93,13 @@ def test_a_place_left_with_a_keyless_shot_is_staged_again_with_the_fallback(tmp_
     seen.clear()
     st.restage_keyless("P")                                             # nothing keyless: nothing staged
     assert seen == []
+
+
+def test_a_last_resort_wide_is_counted_by_what_it_misses_itself():
+    import story_keys as SK
+    old = ["x (named for the shot) is not in the picture"]
+    assert SK.staging_miss({"ok": True, "history": [{"why": old}]}) == []
+    assert SK.staging_miss({"ok": False, "history": [{"why": old}]}) == old
+    assert SK.staging_miss({"ok": False, "history": [{"why": old}], "least_bad": {"misses": ["y"]}}) == ["y"]
+    wide = {"ok": False, "history": [{"why": old}], "least_bad": {"fallback": True, "misses": [], "before": old}}
+    assert SK.staging_miss(wide) == []
