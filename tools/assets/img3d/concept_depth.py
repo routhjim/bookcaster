@@ -18,7 +18,8 @@ Scaled so a door seen in the picture is DOOR_M high (the model's metres are near
 centred on its floor, the eye standing inside its front part.
 
 OUT.json: {"room_m": [W, D, H], "eye": [x, y, z], "things": {"spec:<id>" | "seen:<i>": {"xy", "size_m", "against",
-"facing"}}, "off_floor": {key: {"kind"}} (things the picture shows hanging or standing on another thing: not placed),
+"facing", "raised_m" (it stands on a raised part of the floor, this high)}}, "off_floor": {key: {"kind"}} (things the
+picture shows hanging: not placed),
 "scale", "floor_fit"} (set frame: the room's middle at 0, y toward the back wall).
 """
 from __future__ import annotations
@@ -36,6 +37,7 @@ SCALE_CLAMP = (0.6, 1.6)     # the depth model's metres are trusted within this 
 AGAINST_M = 0.5              # a thing whose back is this near a wall stands against it
 OFF_FLOOR_M = 0.4            # a thing whose own points are this much nearer than its box's foot on the floor is
                              # not standing there: it hangs on a wall or from the roof, or stands on another thing
+RAISED_MOST_M = 1.0          # ... unless its bottom is no higher than this: it stands on a raised part of the floor
 FRONT_M = 1.2                # the room reaches at least this far behind the eye (the picture's front wall is unseen)
 STAND = (0.3, 2.0)           # the height band (m) whose points mark where the walls are
 
@@ -127,7 +129,7 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
     back = float(np.percentile(cols[:, 1], 92))
     left, right = float(np.percentile(stand[:, 0], 3)), float(np.percentile(stand[:, 0], 97))
     ceil = float(np.clip(np.percentile(q[:, 2], 97), 2.2, 9.0))
-    things, hung = {}, {}
+    things, hung, raised = {}, {}, {}
     for key, (b, kind) in boxes.items():
         x0, y0, x1, y1 = b
         yb = y1 - 0.01
@@ -144,13 +146,25 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
         own = to_room(pts[r0:r1, c0:c1][mask[r0:r1, c0:c1]], axes, d)
         own = own[np.isfinite(own).all(1)]
         if len(own) and fq[1] - float(np.median(own[:, 1])) > OFF_FLOOR_M:
-            hung[key] = {"kind": kind, "at_m": round(float(np.median(own[:, 1])), 3)}
-            continue
+            # where its box's bottom really is, at its own distance: a little above the floor, it stands on a raised
+            # part of it (a seat on a dais was taken for a thing hanging and left out of the room, 11-19): placed
+            # there, on the floor. Higher, or with no bottom to find, it hangs
+            bv = ray(intr, (x0 + x1) / 2, yb)
+            yo = float(np.median(own[:, 1]))
+            den = float(bv @ axes[1])
+            bq = to_room((bv * (yo / den))[None], axes, d)[0] if abs(den) > 1e-6 else None
+            if bq is None or not (0.0 < float(bq[2]) <= RAISED_MOST_M):
+                hung[key] = {"kind": kind, "at_m": round(yo, 3)}
+                continue
+            k = yo / max(1e-6, float(fq[1]))               # (its width, seen at its own distance and not the floor's)
+            fq, lq, rq = bq, np.array([bq[0] - abs(rq[0] - lq[0]) * k / 2, yo, 0.0]), np.array([bq[0] + abs(rq[0] - lq[0]) * k / 2, yo, 0.0])
+            foot = bv * (yo / den)
+            raised[key] = round(float(bq[2]), 3)
         width = max(0.2, float(abs(rq[0] - lq[0])))
         # its top: the ray through the box's top middle, at the depth of its front foot
         tv = ray(intr, (x0 + x1) / 2, y0)
         tq = to_room((tv * ((foot @ axes[1]) / max(1e-6, tv @ axes[1])))[None], axes, d)[0]
-        height = max(0.2, float(tq[2]))
+        height = max(0.2, float(tq[2]) - raised.get(key, 0.0))
         ks = kinds_size.get(kind) or [width, width * 0.6, height]
         depth = max(0.2, width * float(ks[1]) / max(1e-6, float(ks[0])))
         things[key] = {"front": [float(fq[0]), float(fq[1])], "width": width, "depth": depth, "height": height,
@@ -174,7 +188,8 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
         elif x + w / 2 > W / 2 - AGAINST_M:
             against, facing, x = "east", [-1.0, 0.0], W / 2 - dp / 2 - 0.02
         out[key] = {"xy": [round(x, 3), round(y, 3)], "size_m": [round(w, 3), round(dp, 3), round(hh, 3)],
-                    "against": against, "facing": facing, "kind": t["kind"]}
+                    "against": against, "facing": facing, "kind": t["kind"],
+                    **({"raised_m": round(raised[key] * scale, 3)} if key in raised else {})}
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
             "things": out, "off_floor": hung, "scale": round(scale, 3), "floor_fit": round(fit, 3)}

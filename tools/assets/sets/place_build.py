@@ -275,7 +275,19 @@ def with_concept(spec: dict, concept: dict) -> dict:
                     # its own words at its own size, where the picture has it (a stone "the size of a sleeping dog",
                     # 0.8 m, was shaped from the picture's squared block 1.4 m long and a metre high, 11-19)
                     p.pop("source", None)
-    if re.search(r"\b(beam|beams|rafter|rafters|timber|timbers|roof|thatch)\b", str((concept.get("surfaces") or {}).get("ceiling") or ""), re.I):
+    if concept.get("space") == "room" and sp.get("kind") != "outdoors":
+        # an opening the picture shows and the spec states none of is the room's (a hall drawn with tall windows down
+        # both walls was built a sealed box with its kind's one door, 11-19): one of each kind, on the wall the
+        # layout finds for it
+        stated = {o.get("kind") for o in sp.get("openings") or []}
+        for i, sn in enumerate(concept.get("seen") or []):
+            if sn.get("kind") in OPENING_KINDS and sn.get("box") and sn["kind"] not in stated:
+                stated.add(sn["kind"])
+                sp.setdefault("openings", []).append({"id": f"oc{i + 1}", "kind": sn["kind"], "wall": "not stated",
+                                                      "words": "; ".join(x for x in (sn.get("name"), sn.get("look")) if x)})
+    # (the roof's timbers, in the judge's words for the overhead or among the things it saw)
+    if re.search(r"\b(beam|beams|rafter|rafters|timber|timbers|roof|thatch)\b", str((concept.get("surfaces") or {}).get("ceiling") or ""), re.I) \
+            or any(re.search(r"\b(beams?|rafters?)\b", str(x.get("name") or ""), re.I) for x in concept.get("seen") or []):
         sp["_roof"] = "rafters"              # the picture's overhead: an open roof on timber, not a plastered ceiling
     if concept.get("space") == "cockpit":
         seen = [x["name"] + (f" ({x['look']})" if x.get("look") else "") for x in concept.get("seen") or []

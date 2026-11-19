@@ -205,3 +205,50 @@ def test_a_worker_stands_at_the_long_side_of_what_they_work_at():
     wp = FP.work_place(long_x, [1.5, 0.1], [], [long_x], room)      # they were nearer its end
     assert wp["facing"][0] == 0.0 and abs(wp["position"][1]) > 0.7 and wp["position"][0] == 0.0
     assert wp["top_cm"] == 86.0
+
+
+def _thing_off_floor(z, lift, w, h):
+    """The room's points with an upright thing w wide and h high whose bottom is `lift` above the floor at z."""
+    pts, mask, intr = room_points()
+
+    def proj(p):
+        return intr[0, 0] * p[0] / p[2] + 0.5, intr[1, 1] * p[1] / p[2] + 0.5
+    u0, v1 = proj([-w / 2, EYE_H - lift, z])
+    u1, v0 = proj([w / 2, EYE_H - lift - h, z])
+    for j in range(H_PX):
+        for i in range(W_PX):
+            u, v = (i + 0.5) / W_PX, (j + 0.5) / H_PX
+            if u0 <= u <= u1 and v0 <= v <= v1:
+                r = np.array([(u - 0.5) / F, (v - 0.5) / (F * W_PX / H_PX), 1.0])
+                pts[j, i] = r * z
+    return pts, mask, intr, [u0, v0, u1, v1]
+
+
+def test_a_thing_standing_on_a_raised_part_of_the_floor_is_placed_where_it_stands():
+    pts, mask, intr, box = _thing_off_floor(5.0, 0.4, 0.8, 1.4)
+    r = CD.room_from(pts, mask, intr, {"spec:p1": (box, "chair")}, {"chair": [0.8, 0.8, 1.4]})
+    assert "spec:p1" not in r["off_floor"]
+    t = r["things"]["spec:p1"]
+    assert abs(t["raised_m"] - 0.4) < 0.1
+    assert abs(t["size_m"][0] - 0.8) < 0.2 and abs(t["size_m"][2] - 1.4) < 0.25
+    assert abs((t["xy"][1] - r["eye"][1]) - 5.0) < 0.6          # at its own distance, not its foot's on the floor
+
+
+def test_a_thing_high_on_the_wall_still_hangs():
+    pts, mask, intr, box = _thing_off_floor(5.9, 1.2, 0.8, 0.25)
+    r = CD.room_from(pts, mask, intr, {"seen:0": (box, "rack")}, {})
+    assert "seen:0" in r["off_floor"] and "seen:0" not in r["things"]
+
+
+def test_an_opening_and_roof_timbers_the_picture_shows_are_the_rooms():
+    c = concept_with_depth()
+    c["seen"] = list(c.get("seen") or []) + [
+        {"name": "arched windows", "look": "stone, grey", "kind": "window", "box": [0.0, 0.0, 0.9, 0.4]},
+        {"name": "more windows", "look": "", "kind": "window", "box": [0.1, 0.0, 0.5, 0.3]},
+        {"name": "wooden beams", "look": "wood, brown", "kind": "table", "box": [0.2, 0.0, 0.7, 0.2]}]
+    spec = dict(place_spec(), openings=[])
+    sp = PB.with_concept(spec, c)
+    assert [o["kind"] for o in sp["openings"]] == ["window"] and sp["openings"][0]["wall"] == "not stated"
+    assert sp["_roof"] == "rafters"
+    stated = dict(place_spec(), openings=[{"id": "o1", "kind": "window", "wall": "east", "words": ""}])
+    assert len(PB.with_concept(stated, c)["openings"]) == 1 and PB.with_concept(stated, c)["openings"][0]["id"] == "o1"
