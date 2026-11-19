@@ -1168,7 +1168,7 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                        sm["eye_z"] - 0.1]
     out = []
     m0 = subjects[spk]["measured"] if spk else ms[0]
-    xr, yr = near_people(subjects, room)
+    xr, yr = near_people(subjects, room, keys=[k for k in keys + [opts.get("subject")] if k])
     zs = {1.45, 1.6} | ({round(subjects[lis]["measured"]["eye_z"] + 0.12, 2)} if lis else set())
     for k in dict.fromkeys(keys + [opts.get("subject")]):
         cm = (subjects.get(k) or {}).get("measured") or {}
@@ -1242,18 +1242,26 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
 CAMERA_REACH_M = 9.0     # a camera stands within this of the people it shows (the floor beyond is not searched)
 
 
-def near_people(subjects, room, step=1):
+FLOOR_POINTS = 4000      # a wide floor is searched at no more standpoints than this (160 m2 at 20 cm)
+
+
+def near_people(subjects, room, step=1, keys=None):
     """The floor a camera is looked for on, as two ranges of tenths of a metre: the room, no farther than
     CAMERA_REACH_M from the people (a hangar's whole floor at 10 cm was fifty times a sitting room's and the search
-    did not end)."""
+    did not end). keys: the people the shot shows, when the caller knows them: the floor round them only (three
+    people apart on an open ground eighty metres across gave a floor of 90 000 standpoints, each tried at every
+    height, aim and lens: one camera took six minutes and a place's staging three hours, 11-19). A wide floor is
+    searched at a spacing that keeps its standpoints to FLOOR_POINTS."""
     W, D, _ = room
-    xs = [v["measured"]["pelvis_xy"][0] for v in subjects.values()] or [0.0]
-    ys = [v["measured"]["pelvis_xy"][1] for v in subjects.values()] or [0.0]
+    who = [v for k, v in subjects.items() if not keys or k in keys] or list(subjects.values())
+    xs = [v["measured"]["pelvis_xy"][0] for v in who] or [0.0]
+    ys = [v["measured"]["pelvis_xy"][1] for v in who] or [0.0]
     wd = wild_m(room)
     x0, x1 = max(-W / 2 - wd, min(xs) - CAMERA_REACH_M), min(W / 2 + wd, max(xs) + CAMERA_REACH_M)
     y0, y1 = max(-D / 2 - wd, min(ys) - CAMERA_REACH_M), min(D / 2 + wd, max(ys) + CAMERA_REACH_M)
-    if (x1 - x0) * (y1 - y0) > 60.0:           # a wide floor is searched at twice the spacing
-        step *= 2
+    area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    if area > 60.0:                            # a wide floor is searched at twice the spacing, or wider
+        step *= max(2, math.ceil(10 * math.sqrt(area / FLOOR_POINTS)))
     return (range(int(math.floor(x0 * 10)), int(math.ceil(x1 * 10)) + 1, step),
             range(int(math.floor(y0 * 10)), int(math.ceil(y1 * 10)) + 1, step))
 
