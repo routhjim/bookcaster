@@ -67,3 +67,15 @@ def test_a_thing_the_picture_shows_is_called_by_the_surer_of_its_two_readings():
     assert PB.seen_called({"name": "old post", "words": "Dark, split and leaning"}) == "old post"
     assert PB.seen_called({"name": "old post"}) == "old post"
     assert PB.seen_called({"name": "all of it", "group": True, "words": "Left: a hut"}) == "buildings"
+
+
+def test_a_rooms_words_call_a_thing_what_the_story_calls_it_and_a_seen_window_plainly():
+    import place_build as PB
+    out = {"tags": ["shop"], "style": "medieval", "props": [],
+           "fixtures": [{"asset": "x1", "name": "landmark", "called": "dark stone"}]}
+    lay = {"openings": [{"id": PB.SEEN_OPENING + "3", "kind": "window"}, {"id": "o1", "kind": "door"}]}
+    kit = {"words": {"window": "a tall window with heavy drapes", "door": "a panelled door"}}
+    recs = {"x1": {"piece_kind": "landmark", "look": "dark stone, low and long, faintly lit"}}
+    w, _ = PB.room_words(out, lay, kit, recs)
+    assert "landmark" not in w and "dark stone (low and long, faintly lit)" in w
+    assert "drapes" not in w and "a window" in w and "a panelled door" in w

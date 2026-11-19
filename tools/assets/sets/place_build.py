@@ -99,7 +99,9 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
         n = NORMAL[o["wall"]]
         p = o["point"]
         sfx = "" if i == 0 else f"_{i + 1}"
-        if "drapes" in dress_by:
+        # (a window the place's own picture shows is as the picture has it: the period kit's dressing is for the
+        # windows a room is given unseen. A shed's one small window was hung with crimson damask drapes, 11-19)
+        if "drapes" in dress_by and not str(o.get("id") or "").startswith(SEEN_OPENING):
             fixtures.append({"asset": dress_by["drapes"], "name": "drapes" + sfx,
                              "position": [round(p[0] + n[0] * 0.125, 3), round(p[1] + n[1] * 0.125, 3), 0.0],
                              "facing": list(n), "hang": True, "look": kit.get("drapes_look")})
@@ -177,6 +179,10 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
         d = re.split(r"[,:;.]", rc.get("description") or "", maxsplit=1)[0].strip()
         if rc.get("piece_kind") and rc.get("look"):          # a piece made on request: its kind and its own look
             d = f"{rc['piece_kind'].replace('_', ' ')} ({rc['look']})"
+        if it.get("called"):                      # what the story calls it, not its kind's name ("a landmark (...)")
+            rest = str(rc.get("look") or "").strip()
+            rest = rest[len(it["called"]):].lstrip(" ,;") if rest.lower().startswith(it["called"].lower()) else rest
+            d = it["called"] + (f" ({rest})" if rest else "")
         d = d or (it.get("name") or "").replace("_", " ")
         if out.get("style") and d.lower().startswith(out["style"].lower() + " "):
             d = d[len(out["style"]) + 1:]         # (the period is said once, for the room)
@@ -184,6 +190,8 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
         held.append(d if re.match(r"(a|an|the) ", d) else ("an " if d[:1] in "aeiou" else "a ") + d)
     for o in lay.get("openings") or []:
         w = kw.get(o.get("kind"))
+        if str(o.get("id") or "").startswith(SEEN_OPENING):
+            w = ("an " if str(o.get("kind"))[:1] in "aeiou" else "a ") + str(o.get("kind"))
         if w and w not in held:
             held.append(w)
     held = list(dict.fromkeys(held))
@@ -194,6 +202,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
+SEEN_OPENING = "oc"              # the id of an opening taken from the place's concept picture begins with this
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
 
 
@@ -285,7 +294,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
         for i, sn in enumerate(concept.get("seen") or []):
             if sn.get("kind") in OPENING_KINDS and sn.get("box") and sn["kind"] not in stated:
                 stated.add(sn["kind"])
-                sp.setdefault("openings", []).append({"id": f"oc{i + 1}", "kind": sn["kind"], "wall": "not stated",
+                sp.setdefault("openings", []).append({"id": f"{SEEN_OPENING}{i + 1}", "kind": sn["kind"], "wall": "not stated",
                                                       "words": "; ".join(x for x in (sn.get("name"), sn.get("look")) if x)})
     # (the roof's timbers, in the judge's words for the overhead or among the things it saw)
     if re.search(r"\b(beam|beams|rafter|rafters|timber|timbers|roof|thatch)\b", str((concept.get("surfaces") or {}).get("ceiling") or ""), re.I) \
