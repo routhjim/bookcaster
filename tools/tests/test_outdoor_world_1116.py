@@ -217,7 +217,9 @@ def test_land_places_spot_and_validation():
 
 
 def test_kit_for_a_period_without_a_kit():
-    assert PB.kit_for("medieval") == PB.kit_for("victorian")
+    # (the kit it is most like, for its lights and its build; nothing of that period's style: place_build.plain)
+    lent, own = PB.kit_for("medieval"), PB.kit_for("victorian")
+    assert lent["lights"] == own["lights"] and lent["materials"] == own["materials"] and lent["_plain"]
     assert PB.kit_for("modern") == PB.kit_for("far_future")
     assert PB.kit_for("not stated") == PB.kit_for("victorian")
 

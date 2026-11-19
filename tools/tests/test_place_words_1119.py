@@ -109,3 +109,14 @@ def test_the_time_of_day_is_read_from_one_word_of_the_answer(tmp_path, monkeypat
     for said, want in (("Night", "night"), ("<think>day?</think>\ndusk.", "dusk"), ("unknown", ""), ("day", "day")):
         monkeypatch.setattr(PS, "ask", lambda url, text, cache, said=said: said)
         assert PS.time_of_day(plan, ["s1"], [], "P", "u", tmp_path) == want
+
+
+def test_a_period_without_a_kit_takes_nothing_of_another_periods_style():
+    import place_build as PB
+    own, lent = PB.kit_for("victorian"), PB.kit_for("medieval")
+    assert own.get("window_dressing") and not own.get("_plain") and own["window"].get("glass_material")
+    assert lent["_plain"] and lent["window_dressing"] == [] and lent["window"]["glass_material"] is None
+    assert lent["window"]["panes"] == [1, 1] and lent["door"]["material"] == lent["door"]["frame_material"]
+    w = " ".join(lent["words"].values())
+    assert "sash" not in w and "drapes" not in w and "panelled" not in w and "grate" not in w
+    assert lent["lights"] == own["lights"]                    # (its light is kept)

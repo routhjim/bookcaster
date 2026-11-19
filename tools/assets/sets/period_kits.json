@@ -599,5 +599,12 @@
   "rural_traditional": "victorian",
   "modern": "far_future",
   "_note": "a period with no kit of its own is dressed with the kit of the period it is most like in its light and fittings (before electric light: victorian; after: far_future), as room_kinds_like does for rooms"
+ },
+ "_plain_periods": {
+  "periods": [
+   "medieval",
+   "rural_traditional"
+  ],
+  "_note": "periods dressed with another period's kit whose openings must be plain ones (an unglazed window in a timber frame, a door of planks, no window dressing): the kit they borrow is of a time with glass, drapes and panelling that theirs had not (place_build.plain)"
  }
 }

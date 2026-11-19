@@ -917,7 +917,32 @@ def kit_for(period) -> dict:
     "_periods_like"; the knight story's medieval rooms fell to no kit lights at all, 11-16), else victorian."""
     kits = json.loads((HERE / "period_kits.json").read_text())
     p = period if period in kits else (kits.get("_periods_like") or {}).get(period)
-    return kits.get(p) or kits["victorian"]
+    kit = kits.get(p) or kits["victorian"]
+    if period in ((kits.get("_plain_periods") or {}).get("periods") or []):
+        kit = plain(kit)
+    return kit
+
+
+PLAIN_WORDS = {"window": "a small unglazed window opening in a timber frame", "door": "a door of plain planks",
+               "fireplace": "an open hearth"}
+
+
+def plain(kit: dict) -> dict:
+    """Another period's kit for a period of plainer buildings that has none of its own (period_kits.json
+    "_plain_periods"): its lights and its build, with nothing of that period's style. Its openings are plain ones (an unglazed window in a timber frame, a door of planks), no window
+    dressing and no view of that period's street; its words name them so. (A medieval forge got a white
+    mantelpiece, a shed crimson drapes and a glazed sash window, each from the kit made for a Victorian sitting
+    room, 11-19.) What the room looks like comes from its own picture."""
+    k = json.loads(json.dumps(kit))
+    dark = next((m for m in ("door_oak", "panel_wood") if m in k.get("materials", {})), None)
+    if dark:
+        k["window"] = dict(k.get("window") or {}, panes=[1, 1], frame_material=dark, glass_material=None)
+        k["door"] = dict(k.get("door") or {}, panel_m=[0.22, 3.0], material=dark, frame_material=dark, braced=False)
+    k["window_dressing"] = []
+    k.pop("drapes_look", None)
+    k["words"] = dict(k.get("words") or {}, **PLAIN_WORDS, surfaces="")
+    k["_plain"] = True
+    return k
 
 
 ROOM_LM_M2 = 450.0               # a room whose own lights give less than this (lumens a square metre of floor; a
