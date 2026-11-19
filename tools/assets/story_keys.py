@@ -535,15 +535,19 @@ class Story:
         # what the variant's figure was drawn and built in (cast_char.spread_look: no headwear, nothing held): a hat
         # or helm reaches the key as a worn thing of the shot (place_spec's things), made with the face in view
         sys.path.insert(0, str(HERE / "img3d"))
-        from cast_char import spread_look
-        dress = spread_look("x, wearing " + dress).partition("wearing ")[2] or dress
+        from cast_char import head_worn, spread_look
+        # (a whole figure is shaped from its own drawing, so it is made in the outfit's headwear too: the outfit
+        # with the thing off is another row of the wardrobe)
+        whole = bool(getattr(self, "whole", True))
+        head_on = whole and head_worn(dress)
+        dress = spread_look("x, wearing " + dress, headwear=whole).partition("wearing ")[2] or dress
         dress = re.sub(r"\b(his|her|their)\s+usual\s+", r"\1 ", dress, flags=re.I)   # (the wardrobe's word)
         pos = "her" if pr["noun"] in ("woman", "girl") else "his"
         dress = dress[:1].lower() + dress[1:]
         short = WD.outer_garment(dress) or dress.split(",")[0]
         sheet = WD.sheet_for(pr["words"].get("worn_sheets") or {}, r["id"]) or pr["sheet"]
         return {"wear": dress, "sheet": sheet, "wear_back": f"the back of {pos} {short} and the back of {pos} head",
-                "back_detail": f"the back of {pos} {short}"}
+                "back_detail": f"the back of {pos} {short}", "head_on": head_on}
 
     def figure_id(self, name: str) -> str:
         if name not in self.cast:
@@ -752,7 +756,7 @@ class Story:
                         "--look", WD.variant_look(pr["look"], ow["wear"]), "--lora", pr["lora"], "--trigger",
                         pr["trigger"], "--work", w / "w", "--scene-tool", HERE / "scenes", "--mh", mh, "--mh-fbx", fbx,
                         "--mh-blueprint", bp, "--variant-of", base] + (
-                            ["--whole"] if getattr(self, "whole", True) else ["--metahuman"])
+                            ["--whole", "--headwear"] if getattr(self, "whole", True) else ["--metahuman"])
 
     def _cast_variants(self, place, name) -> dict:
         """The person's wardrobe variants worn in this place's shots (each built once for the book):
@@ -781,6 +785,13 @@ class Story:
                 if not ok:
                     log(f"{place}: no figure for {name} in {r['id']} ({vid}); see {w / 'run.log'}")
                     (w / "FAILED").write_text(time.strftime("%F %T"))
+            if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_on").exists():
+                # a figure built before an outfit's headwear was part of it: drawn and shaped again, once
+                log(f"{place}: {name} in {r['id']}: made again wearing its headwear")
+                sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log")
+                self._fit_mark(w)
+            if ok and self.outfit_words(name, r).get("head_on"):
+                (w / "headwear_on").write_text(time.strftime("%F %T"))
             if ok:
                 self._hands_again(f"{name} in {r['id']}", w, cmd)
             out[r["variant"]] = (vid if ok else None, r)
@@ -906,7 +917,8 @@ class Story:
             worn = {}
             for v, (vid, r) in vs.items():
                 ow = self.outfit_words(n, r)
-                worn[v] = {"wear_set": ow["wear"], "wear_back_set": ow["wear_back"], "worn_sheet": ow["sheet"]}
+                worn[v] = {"wear_set": ow["wear"], "wear_back_set": ow["wear_back"], "worn_sheet": ow["sheet"],
+                           **({"head_on": True} if ow.get("head_on") else {})}
                 if not vid:
                     continue
                 ps = {str(p.get("pose") or "") for i in self.shots_of(place) if (self.outfit(n, i) or {}).get("variant") == v

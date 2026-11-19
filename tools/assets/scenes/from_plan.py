@@ -493,6 +493,15 @@ ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_s
 WORN_KEYS = ("wear_add", "face_covered", "wear_set", "wear_back_set", "worn_sheet")
 
 
+def not_on_head(cam: dict, key: str) -> None:
+    """A shot's carried things without what this person has on the head (their figure is made wearing it)."""
+    rows = (cam.get("carried") or {}).get(key)
+    if rows:
+        cam["carried"][key] = [r for r in rows if r.get("at") != "head"]
+        if not cam["carried"][key]:
+            del cam["carried"][key]
+
+
 def own_variant(library: Path, base: str, var: str | None) -> str | None:
     """The library figure built for this worn state of base (recorded "variant_of": base), else None."""
     if not var:
@@ -1235,6 +1244,10 @@ def main():
                 continue
             # a wardrobe variant built as its own figure (its own stances made from it): staged from that figure
             vfig = own_variant(library, cv.get("base") or cv["id"], var)
+            if var and ((cv.get("worn") or {}).get(var) or {}).get("head_on"):
+                # the figure of this outfit wears its headwear already: no separate thing is set on its head
+                for c_, _ in g:
+                    not_on_head(c_, k)
             if v["pose"] == "sitting":
                 c = {"seated_from": vfig or cv.get("base") or cv["id"], "seat": v.get("seat") or True,
                      "position": v["position"], "facing": v["facing"], "body_pose": json.loads(json.dumps(SEAT_POSE))}

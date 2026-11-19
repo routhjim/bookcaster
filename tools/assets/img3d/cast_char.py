@@ -359,6 +359,8 @@ def main():
                     " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
     ap.add_argument("--mh-fbx", default=None)
     ap.add_argument("--mh-blueprint", default=None)
+    ap.add_argument("--headwear", action="store_true",
+                    help="a whole figure is drawn and shaped wearing what its look puts on its head")
     ap.add_argument("--variant-of", default=None,
                     help="a wardrobe variant of this library figure (the same person in other clothes, usually on its "
                          "MetaHuman, --mh): the entry records it (\"variant_of\") and takes its look facts")
@@ -671,7 +673,8 @@ def main():
                 sl_, 48 if any(w_ in lk for w_ in ("dress", "gown", "skirt")) else 42)
             CH["draw_start_deg"] = {"deg": deg0, "sleeves": sl_ or None}
             gf_ = ch.get("garment") or {}
-            look = spread_look(a.look, gf_.get("outer_words") if gf_.get("outer_layer") else None)
+            look = spread_look(a.look, gf_.get("outer_words") if gf_.get("outer_layer") else None,
+                               headwear=bool(a.headwear and a.whole))
             CH["draw_look"] = look
             tried, meshes, chosen = [], [], None
             # each run draws into its own folder with its own seeds (an earlier run's entries still on the line
@@ -1608,12 +1611,29 @@ def variant_rec(base):
     return {"variant_of": base, **({"facts": bj["facts"]} if bj.get("facts") else {})}
 
 
-def spread_look(look, outer_words=None):
+HEADWEAR = r"hat\b|top-hat|bonnet|\bcap\b|veil|deerstalker|\bhelm(?:et)?s?\b|\bvisor"
+
+
+HEAD_OFF = __import__("re").compile(r"\b(removed|off|without|no|missing|gone|lost|in (?:his|her|their) hands?|under (?:his|her|their) arm)\b", __import__("re").I)
+
+
+def head_worn(dress: str) -> bool:
+    """Whether these words of what someone wears put a thing on their head (and not one taken off or carried)."""
+    import re
+    return any(re.search(HEADWEAR, q, re.I) and not HEAD_OFF.search(q) for q in re.split(r",| and ", str(dress or "")))
+
+
+def spread_look(look, outer_words=None, headwear=False):
     """The look line for the spread drawing: what the hands carry or hold and any headwear go (the hands must be open
-    and empty for the gate and the fit; the MetaHuman keeps its own head and hair)."""
+    and empty for the gate and the fit; the MetaHuman keeps its own head and hair). headwear=True keeps what is worn
+    on the head: a whole figure is shaped from its own drawing, head and all, so an outfit that has a helm is made
+    with it on (set on the finished figure's head as a separate thing, it sat small and turned, the hair through its
+    shell, 11-19)."""
     import re
     held = re.compile(r"\b(carrying|holding)\b")
-    head = re.compile(r"hat\b|top-hat|bonnet|\bcap\b|veil|deerstalker|\bhelm(?:et)?s?\b|\bvisor")
+    # (kept headwear: only what is on the head. "with the helm removed" names a thing that is not worn)
+    head = re.compile(HEADWEAR) if not headwear else type("H", (), {"search": staticmethod(
+        lambda q: bool(re.search(HEADWEAR, q)) and bool(HEAD_OFF.search(q)))})
     text = look.rstrip(". ")
     before, _, worn = text.partition("wearing ")
     desc = [p.strip() for p in before.split(",") if p.strip() and not held.search(p)]
