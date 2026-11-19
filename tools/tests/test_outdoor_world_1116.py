@@ -229,5 +229,8 @@ def test_room_light_in_a_closed_dark_room():
     add = [l for l in out["lights"] if l["type"] == "point"][1:]
     assert add and sum(l["lumens"] for l in add) + 500 >= PB.ROOM_LM_M2 * 18 - 1
     lit = {"size_m": [3.0, 6.0, 3.0], "structure": [{"kind": "ceiling"}], "lights": [{"type": "sun"}]}
-    assert not PB.room_light(lit, {})                        # (daylight through its windows)
+    assert PB.room_light(lit, {})                 # (daylight at its windows too: everyone inside is seen, 11-19)
+    assert not PB.room_light(lit, {})             # (lit enough now: nothing more is added)
+    assert not PB.room_light({"size_m": [3.0, 6.0, 3.0], "structure": [{"kind": "ceiling"}],
+                              "lights": [{"type": "strip_lights"}]}, {})    # (a room with its own strip of lights)
     assert not PB.room_light({"size_m": [9, 9, 6], "structure": [], "lights": []}, {})   # (in the open)

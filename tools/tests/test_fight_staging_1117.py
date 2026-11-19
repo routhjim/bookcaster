@@ -188,7 +188,7 @@ def test_a_piece_that_gives_light_is_lit_and_a_fire_counts_little_toward_the_roo
     assert fire and PB.is_fire(fire[0]) and fire[0]["position"][2] > 0.9
     room = {"structure": [{"kind": "ceiling"}], "size_m": [4.0, 4.0, 3.0],
             "lights": [dict(kit["lights"]["fire"], position=[0, 0, 0.3]) for _ in range(3)]}
-    assert 3 * kit["lights"]["fire"]["lumens"] >= PB.ROOM_LM_M2 * 16 * 0.9   # as full light it would be near enough
+    assert 3 * kit["lights"]["fire"]["lumens"] >= 300.0 * 16 * 0.9   # as full light it would be near the old level
     assert PB.room_light(room, {})                                   # as a fire's, the room still gets its own light
 
 
