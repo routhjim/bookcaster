@@ -332,21 +332,31 @@ who holds it or what is done with it, never the place around it. Use plain words
 the story itself gives a material or a thing says nothing to a prop maker). Answer with the sentence and nothing else."""
 
 
+THINGS_SHOTS = 8                 # shots in one ask of what is worn and carried
+
+
 def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
     """{shot id: {person: [{"what", "on", "size_cm"}]}}: the director's account, from the whole story, of what each
     person has on or carries beyond their everyday clothes (a pilot flew bare-headed in every shot: the story only
     says he pulled his helmet off after landing). {} when the answer is not usable."""
     sys.path.insert(0, str(HERE))
     import staging_pass as SP
-    lines = "\n".join(
+    line = lambda i: (
         f"{i}: " + "; ".join(p["name"] + (f" (holding: {p['holds']})" if str(p.get("holds") or "").strip() else "")
                              for p in plan[i][0].get("people") or [])
-        + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}" for i in ids)
-    try:
-        got = parse(ask(url, THINGS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9), shots=lines), cache))
-    except OSError:                         # (no director to ask: no account, and the figures' usual look stands)
-        return {}
-    if not isinstance(got, dict):
+        + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}")
+    # asked a few shots at a time: the answer for a long place ran past the answer's length and was no JSON at
+    # all, so a place of 34 shots had nothing worn or carried in any of them (11-18)
+    got = {}
+    for k in range(0, len(ids), THINGS_SHOTS):
+        try:
+            part = parse(ask(url, THINGS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9),
+                                                    shots="\n".join(line(i) for i in ids[k:k + THINGS_SHOTS])), cache))
+        except OSError:                     # (no director to ask: no account, and the figures' usual look stands)
+            return {}
+        if isinstance(part, dict):
+            got.update(part)
+    if not got:
         return {}
     out = {}
     for i in ids:

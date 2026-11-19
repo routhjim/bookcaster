@@ -335,3 +335,23 @@ def test_a_piece_that_burns_is_drawn_lit_and_its_fire_shines():
     draw = lambda r: " ".join(map(str, next(s["argv"] for s in r["plan"]["steps"] if s["step"] == "draw")))  # noqa: E731
     assert "regions" not in spec(a) and spec(b)["regions"][0]["material"] == "emit"
     assert "burning" in draw(b) and "burning" not in draw(a)
+
+
+def test_things_asked_a_few_shots_at_a_time(monkeypatch, tmp_path):
+    """What is worn and carried is asked a few shots at a time, so a long place's answer is never cut short."""
+    import json as J, sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "scenes"))
+    import place_spec as PS
+    ids = [f"s{n:02d}" for n in range(PS.THINGS_SHOTS * 2 + 3)]
+    plan = {i: [{"people": [{"name": "A"}], "action": "A stands"}] for i in ids}
+    asked = []
+    def fake(url, text, cache):
+        if "ON or CARRIES" not in text:
+            return "whole"
+        mine = [i for i in ids if f"\n{i}: " in text or text.find(f"{i}: ") >= 0]
+        asked.append(mine)
+        return J.dumps({i: {"A": [{"what": "hat", "on": "head", "size_cm": 30}]} for i in mine})
+    monkeypatch.setattr(PS, "ask", fake)
+    got = PS.things(plan, ids, "a place", [], "http://x", tmp_path)
+    assert len(asked) == 3 and all(len(a) <= PS.THINGS_SHOTS for a in asked)
+    assert all(got[i]["A"][0]["what"] == "hat" for i in ids)
