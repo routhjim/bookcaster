@@ -53,3 +53,9 @@ def test_a_ground_mark_is_not_named_in_the_frame(tmp_path):
                         "box": [0.1, 0.4, 0.3, 0.6]}]}
     w = R.set_words(shot, outdoors=True)
     assert "bench" in w and "land at5" not in w
+
+
+def test_the_storys_size_decides_whether_the_pictures_thing_is_the_piece():
+    assert PB.size_agrees(0.8, [0.78, 0.62, 0.78]) and PB.size_agrees(1.5, [1.97, 1.58, 0.85])
+    assert not PB.size_agrees(0.8, [1.42, 1.42, 1.03]) and not PB.size_agrees(3.0, [1.0, 0.4, 0.5])
+    assert PB.size_agrees(None, [5.0, 1.0, 1.0])

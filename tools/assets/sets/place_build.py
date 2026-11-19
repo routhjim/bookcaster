@@ -242,6 +242,11 @@ def with_concept(spec: dict, concept: dict) -> dict:
             _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=OPEN_LIKE) for q in kept) and not any(
             _same_part(sn["box"], o.get("box"), like=OPEN_LIKE) for o in (concept.get("seen") or [])[:i]
             if o.get("kind") == "landmark") and sum(1 for q in kept if q["id"].startswith("c")) < OPEN_SEEN_MOST
+        # (a seen thing that is the same part of the picture as a piece of the spec is that piece, whatever kind
+        # the judge gave it: a block the spec's stone was found in was built a second time on the same spot, 11-19)
+        if sn.get("box") and any(_same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=0.5) for q in kept
+                                 if (chk.get(q["id"]) or {}).get("in_picture")):
+            continue
         if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin or sn.get("group")) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
@@ -263,7 +268,13 @@ def with_concept(spec: dict, concept: dict) -> dict:
             t = (dp.get("things") or {}).get(f"spec:{p['id']}") or (dp.get("things") or {}).get(seen_key.get(p["id"], ""))
             if t:
                 p.update(at_xy=t["xy"], facing_xy=t["facing"], against="wall" if t.get("against") else "free")
-                p["_seen_size_m"] = t["size_m"]
+                if size_agrees(p.get("longest_m"), t["size_m"]):
+                    p["_seen_size_m"] = t["size_m"]
+                else:
+                    # the picture's thing is far from the size the story gives it: the story's thing is made from
+                    # its own words at its own size, where the picture has it (a stone "the size of a sleeping dog",
+                    # 0.8 m, was shaped from the picture's squared block 1.4 m long and a metre high, 11-19)
+                    p.pop("source", None)
     if re.search(r"\b(beam|beams|rafter|rafters|timber|timbers|roof|thatch)\b", str((concept.get("surfaces") or {}).get("ceiling") or ""), re.I):
         sp["_roof"] = "rafters"              # the picture's overhead: an open roof on timber, not a plastered ceiling
     if concept.get("space") == "cockpit":
@@ -290,6 +301,19 @@ def with_concept(spec: dict, concept: dict) -> dict:
         sp = outdoors(sp, spec, concept)
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
     return sp
+
+
+SIZE_OFF = 1.6                   # the picture's thing this many times longer or shorter than the story's is not it
+
+
+def size_agrees(stated, seen) -> bool:
+    """Whether a thing as the concept picture measures it (seen: its size in metres) can be the piece whose longest
+    side the story states; a piece with no stated size agrees with any."""
+    try:
+        st, sn = float(stated), max(float(v) for v in seen)
+    except (TypeError, ValueError):
+        return True
+    return st <= 0 or sn <= 0 or (st / SIZE_OFF <= sn <= st * SIZE_OFF)
 
 
 def _same_part(a, b, k: float = 0.6, like: float = 0.0) -> bool:
