@@ -40,17 +40,18 @@ NEAR_MOST_M = 6.0           # a land place the judge put in the water is moved t
 # close up, 11-18. What the ground is made of and what lies where by the water is taken from it, and carried on over
 # the whole map; its way into the picture is the map's top)
 MAP_WORDS = (
-    "A map of one piece of land seen from straight above, looking straight down on the ground: a flat plan view, "
-    "square, with no perspective, no horizon and no sky, about {span} metres across. The land: {land}. It is the "
-    "land of the reference picture, which shows only a small part of it, close up: what its ground is made of, its "
-    "colours, and what lies where beside the water and the paths are as the reference picture has them, and the "
-    "same land goes on all the way to every edge of the map. The direction the reference picture looks is the top "
-    "of the map; the middle of the map is open ground where people can stand.{places} It shows only the "
-    "ground itself and what lies flat on it: any water with its banks and "
-    "edges, paths and tracks, bare earth, grass, mud, sand, stones lying flat. Nothing stands up on it: no "
-    "buildings, no walls, no trees, no bushes, no posts, no furniture, only the ground where such things stand. No "
-    "people and no animals. No shadows: even, flat light from straight above. No writing, no labels, no compass, "
-    "no frame and no grid: the ground fills the whole picture to every edge.{style}")
+    # (drawn from words alone: given the place's picture as its reference, the map came out as that picture again,
+    # a few metres of bank seen from a height at a slant, its pebbles forty metres of boulders on the set, 11-18)
+    "An aerial survey view of open land from very high above, looking straight down: a "
+    "flat plan view, square, with no perspective, no horizon and no sky. The picture is {span} metres of land "
+    "from edge to edge, so everything in it is small: a single stone or a tuft of grass is too small to see, a "
+    "footpath is a thin line, a grown tree would be a small dot. The land: {land}. The same land goes on to "
+    "every edge of the picture; the middle of the picture is open dry ground.{places} It shows only the ground "
+    "itself and what lies flat on it: any water with its banks and edges, paths and tracks, bare earth, grass, "
+    "mud, sand, gravel. Nothing stands up on it: no buildings, no walls, no trees, no bushes, no posts, only the "
+    "ground where such things would stand. No people and no animals. No shadows: even, flat light from straight "
+    "above. No writing, no labels, no compass, no frame and no grid: the ground fills the whole picture to every "
+    "edge.{style}")
 
 WATER_ASK = ("This picture is a map of a piece of land seen from straight above. Outline every stretch of water on it "
              "(a river, a stream, a pond, a lake, the sea, a ford) as a polygon of at most 16 corner points going round "

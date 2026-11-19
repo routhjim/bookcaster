@@ -218,7 +218,7 @@ def test_the_world_draws_and_reads_its_ground_map_before_it_is_shaped():
     assert steps == ["draw", "map", "map_read", "spec", "shape"]
     by = {s["step"]: s for s in r["plan"]["steps"]}
     mp = " ".join(map(str, by["map"]["argv"]))
-    assert "from straight above" in mp and "the edge of the water" in mp and "--sources /c/concept.png" in mp
+    assert "looking straight down" in mp and "the edge of the water" in mp and "--sources" not in mp
     assert f"--size {GM.MAP_PX} {GM.MAP_PX}" in mp and by["map_read"]["land_places"] == t["land_places"]
     spec = by["spec"]["spec"]
     assert spec["map_id"] == by["map"]["ref_id"] == by["map_read"]["ref_id"]

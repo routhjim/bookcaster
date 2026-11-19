@@ -449,8 +449,7 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
                  "station": C.IMAGE_STATION, "kind": "refs", "picture": "picture.png", "ref_id": mid,
                  "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_map_{mid}", "--",
                                  python, str(tools / "refs" / "ref_draw.py"), "picture", mid, "--desc", mdesc,
-                                 "--size", str(GM.MAP_PX), str(GM.MAP_PX), "--seed", "{seed}"]
-                         + (["--sources", str(piece["map_source"])] if piece.get("map_source") else []),
+                                 "--size", str(GM.MAP_PX), str(GM.MAP_PX), "--seed", "{seed}"],
                  "gate": "none: without a map the ground is the panorama's own, as before", "on_fail": "go on without it"},
                 {"step": "map_read", "what": "the vision judge reads the map: where its water is, and where each part of "
                  "the land the plan sends people to is", "station": "igpu", "kind": "choose", "ref_id": mid,
