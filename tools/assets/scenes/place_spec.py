@@ -428,7 +428,10 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
                 if t["on"] in ("worked", "held") and a:
                     # (asked in one question, "its colour, or no", a bar the shot's words called glowing was no)
                     try:
-                        if ask(url, GLOW_ASK.format(act=a, what=t["what"]), cache).strip().lower().startswith("yes"):
+                        # (with its look: a lantern whose look said it glowed, held in a shot whose words only
+                        # had it lifted, was "no" by its name alone and the room stayed dark, 11-19)
+                        wl = t["what"] + (f" ({t['look'].strip().rstrip('.')})" if str(t.get("look") or "").strip() else "")
+                        if ask(url, GLOW_ASK.format(act=a, what=wl), cache).strip().lower().startswith("yes"):
                             glows.setdefault(t["what"], []).append((i, t))
                     except OSError:
                         pass
