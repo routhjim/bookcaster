@@ -175,3 +175,32 @@ def test_story_keys_never_falls_back_to_a_rejected_try_when_the_shot_is_missing(
     assert st.step_keys("P")
     rows = {r["shot"]: r for r in json.loads((d / "keys.json").read_text())}
     assert not rows["A"]["key"]
+
+
+class _Two:
+    """A judge that answers the redraw's head first, then the engine's."""
+    def __init__(self, *answers):
+        self.answers = list(answers)
+
+    def ask(self, *a, **k):
+        return self.answers.pop(0)
+
+
+def _due_person():
+    return {"head_to_camera_deg": 10, "joints2d": {"FACIAL_L_Eye": [0.48, 0.3, 1], "FACIAL_R_Eye": [0.52, 0.3, 1],
+                                                   "chin": [0.5, 0.42], "head_top": [0.5, 0.2]}}
+
+
+def test_a_helmet_worn_in_the_engine_frame_too_gives_no_verdict():
+    from PIL import Image
+    im = Image.new("RGB", (1152, 640))
+    got = FG.ask(_Two("mask", "mask"), im, _due_person(), im)
+    assert got["human_face_ok"] is None and got["human_face"] == "mask"
+
+
+def test_a_mask_only_in_the_redraw_still_fails():
+    from PIL import Image
+    im = Image.new("RGB", (1152, 640))
+    assert FG.ask(_Two("mask", "human"), im, _due_person(), im)["human_face_ok"] is False
+    assert FG.ask(_Two("mask"), im, _due_person())["human_face_ok"] is False
+    assert FG.ask(_Two("creature", "mask"), im, _due_person(), im)["human_face_ok"] is False

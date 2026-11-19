@@ -320,7 +320,8 @@ def main():
             if judge is not None and FG.due(p):
                 # the face gate (facegate.py, blocking in accept.py): a face toward the camera and large enough
                 # must be drawn as a human face (a close shot's head drawn as stone passed every face score, 11-18)
-                q.update(FG.ask(judge, Image.open(it["redraw"]).convert("RGB").resize((1152, 640)), p))
+                eng = Image.open(it["engine"]).convert("RGB").resize((1152, 640)) if it.get("engine") else None
+                q.update(FG.ask(judge, Image.open(it["redraw"]).convert("RGB").resize((1152, 640)), p, eng))
             q["named"], q["action"] = bool(p.get("named")), p.get("action")
             if det is not None and (b[2] - b[0]) * (b[3] - b[1]) >= 0.01:   # the person found in the picture at all
                 q["person_found"] = {kk: round(gdino_person(det, it[kk], b), 3) for kk in ("engine", "redraw")

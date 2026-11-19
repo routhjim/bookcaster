@@ -72,22 +72,43 @@ def crop_box(j2: dict, W: int, H: int) -> tuple:
             int(min(H, my + side / 2)))
 
 
-def ask(judge, frame, p: dict) -> dict:
-    """The gate's question for one person on one redraw (frame: the PIL picture at the check's 1152 x 640; judge:
-    anything with vl_judge.Judge's ask(image, question, max_new_tokens, max_side)) -> {"human_face": answer,
-    "human_face_ok": verdict} for a person the gate is due for, else {} (keycheck.py merges it into the person's
-    record)."""
-    if not due(p):
-        return {}
+def _head(frame, p: dict):
     c = frame.crop(crop_box(p.get("joints2d") or {}, frame.width, frame.height))
     if min(c.size) < 8:
-        return {}
+        return None
     if max(c.size) < CROP_MIN:
         from PIL import Image
         sc = CROP_MIN / max(c.size)
         c = c.resize((round(c.width * sc), round(c.height * sc)), Image.BICUBIC)
+    return c
+
+
+def ask(judge, frame, p: dict, engine=None) -> dict:
+    """The gate's question for one person on one redraw (frame: the PIL picture at the check's 1152 x 640; judge:
+    anything with vl_judge.Judge's ask(image, question, max_new_tokens, max_side)) -> {"human_face": answer,
+    "human_face_ok": verdict} for a person the gate is due for, else {} (keycheck.py merges it into the person's
+    record). engine: the engine's own frame of the shot at the same size. A redraw whose head is a mask or a helmet
+    is asked about again on it: a figure that wears its helmet in the engine frame too is drawn as it stands, and
+    the gate gives no verdict (a man in a visored helm, part of his figure and so not known as worn, had no key in
+    either try, 11-19)."""
+    if not due(p):
+        return {}
+    c = _head(frame, p)
+    if c is None:
+        return {}
     a = str(judge.ask(c, HUMAN_Q, 4, 512)).strip().lower()
-    return {"human_face": a, "human_face_ok": verdict(a)}
+    out = {"human_face": a, "human_face_ok": verdict(a)}
+    if out["human_face_ok"] is False and _word(a) == "mask" and engine is not None:
+        ce = _head(engine, p)
+        ae = str(judge.ask(ce, HUMAN_Q, 4, 512)).strip().lower() if ce is not None else ""
+        if _word(ae) == "mask":
+            out.update(human_face_ok=None, human_face_engine=ae)
+    return out
+
+
+def _word(answer) -> str:
+    w = str(answer or "").strip().lower().lstrip("*\"' ").split()
+    return w[0].strip(".,;:!*\"'") if w else ""
 
 
 def verdict(answer) -> bool | None:
