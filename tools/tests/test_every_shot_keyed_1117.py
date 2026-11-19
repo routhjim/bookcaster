@@ -85,7 +85,7 @@ def test_a_place_left_with_a_keyless_shot_is_staged_again_with_the_fallback(tmp_
     for n in ("stage", "redraw", "keys"):
         monkeypatch.setattr(SK.Story, f"step_{n}", step(n))
     st.restage_keyless("P")
-    assert seen == [("stage", "1"), ("redraw", "1"), ("keys", "1")] and st.keyless("P") == []
+    assert seen == [("stage", "B"), ("redraw", "B"), ("keys", "B")] and st.keyless("P") == []
     assert "SPEAKERS_FALLBACK_ALL" not in SK.os.environ
     seen.clear()
     st.restage_keyless("P")                                             # nothing keyless: nothing staged

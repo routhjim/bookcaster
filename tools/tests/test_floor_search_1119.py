@@ -31,3 +31,26 @@ def test_small_room_is_searched_as_before():
 def test_unknown_keys_fall_back_to_everyone():
     xr, _ = S.near_people(_subj((0, 0)), [5.0, 4.0, 2.6], keys=["zz"])
     assert len(xr) > 1
+
+
+def _m(x, y, fwd):
+    return {"eye_xy": [x, y], "eye_z": 1.6, "head_fwd_xy": list(fwd)}
+
+
+def test_last_resort_stands_before_the_first_ones_face():
+    S.OPEN_GROUND[:] = []
+    S.SOLIDS[:] = []
+    lead, other = _m(0.0, 0.0, (-1.0, 0.0)), _m(-1.2, 0.0, (1.0, 0.0))    # the other stands before the lead, facing them
+    q = S.fallback_camera([lead, other], [12.0, 12.0, 3.0])
+    assert q is not None
+    p = q["position"]
+    assert S.seg_point_dist([-1.2, 0.0, 1.6], p, [0.0, 0.0, 1.6]) >= S.FALLBACK_CLEAR_M      # not over the other's head
+    to_cam = [p[0] - 0.0, p[1] - 0.0]
+    assert to_cam[0] * -1.0 > 0                                           # on the side the lead's face is turned to
+
+
+def test_last_resort_alone_is_straight_before_the_face():
+    S.OPEN_GROUND[:] = []
+    S.SOLIDS[:] = []
+    q = S.fallback_camera([_m(0.0, 0.0, (0.0, 1.0))], [12.0, 12.0, 3.0])
+    assert q and q["position"][1] > 1.0 and abs(q["position"][0]) < 0.2

@@ -1582,6 +1582,9 @@ def open_ground(set_spec: dict, library: Path) -> list:
 FALLBACK_MM = 24             # the last resort wide's lens
 
 
+FALLBACK_CLEAR_M = 0.45      # the last resort's line to its first person passes this clear of the others
+
+
 def fallback_camera(ms: list, room, tried=()) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
@@ -1599,13 +1602,21 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
     # (a creature among them is seen from its head's height too and from as far as its head's size asks
     # (creature_view_why): from 1.6 m, 3 m off, the wide was under a beast's head, black, 11-17)
     zs = [1.6] + sorted({round(m["eye_z"], 2) for m in ms if m.get("creature")} - {1.6})
+    # from before the first one's face round to behind them (the first clear standpoint of a plain sweep stood a
+    # pace behind the listener: her back was 71% of the frame, the speaker unseen, and the shot had no key, 11-19),
+    # and never with another of them standing in the line to the first one's eyes
+    f0 = ms[0].get("head_fwd_xy")
+    a0 = math.degrees(math.atan2(f0[1], f0[0])) if f0 and math.hypot(*f0) > 1e-6 else 0.0
+    sweep = [a0 + sg * d for d in range(0, 181, 15) for sg in ((1,) if d in (0, 180) else (1, -1))]
     for need in (eyes, eyes[:1]):
         for r in [r0 + d for d in (0.0, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 12.0)]:
             for z in zs:
-                for a in range(0, 360, 15):
+                for a in sweep:
                     p = [mid[0] + r * math.cos(math.radians(a)), mid[1] + r * math.sin(math.radians(a)), z]
                     if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or \
                             any(solid_between(p, e) for e in need):
+                        continue
+                    if any(seg_point_dist(e, p, eyes[0]) < FALLBACK_CLEAR_M for e in eyes[1:]):
                         continue
                     q = {"position": [round(x, 3) for x in p],
                          "target": [round(mid[0], 3), round(mid[1], 3), round(mid[2] - 0.3, 3)], "focal_mm": FALLBACK_MM}
@@ -2002,8 +2013,12 @@ def main():
         shots[n_]["tried_stills"] = sorted(str(p_) for p_ in tries_dir.glob(f"{n_}_r*.png"))
         cam_b = (best or {}).get("camera") or shots[n_]["camera"]
         walled = showed_nothing(why) or any(TOO_NEAR in w for w in why)
-        if not in_room(cam_b["position"], room) or walled or os.environ.get("SPEAKERS_FALLBACK_ALL"):
-            # (SPEAKERS_FALLBACK_ALL: the restage of a place whose last staging left a shot without a key)
+        fb_for = os.environ.get("SPEAKERS_FALLBACK_ALL") or ""
+        if not in_room(cam_b["position"], room) or walled or fb_for == "1" or \
+                (c.get("plan_id") and c["plan_id"] in fb_for.split(",")):
+            # (SPEAKERS_FALLBACK_ALL: the restage of a place whose last staging left shots without a key: those
+            # shots, by their plan ids; "1": every shot. Given to every shot, the restage for one shot took the
+            # wide for two talk shots that had keys, and both lost them, 11-19)
             # every try stood inside a thing or off the ground (its still is a wall of rock or black): the last
             # resort is a wide from the open floor on the shot's people (fallback_camera), never no picture
             fb = fallback_camera([subjects[k]["measured"] for k in fallback_people(c, subjects)], room)

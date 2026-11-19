@@ -922,7 +922,7 @@ class Story:
         if not miss:
             return
         log(f"{place}: {len(miss)} shot(s) without a key {miss}: staged again with the clear-wide fallback")
-        os.environ["SPEAKERS_FALLBACK_ALL"] = "1"
+        os.environ["SPEAKERS_FALLBACK_ALL"] = ",".join(miss)        # (those shots only: speakers.give_up)
         try:
             for st in ("stage", "redraw", "keys"):
                 if not getattr(self, f"step_{st}")(place):
