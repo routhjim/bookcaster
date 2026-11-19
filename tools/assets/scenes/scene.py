@@ -96,6 +96,15 @@ def key_light(set_spec_path, ev=None) -> dict | None:
     return {"toward_sun": sun["toward_sun"], "lux": round(max(float(sun.get("lux") or 0), KEY_LUX_EV * 2 ** ev), 1)}
 
 
+def fixture_params(c: dict, pr: dict) -> dict:
+    """A person's pose params with the piece of the set they work with their hands (params "fixture": {"name"}):
+    a work action (WORK_POSE_ACTIONS) that from_plan stood them at a piece for ("work_at", its spec name: the set
+    builder's label of its actor) with nothing worked lying on it (no blow target): the piece itself is the work."""
+    if c.get("work_at") and pr.get("action") in WORK_POSE_ACTIONS and not pr.get("work_target_ue"):
+        return dict(pr, fixture={"name": c["work_at"]})
+    return pr
+
+
 def resolve(spec, cams_wanted=None):
     lib = Path(C.LIBRARY)
     sp = lib / "set" / spec["set"] / "asset.json"
@@ -216,7 +225,17 @@ def resolve(spec, cams_wanted=None):
                 if on and "work_target_ue" not in pr:
                     x, y, z = on["xyz"]
                     pr["work_target_ue"] = layout.ue_pt([x, y, z + min(carried[on["asset"]]["size_m"])])
+                    # (the recorded size is not the model the engine lays down: scene_job re-aims at the top of the
+                    # thing as laid, from its mesh's own box; 11-18, a blow aimed 7.75 cm over the laid top)
+                    pr["work_on"] = {"asset": on["asset"], "base_ue": layout.ue_pt([x, y, z])}
             chars[key]["body_pose"] = dict(bp, params=pr)
+    # a piece of the set worked with the hands themselves (from_plan's "work_at": the piece a work action stands them
+    # at) with nothing worked lying on it: the hands that hold nothing take hold of a part of it (scene_job reads the
+    # piece's surface round the person, pose.py finds a part a hand closes round and puts the hands on it)
+    for key, c in spec["characters"].items():
+        bp = (chars.get(key) or {}).get("body_pose") or {}
+        if bp.get("pose"):
+            chars[key]["body_pose"] = dict(bp, params=fixture_params(c, bp.get("params") or {}))
     kl = key_light(lib / "set" / spec["set"] / "spec.json", spec.get("exposure_ev100"))
     return proj, {**({"key_light": kl} if kl else {}), "carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,

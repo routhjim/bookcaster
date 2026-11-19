@@ -215,3 +215,123 @@ def test_the_check_flags_a_face_short_turned_and_out_of_the_hand():
     assert SP.staged_facts(spec, subj)["a"] == c["why"]
     subj["a"]["held"]["hammer_01"]["contact"] = PO.held_contact(*placed(s, rep), top, [0.0, 0.0, 1.0])
     assert SP.staged_facts(spec, subj)["a"] == []
+
+
+# ------------------------------------------------------------------ (6) a measured miss is corrected, not kept
+# The first engine run: the blow was aimed at a top reckoned from the worked thing's recorded size (its thinnest side,
+# 27 cm) while the engine laid the model 18.8 cm thick, and the check measured the laid top: the face hung 7.75 cm
+# over the work, was flagged in words and the frame kept. Now scene_job aims at the laid top (lie_top_ue), and a
+# miss still measured is re-solved by the miss (aim_fix, a few times, RESOLVE_TRIES) before it is a failure.
+BASE = [0.0, 75.0, 68.0]                 # where the worked thing lies (its box's bottom centre), UE cm
+
+
+def blow(aim, ref=None, size=HAMMER):
+    """The blow posed at aim; ref: a skeleton snapshot to start from (scene_job's re-solve on a posed body)."""
+    s = PO.Skel.from_ref(ref) if ref else skel()
+    PO.pose_skel(s, "stand", {"action": "striking_down", "work_top_cm": BASE[2], "work_near_cm": 38.0,
+                              "work_target_ue": aim, "held": [held("hammer", size)]})
+    return s
+
+
+def landed(s, top, shift=(0.0, 0.0, 0.0)):
+    """The prop placed as scene_job places it (shift: where the engine's wrist differs from the solver's) and the
+    contact measured against the laid top."""
+    rep = s.info["held"]["hammer"]
+    palm = PO.add(rep["palm_cm"], list(shift))
+    put = PO.prop_in_hand(None, palm, rep["dir"], rep["face"], grip=rep["grip"])
+    return PO.held_contact(put, palm, top, [0.0, 0.0, 1.0], "the hammer")
+
+
+def test_the_laid_top_is_the_base_raised_by_the_thinnest_side():
+    assert PO.lie_top_ue(BASE, [17.7, 9.4, 22.5]) == pytest.approx([0.0, 75.0, 86.8])
+    assert PO.lie_top_ue(BASE, [22.5, 17.7, 9.4]) == PO.lie_top_ue(BASE, [9.4, 22.5, 17.7])
+
+
+def test_a_blow_aimed_at_the_sizes_top_misses_the_laid_top_and_one_resolve_lands_it():
+    laid = PO.lie_top_ue(BASE, [17.7, 9.4, 22.5])            # the model as laid: 18.8 cm thick
+    from_size = [BASE[0], BASE[1], BASE[2] + 26.95]           # the recorded size's thinnest side
+    first = skel()
+    snap = first.ref_snapshot()
+    PO.pose_skel(first, "stand", {"action": "striking_down", "work_top_cm": BASE[2], "work_near_cm": 38.0,
+                                  "work_target_ue": from_size, "held": [held("hammer", HAMMER)]})
+    c = landed(first, laid)
+    assert c["gap_cm"] == pytest.approx(8.15, abs=1.0) and PO.needs_resolve(c)
+    assert any("cm from the work" in w for w in c["why"])
+    aim = PO.aim_fix(from_size, c["target"], c["work_pt"])
+    assert aim == pytest.approx(laid, abs=0.5)
+    c2 = landed(blow(aim, snap), laid)                        # re-solved from the reference skeleton
+    assert c2["gap_cm"] <= PO.HELD_LIMITS["gap_cm"] and c2["angle_deg"] <= PO.HELD_LIMITS["angle_deg"], c2
+    assert not PO.needs_resolve(c2) and c2["why"] == []
+    # aimed at the laid top from the start (scene_job reads it from the mesh's box), no re-solve is needed
+    assert not PO.needs_resolve(landed(blow(laid), laid))
+
+
+def test_a_constant_engine_offset_is_taken_out_by_the_resolve():
+    top = [0.0, 75.0, 90.0]
+    shift = (2.5, -3.0, 4.0)                                  # the engine's wrist 5.6 cm off the solver's
+    s = blow(top)
+    c = landed(s, top, shift)
+    assert PO.needs_resolve(c)
+    aim = top
+    for _ in range(PO.RESOLVE_TRIES):                         # as scene_job's loop: at most RESOLVE_TRIES
+        if not PO.needs_resolve(c):
+            break
+        aim = PO.aim_fix(aim, c["target"], c["work_pt"])
+        c = landed(blow(aim), top, shift)
+    assert c["gap_cm"] <= PO.HELD_LIMITS["gap_cm"], c
+
+
+def test_only_a_miss_the_arm_can_close_is_resolved():
+    assert not PO.needs_resolve({"grip_cm": 5.0, "why": ["x"]})            # a handle out of the palm: not the aim
+    assert not PO.needs_resolve({"raised": True, "rise_cm": 3.0})
+    assert PO.needs_resolve({"gap_cm": 2.5}) and PO.needs_resolve({"gap_cm": 0.5, "angle_deg": 20.0})
+    assert not PO.needs_resolve(None) and PO.RESOLVE_TRIES >= 1
+
+
+def test_a_build_from_the_reference_snapshot_matches_a_fresh_one():
+    s = skel()
+    snap = s.ref_snapshot()
+    PO.pose_skel(s, "stand", {"action": "tool_raised", "work_top_cm": 90.0, "held": [held("hammer", HAMMER)]})
+    again = PO.Skel.from_ref(snap)                            # not from the posed bones
+    PO.pose_skel(again, "stand", {"action": "tool_raised", "work_top_cm": 90.0, "held": [held("hammer", HAMMER)]})
+    for b in ("hand_r", "hand_l", "head", "foot_l"):
+        assert again.pos[b] == pytest.approx(s.pos[b], abs=1e-6)
+
+
+# ------------------------------------------------------------------ (7) a raised blow is measured too
+def test_a_raised_blow_reports_its_target_and_how_high_it_is_held_over_it():
+    top = [0.0, 75.0, 95.0]
+    s = PO.pose_skel(skel(), "stand", {"action": "tool_raised", "work_top_cm": 90.0, "work_near_cm": 38.0,
+                                       "work_target_ue": top, "held": [held("hammer", HAMMER)]})
+    rep = s.info["held"]["hammer"]
+    assert rep["raised"] and rep["target_cm"] == pytest.approx(top)
+    w = PO.world_info(s)["held"]["hammer"]
+    assert w["target_ue"] == pytest.approx(top) and w["raised"]               # what scene_job measures against
+    put, palm = placed(s, rep)
+    c = PO.held_contact(put, palm, top, [0.0, 0.0, 1.0], "the hammer", raised=True)
+    assert "gap_cm" not in c and "angle_deg" not in c                         # a wind-up is not a miss
+    assert c["rise_cm"] >= PO.HELD_LIMITS["rise_cm"] and c["why"] == [], c
+    assert not PO.needs_resolve(c)
+    low = dict(c, rise_cm=4.0)
+    assert PO.contact_why(low, "the hammer") == ["the hammer is not raised over the work: its face is 4 cm above it"]
+    # with no worked thing a raised tool reports no target (nothing to be measured against)
+    s = PO.pose_skel(skel(), "stand", {"action": "tool_raised", "work_top_cm": 90.0, "held": [held("hammer", HAMMER)]})
+    assert "target_cm" not in s.info["held"]["hammer"]
+
+
+def test_a_blow_at_a_worked_thing_with_no_measured_contact_is_a_failure():
+    grip_only = {"grip_cm": 0.1, "why": []}
+    assert PO.blow_contact_why("tool_raised", True, [grip_only], "the hammer") == \
+        ["the hammer was never measured against the work (tool_raised): the pose gave no target"]
+    assert PO.blow_contact_why("striking_down", True, []) == \
+        ["nothing is in the hand to bring down on the work (striking_down)"]
+    assert PO.blow_contact_why("tool_raised", True, [dict(grip_only, raised=True, rise_cm=60.0)]) == []
+    assert PO.blow_contact_why("striking_down", True, [dict(grip_only, gap_cm=0.4)]) == []
+    assert PO.blow_contact_why("striking_down", False, []) == []          # no worked thing: nothing to measure
+    assert PO.blow_contact_why("hands_at_work", True, []) == []           # not a blow
+    sys.path.insert(0, str(HERE.parents[0] / "assets" / "scenes"))
+    import speakers as SP
+    spec = {"characters": {"a": {"id": "fig", "position": [0, 0], "facing": [0, -1],
+                                 "body_pose": {"pose": "stand", "params": {}}}}}
+    why = PO.blow_contact_why("tool_raised", True, [grip_only], "the hammer")
+    assert SP.staged_facts(spec, {"a": {"measured": {}, "contact_missing": why}})["a"] == why

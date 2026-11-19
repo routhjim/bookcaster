@@ -133,6 +133,20 @@ class Skel:
         s.changed, s.info = set(), {}
         return s
 
+    def ref_snapshot(self):
+        """The skeleton as first read (its reference pose, the actor's place and turn): a later build starts from it
+        (from_ref) when the body already plays a pose (scene_job's re-solve of a missed contact)."""
+        return {"names": list(self.names), "parent": dict(self.parent), "pos": dict(self.ref_pos),
+                "rot": dict(self.ref_rot), "inv_yaw": self.inv_yaw, "org": list(self.org)}
+
+    @classmethod
+    def from_ref(cls, snap, body=None):
+        s = cls.from_joints(snap["pos"], snap["parent"])
+        s.body, s.inv_yaw, s.org = body, tuple(snap["inv_yaw"]), list(snap["org"])
+        s.rot = dict(snap["rot"])
+        s.ref_rot = dict(snap["rot"])
+        return s
+
     def world(self, v, point=True):
         """Actor frame -> UE world (cm): a point (with the actor's location) or a direction."""
         w = qrot(qinv(self.inv_yaw), v)
@@ -727,7 +741,9 @@ def prop_in_hand(size_m, palm_cm, tool_dir, face_dir, k=1.0, grip=None):
 # thing in a hand is now gripped (the hand closed round its handle, in any pose), and a blow puts the thing's working
 # point (a head's face, a long thing's tip) on the worked thing's top, the face flat on it; held_contact measures the
 # placed result like the old blockout check (grip, gap, face angle) and contact_why says what is wrong in words.
-HELD_LIMITS = {"grip_cm": 2.0, "gap_cm": 2.0, "angle_deg": 15.0}
+HELD_LIMITS = {"grip_cm": 2.0, "gap_cm": 2.0, "angle_deg": 15.0, "rise_cm": 20.0}
+BLOW_ACTIONS = ("tool_raised", "striking_down")   # the work actions that bring a held thing down on the worked thing
+RESOLVE_TRIES = 2           # a measured miss (gap, face angle) is re-solved this many times before it is a failure
 CURL_RANGE = (45.0, 85.0)   # finger curl (deg): a thin handle closes the fist, a thick one opens it
 STRIKE_TIP_DEG = 35.0       # a tipped thing comes down onto the work this steep below the level
 # the striking elbow's sides tried (out, forward, up), the first the usual: out to the side and a little forward,
@@ -787,11 +803,12 @@ def seg_dist(p, a, b):
     return norm(sub(p, add(a, scale(ab, t))))
 
 
-def held_contact(put, palm, target=None, normal=None, name=None):
+def held_contact(put, palm, target=None, normal=None, name=None, raised=False):
     """The placed thing against the hand and the work (one frame, cm): "grip_cm" the palm point's distance from the
     handle's line round the grip, and for a blow (target given) "gap_cm" the working point's distance from the
-    target and, for a head with a surface normal, "angle_deg" between the face's outward normal and -normal; "why"
-    the plain words for each over HELD_LIMITS."""
+    target and, for a head with a surface normal, "angle_deg" between the face's outward normal and -normal; for a
+    thing raised to come down on the work (raised) "rise_cm" instead: how far over the target its working point is
+    held. "why" the plain words for each over HELD_LIMITS."""
     g = put["grip"]
     cols = (put["x"], put["y"], put["z"])
     gp = mesh_point(put, g["grip_m"])
@@ -800,30 +817,411 @@ def held_contact(put, palm, target=None, normal=None, name=None):
     out = {"grip_cm": round(seg_dist(palm, sub(gp, scale(ax, half)), add(gp, scale(ax, half))), 2)}
     if target is not None:
         w = mesh_point(put, work_point_m(g))
-        out.update(work=g.get("work"), work_pt=[round(v, 2) for v in w], target=[round(v, 2) for v in target],
-                   gap_cm=round(math.dist(w, target), 2))
-        if g.get("work") == "head" and normal is not None:
-            fn = scale(cols[g["face_axis"]], g.get("face_sign", 1.0))
-            out["angle_deg"] = round(angle_deg(fn, scale(normal, -1.0)), 1)
+        out.update(work=g.get("work"), work_pt=[round(v, 2) for v in w], target=[round(v, 2) for v in target])
+        if raised:
+            out.update(raised=True, rise_cm=round(dot(sub(w, target), unit(normal or [0.0, 0.0, 1.0])), 2))
+        else:
+            out["gap_cm"] = round(math.dist(w, target), 2)
+            if g.get("work") == "head" and normal is not None:
+                fn = scale(cols[g["face_axis"]], g.get("face_sign", 1.0))
+                out["angle_deg"] = round(angle_deg(fn, scale(normal, -1.0)), 1)
     out["why"] = contact_why(out, name)
     return out
 
 
-def contact_why(c, name=None):
-    """Plain-word reasons a held thing's contact is over HELD_LIMITS ("the hammer's face is 9 cm from the work")."""
+def _the(name, default):
     nm = str(name or "").strip()
     for a in ("the ", "a ", "an "):
         if nm.lower().startswith(a):
             nm = nm[len(a):]
-    nm = f"the {nm}" if nm else "the held thing"
+    return f"the {nm}" if nm else default
+
+
+def contact_why(c, name=None):
+    """Plain-word reasons a held thing's contact is over HELD_LIMITS ("the hammer's face is 9 cm from the work")."""
+    nm = _the(name, "the held thing")
+    end = "face" if c.get("work") == "head" else "tip"
     why = []
     if (c.get("grip_cm") or 0.0) > HELD_LIMITS["grip_cm"]:
         why.append(f"{nm} is not in the hand: its handle is {c['grip_cm']:.0f} cm from the palm")
     if (c.get("gap_cm") or 0.0) > HELD_LIMITS["gap_cm"]:
-        why.append(f"{nm}'s {'face' if c.get('work') == 'head' else 'tip'} is {c['gap_cm']:.0f} cm from the work")
+        why.append(f"{nm}'s {end} is {c['gap_cm']:.0f} cm from the work")
     if (c.get("angle_deg") or 0.0) > HELD_LIMITS["angle_deg"]:
         why.append(f"{nm}'s face is turned {c['angle_deg']:.0f} deg off the work")
+    if c.get("raised") and c.get("rise_cm") is not None and c["rise_cm"] < HELD_LIMITS["rise_cm"]:
+        why.append(f"{nm} is not raised over the work: its {end} is {c['rise_cm']:.0f} cm above it")
     return why
+
+
+# ------------------------------------------------------------------ a measured miss corrected (11-18)
+# The first engine run kept a frame whose blow landed 7.75 cm over the worked thing: the pose had aimed at a top
+# reckoned from the thing's recorded size, the check measured the top of the thing as the engine laid it. The job now
+# aims at the laid top (lie_top_ue) and, when the placed contact still misses, aims again by the measured miss
+# (aim_fix) and re-measures, at most RESOLVE_TRIES times, before the miss is a failure.
+def lie_top_ue(base_ue, extent_cm):
+    """The top of a thing laid on its broadest face (scene_job: its thinnest side upright, its box's bottom centre at
+    base_ue): base_ue raised by the thinnest full side of its box (extent_cm: the box's half sides, any order)."""
+    return [float(base_ue[0]), float(base_ue[1]), float(base_ue[2]) + 2.0 * min(float(e) for e in extent_cm)]
+
+
+def needs_resolve(c):
+    """A placed contact whose miss a re-solve of the arm can close: the working point off the target, or a face turned
+    off it, over HELD_LIMITS (not a raised thing's rise, not a handle out of the palm: the solver puts the palm on it)."""
+    c = c or {}
+    return (c.get("gap_cm") or 0.0) > HELD_LIMITS["gap_cm"] or (c.get("angle_deg") or 0.0) > HELD_LIMITS["angle_deg"]
+
+
+def aim_fix(aim, target, got):
+    """The next aim of a re-solve: the last aim moved by the measured miss (target - where the point landed), so a
+    constant error between the solver's model and the engine's placement (a wrong top, a wrist the engine puts
+    elsewhere) is taken out."""
+    return [round(float(aim[i]) + float(target[i]) - float(got[i]), 3) for i in range(3)]
+
+
+def blow_contact_why(action, has_work, contacts, name=None):
+    """Why a blow at a worked thing has no measured contact (else []): a start action in BLOW_ACTIONS with a worked
+    thing (has_work) must end with a held thing measured against it (a "gap_cm" or a "rise_cm" in one of contacts:
+    held_contact's reports); silence there let a frame with no contact pass (11-18)."""
+    if action not in BLOW_ACTIONS or not has_work:
+        return []
+    cs = [c for c in contacts or [] if c]
+    if not cs:
+        return [f"nothing is in the hand to bring down on the work ({action})"]
+    if any(c.get("gap_cm") is not None or c.get("rise_cm") is not None for c in cs):
+        return []
+    return [f"{_the(name, 'the held thing')} was never measured against the work ({action}): the pose gave no target"]
+
+
+# ------------------------------------------------------------------ a set piece's part in the hands (11-18)
+# A person at work on a piece of the set itself (a lever, a handle, a bar, a rope, a crank: anything standing in the
+# place, not a carried thing) stood at it with the hands hanging near it. Now the piece's own surface (its mesh, in
+# the world, round the person) is searched for a part a hand closes round, as grip_from_points does for a carried
+# thing: thin and roundish (HAND_THICK_M, HAND_ROUND), with room round it for the fingers, along at least a palm's
+# width; one or both free hands are put on it with the arm solver, and the palm's distance from the part is the
+# staged check (fixture_contact), measured again in the engine like a held thing's.
+FIX_INNER_CM = 100.0 * HAND_THICK_M / 2 + 0.5   # a part's surface lies within this of its line ...
+FIX_WRAP_CM = 2.5           # ... with this much empty room round it for the fingers
+FIX_PALM_CM = 9.0           # ... along at least a palm's width
+FIX_STEP_CM = 1.5           # the surface sampled at least this finely (a long face has no vertices in its middle)
+FIX_BAND = (0.35, 1.1)      # a workable height for the hands: shares of the stature above the floor
+FIX_REACH = 1.6             # a part within this many arm lengths of the shoulders (the body leans to the rest)
+FIX_OPEN_CM = 25.0          # nothing of the piece this far over the hand's place on a part (a table's leg under its top)
+FIX_SEEDS = 600             # at most this many surface points tried as a part's start
+FIX_MAX_PARTS = 8
+
+
+def surface_points(verts, tris, step=FIX_STEP_CM, most=200, centre=None, radius=None):
+    """A mesh's surface as points: its vertices plus each triangle filled on a grid no coarser than step (a
+    triangle's longest side over `most` steps at most), then thinned to one point per 0.7 step cell. tris: index
+    triples, or a flat index list. With centre and radius only the points within radius of centre (and only the
+    triangles that come that near)."""
+    vs = [list(map(float, v)) for v in verts]
+    tl = tris if tris and isinstance(tris[0], (list, tuple)) else [tris[i:i + 3] for i in range(0, len(tris) - 2, 3)]
+    keep = (lambda p: True) if centre is None else (lambda p: math.dist(p, centre) <= radius)  # noqa: E731
+    out = [v for v in vs if keep(v)]
+    for tri in tl:
+        a, b, c = (vs[int(i)] for i in tri)
+        if centre is not None:
+            m = [(a[q] + b[q] + c[q]) / 3 for q in range(3)]
+            if math.dist(m, centre) > radius + max(math.dist(m, a), math.dist(m, b), math.dist(m, c)):
+                continue
+        n = min(most, int(max(math.dist(a, b), math.dist(b, c), math.dist(c, a)) // step))
+        for u in range(n + 1):
+            for v in range(n + 1 - u):
+                w = n - u - v
+                if max(u, v, w) == n:                 # a corner: already a vertex
+                    continue
+                p = [(a[q] * w + b[q] * u + c[q] * v) / n for q in range(3)]
+                if keep(p):
+                    out.append(p)
+    # one point per cell of about the step (a long thin triangle's grid is far finer across it than the step)
+    cell, seen, thin = 0.7 * step, set(), []
+    for p in out:
+        k = (int(math.floor(p[0] / cell)), int(math.floor(p[1] / cell)), int(math.floor(p[2] / cell)))
+        if k not in seen:
+            seen.add(k)
+            thin.append(p)
+    return thin
+
+
+def _main_axis(pts):
+    """The direction along which points spread most (power iteration on their covariance)."""
+    n = len(pts)
+    m = [sum(p[q] for p in pts) / n for q in range(3)]
+    C = [[0.0] * 3 for _ in range(3)]
+    for p in pts:
+        d = sub(p, m)
+        for i in range(3):
+            for j in range(3):
+                C[i][j] += d[i] * d[j]
+    v = [0.577, 0.577, 0.577]
+    for i in range(3):                            # start off the widest diagonal entry
+        if C[i][i] >= max(C[j][j] for j in range(3)):
+            v = [0.3, 0.3, 0.3]
+            v[i] = 1.0
+    for _ in range(30):
+        w = [sum(C[i][j] * v[j] for j in range(3)) for i in range(3)]
+        if norm(w) < 1e-12:
+            return [0.0, 0.0, 1.0]
+        v = unit(w)
+    return v
+
+
+def _basis(d):
+    a = [1.0, 0.0, 0.0] if abs(d[0]) < 0.9 else [0.0, 1.0, 0.0]
+    u = unit(perp(a, d))
+    return u, cross(d, u)
+
+
+class _Grid:
+    def __init__(self, pts, cell):
+        self.cell, self.g = cell, {}
+        for p in pts:
+            self.g.setdefault(tuple(int(math.floor(c / cell)) for c in p), []).append(p)
+
+    def near(self, c, r):
+        k = int(math.ceil(r / self.cell))
+        i0 = [int(math.floor(x / self.cell)) for x in c]
+        out = []
+        for i in range(i0[0] - k, i0[0] + k + 1):
+            for j in range(i0[1] - k, i0[1] + k + 1):
+                for m in range(i0[2] - k, i0[2] + k + 1):
+                    out += self.g.get((i, j, m), ())
+        return out
+
+
+def _thin_near(near, d):
+    """A quick look before the full test: the surface round a point lies close about a line along d through its
+    middle (a flat face, a block's corner, spread across it, do not)."""
+    m = [sum(q[i] for q in near) / len(near) for i in range(3)]
+    return sum(1 for q in near if norm(perp(sub(q, m), d)) > FIX_INNER_CM) <= 0.1 * len(near)
+
+
+def _part_test(grid, c, d, half=FIX_PALM_CM / 2):
+    """Is there a part a hand closes round along d through about c? -> (centre on its line, direction, thickness)
+    or None: the surface within FIX_INNER_CM of the line (over a palm's width) re-centred on the line and its
+    direction refined twice, then thin (<= HAND_THICK_M) and roundish (HAND_ROUND), present along the whole width,
+    and nothing else within FIX_WRAP_CM round it."""
+    reach = FIX_INNER_CM + FIX_WRAP_CM + half + 1.0
+    near = grid.near(c, reach)
+    r2in = FIX_INNER_CM * FIX_INNER_CM
+
+    def split(c, d):
+        """Each near point's (along, across x, across y) from c; plain arithmetic (this runs for every seed)."""
+        u, v = _basis(d)
+        cx, cy, cz = c
+        dx, dy, dz = d
+        ux, uy, uz = u
+        vx, vy, vz = v
+        out = []
+        for q in near:
+            wx, wy, wz = q[0] - cx, q[1] - cy, q[2] - cz
+            out.append((wx * dx + wy * dy + wz * dz, wx * ux + wy * uy + wz * uz, wx * vx + wy * vy + wz * vz, q))
+        return out
+    for _ in range(3):
+        inner = [q for s_, x, y, q in split(c, d) if -half <= s_ <= half and x * x + y * y <= r2in]
+        if len(inner) < 8:
+            return None
+        n = len(inner)
+        m = [sum(q[0] for q in inner) / n, sum(q[1] for q in inner) / n, sum(q[2] for q in inner) / n]
+        c = add(c, perp(sub(m, c), d))
+        if n >= 12:                               # (followed only near its line: a short thick piece of a part
+            d2 = _main_axis(inner)                # spreads as much across as along)
+            d2 = d2 if dot(d2, d) >= 0 else scale(d2, -1.0)
+            if dot(d2, d) >= 0.85:
+                d = d2
+    sp = split(c, d)
+    xs, bins, rad = [], set(), 0.0
+    for s_, x, y, _q in sp:
+        if -half <= s_ <= half:
+            r = math.hypot(x, y)
+            if r <= FIX_INNER_CM:
+                xs.append((x, y))
+                bins.add(min(4, int((s_ + half) / (2 * half) * 5)))
+                rad = max(rad, r)
+    if len(xs) < 8 or len(bins) < 5:
+        return None
+    # the cross-section's narrowest width and the width square to it (a square post is as thin as its side, a flat
+    # part turned in the basis is still flat)
+    best = None
+    for k in range(18):
+        co, si = math.cos(math.radians(10.0 * k)), math.sin(math.radians(10.0 * k))
+        e1 = [x * co + y * si for x, y in xs]
+        e2 = [y * co - x * si for x, y in xs]
+        w1, w2 = max(e1) - min(e1), max(e2) - min(e2)
+        if best is None or w1 < best[0]:
+            best = (w1, w2)
+    thin, thick = min(best), max(best)
+    if not (0.6 <= thick <= 100.0 * HAND_THICK_M) or thin / thick < HAND_ROUND:
+        return None
+    lo2, hi2 = (rad + 0.5) ** 2, (rad + FIX_WRAP_CM) ** 2
+    ring = sum(1 for s_, x, y, _q in sp if -half <= s_ <= half and lo2 < x * x + y * y <= hi2)
+    if ring > max(2, 0.03 * len(xs)):
+        return None
+    return c, d, thick
+
+
+def grip_parts(pts, prefer=None, seeds=FIX_SEEDS, most=FIX_MAX_PARTS):
+    """The parts of a piece a hand can close round, from its surface points (one frame, cm; surface_points): each
+    {"a", "b": the ends of the line a palm's middle may take on it, "dir" (a -> b), "c" (its middle), "len_cm" (the
+    run's whole length), "thick_cm"}. Seeds are tried nearest `prefer` first; a part is followed along its line in
+    2 cm steps both ways while the test holds (it may bend: a rope)."""
+    if len(pts) < 8:
+        return []
+    grid = _Grid(pts, 4.0)
+    order = sorted(range(len(pts)), key=lambda i: math.dist(pts[i], prefer)) if prefer else list(range(len(pts)))
+    stride = max(1, len(order) // seeds)
+    parts, tried = [], set()
+    for i in order[::stride]:
+        p = pts[i]
+        vox = (int(p[0] // 2.5), int(p[1] // 2.5), int(p[2] // 2.5))   # one seed per 2.5 cm of surface
+        if vox in tried:
+            continue
+        tried.add(vox)
+        if any(seg_dist(p, q["a"], q["b"]) < FIX_INNER_CM + FIX_PALM_CM / 2 for q in parts):
+            continue
+        near = [q for q in grid.near(p, 6.0) if math.dist(q, p) <= 6.0]
+        if len(near) < 8:
+            continue
+        # the line tried: the way the surface round the point spreads most, then (a thick part spreads about as
+        # much across as along) upright and the two level ways square to it
+        d0 = _main_axis(near)
+        hz = [d0[0], d0[1], 0.0] if math.hypot(d0[0], d0[1]) > 1e-3 else [1.0, 0.0, 0.0]
+        hz = unit(hz)
+        got = None
+        for d in (d0, [0.0, 0.0, 1.0], hz, [-hz[1], hz[0], 0.0]):
+            if (d is not d0 and abs(dot(d, d0)) > 0.97) or not _thin_near(near, d):
+                continue
+            got = _part_test(grid, p, d)
+            if got is not None:
+                break
+        if got is None:
+            continue
+        c0, d0, thick = got
+        ends = []
+        for sg in (1.0, -1.0):
+            c, d, last = c0, scale(d0, sg), c0
+            for _ in range(60):
+                nxt = _part_test(grid, add(c, scale(d, 2.0)), d)
+                if nxt is None or math.dist(nxt[0], c) < 0.5:
+                    break
+                c, d = nxt[0], (nxt[1] if dot(nxt[1], d) >= 0 else scale(nxt[1], -1.0))
+                last = c
+                thick = min(thick, nxt[2])            # (the best-aligned cut is the truest thickness)
+            ends.append(last)
+        b, a = ends
+        L = math.dist(a, b)
+        dr = unit(sub(b, a)) if L > 1e-6 else d0
+        parts.append({"a": [round(x, 2) for x in a], "b": [round(x, 2) for x in b], "dir": [round(x, 4) for x in dr],
+                      "c": [round(x, 2) for x in scale(add(a, b), 0.5)], "len_cm": round(L + FIX_PALM_CM, 1),
+                      "thick_cm": round(thick, 2)})
+        if len(parts) >= most:
+            break
+    return parts
+
+
+def seg_point(p, a, b):
+    """The point of the segment a-b nearest p."""
+    ab = sub(b, a)
+    t = max(0.0, min(1.0, dot(sub(p, a), ab) / max(dot(ab, ab), 1e-9)))
+    return add(a, scale(ab, t))
+
+
+def _open_above(grid, p, d):
+    """Nothing of the piece over p (within FIX_OPEN_CM up, a palm's half-width round) but the part's own line d: a
+    hand can come onto it there (a table's leg under its top cannot be taken)."""
+    if grid is None:
+        return True
+    for q in grid.near(add(p, [0.0, 0.0, FIX_OPEN_CM / 2]), FIX_OPEN_CM / 2 + 4.0):
+        w = sub(q, p)
+        if 2.0 < w[2] <= FIX_OPEN_CM and math.hypot(w[0], w[1]) <= FIX_PALM_CM / 2 and norm(perp(w, d)) > FIX_INNER_CM:
+            return False
+    return True
+
+
+def fixture_hands(parts, s, free, hs, H, floor, pts=None):
+    """Which free hands take hold of which part (actor frame, cm): the part nearest a comfortable working point (in
+    front of the chest at FIX_BAND's middle) that lies at a workable height (FIX_BAND) within FIX_REACH arm lengths
+    of the shoulders, with nothing of the piece just over the hand's place on it (pts: the piece's surface points;
+    _open_above); a part long enough for two palms a shoulder's width apart (or less, as it allows) takes both
+    free hands, the one on the body's left at its left end; else the working hand (hs, when free) takes it and the
+    other free hand the next part at least a palm's width away. -> {side: {"on" (the palm's point on the part's
+    line), "a", "b", "dir", "thick_cm", "t" (the handle direction to grip it with: the thumb toward the body's
+    middle and up)}}."""
+    if not parts or not free:
+        return {}
+    left, fwd = _body_axes(s)
+    sh = scale(add(s.pos["upperarm_l"], s.pos["upperarm_r"]), 0.5)
+    arm = s.length("upperarm_r", "lowerarm_r") + s.length("lowerarm_r", "hand_r")
+    want = add(sh, scale(fwd, 0.25 * H))
+    want[2] = floor + 0.5 * (FIX_BAND[0] + FIX_BAND[1]) * H
+    grid = _Grid(pts, 4.0) if pts else None
+    ok = []
+    for q in parts:
+        L = math.dist(q["a"], q["b"])
+        cands = [seg_point(want, q["a"], q["b"])] + [add(q["a"], scale(q["dir"], L * k / 8.0)) for k in range(9)]
+        cands = [p for p in cands if floor + FIX_BAND[0] * H <= p[2] <= floor + FIX_BAND[1] * H
+                 and math.dist(p, sh) <= FIX_REACH * arm]
+        cands.sort(key=lambda p: math.dist(p, want))
+        near = next((p for p in cands if _open_above(grid, p, q["dir"])), None)
+        if near is not None:
+            ok.append((math.dist(near, want), near, q))
+    if not ok:
+        return {}
+    ok.sort(key=lambda x: x[0])
+    _, near, q = ok[0]
+
+    def hand(side, pt, part):
+        inward = scale(left, -1.0 if side == "l" else 1.0)
+        d = part["dir"]
+        t = d if dot(d, add([0.0, 0.0, 1.0], inward)) >= 0 else scale(d, -1.0)
+        return {"on": [round(x, 2) for x in pt], "a": part["a"], "b": part["b"], "dir": part["dir"],
+                "thick_cm": part["thick_cm"], "t": [round(x, 4) for x in t]}
+    run = math.dist(q["a"], q["b"])
+    free = [x for x in ("l", "r") if x in free]
+    out = {}
+    if len(free) == 2 and run >= FIX_PALM_CM + 4.0:
+        sp = min(math.dist(s.pos["upperarm_l"], s.pos["upperarm_r"]), run)
+        d = q["dir"]
+        lo_, hi_ = sp / 2, run - sp / 2                       # where the middle of the two palms may be, along a -> b
+        mid = max(lo_, min(hi_, dot(sub(near, q["a"]), d)))
+        p1, p2 = add(q["a"], scale(d, mid - sp / 2)), add(q["a"], scale(d, mid + sp / 2))
+        lp, rp = (p1, p2) if dot(sub(p1, p2), left) >= 0 else (p2, p1)
+        return {"l": hand("l", lp, q), "r": hand("r", rp, q)}
+    first = hs if hs in free else free[0]
+    out[first] = hand(first, near, q)
+    for x in free:
+        if x == first:
+            continue
+        for _, n2, q2 in ok[1:]:
+            if math.dist(n2, near) >= FIX_PALM_CM + FIX_INNER_CM:
+                out[x] = hand(x, n2, q2)
+                break
+    return out
+
+
+def fixture_fix(prev, palm, a, b):
+    """The next palm offset of a re-solve on a piece's part: the last one moved by the measured miss across the part
+    (from the palm to the part's nearest point; a palm slid along the part is still on it)."""
+    m = sub(seg_point(palm, a, b), palm)
+    p = prev or [0.0, 0.0, 0.0]
+    return [round(float(p[i]) + m[i], 3) for i in range(3)]
+
+
+def fixture_contact(palm, a, b, name=None, side=None):
+    """A hand on a piece's part (one frame, cm): "palm_cm" the palm point's distance from the part's line between
+    a and b; "why" the plain words when it is over HELD_LIMITS["grip_cm"]."""
+    out = {"palm_cm": round(seg_dist(palm, a, b), 2)}
+    out["why"] = fixture_why(out, name, side)
+    return out
+
+
+def fixture_why(c, name=None, side=None):
+    nm = _the(name, "the piece they work")
+    hand = {"l": "the left hand", "r": "the right hand"}.get(side, "a hand")
+    if (c.get("palm_cm") or 0.0) > HELD_LIMITS["grip_cm"]:
+        return [f"{hand} is not on {nm}: its palm is {c['palm_cm']:.0f} cm from the part it holds"]
+    return []
 
 
 def _restore(s, state):
@@ -1101,9 +1499,13 @@ def _work_solve(s, c, cfg):
     targets, reach, work_hands = {}, {}, []
     pole_top = lambda o: add(scale(o, 0.6), add(scale(fwd, -0.25), [0.0, 0.0, -0.75]))       # noqa: E731
     pole_up = add(scale(out, 0.85), add(scale(fwd, 0.25), [0.0, 0.0, -0.45]))
-    wpt, t = None, t_want
-    # the tool hand: where its palm must be
-    if kind == "striking_down":
+    wpt, rpt, t, h = None, None, t_want, None
+    fix = c.get("fix") or {}
+    # the tool hand: where its palm must be (on a piece's part when it holds nothing and the piece has one)
+    if hs in fix:
+        reach[hs], targets[hs], t, h = _fix_hand(s, hs, fix[hs], pole_top(out), H)
+        work_hands.append(hs)
+    elif kind == "striking_down":
         # the working point on the blow's point: a head's face flat on it (the handle level, across the face's
         # normal), a tipped thing's tip coming down onto it; the elbow out to the side so the forearm slopes down
         # into the blow and the hand can turn the face down
@@ -1141,6 +1543,10 @@ def _work_solve(s, c, cfg):
             reach[hs], targets[hs] = _arm_to(s, hs, sub(palm_want, po), tool_pole, H)
             t, h = _grip(s, hs, t_want)
             po = sub(palm_point(s, hs), s.pos[f"hand_{hs}"])
+        if kind == "tool_raised" and c.get("target"):
+            # wound up over the worked thing: where its working point is held, for the staged check (11-18: a raised
+            # blow reported no target, so nothing measured it against the work)
+            rpt = add(palm_point(s, hs), work_offset(g, t, h))
     # the other hand: on the handle of a two-handed thing, else holding its own thing with its working end on the
     # work beside the blow, else flat on the work's top
     off = None
@@ -1160,17 +1566,35 @@ def _work_solve(s, c, cfg):
                                                           0.0 if oh else STRIKE_TIP_DEG, oh, fwd)
         off = {"dir": t2, "face": h2, "work": w2, "aim": p2}
         work_hands.append(ot)
+    elif ot in fix:
+        reach[ot], targets[ot], _, _ = _fix_hand(s, ot, fix[ot], pole_top(oo), H)
+        work_hands.append(ot)
     else:
         _clav_raise(s, ot, rest_off[2])
         reach[ot], targets[ot] = _arm_to(s, ot, rest_off, pole_top(oo), H)
         _flat_hand(s, ot, fwd, oo)
         work_hands.append(ot)
     look = strike if kind != "hands_at_work" else [wx, wy - 0.04 * H, top]
+    if fix and kind == "hands_at_work":                     # on the part the hands hold
+        look = [sum(f["aim"][i] for f in fix.values()) / len(fix) for i in range(3)]
     _look_at(s, look, H)
     m, com, poly = balance_margin(s.pos) if c["standing"] else (None, None, None)
     return {"reach": max([reach[x] for x in set(work_hands)] or [0.0]), "reach_by_hand": reach, "targets": targets,
             "margin": m, "com": com, "poly": poly, "tool_dir": t, "tool_want": t_want, "face_dir": h,
-            "drop": drop, "look": look, "strike": strike, "normal": nrm, "work_pt": wpt, "off": off}
+            "drop": drop, "look": look, "strike": strike, "normal": nrm, "work_pt": wpt, "raised_pt": rpt, "off": off}
+
+
+def _fix_hand(s, side, f, pole, H):
+    """A free hand closed round a piece's part (fixture_hands' choice f): the palm on f["aim"] (the part's point, plus
+    any engine correction), the handle direction along the part. -> (reach share, wrist target, handle dir, hand dir)."""
+    _clav_raise(s, side, f["aim"][2])
+    po = [0.0, 0.0, 0.0]
+    reach = tgt = t = h = None
+    for _ in range(3):
+        reach, tgt = _arm_to(s, side, sub(f["aim"], po), pole, H)
+        t, h = _grip(s, side, f["t"])
+        po = sub(palm_point(s, side), s.pos[f"hand_{side}"])
+    return reach, tgt, t, h
 
 
 def _held_items(p):
@@ -1217,6 +1641,11 @@ def _work_pose(s, p, kind):
     hip = s.ref_pos["pelvis"][2] - floor
     target = s.local_pt(p["work_target_ue"]) if p.get("work_target_ue") else None
     top = floor + float(p["work_top_cm"]) if "work_top_cm" in p else (target[2] if target else floor + 0.52 * H)
+    # a blow at a worked thing works at its top (where the blow lands and the other hand steadies it), not at the top
+    # of the piece it lies on (11-18: under a thick worked thing the other hand reached down to the piece's top, the
+    # body folded deep for it and the face came down 16-34 deg off the work on the test figure; 0-5 deg now)
+    if target and kind in BLOW_ACTIONS:
+        top = max(top, target[2])
     low = max(0.0, hip - (top - floor))                       # how far under the hips the work's top lies
     spec = WORK_SPEC[kind]
     # the work hand takes the thing it works with: to strike or raise, a thing with a head (measured from its model)
@@ -1231,11 +1660,15 @@ def _work_pose(s, p, kind):
     grip = tool["grip"] if tool else full_grip(p.get("tool_grip"), p.get("tool_size_m"))
     if grip["two_hands"] and off_item:                        # the other hand holds its own thing
         grip = dict(grip, two_hands=False)
+    # a piece of the set worked with the hands (params "fixture": its name and its surface round the person, UE cm,
+    # from scene_job): the hands that hold nothing take hold of a part of it (fixture_hands)
+    busy = ({hs} if tool else set()) | ({ot} if off_item else set()) | ({"l", "r"} if tool and grip["two_hands"] else set())
+    fix, fx_rep = _fixture_choice(s, p, {"l", "r"} - busy, hs, H, floor)
     c = {"H": H, "hand": hs, "other": ot, "kind": kind, "spec": spec, "standing": standing, "top": top,
          "wy": target[1] if target else s.ref_pos["pelvis"][1] + float(p.get("work_fwd_cm", 0.27 * H)),
          "wx": target[0] if target else s.ref_pos["pelvis"][0],
          "near": s.ref_pos["pelvis"][1] + float(p.get("work_near_cm", p.get("work_fwd_cm", 0.27 * H))),
-         "grip": grip, "target": target, "normal": [0.0, 0.0, 1.0], "off_item": off_item}
+         "grip": grip, "target": target, "normal": [0.0, 0.0, 1.0], "off_item": off_item, "fix": fix}
     cfg = {"lean": float(p.get("lean_deg", spec["lean"] + spec["lean_cm"] * low)),
            "drop": min(0.08 * H, 0.03 * H + 0.1 * low) if standing else 0.0, "shift": [0.0, 0.0], "pull": 0.0}
     n = 0
@@ -1260,7 +1693,9 @@ def _work_pose(s, p, kind):
     og = grip if grip["two_hands"] else (off_item["grip"] if off_item else None)
     for x, gg in ((hs, grip), (ot, og)):
         _fingers_rest(s, x)
-        if gg:
+        if x in fix:                                       # round the piece's part, by its thickness
+            _curl(s, x, grip_curl({"handle_m": fix[x]["thick_cm"] / 100.0}), 35)
+        elif gg:
             _curl(s, x, grip_curl(gg), 35)
         else:
             _curl(s, x, 30, 12)
@@ -1280,6 +1715,17 @@ def _work_pose(s, p, kind):
                         gap_cm=round(math.dist(res["work_pt"], res["strike"]), 2))
         if grip.get("work") == "head":
             tool_rep["face_angle_deg"] = round(angle_deg(res["face_dir"], scale(res["normal"], -1.0)), 1)
+    elif res.get("raised_pt") is not None:                 # wound up: the target it will come down on, and how high
+        tool_rep.update(target_cm=r2(res["strike"]), normal=res["normal"], work_cm=r2(res["raised_pt"]), raised=True,
+                        rise_cm=round(dot(sub(res["raised_pt"], res["strike"]), unit(res["normal"])), 2))
+    if fix:
+        for x, f in fix.items():
+            fc = fixture_contact(palm_point(s, x), f["a"], f["b"], fx_rep.get("name"), x)
+            fx_rep["hands"][x] = {"on_cm": r2(f["on"]), "aim_cm": r2(f["aim"]), "a_cm": r2(f["a"]), "b_cm": r2(f["b"]),
+                                  "dir": f["dir"], "thick_cm": f["thick_cm"], "palm_cm": r2(palm_point(s, x)),
+                                  "hand_cm": r2(s.pos[f"hand_{x}"]), "solver_palm_cm": fc["palm_cm"]}
+    if fx_rep:
+        s.info["fixture"] = fx_rep
     if tool:
         tool_rep.update(asset=tool.get("asset"), name=tool.get("name"))
         s.info.setdefault("held", {})[tool.get("asset") or f"held_{hs}"] = dict(tool_rep, how="work")
@@ -1287,6 +1733,34 @@ def _work_pose(s, p, kind):
     if off_item and res["off"]:
         o = res["off"]
         _held_report(s, ot, off_item, o["dir"], o["face"], "work_off", aim_cm=r2(o["aim"]), work_cm=r2(o["work"]))
+
+
+def _fixture_choice(s, p, free, hs, H, floor):
+    """The free hands' parts of the worked piece (params "fixture": {"name", "pts_ue": its surface round the person,
+    UE cm, "fix_ue": {side: a palm offset, UE cm, from the engine's re-solve}}). -> (fixture_hands' choice with each
+    hand's "aim", the report for s.info["fixture"] or {} with no piece)."""
+    fx = p.get("fixture") or {}
+    if not fx.get("pts_ue"):
+        return {}, {}
+    sh = scale(add(s.pos["upperarm_l"], s.pos["upperarm_r"]), 0.5)
+    arm = s.length("upperarm_r", "lowerarm_r") + s.length("lowerarm_r", "hand_r")
+    pts = []
+    for q in fx["pts_ue"]:
+        lq = s.local_pt(q)
+        if floor + (FIX_BAND[0] - 0.05) * H <= lq[2] <= floor + (FIX_BAND[1] + 0.05) * H and \
+                math.dist(lq, sh) <= FIX_REACH * arm + 10.0:
+            pts.append(lq)
+    _, fwd = _body_axes(s)
+    prefer = add(sh, scale(fwd, 0.25 * H))
+    prefer[2] = floor + 0.5 * (FIX_BAND[0] + FIX_BAND[1]) * H
+    parts = grip_parts(pts, prefer) if free else []
+    fix = fixture_hands(parts, s, free, hs, H, floor, pts)
+    for x, f in fix.items():
+        off = (fx.get("fix_ue") or {}).get(x)
+        f["aim"] = add(f["on"], qrot(s.inv_yaw, off)) if off else list(f["on"])
+    rep = {"name": fx.get("name"), "points": len(pts), "parts": len(parts), "free": sorted(free), "hands": {},
+           "part_list": [{k: q[k] for k in ("c", "len_cm", "thick_cm")} for q in parts]}
+    return fix, rep
 
 
 def _item_clear(s, g, palm, t, H, floor):
@@ -1403,9 +1877,13 @@ def pose_skel(s, pose, params):
     return s
 
 
-def build(actor, body, pose, params, path):
-    """Pose name + parameters -> AnimSequence at `path` (replaced). Returns (anim, info)."""
-    s = Skel(actor, body)
+def build(actor, body, pose, params, path, ref=None, keep=None):
+    """Pose name + parameters -> AnimSequence at `path` (replaced). Returns (anim, info). ref: a Skel.ref_snapshot to
+    start from instead of the body's current bones (a re-solve on a body already posed); keep: a dict that receives
+    this build's snapshot as keep["ref"]."""
+    s = Skel.from_ref(ref, body) if ref else Skel(actor, body)
+    if keep is not None:
+        keep["ref"] = s.ref_snapshot()
     pose_skel(s, pose, params)
     if EAL.does_asset_exist(path):
         EAL.delete_asset(path)
@@ -1451,7 +1929,7 @@ def world_info(s):
 
     def ue(d):
         o = dict(d)
-        for k in ("palm", "hand", "target", "work", "aim"):
+        for k in ("palm", "hand", "target", "work", "aim", "on", "a", "b"):
             if d.get(k + "_cm"):
                 o[k + "_ue"] = r2(s.world(d[k + "_cm"]))
         for k in ("dir", "face", "normal"):
@@ -1463,4 +1941,6 @@ def world_info(s):
         out["tool"] = ue(s.info["tool"])
     if s.info.get("held"):
         out["held"] = {k: ue(v) for k, v in s.info["held"].items()}
+    if s.info.get("fixture"):
+        out["fixture"] = dict(s.info["fixture"], hands={k: ue(v) for k, v in s.info["fixture"]["hands"].items()})
     return out

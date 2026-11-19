@@ -295,6 +295,55 @@ def guide_capture(cs, res, path, show_only=None):
         act.destroy_actor(a)
 
 
+FIX_READ_CM = 160.0          # a worked set piece's surface is read this far round the person's chest (reach + lean)
+FIX_READ_MAX = 40000         # ... and thinned to at most this many points
+
+
+def fixture_points(name, loc_cm, PO):
+    """The surface (UE world cm) of the set piece `name` (the set builder labels each piece by its spec name; a
+    repeated piece name_NN: the nearest) within FIX_READ_CM of a person standing at loc_cm: its LOD 0 sections
+    filled to pose.FIX_STEP_CM (pose.surface_points) in the mesh's own frame, near the person only, then carried
+    by the actor's transform. -> (points | None, what was read)."""
+    sm = [a for a in act.get_all_level_actors() if isinstance(a, unreal.StaticMeshActor)]
+    # (the piece's own label first: "x" must not take "x_2", another piece)
+    cands = [a for a in sm if a.get_actor_label() == name] or \
+        [a for a in sm if a.get_actor_label().startswith(name + "_") and a.get_actor_label()[len(name) + 1:].isdigit()
+         and len(a.get_actor_label()) - len(name) - 1 == 2]
+    if not cands:
+        return None, f"no set piece labelled {name!r}"
+    lc = V([loc_cm[0], loc_cm[1], loc_cm[2] + 100.0])
+    a = min(cands, key=lambda x: (x.get_actor_location() - lc).length())
+    mesh = a.static_mesh_component.get_editor_property("static_mesh")
+    if mesh is None:
+        return None, f"{a.get_actor_label()} has no mesh"
+    tf = a.get_actor_transform()
+    sc = tf.scale3d
+    big, small = max(abs(sc.x), abs(sc.y), abs(sc.z)) or 1.0, min(abs(sc.x), abs(sc.y), abs(sc.z)) or 1.0
+    c = tf.inverse_transform_location(lc)
+    verts, tris = [], []
+    for sec in range(mesh.get_num_sections(0)):
+        got = unreal.ProceduralMeshLibrary.get_section_from_static_mesh(mesh, 0, sec)
+        o = len(verts)
+        verts += [[v.x, v.y, v.z] for v in got[0]]
+        tris += [o + int(i) for i in got[1]]
+    loc = PO.surface_points(verts, tris, PO.FIX_STEP_CM / big, centre=[c.x, c.y, c.z], radius=FIX_READ_CM / small)
+    loc = loc[::max(1, len(loc) // FIX_READ_MAX)]
+    pts = []
+    for p in loc:
+        w = tf.transform_location(V(p))
+        pts.append([round(w.x, 2), round(w.y, 2), round(w.z, 2)])
+    return pts, f"{a.get_actor_label()}: {len(verts)} vertices, {len(pts)} surface points near"
+
+
+def measured_palm(body, side, PO):
+    """The palm point (pose.palm_from_joints) on the posed body's own hand joints, UE world cm; None unmeasured."""
+    bones = [f"hand_{side}", f"middle_01_{side}", f"index_01_{side}", f"pinky_01_{side}"]
+    if not all(body.does_socket_exist(b) for b in bones):
+        return None
+    jv = [sock(body, b) for b in bones]
+    return PO.palm_from_joints(*[[v.x, v.y, v.z] for v in jv], side)
+
+
 def find_post():
     for a in act.get_all_level_actors():
         if isinstance(a, unreal.PostProcessVolume) and a.get_actor_label() == "SetPost":
@@ -486,13 +535,53 @@ def run(job):
             for h_ in pr_.get("held") or []:
                 if model_grip(h_.get("asset")):
                     h_["grip"] = model_grip(h_["asset"])
+        # a blow is aimed at the worked thing's top as this job lays it (below: its box's thinnest side upright, its
+        # bottom on the work top), read from its mesh's own box. 11-18: the aim was reckoned from the recorded size's
+        # thinnest side (27 cm) while the laid model was 19 cm thick, and the face hung 7.75 cm over the work
+        for key, spec in job["characters"].items():
+            pr_ = (spec.get("body_pose") or {}).get("params") or {}
+            wo_ = pr_.get("work_on") or {}
+            cm_ = (job.get("carried") or {}).get(wo_.get("asset"))
+            if not (cm_ and wo_.get("base_ue") and pr_.get("work_target_ue")):
+                continue
+            try:
+                bb_ = EAL.load_asset(cm_["mesh"]).get_bounds()
+                top_ = PO.lie_top_ue(wo_["base_ue"], [bb_.box_extent.x, bb_.box_extent.y, bb_.box_extent.z])
+                r["subjects"][key]["work_top"] = {"from_size_ue": pr_["work_target_ue"], "laid_ue": top_}
+                pr_["work_target_ue"] = top_
+            except Exception as e_:                        # the size's reckoning stands; the re-solve below closes it
+                r["notes"].append(f"{key}: the worked thing's laid top not read ({e_})")
+        # a piece of the set worked with the hands (params "fixture", scene.py): its surface round the person, for the
+        # pose to find a part a hand closes round (pose.grip_parts); kept here for a re-solve, not in the result
+        fix_pts = {}
+        for key, spec in job["characters"].items():
+            fx_ = ((spec.get("body_pose") or {}).get("params") or {}).get("fixture")
+            if not fx_:
+                continue
+            try:
+                pts_, how_ = fixture_points(fx_["name"], spec["loc_cm"], PO)
+            except Exception as e_:
+                pts_, how_ = None, f"surface not read: {e_}"
+            r["subjects"][key]["fixture_read"] = how_
+            if pts_:
+                fix_pts[key] = pts_
+                fx_["pts_ue"] = pts_
+            else:                                      # (a failure, not silence: the hands stay off the piece)
+                r["subjects"][key].setdefault("contact_missing", []).append(
+                    f"the hands were not put on the {fx_['name']}: {how_}")
         for key, spec in job["characters"].items():
             bp = spec.get("body_pose")
             if bp and bp.get("pose"):
                 a, body, face = comps(key)
-                anim, info = PO.build(a, body, bp["pose"], bp.get("params"), f"/Game/Scene/Poses/AS_{job['id']}_{key}")
+                keep_ = {}
+                anim, info = PO.build(a, body, bp["pose"], bp.get("params"), f"/Game/Scene/Poses/AS_{job['id']}_{key}",
+                                      keep=keep_)
                 bp["_anim"] = anim
+                bp["_ref"] = keep_.get("ref")          # the reference skeleton, for a re-solve on the posed body
                 r["subjects"][key]["pose_build"] = info
+                fx_ = (bp.get("params") or {}).get("fixture")
+                if fx_ and "pts_ue" in fx_:
+                    fx_["points_read"] = len(fx_.pop("pts_ue"))
 
         def pose_all():
             for key, f in (job.get("figures") or {}).items():     # a rigged figure holds its clip's frame
@@ -527,7 +616,8 @@ def run(job):
                     # call on the face failed with "ObjectInstance is null" (11-11, every character)
                     if spec.get("_face_anim") is None:
                         mk = getattr(CR, "face_from_body_anim", None) or _face_from_body_anim
-                        spec["_face_anim"] = mk(body, face, fp["curves"], f"AS_scene_{job['id']}_{key}_face")
+                        spec["_face_anim"] = mk(body, face, fp["curves"],
+                                                f"AS_scene_{job['id']}_{key}_face{spec.get('_face_tag', '')}")
                     anim, n = spec["_face_anim"]
                     face.set_leader_pose_component(None, True, False)
                     a, body, face = live_face(key)          # the call can replace the Blueprint's components
@@ -592,7 +682,8 @@ def run(job):
                     fb[m_.get_name()] = {"centre": [round(v, 3) for v in to_set(o_)],
                                          "half_m": [round(e_.x / 100, 3), round(e_.y / 100, 3), round(e_.z / 100, 3)]}
             r["subjects"][key]["piece_bounds"] = fb
-            r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items() if k != "_anim"}
+            r["subjects"][key]["body_pose"] = {k: v for k, v in (spec.get("body_pose") or {}).items()
+                                               if not k.startswith("_")}
         # a lying person (the spec's "_lie": the bed's head and foot points) is read by the cameras from the bed's
         # side nearer whoever is with them
         for key, spec in job["characters"].items():
@@ -605,6 +696,84 @@ def run(job):
             if spec.get("_inside"):
                 r["subjects"][key]["measured"]["inside"] = True
                 r["subjects"][key]["measured"]["open_walls"] = spec["_inside"] == "open"
+
+        def repose(key, why_):
+            """A measured miss re-solved: the person's pose built again from their reference skeleton with the
+            corrected aims now in their params, played, settled (the face caught up through a helper camera, as for
+            the first pose) and measured again. The cameras keep the framing of the first measure."""
+            spec = job["characters"][key]
+            bp = spec["body_pose"]
+            n_ = len(bp.setdefault("_resolves", [])) + 1
+            bp["_resolves"].append(list(why_ or []))
+            pr_ = dict(bp.get("params") or {})
+            if key in fix_pts and pr_.get("fixture"):
+                pr_["fixture"] = dict(pr_["fixture"], pts_ue=fix_pts[key])
+            a, body, face = comps(key)
+            anim, info = PO.build(a, body, bp["pose"], pr_, f"/Game/Scene/Poses/AS_{job['id']}_{key}_re{n_}",
+                                  ref=bp.get("_ref"))
+            bp["_anim"] = anim
+            r["subjects"][key]["pose_build"] = info
+            if spec.get("_face_anim") is not None:   # the face anim holds the body's old pose: made again, a new name
+                spec["_face_anim"] = None
+                spec["_face_tag"] = f"_re{n_}"
+            pose_all()
+            yield from frames(10)
+            pose_all()
+            yield from frames(5)
+            pose_faces()
+            yield from frames(3)
+            pv = sock(comps(key)[1], "spine_05")
+            p0 = to_set(pv)
+            mc = cine("measure", [p0[0] + spec["facing"][0] * 3, p0[1] + spec["facing"][1] * 3, p0[2]], p0, 35, 8.0,
+                      3.0, res)
+            les.pilot_level_actor(mc)
+            yield from frames(5)
+            pose_all()
+            yield from frames(3)
+            pose_faces()
+            n = yield from settle_attach(job, comps, 240)
+            les.eject_pilot_level_actor()
+            act.destroy_actor(mc)
+            a, body, face = comps(key)
+            old_ = r["subjects"][key].get("measured") or {}
+            new_ = measure(key, body, face, spec, head_off[key])
+            for k_ in ("inside", "open_walls"):
+                if k_ in old_:
+                    new_[k_] = old_[k_]
+            r["subjects"][key]["measured"] = new_
+            r["subjects"][key].setdefault("resolves", []).append({"why": list(why_ or []), "attach_ticks": n})
+
+        def fixture_measure(key):
+            """Each hand on a piece's part as the engine posed it: the palm on the body's own hand joints against the
+            part's line (pose.fixture_contact), stored beside the held things' contacts; None with no piece."""
+            fp_ = (r["subjects"][key].get("pose_build") or {}).get("fixture")
+            if not fp_:
+                return None
+            body_ = comps(key)[1]
+            out_ = {"name": fp_.get("name"), "points": fp_.get("points"), "parts": fp_.get("parts"), "hands": {},
+                    "why": []}
+            if not fp_.get("hands"):
+                out_["note"] = "no part of it a free hand can take hold of within reach"
+            for x_, h_ in (fp_.get("hands") or {}).items():
+                palm_ = measured_palm(body_, x_, PO) or h_.get("palm_ue")
+                c_ = PO.fixture_contact(palm_, h_["a_ue"], h_["b_ue"], fp_.get("name"), x_)
+                c_.update(palm_ue=[round(v, 2) for v in palm_], a_ue=h_["a_ue"], b_ue=h_["b_ue"], on_ue=h_.get("on_ue"))
+                out_["hands"][x_] = c_
+                out_["why"] += c_["why"]
+            r["subjects"][key]["fixture"] = out_
+            return out_
+        # each hand on a piece's part measured; a palm off its part is solved again by the measured miss across the
+        # part (pose.fixture_fix), at most RESOLVE_TRIES times, before it is a failure
+        for key, spec in job["characters"].items():
+            for n_ in range(PO.RESOLVE_TRIES + 1):
+                fc_ = fixture_measure(key)
+                if not fc_ or not fc_["why"] or n_ == PO.RESOLVE_TRIES:
+                    break
+                fu_ = spec["body_pose"]["params"]["fixture"].setdefault("fix_ue", {})
+                for x_, hc_ in fc_["hands"].items():
+                    if hc_["why"]:
+                        fu_[x_] = PO.fixture_fix(fu_.get(x_), hc_["palm_ue"], hc_["a_ue"], hc_["b_ue"])
+                yield from repose(key, fc_["why"])
         for key, f in (job.get("figures") or {}).items():
             m_ = creature_measure(figs[key], f) if f.get("creature") else FG.measure(figs[key], f)
             r["subjects"][key] = {"measured": m_, "figure": f.get("id") or f["mesh"]}
@@ -652,6 +821,59 @@ def run(job):
                 r["notes"].append("key_light: the level has no Sun")
         # stills
         worn_actors = {}                 # (person, library prop) -> its actor: what people wear on the head or carry
+        on_top_, resolves_ = {}, {}      # this still's worked things' tops by person; re-solves so far by person
+
+        def hold_in_hand(key, t_, a_):
+            """A thing in a hand (pose.py reports every one it gripped: info["held"], by asset; the older info["tool"]
+            for a work tool): held in the palm of its hand, the handle along the direction the pose gives, its face
+            where the pose turned it, its grip point in the palm. The palm is the pose's own palm point carried by the
+            measured wrist joint. (11-18: anything but a work tool hung below the wrist; with a grip reported that
+            fallback is not reached.) -> (placement, the pose's report) when gripped, () when hung under the wrist,
+            None when the hand is not measured."""
+            cm_ = job["carried"][t_["asset"]]
+            sz_ = cm_["size_m"]
+            m_ = r["subjects"][key]["measured"]
+            pb_ = r["subjects"][key].get("pose_build") or {}
+            tl_ = (pb_.get("held") or {}).get(t_["asset"])
+            if not tl_ and not pb_.get("held"):
+                tl_ = pb_.get("tool")
+            j_ = (m_.get("joints") or {}).get(f"hand_{(tl_ or {}).get('hand') or t_.get('hand') or 'r'}")
+            if not j_:
+                return None
+            a_.set_actor_scale3d(unreal.Vector(1.0, 1.0, 1.0))
+            if not (tl_ and tl_.get("palm_ue")):
+                f_ = m_["facing"]
+                a_.set_actor_location(to_ue([j_[0], j_[1], j_[2] - sz_[2] - 0.02]), False, False)
+                a_.set_actor_rotation(unreal.Rotator(0, 0, -(math.degrees(math.atan2(f_[1], f_[0])) + 90.0)), False)
+                return ()
+            w_ = to_ue(j_)
+            palm_ = [w_.x + tl_["palm_ue"][0] - tl_["hand_ue"][0], w_.y + tl_["palm_ue"][1] - tl_["hand_ue"][1],
+                     w_.z + tl_["palm_ue"][2] - tl_["hand_ue"][2]]
+            grip_ = PO.prop_in_hand(sz_, palm_, tl_["dir_ue"], tl_["face_ue"], grip=tl_.get("grip") or cm_.get("grip"))
+            a_.set_actor_rotation(unreal.MathLibrary.make_rot_from_xz(V(grip_["x"]), V(grip_["z"])), False)
+            a_.set_actor_location(V(grip_["origin_cm"]), False, False)
+            r["subjects"][key].setdefault("held", {})[t_["asset"]] = {
+                "grip": grip_["grip"], "origin_ue": [round(v, 2) for v in grip_["origin_cm"]],
+                "palm_ue": [round(v, 2) for v in palm_], "hand": tl_.get("hand"), "how": tl_.get("how"),
+                "name": t_.get("name") or tl_.get("name")}
+            return grip_, tl_
+
+        def held_measure(key, t_, grip_, tl_):
+            """The staged check of a held thing (pose.held_contact, the old blockout check's numbers): the palm
+            measured on the posed body's own hand joints against the placed handle's line, and for a blow the working
+            point against the worked thing's placed top, the face against straight down (a raised thing: how high
+            over that top). Over the limits its words reach the staging's facts (speakers.staged_facts)."""
+            hs_ = tl_.get("hand") or "r"
+            hm_ = r["subjects"][key]["held"][t_["asset"]]
+            palm_m_ = measured_palm(comps(key)[1], hs_, PO)
+            if palm_m_:
+                hm_["palm_measured_ue"] = [round(v, 2) for v in palm_m_]
+            else:
+                palm_m_ = hm_["palm_ue"]
+            tgt_ = (on_top_.get(key) or tl_["target_ue"]) if tl_.get("target_ue") else None
+            hm_["contact"] = PO.held_contact(grip_, palm_m_, tgt_, [0.0, 0.0, 1.0] if tgt_ else None, hm_.get("name"),
+                                             raised=bool(tl_.get("raised")))
+            return hm_["contact"]
         t_r = time.time()
         for c, cs, chk, cam, everyone in cams:
             ts = time.time()
@@ -718,7 +940,6 @@ def run(job):
                     if tag not in worn_actors:
                         continue
                     sz_ = cm_["size_m"]
-                    grip_ = None
                     if t_["at"] == "on":         # the thing being worked on, lying on the top of what they work at
                         f_, k_ = m_["facing"], 1.0
                         xy_, z_ = t_["xyz"][:2], t_["xyz"][2]
@@ -731,27 +952,14 @@ def run(job):
                         # (the eyes stand at the face's front: the head's middle is half a head's depth behind them)
                         xy_ = [m_["eye_xy"][0] - f_[0] * 0.42 * hh_, m_["eye_xy"][1] - f_[1] * 0.42 * hh_]
                         z_ = m_["head_top_z"] + HEAD_OVER * hh_ - sz_[2] * k_
-                    else:
-                        # a thing in a hand (pose.py reports every one it gripped: info["held"], by asset; the older
-                        # info["tool"] for a work tool): held in the palm of its hand, the handle along the direction
-                        # the pose gives, its face where the pose turned it, its grip point in the palm. The palm is
-                        # the pose's own palm point carried by the measured wrist joint. (11-18: anything but a work
-                        # tool hung below the wrist; with a grip reported this fallback is not reached)
-                        pb_ = (r["subjects"].get(key) or {}).get("pose_build") or {}
-                        tl_ = (pb_.get("held") or {}).get(t_["asset"])
-                        if not tl_ and not pb_.get("held"):
-                            tl_ = pb_.get("tool")
-                        j_ = (m_.get("joints") or {}).get(f"hand_{(tl_ or {}).get('hand') or t_.get('hand') or 'r'}")
-                        if not j_:
+                    else:                        # a thing in a hand: gripped as the pose holds it
+                        got_ = hold_in_hand(key, t_, worn_actors[tag])
+                        if got_ is None:
                             continue
-                        f_, k_ = m_["facing"], 1.0
-                        xy_, z_ = [j_[0], j_[1]], j_[2] - sz_[2] - 0.02
-                        if tl_ and tl_.get("palm_ue"):
-                            w_ = to_ue(j_)
-                            palm_ = [w_.x + tl_["palm_ue"][0] - tl_["hand_ue"][0], w_.y + tl_["palm_ue"][1] - tl_["hand_ue"][1],
-                                     w_.z + tl_["palm_ue"][2] - tl_["hand_ue"][2]]
-                            grip_ = PO.prop_in_hand(sz_, palm_, tl_["dir_ue"], tl_["face_ue"],
-                                                    grip=tl_.get("grip") or cm_.get("grip"))
+                        if got_:
+                            in_hand_.append((key, t_) + got_)
+                        shown.add(tag)
+                        continue
                     a_ = worn_actors[tag]
                     a_.set_actor_scale3d(unreal.Vector(k_, k_, k_))
                     a_.set_actor_location(to_ue([xy_[0], xy_[1], z_]), False, False)
@@ -771,35 +979,41 @@ def run(job):
                                                             l_.z + want_.z - (o_.z - e_.z)), False, False)
                         o_, e_ = a_.get_actor_bounds(False)
                         on_top_[key] = [o_.x, o_.y, o_.z + e_.z]       # the worked thing's top: the blow's point
-                    elif grip_:
-                        a_.set_actor_rotation(unreal.MathLibrary.make_rot_from_xz(V(grip_["x"]), V(grip_["z"])), False)
-                        a_.set_actor_location(V(grip_["origin_cm"]), False, False)
-                        r["subjects"][key].setdefault("held", {})[t_["asset"]] = {
-                            "grip": grip_["grip"], "origin_ue": [round(v, 2) for v in grip_["origin_cm"]], "palm_ue": [round(v, 2) for v in palm_],
-                            "hand": tl_.get("hand"), "how": tl_.get("how"), "name": t_.get("name") or tl_.get("name")}
-                        in_hand_.append((key, t_, grip_, tl_))
                     else:
                         a_.set_actor_rotation(unreal.Rotator(0, 0, yaw_), False)
                     shown.add(tag)
-            # the staged check of each held thing (pose.held_contact, the old blockout check's numbers): the palm
-            # measured on the posed body's own hand joints against the placed handle's line, and for a blow the
-            # working point against the worked thing's placed top, the face against straight down. Over the limits
-            # its words reach the staging's facts (speakers.staged_facts)
+            # the staged check of each held thing (held_measure); a miss a re-solve can close (pose.needs_resolve:
+            # the working point off the measured target, the face turned off it) is not kept: the arm is solved again
+            # to the measured target, aimed by the miss (pose.aim_fix), the things placed and measured again, at most
+            # RESOLVE_TRIES times per person; only a miss that outlasts them is the shot's failure (11-18: a face
+            # 7.75 cm over the work was flagged in words and the frame kept)
             for key, t_, grip_, tl_ in in_hand_:
-                body_ = comps(key)[1]
-                hs_ = tl_.get("hand") or "r"
-                bones_ = [f"hand_{hs_}", f"middle_01_{hs_}", f"index_01_{hs_}", f"pinky_01_{hs_}"]
-                hm_ = r["subjects"][key]["held"][t_["asset"]]
-                if all(body_.does_socket_exist(b_) for b_ in bones_):
-                    jv_ = [sock(body_, b_) for b_ in bones_]
-                    palm_m_ = PO.palm_from_joints(*[[v_.x, v_.y, v_.z] for v_ in jv_], hs_)
-                    hm_["palm_measured_ue"] = [round(v, 2) for v in palm_m_]
-                else:
-                    palm_m_ = hm_["palm_ue"]
-                tgt_ = None
-                if tl_.get("target_ue"):                 # a blow: the worked thing's measured top, else the pose's aim
-                    tgt_ = on_top_.get(key) or tl_["target_ue"]
-                hm_["contact"] = PO.held_contact(grip_, palm_m_, tgt_, [0.0, 0.0, 1.0] if tgt_ else None, hm_.get("name"))
+                held_measure(key, t_, grip_, tl_)
+            for key in sorted({x_[0] for x_ in in_hand_}):
+                while resolves_.get(key, 0) < PO.RESOLVE_TRIES:
+                    bad_ = [r["subjects"][key]["held"][x_[1]["asset"]].get("contact") for x_ in in_hand_
+                            if x_[0] == key and PO.needs_resolve(r["subjects"][key]["held"][x_[1]["asset"]].get("contact"))]
+                    if not bad_ or not (bad_[0].get("target") and bad_[0].get("work_pt")):
+                        break
+                    pr_ = job["characters"][key]["body_pose"]["params"]
+                    aim0_ = pr_.get("work_target_ue") or bad_[0]["target"]
+                    aim_ = PO.aim_fix(aim0_, bad_[0]["target"], bad_[0]["work_pt"])
+                    if math.dist(aim_, aim0_) < 0.5:         # (a face turned off with the point on: the same solve)
+                        break
+                    pr_["work_target_ue"] = aim_
+                    resolves_[key] = resolves_.get(key, 0) + 1
+                    yield from repose(key, bad_[0]["why"])
+                    r["subjects"][key]["resolves"][-1]["aim_ue"] = aim_
+                    again_ = []
+                    for x_ in in_hand_:
+                        if x_[0] != key:
+                            again_.append(x_)
+                            continue
+                        got_ = hold_in_hand(key, x_[1], worn_actors[(key, x_[1]["asset"])])
+                        if got_:
+                            again_.append((key, x_[1]) + got_)
+                            held_measure(key, x_[1], *got_)
+                    in_hand_ = again_
             for tag, a_ in worn_actors.items():
                 a_.set_is_temporarily_hidden_in_editor(tag not in shown)
                 a_.set_actor_hidden_in_game(tag not in shown)
@@ -861,6 +1075,15 @@ def run(job):
             r["shots"].append(shot)
             log(f"{job['id']}: still {c['name']} in {shot['still_s']} s")
         r["times_s"]["stills"] = round(time.time() - t_r, 2)
+        # a blow at a worked thing that ended with nothing measured against the work is a failure, not silence
+        # (pose.blow_contact_why; 11-18: the raised blows reported no target and nothing said so)
+        for key, spec in job["characters"].items():
+            pr_ = (spec.get("body_pose") or {}).get("params") or {}
+            hh_ = [h_ for h_ in ((r["subjects"].get(key) or {}).get("held") or {}).values() if h_.get("how") == "work"]
+            why_ = PO.blow_contact_why(pr_.get("action"), bool(pr_.get("work_target_ue")),
+                                       [h_.get("contact") for h_ in hh_], hh_[0].get("name") if hh_ else None)
+            if why_:
+                r["subjects"].setdefault(key, {}).setdefault("contact_missing", []).extend(why_)
         r["ok"] = True
     except Exception:
         r["error"] = traceback.format_exc()

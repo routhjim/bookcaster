@@ -853,6 +853,10 @@ def staged_facts(spec, subjects):
         # the metal and turned sideways, and nothing said so)
         for _a, hd_ in sorted((((subjects.get(k) or {}).get("held")) or {}).items()):
             bad += list((((hd_ or {}).get("contact")) or {}).get("why") or [])
+        # a blow at a worked thing with no contact measured at all, and each hand on a piece of the set it works
+        # (scene_job: pose.blow_contact_why, pose.fixture_contact)
+        bad += list(((subjects.get(k) or {}).get("contact_missing")) or [])
+        bad += list((((subjects.get(k) or {}).get("fixture")) or {}).get("why") or [])
         out[k] = bad
     return out
 
