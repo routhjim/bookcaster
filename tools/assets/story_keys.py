@@ -1,7 +1,8 @@
 """A book's shot plan to engine-staged keyframes, every place of it, in one command.
 
     python tools/assets/story_keys.py PLAN.json BOOK_DIR WORK_DIR KEYS_DIR [--prefix ID] [--only PLACE ...]
-                                      [--from STEP] [--until STEP] [--redo STEP ...] [--metahuman]
+                                      [--from STEP] [--until STEP] [--redo STEP|PLACE:STEP ...] [--jobs N]
+                                      [--metahuman]
 
 PLAN.json is the shots flow's plan ({shot id: [shot, ...]}), BOOK_DIR the book's folder (its work/video holds the
 look sheet, the cast's reference sheets and LoRAs, the places' concept pictures, and the narration's timeline).
@@ -19,6 +20,12 @@ in WORK_DIR/<place>/ when it is done, so a second run takes up where the first s
   redraw    guides, the redraw, its checks, one re-draw, the pick           (redraw/*.py)
   keys      the accepted keys and their people facts into KEYS_DIR          (scenes/shot_people.py)
   drawn     (off unless --until drawn; 11-17: engine keys for everything) shots left keyless, drawn from the plan
+
+--jobs N works N places at once (their GPU work queues on the line by device; the steps that write the shared
+library run one place at a time). --redo takes a step for every place or PLACE_SLUG:STEP for one. After the pass
+step the place's scenes are checked before any GPU work (scenes/preflight.py; told in the log, nothing stopped); a
+step past three times its usual time is told in the log, and one scene's staging is stopped at 25 minutes; a place
+left with shots without a key has only those shots' scenes staged and drawn again.
 
 All GPU work goes through the line (run_asset.py --line-cmd); nothing here decides how anything looks. WORK_DIR's
 places.json ({place name: {"slug", "set"}}) and cast.json ({person: figure id}) are written on the first run and
@@ -108,12 +115,73 @@ def slug_of(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40]
 
 
-def sh(argv, logf: Path | None = None, env=None, cwd=None) -> int:
+def sh(argv, logf: Path | None = None, env=None, cwd=None, limit_s: float | None = None) -> int:
+    """One command, its output to logf. limit_s: stopped (with its children) when it runs longer, -> 124."""
     e = dict(os.environ, ASSETS_LINE_CLIENT=str(HERE / "run_asset.py"), STORY_VENV_PY=str(VENV_PY), **(env or {}))
-    if logf:
-        with open(logf, "a") as f:
-            return subprocess.run([str(a) for a in argv], stdout=f, stderr=subprocess.STDOUT, env=e, cwd=cwd).returncode
-    return subprocess.run([str(a) for a in argv], env=e, cwd=cwd).returncode
+    f = open(logf, "a") if logf else None
+    try:
+        p = subprocess.Popen([str(a) for a in argv], stdout=f, stderr=subprocess.STDOUT if f else None, env=e, cwd=cwd,
+                             start_new_session=bool(limit_s))
+        try:
+            return p.wait(timeout=limit_s)
+        except subprocess.TimeoutExpired:
+            import signal
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
+                p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            return 124
+    finally:
+        if f:
+            f.close()
+
+
+# How long a step usually runs, as (seconds, seconds per shot): a step past OVER_TIMES its usual time is said so in
+# the log, again each time that long passes (a place's staging ran three hours where thirteen minutes were usual,
+# on the CPU with every card idle, and nothing said so, 11-19). The waits of a shared line are in these times, so a
+# step is told of, not stopped; a scene's own staging, which waits on nothing, is stopped at GROUP_MAX_S.
+STEP_USUAL_S = {"shots": (60, 0), "spec": (600, 20), "concept": (600, 0), "pieces": (1500, 0), "set": (300, 0),
+                "cast": (900, 0), "pass": (600, 30), "stage": (240, 40), "redraw": (420, 45), "keys": (120, 5),
+                "drawn": (600, 60)}
+OVER_TIMES = 3.0
+GROUP_MAX_S = 1500.0         # one scene group's staging (speakers.py: its rounds are seconds each)
+
+
+def over_time(step: str, shots: int, ran_s: float) -> bool:
+    """Whether a step has run past OVER_TIMES its usual time for this many shots."""
+    a, b = STEP_USUAL_S.get(step, (600, 0))
+    return ran_s > OVER_TIMES * (a + b * shots)
+
+
+class Watch:
+    """Tells the log when a running step is past its usual time (a thread; with: around the step)."""
+    def __init__(self, what: str, step: str, shots: int, every_s: float = 30.0):
+        import threading
+        self.what, self.step, self.shots, self.every = what, step, shots, every_s
+        self.stop = threading.Event()
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.told = 0
+
+    def _run(self):
+        t0 = time.time()
+        a, b = STEP_USUAL_S.get(self.step, (600, 0))
+        usual = a + b * self.shots
+        while not self.stop.wait(self.every):
+            ran = time.time() - t0
+            if ran > OVER_TIMES * usual * (self.told + 1):
+                self.told += 1
+                log(f"{self.what}: {self.step} OVER TIME: running {ran / 60:.0f} min, usual about {usual / 60:.0f} min")
+
+    def __enter__(self):
+        self.t.start()
+        return self
+
+    def __exit__(self, *a):
+        self.stop.set()
 
 
 def line(station: str, kind: str, jid: str, logf: Path, cmd: list, env=None) -> int:
@@ -756,33 +824,63 @@ class Story:
         log(f"{place}: {len(made)} of {len(pcs)} worn or carried things are made: {sorted(made)}")
         return out
 
-    def step_stage(self, place):
+    def groups_of(self, place, shots) -> list:
+        """The scene groups (spec file stems) that hold these shots."""
+        out = []
+        for f in sorted((self.d(place) / "specs").glob("pl_g*.json")):
+            if any(c.get("plan_id") in shots for c in json.loads(f.read_text()).get("cameras") or []):
+                out.append(f.stem)
+        return out
+
+    @staticmethod
+    def group_dirs(seq: Path, stem: str) -> list:
+        """A group's staged folders: its own and its per-speaker parts (pl_g05, pl_g05_a, pl_g05_q)."""
+        return sorted(q for q in seq.glob(f"{stem}*") if q.is_dir() and (q.name == stem or q.name.startswith(stem + "_")))
+
+    def step_stage(self, place, only=None, fallback=()):
+        """only: the groups to stage again (the others' stagings are kept); fallback: the shots that take the
+        clear wide when their tries run out (speakers.give_up)."""
         d = self.d(place)
-        shutil.rmtree(d / "seq", ignore_errors=True)
+        if only is None:
+            shutil.rmtree(d / "seq", ignore_errors=True)
         (d / "seq").mkdir(exist_ok=True)      # (a stopped run's last scene may still be writing into it)
+        env = {"SCENES_OUT": str(d / "seq"), "SCENES_CHAR_TOOLS": str(HERE / "characters")}
+        if fallback:
+            env["SPEAKERS_FALLBACK_ALL"] = ",".join(fallback)
         prev = None
         for f in sorted((d / "specs").glob("pl_g*.json")):
+            if only is not None and f.stem not in only:
+                if (d / "seq" / f.stem / "staged.json").exists():
+                    prev = d / "seq" / f.stem / "staged.json"
+                continue
+            if only is not None:
+                for q in self.group_dirs(d / "seq", f.stem):
+                    shutil.rmtree(q, ignore_errors=True)
+                for q in (d / "seq").glob(f"{f.stem}*.json"):
+                    q.unlink()
             if not json.loads(f.read_text()).get("characters"):
                 # an insert (nobody of the cast in it: the place or a thing seen alone): the set photographed from
                 # its placed camera, no people's checks to make (from_plan.insert_camera)
                 (d / "seq" / f.stem).mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, d / "seq" / f.stem / "spec_round0.json")
-                if sh([PY, HERE / "scenes" / "scene.py", f], d / "seq" / f"{f.stem}.scene.log",
-                      {"SCENES_OUT": str(d / "seq"), "SCENES_CHAR_TOOLS": str(HERE / "characters")}):
+                if sh([PY, HERE / "scenes" / "scene.py", f], d / "seq" / f"{f.stem}.scene.log", env, limit_s=GROUP_MAX_S):
                     log(f"{place}: insert {f.stem} failed its staging")
                 continue
             rc = sh([PY, HERE / "scenes" / "speakers.py", f] + (["--prev", prev] if prev else []),
-                    d / "seq" / f"{f.stem}.speakers.log",
-                    {"SCENES_OUT": str(d / "seq"), "SCENES_CHAR_TOOLS": str(HERE / "characters")})
-            if rc:
+                    d / "seq" / f"{f.stem}.speakers.log", env, limit_s=GROUP_MAX_S)
+            if rc == 124:
+                log(f"{place}: scene {f.stem} STOPPED after {GROUP_MAX_S / 60:.0f} min of staging (its usual: a minute or two)")
+            elif rc:
                 log(f"{place}: scene {f.stem} failed its staging")
             if (d / "seq" / f.stem / "staged.json").exists():
                 prev = d / "seq" / f.stem / "staged.json"
         return bool(list((d / "seq").glob("*/result.json")))
 
-    def step_redraw(self, place):
+    def step_redraw(self, place, only=None):
+        """only: the groups whose shots are drawn again; their rows and pictures replace those groups' in the
+        place's run, the other shots' keys kept as they are."""
         d = self.d(place)
-        out = d / "run"
+        out = d / "run" if only is None else d / "run_again"
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir()
         cast = json.loads((d / "cast.json").read_text())
@@ -790,7 +888,8 @@ class Story:
         style = (self.book / "art_style.txt")
         run = dict(REDRAW, cast={v["key"]: dict(self.person(n)["words"], **({"stand_in": True} if v.get("stand_in") else {}))
                                  for n, v in cast.items()},
-                   scenes=sorted(os.path.dirname(p) for p in glob.glob(str(d / "seq" / "*" / "result.json"))),
+                   scenes=sorted(os.path.dirname(p) for p in glob.glob(str(d / "seq" / "*" / "result.json"))
+                                 if only is None or any(Path(p).parent in self.group_dirs(d / "seq", g) for g in only)),
                    set=str(self.set_dir(place)), out=str(out),
                    # (a cabin with views outside: its concept picture shows one view of its own, which the redraw
                    # then painted in every window; the cabin's look reaches the redraw through its pieces)
@@ -802,9 +901,11 @@ class Story:
         # hearth and door and hung lanterns the set does not have (11-18, seven shots at three strengths)
         if not ss.get("world"):
             run.update(strength_bg=ROOM_BG, mask_people="heads")   # (redraw/guides.py HEADS_*: these two strengths)
-        rp = d / "run.json"
+        if not run["scenes"]:
+            return only is not None
+        rp = d / ("run.json" if only is None else "run_again.json")
         rp.write_text(json.dumps(run, indent=1))
-        tag = self.places[place]["slug"]
+        tag = self.places[place]["slug"] + ("" if only is None else "_again")
         root = HERE.parents[1]
         if line("blender", "guides", f"guides_{tag}", out / "guides.log",
                 ["bash", "-c", f"cd {root} && bash {CARD_SH} 05 {GUIDES_PY} -I tools/assets/redraw/guides.py --set "
@@ -826,7 +927,31 @@ class Story:
             line("image", "check", f"checkx_{tag}", out / "check_x.log", ["bash", CHECK_SH, out / "check_x.json"])
         sh(acc + ["pick", rp, out / "check_result.json", out / "check_x_result.json", out / "accepted.json"],
            out / "accept.log", cwd=root)
-        return (out / "accepted.json").exists()
+        if only is None or not (out / "accepted.json").exists():
+            return (out / "accepted.json").exists()
+        return self.merge_run(d / "run", out, [q.name for g in only for q in self.group_dirs(d / "seq", g)] + list(only))
+
+    @staticmethod
+    def merge_run(run: Path, again: Path, groups: list) -> bool:
+        """The redrawn groups' rows and pictures take those groups' places in the run: every old row and try of
+        theirs goes, the new ones come in with their paths in the run's own folder."""
+        of = lambda name: any(name.startswith(g + "__") for g in groups)       # noqa: E731
+        run.mkdir(exist_ok=True)
+        acc = json.loads((run / "accepted.json").read_text()) if (run / "accepted.json").exists() else {}
+        acc = {k: v for k, v in acc.items() if not of(k)}
+        for q in run.glob("*.png"):
+            if of(q.name):
+                q.unlink()
+        for q in again.glob("*.png"):
+            shutil.copy2(q, run / q.name)
+        new = json.loads((again / "accepted.json").read_text())
+        for k, v in new.items():
+            v = dict(v)
+            if v.get("path"):
+                v["path"] = str(run / Path(v["path"]).name)
+            acc[k] = v
+        (run / "accepted.json").write_text(json.dumps(acc, indent=1))
+        return True
 
     def step_keys(self, place):
         d = self.d(place)
@@ -915,22 +1040,41 @@ class Story:
         return out
 
     def restage_keyless(self, place) -> None:
-        """Every shot ends with an engine key (the user's rule, 11-17): a place whose keys step left shots without
-        one is staged again, once, with each shot that fails every gate taken from a clear wide on its people
-        (speakers.py SPEAKERS_FALLBACK_ALL), then drawn and keyed again."""
+        """Every shot ends with an engine key (the user's rule, 11-17): the shots a place's keys step left without
+        one are staged again, once, each taking a clear wide on its people when its tries run out (speakers.py
+        SPEAKERS_FALLBACK_ALL), then drawn and keyed again. Only their scene groups: the other shots keep their
+        stagings and keys (staged and drawn again whole for one shot, a place took a quarter of an hour and two of
+        its keyed talk shots lost their keys, 11-19)."""
         miss = self.keyless(place)
         if not miss:
             return
-        log(f"{place}: {len(miss)} shot(s) without a key {miss}: staged again with the clear-wide fallback")
-        os.environ["SPEAKERS_FALLBACK_ALL"] = ",".join(miss)        # (those shots only: speakers.give_up)
-        try:
-            for st in ("stage", "redraw", "keys"):
-                if not getattr(self, f"step_{st}")(place):
-                    log(f"{place}: the restage's {st} FAILED")
-                    return
-        finally:
-            os.environ.pop("SPEAKERS_FALLBACK_ALL", None)
+        groups = self.groups_of(place, set(miss))
+        log(f"{place}: {len(miss)} shot(s) without a key {miss}: scene(s) {groups} staged again with the clear-wide fallback")
+        if not groups:
+            return
+        for st, call in (("stage", lambda: self.step_stage(place, only=groups, fallback=miss)),
+                         ("redraw", lambda: self.step_redraw(place, only=groups)),
+                         ("keys", lambda: self.step_keys(place))):
+            if not call():
+                log(f"{place}: the restage's {st} FAILED")
+                return
         log(f"{place}: after the restage, {len(self.keyless(place))} shot(s) without a key")
+
+    def preflight(self, place) -> list:
+        """What can be seen wrong in a place's scene specs and words before any of it is staged or drawn
+        (scenes/preflight.py): told in the log and kept in the place's preflight.json. Nothing is stopped."""
+        d = self.d(place)
+        try:
+            sys.path.insert(0, str(HERE / "scenes"))
+            import preflight as PF
+            found = PF.check(d / "specs", self.set_dir(place), d / "pass.json",
+                             {p["name"] for i in self.ids for p in self.plan[i][0].get("people") or []})
+        except Exception as e:                             # (a check that cannot run stops nothing)
+            found = [f"the preflight could not run: {e!r}"]
+        (d / "preflight.json").write_text(json.dumps(found, indent=1))
+        for w in found:
+            log(f"{place}: preflight: {w}")
+        return found
 
     def _room_picture(self, place, rows) -> list:
         """The picture a drawn key takes its room from: one of the place's own engine keys, the widest there is (a
@@ -1048,36 +1192,63 @@ class Story:
         return True
 
     # ------------------------------------------------------------ the run
-    def run(self, only=None, first="shots", last="keys", redo=()):
-        todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
-        for place in self.places:
-            if only and place not in only and self.places[place]["slug"] not in only:
+    SHARED_STEPS = ("pieces", "cast", "pass")     # they write the library's shared things (figures, carried things,
+    #                                               pieces by their look): one place at a time
+
+    def run_place(self, place, todo, redo) -> None:
+        if 0 < len(self.shots_of(place)) <= DRAWN_MAX_SHOTS:         # a glance at a place: drawn, not built
+            if not self.done(place, "drawn") or "drawn" in redo:
+                log(f"{place}: drawn")
+                llm_down()
+                if self.step_drawn(place):
+                    self.mark(place, "drawn")
+                else:
+                    log(f"{place}: drawn FAILED")
+            return
+        import contextlib
+        sl = self.places[place]["slug"]
+        redo = {x for x in redo if ":" not in x} | {x.split(":", 1)[1] for x in redo if x.split(":", 1)[0] == sl}
+        for st in todo:
+            if self.done(place, st) and st not in redo:
                 continue
-            if 0 < len(self.shots_of(place)) <= DRAWN_MAX_SHOTS:         # a glance at a place: drawn, not built
-                if not self.done(place, "drawn") or "drawn" in redo:
-                    log(f"{place}: drawn")
-                    llm_down()
-                    if self.step_drawn(place):
-                        self.mark(place, "drawn")
-                    else:
-                        log(f"{place}: drawn FAILED")
-                continue
-            for st in todo:
-                if self.done(place, st) and st not in redo:
-                    continue
+            with (self._shared if st in self.SHARED_STEPS else contextlib.nullcontext()):
                 log(f"{place}: {st}")
                 if st not in ("spec", "pass"):
                     llm_down()
                 t = time.time()
-                if not getattr(self, f"step_{st}")(place):
-                    log(f"{place}: {st} FAILED after {time.time() - t:.0f} s; the place stops here")
-                    break
-                self.mark(place, st)
-                for later in STEPS[STEPS.index(st) + 1:]:           # what follows is made again from the new result
-                    (self.d(place) / f".done_{later}").unlink(missing_ok=True)
-                log(f"{place}: {st} done in {time.time() - t:.0f} s")
-                if st == "keys":
-                    self.restage_keyless(place)
+                with Watch(place, st, len(self.shots_of(place))):
+                    ok = getattr(self, f"step_{st}")(place)
+            if not ok:
+                log(f"{place}: {st} FAILED after {time.time() - t:.0f} s; the place stops here")
+                break
+            self.mark(place, st)
+            for later in STEPS[STEPS.index(st) + 1:]:           # what follows is made again from the new result
+                (self.d(place) / f".done_{later}").unlink(missing_ok=True)
+            log(f"{place}: {st} done in {time.time() - t:.0f} s")
+            if st == "pass":
+                self.preflight(place)
+            if st == "keys":
+                self.restage_keyless(place)
+
+    def run(self, only=None, first="shots", last="keys", redo=(), jobs=1):
+        """jobs: how many places are worked at once. Each place's steps stay in order; their GPU work queues on the
+        line by device, so with two places one draws on one card while the other stages or shapes on the other
+        (one place at a time left the second card idle through a night's run, 11-19)."""
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        self._shared = threading.Lock()
+        todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
+        places = [p for p in self.places if not only or p in only or self.places[p]["slug"] in only]
+        if jobs > 1 and len(places) > 1:
+            with ThreadPoolExecutor(max_workers=jobs) as ex:
+                for fu in [ex.submit(self.run_place, p, todo, redo) for p in places]:
+                    try:
+                        fu.result()
+                    except Exception as e:                 # one place's failure does not stop the others
+                        log(f"a place stopped on an error: {e!r}")
+        else:
+            for place in places:
+                self.run_place(place, todo, redo)
         report = {}
         for place in self.places:
             kp = self.d(place) / "keys.json"
@@ -1107,7 +1278,8 @@ def main():
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
     s.whole = "--metahuman" not in a           # figures as whole generated meshes on the skeleton (cast_char.py --whole),
     #                                      the default since 11-15; --metahuman casts MetaHuman bodies wearing generated outfits
-    s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")))
+    s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")),
+          jobs=int(opt("--jobs", "1")))
 
 
 if __name__ == "__main__":

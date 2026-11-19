@@ -71,13 +71,15 @@ def test_a_place_left_with_a_keyless_shot_is_staged_again_with_the_fallback(tmp_
     st.work = tmp_path / "work"
     st.places = {"P": {"slug": "p", "set": "s"}}
     d = st.work / "p"
-    d.mkdir(parents=True)
+    (d / "specs").mkdir(parents=True)
+    (d / "specs" / "pl_g01.json").write_text(json.dumps({"cameras": [{"plan_id": "A"}]}))
+    (d / "specs" / "pl_g02.json").write_text(json.dumps({"cameras": [{"plan_id": "B"}]}))
     (d / "keys.json").write_text(json.dumps([{"shot": "A", "key": True}, {"shot": "B", "key": False}]))
     seen = []
 
     def step(name):
-        def f(self, place):
-            seen.append((name, SK.os.environ.get("SPEAKERS_FALLBACK_ALL")))
+        def f(self, place, **kw):
+            seen.append((name, kw))
             if name == "keys":
                 (d / "keys.json").write_text(json.dumps([{"shot": "A", "key": True}, {"shot": "B", "key": True}]))
             return True
@@ -85,8 +87,9 @@ def test_a_place_left_with_a_keyless_shot_is_staged_again_with_the_fallback(tmp_
     for n in ("stage", "redraw", "keys"):
         monkeypatch.setattr(SK.Story, f"step_{n}", step(n))
     st.restage_keyless("P")
-    assert seen == [("stage", "B"), ("redraw", "B"), ("keys", "B")] and st.keyless("P") == []
-    assert "SPEAKERS_FALLBACK_ALL" not in SK.os.environ
+    # only the keyless shot's scene, and only that shot takes the clear wide
+    assert seen == [("stage", {"only": ["pl_g02"], "fallback": ["B"]}), ("redraw", {"only": ["pl_g02"]}), ("keys", {})]
+    assert st.keyless("P") == [] and "SPEAKERS_FALLBACK_ALL" not in SK.os.environ
     seen.clear()
     st.restage_keyless("P")                                             # nothing keyless: nothing staged
     assert seen == []
