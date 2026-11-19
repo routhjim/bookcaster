@@ -277,9 +277,15 @@ def test_a_room_takes_every_thing_its_picture_shows():
                                           "xy": [-1.0, 2.9], "size_m": [1.8, 0.15, 0.6]}}
     sp = PB.with_concept(place_spec(), c)
     by = {p["id"]: p for p in sp["pieces"]}
-    assert {"c1", "c2", "c4"} <= set(by) and "c3" not in by and "c5" not in by       # each once; nothing unkinded
+    assert {"c1", "c2"} <= set(by) and "c3" not in by and "c5" not in by             # each once; nothing unkinded
     assert by["c1"]["at_xy"] == [1.8, 0.5] and by["c1"]["longest_m"] == 0.9 and by["c1"]["called"] == "round cask"
-    assert by["c4"]["hangs_m"] == 1.4 and by["c4"]["against"] == "wall" and "at_xy" not in by["c4"]
+    assert "c4" not in by                         # (a thing on a wall is not built while ROOM_HUNG is off)
+    PB.ROOM_HUNG = True
+    try:
+        by = {p["id"]: p for p in PB.with_concept(place_spec(), c)["pieces"]}
+        assert by["c4"]["hangs_m"] == 1.4 and by["c4"]["against"] == "wall" and "at_xy" not in by["c4"]
+    finally:
+        PB.ROOM_HUNG = False
 
 
 def test_a_thing_hung_on_a_wall_is_measured_where_it_hangs():

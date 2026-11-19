@@ -226,6 +226,11 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
+# a thing the picture shows on a wall, built and hung there: OFF. The first one made (a wall of hanging tools, as wide
+# as the picture) was set in the middle of the floor as a solid four metres across: nobody could be stood in the
+# room and no camera placed, and six of its eight stills were black (11-19). On again when a hung thing is put
+# flat on its own wall and takes no floor.
+ROOM_HUNG = False
 ROOM_SEEN_MOST = 10              # the things of a room's picture built besides the plan's own, at most
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
@@ -278,7 +283,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
     in_room_ = concept.get("space") == "room" and sp.get("kind") != "outdoors"
     for i, sn in enumerate(concept.get("seen") or []):
         hung_ = ((concept.get("depth") or {}).get("off_floor") or {}).get(f"seen:{i}")
-        if hung_ is not None and not (in_room_ and hung_.get("hangs_m") and sn.get("kind") == "work_piece"):
+        if hung_ is not None and not (ROOM_HUNG and in_room_ and hung_.get("hangs_m") and sn.get("kind") == "work_piece"):
             continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
         # (in the open every large thing standing on the ground is built, unless a piece of the spec is that thing:
         # mostly the same part of the picture)
