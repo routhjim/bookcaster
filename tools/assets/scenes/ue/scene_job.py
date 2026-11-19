@@ -65,6 +65,8 @@ def to_set(v):
     return [v.x / 100.0, -v.y / 100.0, v.z / 100.0]
 
 
+GLOW_LIGHT = {"lumens": 250.0, "radius_m": 2.5, "over_m": 0.06}   # the light of a worked thing that glows of itself
+GLOW_COLOR = "#ff6a1a"      # ... at its own top, in the colour of hot metal and embers
 HEAD_THING = 1.25           # a thing worn on the head stands this many head heights (crown to chin) tall
 HEAD_OVER = 0.10            # ... its crown this share of a head's height over the head's own
 
@@ -820,6 +822,7 @@ def run(job):
             else:
                 r["notes"].append("key_light: the level has no Sun")
         # stills
+        glow_lights = {}                 # (person, library prop) -> the light of a worked thing that glows
         worn_actors = {}                 # (person, library prop) -> its actor: what people wear on the head or carry
         on_top_, resolves_ = {}, {}      # this still's worked things' tops by person; re-solves so far by person
 
@@ -920,7 +923,7 @@ def run(job):
                         a_.set_actor_rotation(unreal.Rotator(r0.roll, r0.pitch, r0.yaw - turn), False)
             # what the people of this shot wear on the head or carry in a hand (from_plan's "carried"): each made
             # object set on the head, sized to it, or gripped in its hand; those of other shots hidden
-            shown = set()
+            shown, glow_on = set(), set()
             on_top_, in_hand_ = {}, []
             # (a worked thing lies first, so a blow's check finds its top)
             for key, things_ in (c.get("carried") or {}).items():
@@ -979,6 +982,22 @@ def run(job):
                                                             l_.z + want_.z - (o_.z - e_.z)), False, False)
                         o_, e_ = a_.get_actor_bounds(False)
                         on_top_[key] = [o_.x, o_.y, o_.z + e_.z]       # the worked thing's top: the blow's point
+                        # a worked thing that glows of itself in this shot (the plan's "glow": metal hot from the
+                        # fire) lights what is round it: unlit, it was a dark lump and the key drew cold iron (11-18)
+                        if t_.get("glow"):
+                            try:
+                                if tag not in glow_lights:
+                                    SBg_ = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
+                                    glow_lights[tag] = SBg_.spawn_light({
+                                        "type": "point", "c": [0, 0, 0], "lumens": GLOW_LIGHT["lumens"],
+                                        "radius_m": GLOW_LIGHT["radius_m"], "color": GLOW_COLOR, "shadows": False,
+                                        "f": "Scene/lights"})
+                                    temp.append(glow_lights[tag])
+                                glow_lights[tag].set_actor_location(unreal.Vector(
+                                    o_.x, o_.y, o_.z + e_.z + GLOW_LIGHT["over_m"] * 100.0), False, False)
+                                glow_on.add(tag)
+                            except Exception as e_g:
+                                r["notes"].append(f"glow light: {e_g}")
                     else:
                         a_.set_actor_rotation(unreal.Rotator(0, 0, yaw_), False)
                     shown.add(tag)
@@ -1017,6 +1036,13 @@ def run(job):
             for tag, a_ in worn_actors.items():
                 a_.set_is_temporarily_hidden_in_editor(tag not in shown)
                 a_.set_actor_hidden_in_game(tag not in shown)
+            for tag, l_ in glow_lights.items():
+                on_ = tag in shown and tag in glow_on
+                l_.set_is_temporarily_hidden_in_editor(not on_)
+                l_.set_actor_hidden_in_game(not on_)
+                lc_ = l_.get_component_by_class(unreal.PointLightComponent)
+                if lc_:
+                    lc_.set_visibility(on_)
             if sun_a is not None:
                 sm_ = r["subjects"][c["subject"]]["measured"] if c.get("subject") else None
                 eye_ = [sm_["eye_xy"][0], sm_["eye_xy"][1], sm_["eye_z"]] if sm_ else cs["target"]

@@ -318,6 +318,9 @@ THING_ON = ("head", "face", "hands", "feet", "body", "held", "worked")
 PART_ASK = ("In a scene this happens: {act}\nA prop list for it names this as a thing in a person's hand: {what}\n"
             "Is it a whole thing of its own that a person can pick up and carry away; or is it a part of something "
             "bigger that stays in its place? Answer with exactly one word: whole or part.")
+GLOW_ASK = ("In a scene this happens: {act}\nThe thing this work is done on: {what}\nAt that moment, does this thing "
+            "glow with its own heat or its own light (as a thing just out of a fire does)? If it does, answer with "
+            "the colour of its glow in one or two plain words; if it does not, or the words do not say, answer no.")
 LOOK_ASK = """A story is told below, whole.
 
 The story:
@@ -396,6 +399,20 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
                          for t in out[i][n] if t["what"] not in part]
             if not out[i][n]:
                 del out[i][n]
+    # a worked thing that glows of itself in a shot (hot from a fire): asked shot by shot from the shot's own words,
+    # and it rides with the thing ("glow": the colour) to the staging's light and the key's words. (The thing's
+    # look is the story's cold one: a bar being hammered lay dark on the anvil in every key, 11-18)
+    for i in ids:
+        a = (plan[i][0].get("action") or "").strip()
+        for ts in out[i].values():
+            for t in ts:
+                if t["on"] == "worked" and a:
+                    try:
+                        g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_ASK.format(act=a, what=t["what"]), cache).strip().lower()).strip()
+                    except OSError:
+                        g = ""
+                    if g and g not in ("no", "none") and not g.startswith("no ") and len(g.split()) <= 3:
+                        t["glow"] = g
     # a thing a person has in the shot before and in the shot after, the same way, they have in between too (the
     # account left a helmet off for one shot of a flight)
     for a_, b_, c_ in zip(ids, ids[1:], ids[2:]):

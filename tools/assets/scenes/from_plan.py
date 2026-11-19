@@ -1062,7 +1062,8 @@ def main():
             for t_ in ts_:
                 if t_["on"] == "worked" and t_["what"] in made_ and at_ and k_ in state:
                     obj_.setdefault(k_, []).append({"asset": made_[t_["what"]], "at": "on", "name": t_["what"], "xyz": [
-                        at_["center"][0], at_["center"][1], round(at_["center"][2] + at_["half"][2], 3)]})
+                        at_["center"][0], at_["center"][1], round(at_["center"][2] + at_["half"][2], 3)],
+                        **({"glow": t_["glow"]} if t_.get("glow") else {})})
         obj_ = {k_: v_ for k_, v_ in obj_.items() if v_}
         if obj_:                              # (scene_job puts each on the person's head or in their hand)
             cam["carried"] = obj_

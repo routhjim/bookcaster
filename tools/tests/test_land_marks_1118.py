@@ -355,3 +355,37 @@ def test_things_asked_a_few_shots_at_a_time(monkeypatch, tmp_path):
     got = PS.things(plan, ids, "a place", [], "http://x", tmp_path)
     assert len(asked) == 3 and all(len(a) <= PS.THINGS_SHOTS for a in asked)
     assert all(got[i]["A"][0]["what"] == "hat" for i in ids)
+
+
+def test_a_worked_thing_that_glows_is_said_glowing_to_the_key(tmp_path):
+    """A worked thing the plan has glowing in a shot is told to the key as glowing, in its colour."""
+    import redraw as RD
+    place = tmp_path / "place"
+    sd = place / "seq" / "g1"
+    sd.mkdir(parents=True)
+    (place / "carried.json").write_text(json.dumps({"the bar": "thing_01"}))
+    (sd / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "c1", "carried": {"a": [{"asset": "thing_01", "at": "on", "xyz": [0, 1, 0.7], "glow": "orange"}]}},
+        {"name": "c2", "carried": {"a": [{"asset": "thing_01", "at": "on", "xyz": [0, 1, 0.7]}]}}]}))
+    assert "glowing orange" in RD.laid_words(sd, "c1", [("a",)])
+    assert "glowing" not in RD.laid_words(sd, "c2", [("a",)])
+
+
+def test_the_glow_of_a_worked_thing_is_asked_shot_by_shot(monkeypatch, tmp_path):
+    """Whether the worked thing glows is asked from each shot's own words, and only a colour is taken."""
+    import json as J, sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "scenes"))
+    import place_spec as PS
+    plan = {"s1": [{"people": [{"name": "A"}], "action": "A beats the hot bar"}],
+            "s2": [{"people": [{"name": "A"}], "action": "A looks at the cold bar"}]}
+    def fake(url, text, cache):
+        if "ON or CARRIES" in text:
+            return J.dumps({i: {"A": [{"what": "bar", "on": "worked", "size_cm": 40}]} for i in plan if f"{i}: " in text})
+        if "glow with its own heat" in text:
+            return "Orange." if "hot bar" in text else "No, the words do not say."
+        if "whole or part" in text:
+            return "whole"
+        return "a plain bar of metal"
+    monkeypatch.setattr(PS, "ask", fake)
+    got = PS.things(plan, ["s1", "s2"], "a place", [], "http://x", tmp_path)
+    assert got["s1"]["A"][0].get("glow") == "orange" and "glow" not in got["s2"]["A"][0]

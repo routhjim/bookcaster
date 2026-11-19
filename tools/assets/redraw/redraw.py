@@ -282,6 +282,8 @@ def laid_words(sd: Path, cam: str, ppl: list) -> str:
             if x.get("at") != "on" or k not in inf:
                 continue
             nm = str(made.get(str(x.get("asset"))) or "").strip()
+            if nm and x.get("glow"):         # (hot from the fire in this shot: said, or the key drew it cold)
+                nm += f", glowing {str(x['glow']).strip()} with its own heat and lighting what is near it"
             if nm and nm not in names_:
                 names_.append(nm)
     if not names_:
