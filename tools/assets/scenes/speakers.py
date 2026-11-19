@@ -1483,6 +1483,21 @@ def face_light_why(shot, k, m, res) -> list:
     return [f"{k}'s face is in shadow (mean {lum:.0f} of 255)"]
 
 
+STILL_BLACK = (12, 0.7)      # a still with this share of it under this brightness (of 255) is nearly black too: a
+#                              frame from inside a shadow with a strip of bright sky stood at a mean of 13 to 21,
+#                              74 to 87% of it black, and passed (the darkest good stills of a firelit room: 61%)
+
+
+def still_black(path) -> float | None:
+    """The share of a still that is black (under STILL_BLACK's brightness); None when it cannot be read."""
+    try:
+        from PIL import Image
+        px = list(Image.open(path).convert("L").resize((128, 72)).getdata())
+    except (ImportError, OSError):
+        return None
+    return sum(1 for v in px if v < STILL_BLACK[0]) / len(px) if px else None
+
+
 def still_why(shot, chk) -> list:
     """A rendered still that shows nothing: nearly black, or one person's or creature's own pixels over nearly the
     whole frame (the camera is inside them or against them). A failed staging, re-framed farther back (BACK_FACTOR):
@@ -1495,6 +1510,8 @@ def still_why(shot, chk) -> list:
     lum = still_mean(shot["path"]) if shot.get("path") else None
     if lum is not None and lum < STILL_DARK:
         why.append(f"the still is nearly black (mean {lum:.1f} of 255)")
+    elif shot.get("path") and (bl := still_black(shot["path"])) is not None and bl >= STILL_BLACK[1]:
+        why.append(f"the still is nearly black ({bl:.0%} of it black)")
     return why
 
 

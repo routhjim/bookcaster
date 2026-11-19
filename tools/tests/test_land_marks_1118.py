@@ -389,3 +389,18 @@ def test_the_glow_of_a_worked_thing_is_asked_shot_by_shot(monkeypatch, tmp_path)
     monkeypatch.setattr(PS, "ask", fake)
     got = PS.things(plan, ["s1", "s2"], "a place", [], "http://x", tmp_path)
     assert got["s1"]["A"][0].get("glow") == "orange" and "glow" not in got["s2"]["A"][0]
+
+
+def test_a_still_that_is_mostly_black_is_nearly_black(tmp_path):
+    """A still with a bright strip and the rest black shows nothing, whatever its mean brightness."""
+    import sys
+    from PIL import Image
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "scenes"))
+    import speakers as SK
+    dark = Image.new("L", (160, 90), 2)
+    dark.paste(230, (0, 0, 160, 16))                        # a strip of sky over a black frame
+    dark.save(tmp_path / "d.png")
+    dim = Image.new("L", (160, 90), 30)                     # a dim room, evenly lit
+    dim.save(tmp_path / "m.png")
+    assert any("nearly black" in w for w in SK.still_why({"path": str(tmp_path / "d.png")}, {}))
+    assert SK.still_why({"path": str(tmp_path / "m.png")}, {}) == []
