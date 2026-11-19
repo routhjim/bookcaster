@@ -266,6 +266,9 @@ def main():
 FOLLOW_S = float(os.environ.get("KEYCHECK_FOLLOW_S", "0"))     # > 0: the pictures are still being drawn (below)
 
 
+ALIVE = os.environ.get("KEYCHECK_ALIVE", "")                   # a file that stands while the drawers are at work
+
+
 def as_they_land(items: list, wait_s: float = FOLLOW_S):
     """The items, each when its picture is there: with KEYCHECK_FOLLOW_S the list is checked beside the drawing
     (on another device), a picture the moment it lands; an item whose picture has not come wait_s after the last
@@ -274,7 +277,9 @@ def as_they_land(items: list, wait_s: float = FOLLOW_S):
     while left:
         got = next((it for it in left if Path(it["redraw"]).exists()), None) if wait_s > 0 else left[0]
         if got is None:
-            if time.time() - last > wait_s:
+            # (while the drawers' own mark stands, they are loaded or waiting their turn on a card: a drawer kept
+            # waiting ten minutes by other work on its card had its half of the pictures given up as not drawn, 11-19)
+            if time.time() - last > wait_s and not (ALIVE and Path(ALIVE).exists()):
                 print(json.dumps({"not_drawn": [it["id"] for it in left]}), flush=True)
                 return
             time.sleep(0.5)

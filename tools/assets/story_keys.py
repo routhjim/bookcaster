@@ -70,7 +70,7 @@ IMAGE_PY = Path(os.environ.get("STORY_IMAGE_PY", Path.home() / "tts-ab" / ".venv
 # check); "cards" = on the drawing cards after each round of drawing
 CHECK_ON = os.environ.get("STORY_CHECK_ON", "igpu")
 IGPU_PY = Path(os.environ.get("STORY_IGPU_PY", Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"))
-FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "600"))    # a picture not landed this long after the last: not drawn
+FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "120"))    # a picture not landed this long after the last: not drawn
 DRAW_CARDS = [c for c in os.environ.get("STORY_DRAW_CARDS", "05,65").split(",") if c.strip()]
 CARD_LINE = {os.environ.get("ASSETS_BLENDER_CARD", "05"): ("image", "refs"),
              os.environ.get("ASSETS_UE_CARD", "65"): ("engine", "refs")}
@@ -282,6 +282,10 @@ class Drawers:
         import threading
         root = HERE.parents[1]
         self.cards, self.q, self.dead, self.rc, self.ths = list(DRAW_CARDS), {}, {}, {}, []
+        # (stands while every drawer is at work or waiting for its card: the check beside them gives no picture up
+        # as not drawn while it does)
+        self.alive = logd / f"{tag}.alive"
+        self.alive.write_text(time.strftime("%F %T"))
         for card in self.cards:
             ff = logd / f"{tag}_{card}.fifo"
             ff.unlink(missing_ok=True)
@@ -297,6 +301,7 @@ class Drawers:
                                      ["bash", "-c", f"cd {root} && bash {CARD_SH} {card} {IMAGE_PY} -I "
                                                     f"tools/qwen_image.py --serve < {ff}"])
                 self.dead[card].set()
+                self.alive.unlink(missing_ok=True)
 
             def write(card=card, fd=fd, ff=ff):
                 while True:
@@ -332,7 +337,7 @@ def rows_of(files: list) -> list:
     return [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
 
 
-def check_beside(files: list, tag: str, logd: Path) -> bool:
+def check_beside(files: list, tag: str, logd: Path, alive: Path | None = None) -> bool:
     """The key checks of these check files on the iGPU while the cards draw: each picture checked when it lands
     (keycheck.py KEYCHECK_FOLLOW_S), the models loaded once for every list."""
     files = [str(f_) for f_ in files if Path(f_).exists()]
@@ -340,6 +345,7 @@ def check_beside(files: list, tag: str, logd: Path) -> bool:
         return True
     root = HERE.parents[1]
     inner = (f"env HSA_CU_MASK=$HIP_VISIBLE_DEVICES:0-38 DETECT_DEVICE=cuda KEYCHECK_FOLLOW_S={FOLLOW_S:.0f} "
+             f"KEYCHECK_ALIVE={alive or ''} "
              f"{IGPU_PY} -I tools/assets/redraw/keycheck.py {' '.join(files)}")
     return line("igpu", "check", tag, logd / f"{tag}.log",
                 ["bash", "-c", f"cd {root} && bash {CARD_SH} igpu bash -c {inner!r}"]) == 0
@@ -1160,13 +1166,13 @@ class Story:
         if beside:
             dr = Drawers(f"draw_{tag}", logd)
             dr.feed(first)
-            if check_beside([c["out"] / "check.json" for c in cs], f"check_{tag}", logd):
+            if check_beside([c["out"] / "check.json" for c in cs], f"check_{tag}", logd, dr.alive):
                 again = retries()
                 if again:
                     rows = rows_of([c["out"] / "retry_jobs.jsonl" for c in again])
                     log(f"drawing: {len(rows)} picture(s) drawn again")
                     dr.feed(rows)
-                    check_beside([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+                    check_beside([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd, dr.alive)
                 if not dr.close():
                     log("drawing: a card's drawer ended badly")
             else:
