@@ -206,3 +206,20 @@ def test_the_pictures_are_shared_between_the_drawing_cards(tmp_path, monkeypatch
     got = sorted((tmp_path / f"draw_t_{c}.jsonl").read_text().count("\n") for c in ("05", "65"))
     assert got == [1, 2]
     assert all("qwen_image.py --serve" in c[2] for c in calls)
+
+
+def test_a_check_takes_each_picture_as_it_lands(tmp_path, monkeypatch):
+    import ast
+    src = (Path(SK.HERE) / "redraw" / "keycheck.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "as_they_land")
+    ns = {"time": time, "Path": Path, "json": json, "FOLLOW_S": 0.0}
+    exec(compile(ast.Module([fn], []), "kc", "exec"), ns)
+    a, b, c = ({"id": n, "redraw": str(tmp_path / f"{n}.png")} for n in "abc")
+    assert [x["id"] for x in ns["as_they_land"]([a, b, c], 0)] == ["a", "b", "c"]      # not following: all, in order
+    (tmp_path / "b.png").write_bytes(b"x")
+    got = []
+    for x in ns["as_they_land"]([a, b, c], 1.2):
+        got.append(x["id"])
+        if x["id"] == "b":
+            (tmp_path / "a.png").write_bytes(b"x")
+    assert got == ["b", "a"]                      # as they land; the one never drawn is left out

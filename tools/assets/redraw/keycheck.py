@@ -237,7 +237,8 @@ def lab_of(img: torch.Tensor, mask_path: str, rise: float = 0.0) -> dict | None:
 def main():
     if not torch.cuda.is_available():
         raise SystemExit("no GPU visible: checks run on a card, never on the CPU")
-    cfg = json.loads(Path(sys.argv[1]).read_text())
+    cfgs = [json.loads(Path(p).read_text()) for p in sys.argv[1:]]
+    cfg = cfgs[0]                                # (the models are the same for every list given: loaded once)
     dev = torch.device("cuda")
     t0 = time.time()
     pose = Pose(cfg["pose_model"], dev)
@@ -258,9 +259,35 @@ def main():
         import vl_judge as VJ
         judge = VJ.Judge("cuda")
     print(json.dumps({"phase": "load", "s": round(time.time() - t0, 1)}), flush=True)
+    for cfg in cfgs:
+        check_list(cfg, pose, det, judge, dev, t0)
+
+
+FOLLOW_S = float(os.environ.get("KEYCHECK_FOLLOW_S", "0"))     # > 0: the pictures are still being drawn (below)
+
+
+def as_they_land(items: list, wait_s: float = FOLLOW_S):
+    """The items, each when its picture is there: with KEYCHECK_FOLLOW_S the list is checked beside the drawing
+    (on another device), a picture the moment it lands; an item whose picture has not come wait_s after the last
+    one landed is left out (its drawing failed). Without it: every item at once, in order."""
+    left, last = list(items), time.time()
+    while left:
+        got = next((it for it in left if Path(it["redraw"]).exists()), None) if wait_s > 0 else left[0]
+        if got is None:
+            if time.time() - last > wait_s:
+                print(json.dumps({"not_drawn": [it["id"] for it in left]}), flush=True)
+                return
+            time.sleep(0.5)
+            continue
+        left.remove(got)
+        last = time.time()
+        yield got
+
+
+def check_list(cfg, pose, det, judge, dev, t0):
     out = {}
     cache = {}
-    for it in cfg["items"]:
+    for it in as_they_land(cfg["items"]):
         r = {"people": {}}
         imgs = {"redraw": load(it["redraw"], dev)}
         for kk in ("engine", "depth"):
