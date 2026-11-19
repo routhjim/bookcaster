@@ -1192,8 +1192,10 @@ class Story:
         return True
 
     # ------------------------------------------------------------ the run
-    SHARED_STEPS = ("pieces", "cast", "pass")     # they write the library's shared things (figures, carried things,
-    #                                               pieces by their look): one place at a time
+    # the steps that write the library's shared things, one place at a time within each kind: the pieces (by their
+    # look), and the figures and carried things. (Under one lock for all three, a place waited to cast its figures
+    # until another's quarter-hour of pieces was done, 11-19)
+    SHARED_STEPS = {"pieces": "pieces", "cast": "people", "pass": "people"}
 
     def run_place(self, place, todo, redo) -> None:
         if 0 < len(self.shots_of(place)) <= DRAWN_MAX_SHOTS:         # a glance at a place: drawn, not built
@@ -1211,7 +1213,7 @@ class Story:
         for st in todo:
             if self.done(place, st) and st not in redo:
                 continue
-            with (self._shared if st in self.SHARED_STEPS else contextlib.nullcontext()):
+            with (self._shared[self.SHARED_STEPS[st]] if st in self.SHARED_STEPS else contextlib.nullcontext()):
                 log(f"{place}: {st}")
                 if st not in ("spec", "pass"):
                     llm_down()
@@ -1236,7 +1238,7 @@ class Story:
         (one place at a time left the second card idle through a night's run, 11-19)."""
         import threading
         from concurrent.futures import ThreadPoolExecutor
-        self._shared = threading.Lock()
+        self._shared = {k: threading.Lock() for k in set(self.SHARED_STEPS.values())}
         todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
         places = [p for p in self.places if not only or p in only or self.places[p]["slug"] in only]
         if jobs > 1 and len(places) > 1:
