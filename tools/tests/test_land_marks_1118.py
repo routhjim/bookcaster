@@ -381,8 +381,10 @@ def test_the_glow_of_a_worked_thing_is_asked_shot_by_shot(monkeypatch, tmp_path)
     def fake(url, text, cache):
         if "ON or CARRIES" in text:
             return J.dumps({i: {"A": [{"what": "bar", "on": "worked", "size_cm": 40}]} for i in plan if f"{i}: " in text})
-        if "glow with its own heat" in text:
-            return "Orange." if "hot bar" in text else "No, the words do not say."
+        if "What colour" in text:
+            return "Orange."
+        if "with its own heat or light" in text:
+            return "Yes" if "hot bar" in text else "No."
         if "whole or part" in text:
             return "whole"
         return "a plain bar of metal"

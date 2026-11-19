@@ -325,9 +325,11 @@ LOOK_ALONE_ASK = ("A prop maker is given this sentence to make one object from: 
                   "every word left out that says where the object is, what it hangs, lies, rests or stands on or "
                   "over, who has it, or what is done with it: only how the object itself looks stays. Answer with "
                   "the sentence and nothing else.")
-GLOW_ASK = ("In a scene this happens: {act}\nA thing in it: {what}\nAt that moment, does this thing "
-            "glow with its own heat or its own light (as a thing just out of a fire does)? If it does, answer with "
-            "the colour of its glow in one or two plain words; if it does not, or the words do not say, answer no.")
+GLOW_ASK = ("In a scene this happens: {act}\nA thing in it: {what}\nAt that moment, is this thing glowing, burning or "
+            "shining with its own heat or light: because the words say so, or because what is being done to it "
+            "can only be done to it hot from a fire? Answer with exactly one word: yes or no.")
+GLOW_COLOUR_ASK = ("In a scene this happens: {act}\nA thing in it glows with its own heat or light: {what}\nWhat colour "
+                   "is its glow? Answer with one or two plain words and nothing else.")
 LOOK_ASK = """A story is told below, whole.
 
 The story:
@@ -421,11 +423,15 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
         for ts in out[i].values():
             for t in ts:
                 if t["on"] in ("worked", "held") and a:
+                    # (asked in one question, "its colour, or no", a bar the shot's words called glowing was no)
                     try:
-                        g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_ASK.format(act=a, what=t["what"]), cache).strip().lower()).strip()
+                        g = ""
+                        if ask(url, GLOW_ASK.format(act=a, what=t["what"]), cache).strip().lower().startswith("yes"):
+                            g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_COLOUR_ASK.format(act=a, what=t["what"]),
+                                                             cache).strip().lower()).strip()
                     except OSError:
                         g = ""
-                    if g and g not in ("no", "none") and not g.startswith("no ") and len(g.split()) <= 3:
+                    if g and len(g.split()) <= 3:
                         t["glow"] = g
     # a thing a person has in the shot before and in the shot after, the same way, they have in between too (the
     # account left a helmet off for one shot of a flight)
