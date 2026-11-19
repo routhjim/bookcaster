@@ -66,6 +66,11 @@ IMAGE_PY = Path(os.environ.get("STORY_IMAGE_PY", Path.home() / "tts-ab" / ".venv
 # the cards the keys are drawn on, each with the line's station and job kind that hold it: the image card, and the
 # engine's (a command there borrows it: the editor unloads, line.py). The drawing is its own phase after every
 # place is staged, so the engine has no work then and both cards draw (run())
+# the checks: "igpu" = on the iGPU beside the drawing, each picture as it lands (the cards never stop drawing to
+# check); "cards" = on the drawing cards after each round of drawing
+CHECK_ON = os.environ.get("STORY_CHECK_ON", "igpu")
+IGPU_PY = Path(os.environ.get("STORY_IGPU_PY", Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"))
+FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "600"))    # a picture not landed this long after the last: not drawn
 DRAW_CARDS = [c for c in os.environ.get("STORY_DRAW_CARDS", "05,65").split(",") if c.strip()]
 CARD_LINE = {os.environ.get("ASSETS_BLENDER_CARD", "05"): ("image", "refs"),
              os.environ.get("ASSETS_UE_CARD", "65"): ("engine", "refs")}
@@ -252,7 +257,7 @@ def on_cards(parts: list, cmd_of, tag: str, logd: Path) -> bool:
 def draw_jobs(files: list, tag: str, logd: Path) -> bool:
     """Every drawing job of these job files (JSON lines), shared between the drawing cards: one image server on
     each, fed its share."""
-    rows = [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
+    rows = rows_of(files)
     if not rows:
         return True
     parts = split_even(rows, len(DRAW_CARDS))
@@ -263,6 +268,79 @@ def draw_jobs(files: list, tag: str, logd: Path) -> bool:
         return f"{IMAGE_PY} -I tools/qwen_image.py --serve < {pf}"
     log(f"drawing: {len(rows)} picture(s) on {len(parts)} card(s)")
     return on_cards(parts, cmd, tag, logd)
+
+
+class Drawers:
+    """An image server kept loaded on each drawing card for a whole drawing phase (through the line), fed jobs as
+    they come: the first drawings, later the ones drawn again, with no reload between. feed() shares rows between
+    the cards; close() ends the servers when they have drawn what they were fed -> whether every one ended well."""
+
+    def __init__(self, tag: str, logd: Path):
+        import queue
+        import threading
+        root = HERE.parents[1]
+        self.cards, self.q, self.dead, self.rc, self.ths = list(DRAW_CARDS), {}, {}, {}, []
+        for card in self.cards:
+            ff = logd / f"{tag}_{card}.fifo"
+            ff.unlink(missing_ok=True)
+            os.mkfifo(ff)
+            # (held open for reading too: the server sees its input end only when this side closes it, and opening
+            # does not wait for the server, which the line may start minutes later)
+            fd = os.open(ff, os.O_RDWR | os.O_NONBLOCK)
+            self.q[card], self.dead[card] = queue.Queue(), threading.Event()
+            station, kind = CARD_LINE.get(card, ("image", "refs"))
+
+            def serve(card=card, ff=ff, station=station, kind=kind):
+                self.rc[card] = line(station, kind, f"{tag}_{card}", logd / f"{tag}_{card}.log",
+                                     ["bash", "-c", f"cd {root} && bash {CARD_SH} {card} {IMAGE_PY} -I "
+                                                    f"tools/qwen_image.py --serve < {ff}"])
+                self.dead[card].set()
+
+            def write(card=card, fd=fd, ff=ff):
+                while True:
+                    row = self.q[card].get()
+                    if row is None:
+                        break
+                    data = (row + "\n").encode()
+                    while data and not self.dead[card].is_set():
+                        try:
+                            data = data[os.write(fd, data):]
+                        except BlockingIOError:
+                            time.sleep(0.5)
+                os.close(fd)
+                ff.unlink(missing_ok=True)
+            self.ths += [threading.Thread(target=serve), threading.Thread(target=write)]
+        for t in self.ths:
+            t.start()
+
+    def feed(self, rows: list) -> None:
+        for card, part in zip(self.cards, split_even(rows, len(self.cards))):
+            for row in part:
+                self.q[card].put(row)
+
+    def close(self) -> bool:
+        for card in self.cards:
+            self.q[card].put(None)
+        for t in self.ths:
+            t.join()
+        return all(self.rc.get(c) == 0 for c in self.cards)
+
+
+def rows_of(files: list) -> list:
+    return [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
+
+
+def check_beside(files: list, tag: str, logd: Path) -> bool:
+    """The key checks of these check files on the iGPU while the cards draw: each picture checked when it lands
+    (keycheck.py KEYCHECK_FOLLOW_S), the models loaded once for every list."""
+    files = [str(f_) for f_ in files if Path(f_).exists()]
+    if not files:
+        return True
+    root = HERE.parents[1]
+    inner = (f"env HSA_CU_MASK=$HIP_VISIBLE_DEVICES:0-38 DETECT_DEVICE=cuda KEYCHECK_FOLLOW_S={FOLLOW_S:.0f} "
+             f"{IGPU_PY} -I tools/assets/redraw/keycheck.py {' '.join(files)}")
+    return line("igpu", "check", tag, logd / f"{tag}.log",
+                ["bash", "-c", f"cd {root} && bash {CARD_SH} igpu bash -c {inner!r}"]) == 0
 
 
 def check_files(files: list, tag: str, logd: Path) -> bool:
@@ -1019,26 +1097,61 @@ class Story:
             return res
         logd = self.work
         tag = "keys_" + time.strftime("%H%M%S")
-        if not draw_jobs([c["out"] / "image_jobs.jsonl" for c in ctx.values()], f"draw_{tag}", logd):
-            log("drawing: a card's job FAILED")
-            return dict(res, **{p: False for p in ctx})
-        for c in ctx.values():
-            sh(acc + ["checks", c["rp"], c["out"] / "check.json", "--pose-model", POSE_MODEL], c["out"] / "accept.log", cwd=root)
-        if not check_files([c["out"] / "check.json" for c in ctx.values()], f"check_{tag}", logd):
-            log("drawing: a check job FAILED")
-            return dict(res, **{p: False for p in ctx})
-        again = []
-        for c in ctx.values():
-            sh(acc + ["retry", c["rp"], c["out"] / "check_result.json", c["out"] / "retry_jobs.jsonl"], c["out"] / "accept.log", cwd=root)
-            rj = c["out"] / "retry_jobs.jsonl"
-            if rj.exists() and rj.stat().st_size:
-                again.append(c)
-        if again:
-            draw_jobs([c["out"] / "retry_jobs.jsonl" for c in again], f"redraw_{tag}", logd)
-            for c in again:
-                sh(acc + ["checks", c["rp"], c["out"] / "check_x.json", "--ids-from", c["out"] / "retry_jobs.jsonl",
-                          "--pose-model", POSE_MODEL], c["out"] / "accept.log", cwd=root)
-            check_files([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+        cs = list(ctx.values())
+        checks = lambda c, name, *more: sh(acc + ["checks", c["rp"], c["out"] / name, *more, "--pose-model", POSE_MODEL],   # noqa: E731
+                                           c["out"] / "accept.log", cwd=root)
+
+        def retries() -> list:
+            again = []
+            for c in cs:
+                sh(acc + ["retry", c["rp"], c["out"] / "check_result.json", c["out"] / "retry_jobs.jsonl"],
+                   c["out"] / "accept.log", cwd=root)
+                rj = c["out"] / "retry_jobs.jsonl"
+                if rj.exists() and rj.stat().st_size:
+                    again.append(c)
+                    checks(c, "check_x.json", "--ids-from", rj)
+            return again
+        for c in cs:                         # (what each picture is checked for is known before it is drawn)
+            checks(c, "check.json")
+        first = rows_of([c["out"] / "image_jobs.jsonl" for c in cs])
+        log(f"drawing: {len(first)} picture(s) of {len(cs)} place(s) on {len(DRAW_CARDS)} card(s), checked on "
+            f"{'the iGPU as they land' if CHECK_ON == 'igpu' else 'the cards after'}")
+        beside = CHECK_ON == "igpu"
+        if beside:
+            dr = Drawers(f"draw_{tag}", logd)
+            dr.feed(first)
+            if check_beside([c["out"] / "check.json" for c in cs], f"check_{tag}", logd):
+                again = retries()
+                if again:
+                    rows = rows_of([c["out"] / "retry_jobs.jsonl" for c in again])
+                    log(f"drawing: {len(rows)} picture(s) drawn again")
+                    dr.feed(rows)
+                    check_beside([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+                if not dr.close():
+                    log("drawing: a card's drawer ended badly")
+            else:
+                # the iGPU's check did not run: the drawers finish what they have, and the checks go to the cards
+                log("drawing: the check beside the drawing FAILED; checking on the cards after it")
+                dr.close()
+                beside = False
+                if not check_files([c["out"] / "check.json" for c in cs], f"check_{tag}", logd):
+                    log("drawing: a check job FAILED")
+                    return dict(res, **{p: False for p in ctx})
+                again = retries()
+                if again:
+                    draw_jobs([c["out"] / "retry_jobs.jsonl" for c in again], f"redraw_{tag}", logd)
+                    check_files([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+        else:
+            if not draw_jobs([c["out"] / "image_jobs.jsonl" for c in cs], f"draw_{tag}", logd):
+                log("drawing: a card's job FAILED")
+                return dict(res, **{p: False for p in ctx})
+            if not check_files([c["out"] / "check.json" for c in cs], f"check_{tag}", logd):
+                log("drawing: a check job FAILED")
+                return dict(res, **{p: False for p in ctx})
+            again = retries()
+            if again:
+                draw_jobs([c["out"] / "retry_jobs.jsonl" for c in again], f"redraw_{tag}", logd)
+                check_files([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
         for place, c in ctx.items():
             out, only = c["out"], c["only"]
             sh(acc + ["pick", c["rp"], out / "check_result.json", out / "check_x_result.json", out / "accepted.json"],
