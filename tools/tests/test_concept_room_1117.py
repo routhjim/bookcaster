@@ -252,3 +252,12 @@ def test_an_opening_and_roof_timbers_the_picture_shows_are_the_rooms():
     assert sp["_roof"] == "rafters"
     stated = dict(place_spec(), openings=[{"id": "o1", "kind": "window", "wall": "east", "words": ""}])
     assert len(PB.with_concept(stated, c)["openings"]) == 1 and PB.with_concept(stated, c)["openings"][0]["id"] == "o1"
+
+
+def test_the_deeper_of_two_things_on_one_stretch_of_wall_stands_before_the_flatter():
+    t = {"a": {"xy": [0.0, 4.5], "size_m": [0.9, 0.9, 1.5], "against": "north"},
+         "b": {"xy": [0.1, 4.8], "size_m": [2.3, 0.3, 2.8], "against": "north"},
+         "c": {"xy": [3.5, 4.6], "size_m": [1.0, 0.7, 1.0], "against": "north"}}
+    CD.stand_before(t)
+    assert t["b"]["xy"] == [0.1, 4.8] and t["c"]["xy"] == [3.5, 4.6]
+    assert abs(t["a"]["xy"][1] - (4.8 - 0.15 - 0.45 - 0.05)) < 1e-6

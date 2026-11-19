@@ -116,6 +116,23 @@ def on_floor(rv: np.ndarray, n: np.ndarray, d: float) -> np.ndarray | None:
     return rv * t if t > 0 else None
 
 
+def stand_before(things: dict) -> None:
+    """Two things against one wall on the same stretch of it: the deeper one stands before the flatter one, clear of
+    it (a seat and the hanging behind it were both put flat on the wall, one inside the other, and no camera could
+    be found for the one who sits there, 11-19)."""
+    ks = [k for k, t in things.items() if t.get("against")]
+    for a in ks:
+        for b in ks:
+            ta, tb = things[a], things[b]
+            if a == b or ta["against"] != tb["against"] or ta["size_m"][1] <= tb["size_m"][1]:
+                continue
+            i = 0 if ta["against"] == "north" else 1          # the axis along the wall
+            if abs(ta["xy"][i] - tb["xy"][i]) >= (ta["size_m"][0] + tb["size_m"][0]) / 2:
+                continue
+            j, sg = 1 - i, {"north": -1.0, "east": -1.0, "west": 1.0}[ta["against"]]
+            ta["xy"][j] = round(tb["xy"][j] + sg * (tb["size_m"][1] / 2 + ta["size_m"][1] / 2 + 0.05), 3)
+
+
 def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
     """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}."""
     n, d, fit = fit_floor(pts, mask)
@@ -190,6 +207,7 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
         out[key] = {"xy": [round(x, 3), round(y, 3)], "size_m": [round(w, 3), round(dp, 3), round(hh, 3)],
                     "against": against, "facing": facing, "kind": t["kind"],
                     **({"raised_m": round(raised[key] * scale, 3)} if key in raised else {})}
+    stand_before(out)
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
             "things": out, "off_floor": hung, "scale": round(scale, 3), "floor_fit": round(fit, 3)}

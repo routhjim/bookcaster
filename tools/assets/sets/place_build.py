@@ -88,6 +88,17 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
                    "top_m": round(H - 0.02, 2), "rise_m": rise, "chord_m": [0.18, 0.14], "web_m": 0.1,
                    "panel_m": round(span / 2, 2), "columns": False, "material": "panel_wood"})
         st.append(dict(kit["ceiling"], height_m=round(H + rise + 0.2, 2), material="panel_wood"))
+        # the walls carried up to those boards (between the walls' tops and the boards the room stood open to the
+        # sky on every side: sunlight fell through it in sheets across a hall and a shed, 11-19)
+        up, th = round(rise + 0.2, 2), 0.25
+        for side, base, size in (("north", [0, D / 2 + th / 2, H], [W + 2 * th, th, up]),
+                                 ("south", [0, -D / 2 - th / 2, H], [W + 2 * th, th, up]),
+                                 ("east", [W / 2 + th / 2, 0, H], [th, D + 2 * th, up]),
+                                 ("west", [-W / 2 - th / 2, 0, H], [th, D + 2 * th, up])):
+            st.append({"kind": "box", "name": f"wall_top_{side}", "base": [round(v, 3) for v in base],
+                       "size_m": [round(v, 3) for v in size],
+                       "material": kit["wall_material_ns" if side in ("north", "south") else "wall_material_ew"]
+                       if "wall_material_ew" in kit else kit["wall_material_ns"]})
     else:
         st.append(dict(kit["ceiling"], height_m=H))
     out["structure"] = st
