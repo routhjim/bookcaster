@@ -434,3 +434,15 @@ if __name__ == "__main__":
                 fails += 1
                 print("FAIL", name, repr(e))
     sys.exit(1 if fails else 0)
+
+
+def test_a_drop_that_does_not_help_is_put_back():
+    """(11-17: the forge lost its bench for a relation the bench had no part in.)"""
+    s = spec(size="large", openings=[op("o1", "fireplace", "north"), op("o2", "window", "south"),
+                                     op("o3", "door", "east")],
+             pieces=[pc_("p1", "stool", ["the stool"]), pc_("p2", "side_table")],
+             relations=[rel("p1", "beside", "o1"), rel("p1", "beside", "o2")])
+    lay = pl.solve_recover(s)
+    assert not lay["ok"] and lay["dropped"] == []
+    assert {"stool", "side_table"} <= {p["kind"] for p in lay["pieces"]}
+    assert lay["ladder"][-1]["step"] == "dropped pieces put back"

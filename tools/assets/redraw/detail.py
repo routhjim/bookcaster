@@ -370,7 +370,7 @@ def plan(run: dict, accepted: dict, dry: bool, pieces: str) -> tuple:
     jobs, rows = [], []
     for kid, rec in accepted.items():
         m = meta.get(rec.get("id", kid)) or meta.get(kid)
-        if not m:
+        if not m or not rec.get("path"):     # (no key: every try failed the face gate, accept.pick_one)
             continue
         sd, truth = truths[m["scene"]]
         sh = truth["shots"][m["cam"]]
@@ -520,7 +520,7 @@ def lit_keys(run: dict, accepted: dict) -> dict:
     done = {}
     for kid, rec in accepted.items():
         m = meta.get(rec.get("id", kid)) or meta.get(kid)
-        if not m:
+        if not m or not rec.get("path"):     # (no key: every try failed the face gate, accept.pick_one)
             continue
         sd = next(Path(x) for x in run["scenes"] if Path(x).name == m["scene"])
         sh = json.loads((sd / "truth.json").read_text())["shots"][m["cam"]]

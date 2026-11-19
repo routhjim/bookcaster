@@ -17,7 +17,8 @@
   "corridor",
   "cabin",
   "hangar",
-  "cockpit"
+  "cockpit",
+  "outdoors"
  ],
  "PERIODS": [
   "victorian",
@@ -111,7 +112,9 @@
   "cart",
   "pilot_seat",
   "vehicle_cabin",
-  "bystander"
+  "bystander",
+  "landmark",
+  "work_piece"
  ],
  "SEATS": [
   "armchair",

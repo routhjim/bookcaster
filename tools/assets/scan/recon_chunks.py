@@ -96,33 +96,53 @@ def umeyama(src, dst):
 
 
 na = len(anchors)
-ref = c2w_of(res[0]["w2c"][:na])
+raw = [c2w_of(r["w2c"]) for r in res]
+ref = raw[0][:na].copy()
 radius = np.linalg.norm(ref[:, :3, 3] - ref[:, :3, 3].mean(0), axis=1).mean()
-aligned_anchor = []
+
+
+def rot_err(A, B):
+    return np.degrees(np.arccos(np.clip((np.trace(A.T @ B) - 1) / 2, -1, 1)))
+
+
+def mean_pose(P_):
+    M = np.eye(4)
+    M[:3, 3] = P_[:, :3, 3].mean(0)
+    U, _, Vt = np.linalg.svd(P_[:, :3, :3].sum(0))
+    M[:3, :3] = U @ np.diag([1, 1, np.linalg.det(U @ Vt)]) @ Vt
+    return M
+
+
+# robust alignment: each chunk onto the current mean anchors using only the anchors it agrees on; an anchor whose
+# pose depends on which frames came with it (the subject changed there) is left out of that chunk's fit and of
+# its own mean; three rounds
+inl = np.ones((len(res), na), bool)
+for rnd in range(3):
+    al = []
+    for c in range(len(res)):
+        s, R, t = umeyama(raw[c][:na, :3, 3][inl[c]], ref[inl[c], :3, 3])
+        T = np.eye(4)
+        T[:3, :3], T[:3, 3] = s * R, t
+        cw2 = T @ raw[c]
+        cw2[:, :3, :3] /= s
+        al.append((s, cw2))
+    err = np.array([[np.linalg.norm(al[c][1][k, :3, 3] - ref[k, :3, 3]) / radius for k in range(na)]
+                    for c in range(len(res))])
+    rerr = np.array([[rot_err(al[c][1][k, :3, :3], ref[k, :3, :3]) for k in range(na)] for c in range(len(res))])
+    inl = (err < max(3 * np.median(err), 0.03)) & (rerr < max(3 * np.median(rerr), 2.0))
+    inl[:, 0] = True
+    ref = np.stack([mean_pose(np.stack([al[c][1][k] for c in range(len(res)) if inl[c, k]] or
+                                       [al[c][1][k] for c in range(len(res))])) for k in range(na)])
 info = {"anchors": anchors, "chunks": [], "radius": float(radius)}
 for c, r in enumerate(res):
-    cw = c2w_of(r["w2c"])
-    s, R, t = umeyama(cw[:na, :3, 3], ref[:, :3, 3])
-    T = np.eye(4)
-    T[:3, :3], T[:3, 3] = s * R, t
-    cw2 = T @ cw
-    cw2[:, :3, :3] /= s                                   # rotation part back to orthonormal; centre carries s
+    s, cw2 = al[c]
     r["c2w"] = cw2
     r["depth"] = r["depth"] * s
-    dc = np.linalg.norm(cw2[:na, :3, 3] - ref[:, :3, 3], axis=1) / radius
-    dr = [np.degrees(np.arccos(np.clip((np.trace(cw2[k, :3, :3].T @ ref[k, :3, :3]) - 1) / 2, -1, 1)))
-          for k in range(na)]
-    info["chunks"].append({"frames": len(r["idx"]), "scale": float(s), "anchor_centre_err_frac_radius":
-                           [round(float(x), 4) for x in dc], "anchor_rot_err_deg": [round(float(x), 2) for x in dr]})
-    aligned_anchor.append(cw2[:na])
-
-# anchors: mean over chunks (centres averaged, rotations by SVD of the summed matrices)
-aa = np.stack(aligned_anchor)                             # C,na,4,4
-anc = np.tile(np.eye(4), (na, 1, 1))
-anc[:, :3, 3] = aa[:, :, :3, 3].mean(0)
-for k in range(na):
-    U, _, Vt = np.linalg.svd(aa[:, k, :3, :3].sum(0))
-    anc[k, :3, :3] = U @ np.diag([1, 1, np.linalg.det(U @ Vt)]) @ Vt
+    info["chunks"].append({"frames": len(r["idx"]), "scale": float(s),
+                           "anchor_centre_err_frac_radius": [round(float(x), 4) for x in err[c]],
+                           "anchor_rot_err_deg": [round(float(x), 2) for x in rerr[c]],
+                           "anchor_inlier": inl[c].tolist()})
+anc = ref
 _, H, W = res[0]["depth"].shape
 D = np.zeros((N, H, W), np.float32)
 Cf = np.zeros((N, H, W), np.float32)
@@ -146,6 +166,8 @@ info.update({"frames": N, "size": [W, H], "load_s": round(t_load, 1), "infer_s":
              "gpu_total_s": round(t_gpu, 1), "peak_gib": round(peak, 1), "pp": pp})
 (out / "chunks.json").write_text(json.dumps(info, indent=1))
 print(json.dumps({k: info[k] for k in ("frames", "load_s", "infer_s", "gpu_total_s", "peak_gib")}))
+np.savez(out / "raw_chunks.npz", **{f"c2w_{c}": raw[c] for c in range(len(res))},
+         **{f"idx_{c}": np.array(res[c]["idx"]) for c in range(len(res))})
 for c, ch in enumerate(info["chunks"]):
     print(f"chunk {c}: scale {ch['scale']:.3f} anchor centre err (x radius) max "
           f"{max(ch['anchor_centre_err_frac_radius']):.3f}, rot err max {max(ch['anchor_rot_err_deg']):.2f} deg")

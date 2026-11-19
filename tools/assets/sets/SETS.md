@@ -234,3 +234,20 @@ uses `solve_recover`. `place_plan_draw.py LAYOUT.json OUT.png` draws a layout in
 
 Every weight and band is a starting value from published layout work or derived from the scene tool's framing
 rule; none has been measured on a built room.
+
+## A place in the open (`place_build.py` outdoors, `img3d/pano_shell.py --outdoor`)
+
+A place whose concept picture reads as outdoors (`scenes/concept.py`), or whose place spec has the kind `outdoors`,
+is built as a world, not a room: the film-previs layout of land, sky and blocked figures. `with_concept` turns it
+into one `terrain` piece (made_as `world`) plus the plan's named pieces standing free (`landmark`: a separate thing on
+the ground, sized by its longest side). The terrain is one panorama of the place from a standing eye, drawn with the
+concept picture as its reference (`places/pieces.py` WORLD_WORDS), made into a shell (`pano_shell.py --outdoor`):
+MoGe-2 depth scaled so the ground straight below is 1.6 m down; the depth model's own ground height taken off near
+the eye so the ground there is one flat plane people stand on (FLAT_R_M) and fades back into the land (RAMP_R_M);
+nothing under that plane; the sky (CLIPSeg's "sky" / "night sky", or a stretch as plain as the picture's top,
+joined to the top) a dome at SKY_R_M; the panorama as texture, also emitted (the land and sky give their own light).
+A part of the land the plan sends people to (`land_places` of the spec, e.g. a phrase answered by the open ground but
+naming a stretch of it) is drawn close in front of the eye and found again in the panorama; the stage is set there.
+`world_stage` puts the world so that point (or the point under the eye) is the set's origin, takes the structure
+away, and lights the people with a sky light (which captures the world) and a key from the brightest part of the
+panorama's sky in its colour.

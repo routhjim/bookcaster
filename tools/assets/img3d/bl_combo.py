@@ -9,7 +9,10 @@ import_outfit: hide the body, the outfit follows it by leader pose; the MetaHuma
 JOB {"body_fbx": the MetaHuman body FBX exported from UE (centimetres, as the character tools export it),
      "head_fbx": the head FBX (its top sets the height) | null, "figure_glb": img3d.py's .glb, "out": folder,
      "neck_cut_m": cut height above the body's neck_02 joint [0.03], "keep_figure_hands": false,
-     "skin_rgb": colour test for exposed skin [see is_skin], "preview_device": "HIP" substring | null}
+     "skin_rgb": colour test for exposed skin [see is_skin], "preview_device": "HIP" substring | null,
+     mode "statue": "statue_body_hands": the statue's own fused hands cut off at the wrist and the body's jointed
+     hands carried in the figure in the statue's colour [true; a side that cannot be fitted keeps the rigid statue
+     hand, REP "statue_hands" says why; statue_hands.py has the rules]}
 
 Fit (the figure stands in a spread rest pose, the body in its A-pose bind pose):
 1. scale the figure to the body's height (feet on the floor, pelvis over pelvis);
@@ -1979,21 +1982,115 @@ bpy.ops.object.mode_set(mode="WEIGHT_PAINT")
 bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=int(JOB.get("max_influences", 4)))
 bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
 bpy.ops.object.mode_set(mode="OBJECT")
+JOINTED = {}       # statue: side -> the plan for the body's own jointed hand there (see below)
+STATUE_BVH = None  # statue: the cut statue's surface, for seating the body's wrist inside its sleeve
 if STATUE:
-    # the statue's head is rigid on the head bone above the collar line; its hands rigid on the hand bones past
-    # the wrists (fused fingers, no finger bones)
+    # the statue's head is rigid on the head bone above the collar line. Its hands: the statue's own hand is one
+    # fused lump with no finger bones (a hand holding a tool stood open with the handle through it), so by default
+    # (JOB "statue_body_hands") it is cut off past a plane across the forearm near the wrist and the body's own
+    # hands, finger-weighted, are carried in the figure instead (joined in below, after the weights). A side where
+    # the body's hand cannot be fitted keeps the old rigid statue hand on the hand bone (REP "statue_hands" says why)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import statue_hands as SHN  # noqa: E402
     P = np.array([v.co[:] for v in fig.data.vertices])
     rig = {}
     hd = (P[:, 2] - cut_z) * math.cos(tilt) - (P[:, 1] - J("neck_01").y) * math.sin(tilt) > 0
-    rig["head"] = np.nonzero(hd)[0]
-    for side in ("l", "r"):
+    # the head as the head, not the collar line: what lies under the line (a drawn head sits lower than the hidden
+    # one: ear lobes, jaw corners, the hair over the nape) had the shoulders' weights and the ears were pulled into
+    # points when the arms came down. statue_head.py has the rule: a level line over the neck's upper joint within
+    # a head's reach of the neck's axis, a blend down the neck, no arm weights on the neck (JOB "statue_head_follow")
+    import statue_head as SHD  # noqa: E402
+    HEAD_W = None
+    if JOB.get("statue_head_follow", True):
+        HEAD_W = SHD.head_follow(P, np.array(J("neck_01")), np.array(J("head")), float(J("neck_02").z),
+                                 line_m=float(JOB.get("statue_head_line_m", SHD.HEAD_LINE_M)),
+                                 blend_m=float(JOB.get("statue_head_blend_m", SHD.BLEND_M)),
+                                 reach_m=float(JOB.get("statue_head_reach_m", SHD.REACH_M)),
+                                 reach_above_m=float(JOB.get("statue_head_reach_above_m", SHD.REACH_ABOVE_M)),
+                                 rigid=hd)
+        rig["head"] = np.nonzero(HEAD_W >= 1.0 - 1e-6)[0]
+        REP["statue_head"] = {"collar_line_verts": int(hd.sum()), "rigid_verts": len(rig["head"]),
+                              "blend_verts": int(((HEAD_W > 1e-6) & (HEAD_W < 1.0 - 1e-6)).sum())}
+        if HEAD is not None:
+            # the visible head against the hidden one (a worn thing is sized from the hidden head; cast_char
+            # copies this into the library entry as "statue_head_box" for the scene to fit it to the visible one)
+            _hv = np.array([(HEAD.matrix_world @ v.co)[:] for v in HEAD.data.vertices])
+            REP["statue_head"]["box"] = SHD.head_box(P[rig["head"]], _hv, np.array(J("head")),
+                                                     float(J("neck_02").z) + 0.02)
+    else:
+        rig["head"] = np.nonzero(hd)[0]
+    _fcs = np.empty(len(P) * 4, np.float32)
+    fig.data.attributes["fcol"].data.foreach_get("color", _fcs)
+    _fcs = _fcs.reshape(-1, 4)[:, :3].astype(float)
+    _face_rgb = _fcs[hd & is_skin(_fcs)]
+    # the body as posed (its hands where they will be carried), and each body vertex's strongest bone
+    _be = body.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    _BP = np.array([v.co[:] for v in _be.data.vertices])
+    _bgi = {g.index: g.name for g in body.vertex_groups}
+    _bmax = np.array([_bgi[max(v.groups, key=lambda g: g.weight).group] if v.groups else "" for v in body.data.vertices])
+    # (the foot's toes are "indextoe_01_l" and so on: not a hand)
+    _bhand = np.array([n.startswith(("hand", "thumb", "index", "middle", "ring", "pinky")) and "toe" not in n
+                       for n in _bmax])
+    if len(_BP) != len(_bmax):          # (a body with more than its armature on it: no posed copy to read)
+        _bhand[:] = False
+        _BP = np.array([v.co[:] for v in body.data.vertices])
+    # the hand's reach off the forearm's axis (the old rigid hand's) and along it past the cut
+    TUBE = float(JOB.get("statue_hand_tube_m", 0.16))
+    REACH = float(JOB.get("statue_hand_reach_m", 0.40))
+    ISLE_R = float(JOB.get("statue_hand_island_r_m", 0.45))
+    ISLE_MAX = int(JOB.get("statue_hand_island_max", 3000))
+    REP["statue_hands"] = {}
+    for side, sg in (("l", 1), ("r", -1)):
         S0 = np.array(pose_head(f"upperarm_{side}"))
         hw = np.array(pose_head(f"hand_{side}"))
         L = np.linalg.norm(hw - S0)
         ax = (hw - S0) / L
         p = (P - S0) @ ax
         rad = np.linalg.norm((P - S0) - p[:, None] * ax[None, :], axis=1)
-        rig[f"hand_{side}"] = np.nonzero((p > L - 0.01) & (rad < 0.16) & ~hd)[0]
+        old_rigid = (p > L - 0.01) & (rad < 0.16) & ~hd
+        # the cut: the statue's radius profile along the forearm (the line the statue's arm was stretched along,
+        # shoulder to the wrist joint), its narrowest section near the wrist (see statue_hands.choose_cut)
+        pw = p - L
+        arm_ = (sg * (P[:, 0] - J("pelvis").x) > 0) & ~hd & (rad < TUBE)
+        stations = np.round(np.arange(-0.08, 0.10 + 1e-9, 0.005), 4)
+        _prof = arm_ & (rad < 0.12)            # (the section itself: the tube's outer reach takes in the hip)
+        radii = SHN.radius_profile(P[_prof], pw[_prof], ax, stations)
+        cut, cut_why = SHN.choose_cut(stations, radii)
+        region = arm_ & (pw > (cut if cut is not None else 9.0)) & (pw < (cut if cut is not None else 9.0) + REACH)
+        bside = _bhand & (sg * (_BP[:, 0] - J("pelvis").x) > 0)
+        bpw = (_BP - S0) @ ax - L
+        fig_len = float(np.quantile(pw[region], 0.98)) if region.sum() >= 10 else None
+        body_len = float(np.quantile(bpw[bside], 0.98)) if bside.sum() >= 10 else None
+        ratio = round(fig_len / body_len, 3) if fig_len and body_len else None
+        ang = SHN.angle_deg(P[region].mean(0) - hw, _BP[bside].mean(0) - hw) if region.any() and bside.any() else 180.0
+        ok, why = SHN.fit_decision(bool(JOB.get("statue_body_hands", True)), cut, int(region.sum()), int(bside.sum()),
+                                   ratio, ang, cut_why)
+        colour = SHN.hand_colour(_fcs[region], is_skin(_fcs[region]), _face_rgb) if region.sum() >= 10 else None
+        # the hand's widest section past the cut (the palm's half-breadth off the forearm's axis) on each
+        def _pr(Q_, q_):
+            r_ = SHN.radius_profile(Q_, q_, ax, stations[stations > (cut or 0.0)]) if len(q_) >= 10 else np.array([np.nan])
+            return round(float(np.nanmax(r_)) * 100, 1) if np.isfinite(r_).any() else None
+        REP["statue_hands"][side] = {
+            "jointed": bool(ok), "why": why, "cut_m_from_wrist": cut, "cut_why": cut_why,
+            "profile_cm": {f"{s_ * 100:+.1f}": round(float(r_) * 100, 2) for s_, r_ in zip(stations, radii)
+                           if np.isfinite(r_) and -0.04 <= s_ <= 0.08},
+            "statue_hand_verts": int(region.sum()), "old_rigid_verts": int(old_rigid.sum()),
+            "hand_len_cm": {"statue": None if fig_len is None else round(fig_len * 100, 1),
+                            "body": None if body_len is None else round(body_len * 100, 1), "ratio": ratio},
+            "palm_radius_cm": {"statue": _pr(P[region], pw[region]), "body": _pr(_BP[bside], bpw[bside])},
+            "direction_deg_from_body_hand": round(ang, 1), "colour": colour,
+            # the body's hand is not scaled to the statue's: the figure follows the body's skeleton by leader pose,
+            # so its finger joints are the body's own wherever the mesh is; a hand scaled about the wrist would
+            # bend k-1 of its length off each knuckle (the mismatch is reported here instead)
+            "hand_scale": 1.0}
+        if JOB.get("statue_hands_debug"):
+            np.savez_compressed(f"{JOB['statue_hands_debug']}_{side}.npz", P=P, region=region, BP=_BP, bside=bside,
+                                S0=S0, ax=ax, L=L, hw=hw)
+        if ok:
+            JOINTED[side] = {"S0": S0, "ax": ax, "L": L, "cut": cut, "rgb": colour["rgb"],
+                             "covered": colour["covered"]}
+        else:
+            rig[f"hand_{side}"] = np.nonzero(old_rigid)[0]
     names = [g.name for g in fig.vertex_groups]
     for bone, ids in rig.items():
         ids = [int(i) for i in ids]
@@ -2001,6 +2098,84 @@ if STATUE:
             fig.vertex_groups[gn].remove(ids)
         (fig.vertex_groups.get(bone) or fig.vertex_groups.new(name=bone)).add(ids, 1.0, "REPLACE")
     REP["rigid_verts"] = {k: len(v) for k, v in rig.items()}
+    if HEAD_W is not None:
+        # the neck's blend: the head's share on the head bone, the rest the body's own weights without the arms
+        _gname = {g.index: g.name for g in fig.vertex_groups}
+        _armw = 0
+        for i in np.nonzero((HEAD_W > 1e-6) & (HEAD_W < 1.0 - 1e-6))[0]:
+            v_ = fig.data.vertices[int(i)]
+            old_ = {_gname[g.group]: g.weight for g in v_.groups}
+            _armw += any(SHD.is_arm(k) and w_ > 1e-6 for k, w_ in old_.items())
+            new_ = SHD.blend_weights(old_, float(HEAD_W[i]))
+            for k in old_:
+                if k not in new_:
+                    fig.vertex_groups[k].remove([int(i)])
+            for k, w_ in new_.items():
+                (fig.vertex_groups.get(k) or fig.vertex_groups.new(name=k)).add([int(i)], w_, "REPLACE")
+        REP["statue_head"]["blend_verts_off_the_arms"] = int(_armw)
+    if JOINTED:
+        # the cut, side by side: the faces round the hand split on the plane, everything of the hand past it
+        # removed (only within the hand's tube on its own side: the old rigid hand's region, so nothing the hand
+        # did not already carry); the sleeve's open end is then turned in toward the wrist as a lip (below, once the
+        # body's wrist is known)
+        bm = bmesh.new()
+        bm.from_mesh(fig.data)
+        for side, J_ in JOINTED.items():
+            sg = 1 if side == "l" else -1
+            S0, ax, L, cut = J_["S0"], J_["ax"], J_["L"], J_["cut"]
+            pc_ = Vector(S0 + ax * (L + cut))
+
+            def _in_tube(co_, lo_, hi_):
+                d_ = np.array(co_[:]) - S0
+                pp_ = float(d_ @ ax) - L
+                return (lo_ < pp_ < hi_ and np.linalg.norm(d_ - (pp_ + L) * ax) < TUBE
+                        and sg * (co_.x - J("pelvis").x) > 0
+                        and not ((co_.z - cut_z) * math.cos(tilt) - (co_.y - J("neck_01").y) * math.sin(tilt) > 0))
+
+            near_f = [f_ for f_ in bm.faces if any(_in_tube(v_.co, cut - 0.02, cut + REACH) for v_ in f_.verts)]
+            near_g = list({e_ for f_ in near_f for e_ in f_.edges}) + list({v_ for f_ in near_f for v_ in f_.verts}) \
+                + near_f
+            bmesh.ops.bisect_plane(bm, geom=near_g, dist=1e-5, plane_co=pc_, plane_no=Vector(ax), clear_outer=False)
+            gone_ = [v_ for v_ in bm.verts if _in_tube(v_.co, cut + 1e-4, cut + REACH)]
+            n0_ = len(bm.verts)
+            bmesh.ops.delete(bm, geom=gone_, context="VERTS")
+            # pieces of the statue's hand left over, joined to nothing: islands lying wholly past the cut plane
+            # within ISLE_R of the wrist joint (finger tips out of the tube, a shard of a gauntlet); an island that
+            # reaches back over the plane (a plate of the sleeve, a rivet) stays
+            bm.verts.ensure_lookup_table()
+            wj_ = S0 + ax * L
+
+            def _past(co_):
+                d_ = np.array(co_[:]) - S0
+                return (float(d_ @ ax) - L > cut - 0.005 and np.linalg.norm(np.array(co_[:]) - wj_) < ISLE_R
+                        and sg * (co_.x - J("pelvis").x) > 0)
+
+            seen_, crumbs_ = set(), []
+            for v0 in bm.verts:
+                if v0.index in seen_ or not _past(v0.co):
+                    continue
+                comp_, st_ = [], [v0]
+                seen_.add(v0.index)
+                while st_ and len(comp_) < ISLE_MAX:
+                    v_ = st_.pop()
+                    comp_.append(v_)
+                    for e_ in v_.link_edges:
+                        o_ = e_.other_vert(v_)
+                        if o_.index not in seen_:
+                            seen_.add(o_.index)
+                            st_.append(o_)
+                if not st_ and all(_past(v_.co) for v_ in comp_):
+                    crumbs_ += comp_
+            if crumbs_:
+                bmesh.ops.delete(bm, geom=crumbs_, context="VERTS")
+            J_["removed_verts"] = n0_ - len(bm.verts)
+            REP["statue_hands"][side]["removed_verts"] = J_["removed_verts"]
+            REP["statue_hands"][side]["crumb_verts"] = len(crumbs_)
+            REP["statue_hands"][side]["cut_point_m"] = [round(float(x), 4) for x in pc_]
+        bm.to_mesh(fig.data)
+        bm.free()
+        fig.data.update()
+        STATUE_BVH = BVHTree.FromObject(fig, bpy.context.evaluated_depsgraph_get())
 mark("weights", t)
 stage_save("s3_fitted_weighted")
 
@@ -2008,7 +2183,7 @@ stage_save("s3_fitted_weighted")
 t = time.time()
 hands = None
 if STATUE:
-    body_hands = False
+    body_hands = bool(JOINTED)          # a statue carries the body's hands only on the sides they were fitted to
 else:
     body_hands = True
 hands = body.copy()
@@ -2128,6 +2303,119 @@ for side, (S0_, ax_, c_) in CUFF.items():
     REP["limb_thicken"][f"arm_{side}"] = {"forearm_target_cm": round(t_f, 1), "wrist_target_cm": round(t_w, 1),
                                           "opening_cm": lg_.get("_opening_cm"), "cap_cm": lg_.get("_cap_cm"),
                                           "figure_hand_cm": fh, "body_hand_cm": bh, "scale_by_station": ks}
+HAND_UV = None
+if STATUE and JOINTED:
+    # the statue's jointed hands: the body's hand on each fitted side, with a stub of its forearm reaching STUB back
+    # under the statue's sleeve past the cut (overlap: no gap at the wrist from any side); that stub, and the
+    # wrist up to just past the cut, seated inside the statue's own surface where it would stand through the
+    # sleeve; the sleeve's open end turned in to the wrist as a lip; the hands coloured as the statue's own were
+    STUB = float(JOB.get("statue_hand_stub_m", 0.03))
+    SEAT = float(JOB.get("statue_hand_seat_m", 0.003))
+    BH = np.array([v.co[:] for v in hands.data.vertices])
+    gmax_ = np.array([gi[max(v.groups, key=lambda g: g.weight).group] if v.groups else "" for v in hands.data.vertices])
+    keep_s = np.zeros(len(BH), bool)
+    lb = bmesh.new()
+    lb.from_mesh(fig.data)
+    for side, J_ in JOINTED.items():
+        sg = 1 if side == "l" else -1
+        S0, ax, L, cut = J_["S0"], J_["ax"], J_["L"], J_["cut"]
+        d_ = BH - S0
+        pw_ = d_ @ ax - L
+        rad_ = np.linalg.norm(d_ - (pw_ + L)[:, None] * ax[None, :], axis=1)
+        sidem = sg * (BH[:, 0] - J("pelvis").x) > 0
+        stub = sidem & (pw_ > cut - STUB) & (pw_ < cut + 0.05) & (rad_ < 0.10) & \
+            np.array([n.startswith("lowerarm") for n in gmax_])
+        mine = (keep & sidem) | stub
+        keep_s |= mine
+        seated = 0
+        for i in np.nonzero(mine & (pw_ < cut))[0]:
+            loc_, nrm_, _, dd_ = STATUE_BVH.find_nearest(Vector(BH[i]), 0.05)
+            if loc_ is not None and (Vector(BH[i]) - loc_).dot(nrm_) > -SEAT:
+                BH[i] = np.array(loc_ - nrm_ * SEAT)
+                seated += 1
+        # the lip: the cut ring of the statue (its open boundary on the plane) drawn in to the body's wrist
+        lb.verts.ensure_lookup_table()
+        lb.edges.ensure_lookup_table()
+
+        def _on_ring(v_):
+            q_ = np.array(v_.co[:]) - S0
+            pp_ = float(q_ @ ax) - L
+            return abs(pp_ - cut) < 1e-3 and np.linalg.norm(q_ - (pp_ + L) * ax) < TUBE and sg * (v_.co.x - J("pelvis").x) > 0
+        ring_e = [e_ for e_ in lb.edges if len(e_.link_faces) == 1 and all(_on_ring(v_) for v_ in e_.verts)]
+        ring_v = list({v_ for e_ in ring_e for v_ in e_.verts})
+        lip_n = 0
+        rb_ = None
+        if ring_v:
+            # drawn in toward the body's own wrist section on the cut plane (its centre and radius: the body's
+            # forearm and the statue's need not be coaxial), to inside the wrist's skin
+            c_ = np.mean([v_.co[:] for v_ in ring_v], axis=0)
+            rs_ = float(np.median([np.linalg.norm((np.array(v_.co[:]) - c_) - ((np.array(v_.co[:]) - c_) @ ax) * ax)
+                                   for v_ in ring_v]))
+            cb_ = c_
+            wr_ = mine & (np.abs(pw_ - cut) < 0.006)
+            if wr_.sum() >= 6:
+                cb_ = BH[wr_].mean(0)
+                cb_ = cb_ + float((c_ - cb_) @ ax) * ax          # (on the cut plane)
+                qq_ = BH[wr_] - cb_
+                rb_ = float(np.median(np.linalg.norm(qq_ - (qq_ @ ax)[:, None] * ax[None, :], axis=1)))
+            r_in = float(JOB.get("statue_lip_in", 0.8)) * (rb_ if rb_ else rs_ * 0.6)
+            ex_ = bmesh.ops.extrude_edge_only(lb, edges=ring_e)
+            for v_ in (g_ for g_ in ex_["geom"] if isinstance(g_, bmesh.types.BMVert)):
+                q_ = np.array(v_.co[:]) - cb_
+                q_ = q_ - (q_ @ ax) * ax
+                n_ = np.linalg.norm(q_)
+                if n_ > 1e-6:
+                    q_ = q_ / n_ * min(n_, r_in)
+                v_.co = Vector(cb_ + q_ - ax * float(JOB.get("statue_lip_back_m", 0.008)))
+                lip_n += 1
+            # the lip's faces take the colour of the cuff's edge they turn in from (extruded loops carried none)
+            uvl_ = lb.loops.layers.uv.active
+            ring_s = set(ring_v)
+            new_f = [g_ for g_ in ex_["geom"] if isinstance(g_, bmesh.types.BMFace)]
+            new_fs = set(new_f)
+            src_ = {}
+            for v_ in (g_ for g_ in ex_["geom"] if isinstance(g_, bmesh.types.BMVert)):
+                src_[v_] = next((e_.other_vert(v_) for e_ in v_.link_edges if e_.other_vert(v_) in ring_s), None)
+            uv_of = {}
+            for v_ in ring_v:
+                lo_ = next((l_ for l_ in v_.link_loops if l_.face not in new_fs), None)
+                if lo_ is not None and uvl_ is not None:
+                    uv_of[v_] = lo_[uvl_].uv.copy()
+            if uvl_ is not None:
+                for f_ in new_f:
+                    for l_ in f_.loops:
+                        sv_ = l_.vert if l_.vert in ring_s else src_.get(l_.vert)
+                        if sv_ in uv_of:
+                            l_[uvl_].uv = uv_of[sv_]
+        REP["statue_hands"][side].update({
+            "stub_verts": int(stub.sum()), "body_hand_verts": int(mine.sum()), "wrist_seated_verts": seated,
+            "ring_verts": len(ring_v), "lip_verts": lip_n,
+            "wrist_radius_cm": {"body": None if rb_ is None else round(rb_ * 100, 2),
+                                "statue_cut": None if not ring_v else round(rs_ * 100, 2)},
+            "wrist_offset_cm": None if not ring_v else round(float(np.linalg.norm(cb_ - c_)) * 100, 2)})
+    lb.to_mesh(fig.data)
+    lb.free()
+    fig.data.update()
+    hands.data.vertices.foreach_set("co", BH.ravel())
+    hands.data.update()
+    keep = keep_s
+    # the colour: one even swatch per side written into a free corner of the statue's atlas (its one material: in
+    # the engine the outfit's baked material, so the hands are the statue's own colour, not the MetaHuman's skin)
+    sides_ = sorted(JOINTED)
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import bl_collar  # noqa: E402
+        uvs_ = bl_collar.free_swatches(fig, img, [JOINTED[s_]["rgb"] for s_ in sides_])
+        HAND_UV = dict(zip(sides_, uvs_))
+    except RuntimeError as e_:
+        # no free corner: the texel nearest each colour, in an even patch of it (as the liner's)
+        sub_ = px[::4, ::4]
+        HAND_UV = {}
+        for s_ in sides_:
+            dc_ = np.linalg.norm(sub_[..., :3] - np.array(JOINTED[s_]["rgb"]), axis=2) + (sub_[..., 3] < 0.5) * 9
+            yy_, xx_ = np.unravel_index(np.argmin(dc_), dc_.shape)
+            HAND_UV[s_] = ((xx_ * 4 + 0.5) / W, (yy_ * 4 + 0.5) / H)
+        REP["statue_hands"]["swatch_fallback"] = str(e_)
 bm = bmesh.new()
 bm.from_mesh(hands.data)
 bm.verts.ensure_lookup_table()
@@ -2135,8 +2423,19 @@ bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.nonzero(~keep)[0]], context="
 bm.to_mesh(hands.data)
 bm.free()
 hands.data.materials.clear()
-ms = bpy.data.materials.new("M_skin")
-hands.data.materials.append(ms)
+if HAND_UV:
+    # every loop of a hand at its side's swatch; the statue's own material (joined into its one slot below)
+    _hu = hands.data.uv_layers[0] if hands.data.uv_layers else hands.data.uv_layers.new(name="UVMap")
+    _li = np.empty(len(hands.data.loops), np.int64)
+    hands.data.loops.foreach_get("vertex_index", _li)
+    _hx = np.array([v.co.x for v in hands.data.vertices])
+    _uv = np.array([HAND_UV["l" if (_hx[i] - J("pelvis").x) > 0 and "l" in HAND_UV else
+                            ("r" if "r" in HAND_UV else "l")] for i in _li], np.float32)
+    _hu.data.foreach_set("uv", _uv.ravel())
+    hands.data.uv_layers.active = _hu
+else:
+    ms = bpy.data.materials.new("M_skin")
+    hands.data.materials.append(ms)
 REP["hand_verts"] = len(hands.data.vertices)
 mark("hands", t)
 
@@ -2532,6 +2831,8 @@ for o in [x for x in (fig, hands) if x is not None]:
     while len(o.data.uv_layers) > 1:
         o.data.uv_layers.remove(o.data.uv_layers[-1])
 if hands is not None:
+    if HAND_UV:
+        hands.data.materials.append(mo)         # the statue's own slot: one material, the hands in it
     bpy.ops.object.select_all(action="DESELECT")
     fig.select_set(True)
     hands.select_set(True)

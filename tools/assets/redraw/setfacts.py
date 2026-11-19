@@ -30,7 +30,10 @@ def _size(lib: Path, asset: str) -> list:
     for cls in ("prop", "set", "character"):
         p = lib / cls / asset / "asset.json"
         if p.exists():
-            return json.loads(p.read_text()).get("size_m") or [0.5, 0.5, 0.5]
+            # a made model's measured box (its recorded size is only the cube it was asked to fit in: an anvil
+            # 0.86 m high was stood at and reached for as 1.0 m high and 1.0 m deep)
+            j = json.loads(p.read_text())
+            return (j.get("blender") or {}).get("dims_m") or j.get("size_m") or [0.5, 0.5, 0.5]
     return [0.5, 0.5, 0.5]
 
 
@@ -81,11 +84,16 @@ def things(set_dir) -> list:
             hx, hy = (sz[0] * c + sz[1] * s) / 2, (sz[0] * s + sz[1] * c) / 2
             z0 = float(f.get("on_z_m", f["position"][2] if len(f["position"]) > 2 else 0.0))
             t = {"name": f["name"], "asset": f["asset"], "kind": kind[:-1], "short": _short(lib, f["asset"]),
-                 "look": f.get("look") or _look(lib, f["asset"]),
+                 "look": f.get("look") or _look(lib, f["asset"]), "called": f.get("called"),
                  "center": [f["position"][0], f["position"][1], z0 + sz[2] / 2], "half": [hx, hy, sz[2] / 2],
                  "on": f.get("on"), "lit": False, "fire": False}
             out.append(t)
             by_name[f["name"]] = t
+    for mk in spec.get("marks", []):         # a thing of the land itself (a place in the open): a place on the ground
+        out.append({"name": mk["name"], "asset": None, "kind": "mark", "short": mk.get("look") or mk["name"],
+                    "look": mk.get("look") or "", "center": [mk["position"][0], mk["position"][1], 0.0],
+                    "half": [0.0, 0.0, 0.0], "toward": mk.get("toward"), "on": None, "lit": False, "fire": False,
+                    "wet": bool(mk.get("wet"))})
     for w in spec.get("structure", []):
         if w.get("kind") != "wall":
             continue
@@ -159,6 +167,10 @@ def things(set_dir) -> list:
             t["words"] = "the door"
         else:
             own = "; ".join(x for x in (t.get("short"), t.get("look")) if x) if t["kind"] in ("fixture", "prop") else ""
+            if t.get("called"):           # what the story calls it, not its kind's name ("the landmark (landmark; ...)")
+                n = t["called"]
+                own = "; ".join(x for x in (t.get("short"), t.get("look"))
+                                if x and x.lower().replace("_", " ") not in ("landmark", "work piece", n))
             what = f"the {n}" + (f" ({own})" if own else "")
             t["words"] = what + (f" on the {by_name[t['on']]['name'].replace('_', ' ')}" if t.get("on") in by_name else "")
         if t["fire"]:

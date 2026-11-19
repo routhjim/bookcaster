@@ -11,7 +11,8 @@ faults under "_faults") and OUT.prompt.txt.
 Schema place_spec/1 (lists in place_kinds.json):
  {"schema", "place", "kind", "period", "size",
   "openings": [{"id", "kind": window|door|fireplace, "wall": north|south|east|west|not stated, "words"}],
-  "pieces": [{"id", "kind", "look", "phrases": [plan phrases verbatim], "against": wall|opening:<id>|free|not stated}],
+  "pieces": [{"id", "kind", "look", "phrases": [plan phrases verbatim], "against": wall|opening:<id>|free|not stated,
+              "gives_light"?: true (it burns or glows), "longest_m"?: m (a landmark, a work_piece)}],
   "relations": [{"a", "rel", "b", "c"?}],
   "named_places": {plan phrase: piece or opening id}}
 The model only judges what the text gives; sizes, positions and facings are code's (the layout), defaults of the
@@ -92,17 +93,42 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         '"openings": [{"id": "o1", "kind": <window|door|fireplace>, "wall": <north|south|east|west|not stated>, '
         '"words": <the text\'s words for it or "">}], '
         '"pieces": [{"id": "p1", "kind": <one of PIECE_KINDS>, "look": <one line: material, colour, condition, style>, '
-        '"phrases": [<the place phrases this piece answers to, verbatim>], "against": <wall|opening:<id>|free|not stated>}], '
+        '"phrases": [<the place phrases this piece answers to, verbatim>], "against": <wall|opening:<id>|free|not stated>, '
+        '"gives_light"?: true, "longest_m"?: <metres>, "hangs_m"?: <metres>}], '
         '"relations": [{"a": <id>, "rel": <one of RELATIONS>, "b": <id>}], '
         '"named_places": {<each place phrase verbatim>: <a piece or opening id, or "floor">}}\n'
         f"ROOM_KINDS: {', '.join(k['ROOM_KINDS'])}\nPERIODS: {', '.join(k['PERIODS'])}\nSIZES: {', '.join(k['SIZES'])}\n"
         f"PIECE_KINDS: {', '.join(k['PIECE_KINDS'])}\nRELATIONS: {', '.join(k['RELATIONS'])}\n"
-        "Include every piece a place phrase or shot line names, and the usual furnishing of such a room. Relations "
+        "Include every piece a place phrase or shot line names, and the usual furnishing of such a room. A piece is "
+        "the very thing the words name, never a piece made for another use standing in for it: a thing of the place "
+        "that the shot lines have people work on, at or with (what the work the shots show is done on, at or in), "
+        "when no kind of PIECE_KINDS is that thing itself, has the kind \"work_piece\", with \"longest_m\": its "
+        "longest side in metres, and its look begins with the thing's own plain name (the word the shot lines use "
+        "for it), then what it is and what it is used for in a few plain words, then the shape it truly has in that "
+        "period, told as one who has worked with such a thing would tell someone who must build it having never seen "
+        "one (its real outline, its working parts and how they join, how it stands or hangs where it is used; never "
+        "a plain box unless it is one), then its material, colour and condition. The loose thing that work is done on (the stuff or object the work changes: held, struck, heated, "
+        "cut or carried, whatever the text calls it) is "
+        "never a piece: a phrase that names it has the named_places value of the piece it lies on. A fire that work "
+        "is done at (where things are heated, cooked or made) is a piece of kind \"work_piece\" standing where it is "
+        "used, never an opening: the opening \"fireplace\" is only a room's own fire for warmth, built into its wall. A piece or opening with a fire or a flame burning in it, or a "
+        "lamp, has \"gives_light\": true; a thing that only shines, gleams or reflects light does not. A thing fixed up on a wall or "
+        "over an opening, that does not stand on the floor, has \"hangs_m\": the height of its lowest point above "
+        "the floor in metres, and \"against\": the wall or the opening it is on or over. Relations "
         "only where the text states them. A phrase that names the open floor itself and no thing (the middle of "
         "the room, the centre of the floor) has the named_places value \"floor\": no piece is ever made up to stand "
         "for a part of the floor. Otherwise a named_places value is always a piece or opening id, never \"not stated\": "
         "when a phrase names a thing whose position the text does not give, list that thing as an opening or piece "
-        "anyway and write \"not stated\" only in its wall or against field. Write the JSON only, nothing else.")
+        "anyway and write \"not stated\" only in its wall or against field. "
+        "A place in the open air (no walls round it, the sky overhead) has the kind \"outdoors\"; then: \"openings\" "
+        "is []; \"outside\" is \"\"; \"room\" tells the ground and the land round it; every piece's against is "
+        "\"free\"; the pieces are only the separate solid things standing on the ground near the people that a place "
+        "phrase or shot line names (the kind landmark, with \"longest_m\": its longest side in metres, for a thing "
+        "nobody sits or lies on), never furnishing; the ground itself, water, slopes, paths, fields, the sky and "
+        "anything far off are the land, not pieces, and a phrase that names one of them has the named_places value "
+        "\"floor\", as has a phrase that only gives a direction or a side of the picture; when such a phrase names a particular part of the land (not the open ground in general, not a "
+        "direction), add it to \"land_places\": {<the phrase verbatim>: <a few plain words for that part of the land "
+        "as it would be seen in a picture>}. Write the JSON only, nothing else.")
 
 
 def validate(spec, phr: list) -> list:
@@ -151,6 +177,30 @@ def validate(spec, phr: list) -> list:
         for x in ("a", "b") + (("c",) if r.get("rel") == "between" else ()):
             if r.get(x) not in ids:
                 f.append(f"relation {r!r}: {x} is not a known piece or opening id")
+    if spec.get("kind") == "outdoors":              # a place in the open: no walls, nothing against one
+        if spec.get("openings"):
+            f.append('a place of the kind "outdoors" has no openings: "openings" must be []')
+        for p in spec.get("pieces") or []:
+            if isinstance(p, dict) and p.get("against") not in ("free", NOT):
+                f.append(f'piece {p.get("id")}: a place of the kind "outdoors" has no walls: against must be "free"')
+    lp = spec.get("land_places", {})
+    if not isinstance(lp, dict) or not all(isinstance(v, str) and v.strip() for v in lp.values()):
+        f.append('"land_places" must be an object {phrase: a few words for that part of the land}')
+    else:
+        for ph in lp:
+            if (spec.get("named_places") or {}).get(ph) != "floor":
+                f.append(f'land_places["{ph}"]: only a phrase whose named_places value is "floor" is a part of the land')
+    for p in spec.get("pieces") or []:
+        if isinstance(p, dict) and p.get("kind") in ("landmark", "work_piece"):
+            lm = p.get("longest_m")
+            if not (isinstance(lm, (int, float)) and 0.3 <= lm <= 80):
+                f.append(f'piece {p.get("id")}: a {p["kind"]} needs "longest_m", its longest side in metres (0.3 to 80)')
+    for p in spec.get("pieces") or []:
+        if isinstance(p, dict) and "hangs_m" in p and not (isinstance(p["hangs_m"], (int, float)) and 0 <= p["hangs_m"] <= 12):
+            f.append(f'piece {p.get("id")}: "hangs_m" is a height in metres (0 to 12), or left out')
+    for x in (spec.get("pieces") or []) + (spec.get("openings") or []):
+        if isinstance(x, dict) and "gives_light" in x and not isinstance(x["gives_light"], bool):
+            f.append(f'{x.get("id")}: "gives_light" is true or left out')
     np = spec.get("named_places") or {}
     for ph in phr:
         if ph not in np:
@@ -240,12 +290,14 @@ people in it, what happens, and what the shot's plan has each person holding.
 
 For each shot and each person in it, list what that person has ON or CARRIES at that moment beyond their everyday
 clothes: anything worn on the head or face, on the hands or feet, or put on over the clothes for what they are
-doing, and anything they hold in a hand and could carry away with them. A part of the place itself that they grip
-or work (a lever, a wheel, a rail, a panel) is not listed. Take it from what the story tells and from what follows
+doing, anything they hold in a hand and could carry away with them, and the loose thing their work in the shot is
+done on (lying in front of them on what they work at, or gripped in a tool), as the story has it at that moment. A
+part of the place itself that they grip or work (a lever, a wheel, a rail, a panel) is not listed. Take it from what the story tells and from what follows
 from it: a thing the story has someone take off was on them until then, a thing it has them put on is on them from
 then. For each thing give:
   "what": one short plain description of the thing, in the same words every time it is the same thing;
-  "on": exactly one of head, face, hands, feet, body (where it is worn) or held (carried in a hand);
+  "on": exactly one of head, face, hands, feet, body (where it is worn), held (carried in a hand) or worked (the
+  thing being worked on, lying on what they work at or gripped in a tool);
   "goes_on": for a thing made to be worn, where it is worn when it is on (head, face, hands, feet or body), even
   while it is only being carried; none for a thing that is never worn;
   "size_cm": its longest side in centimetres, a number.
@@ -262,7 +314,48 @@ The shots:
 Answer with one JSON object and nothing else:
 {{"<shot id>": {{"<person>": [{{"what": "...", "on": "...", "goes_on": "...", "size_cm": 0}}, ...]}}, ...}} with every
 shot id."""
-THING_ON = ("head", "face", "hands", "feet", "body", "held")
+THING_ON = ("head", "face", "hands", "feet", "body", "held", "worked")
+PART_ASK = ("In a scene this happens: {act}\nA prop list for it names this as a thing in a person's hand: {what}\n"
+            "Is it a whole thing of its own that a person can pick up and carry away; or is it a part of something "
+            "bigger that stays in its place? Answer with exactly one word: whole or part.")
+LOOK_WHERE_ASK = ("A prop maker is given this sentence to make one object from: {look}\nDoes the sentence say anything "
+                  "but how the object itself looks: where it is, what it hangs, lies, rests or stands on or over, who "
+                  "has it, or what is done with it? Answer with exactly one word: yes or no.")
+LOOK_ALONE_ASK = ("A prop maker is given this sentence to make one object from: {look}\nWrite the sentence again with "
+                  "every word left out that says where the object is, what it hangs, lies, rests or stands on or "
+                  "over, who has it, or what is done with it: only how the object itself looks stays. Answer with "
+                  "the sentence and nothing else.")
+GLOW_ASK = ("In a scene this happens: {act}\nA thing in it: {what}\nAt that moment, is this thing glowing, burning or "
+            "shining with its own heat or light: because the words say so, or because what is being done to it "
+            "can only be done to it hot from a fire? Answer with exactly one word: yes or no.")
+GLOW_COLOUR_ASK = ("In a scene these things happen, in order:\n{acts}\nA thing in it glows with its own heat or light: "
+                   "{what}\nWhat colour is its glow while it glows, as these words have it; and where they do not "
+                   "say, the colour such a thing glows when it is as hot as that? Answer with one or two plain "
+                   "words for the one colour and nothing else.")
+LOOK_ASK = """A story is told below, whole.
+
+The story:
+<<<
+{story}
+>>>
+
+A prop maker must make this one thing from the story as an object on its own: {what}
+Describe in one sentence how it looks as the story has it in the place "{place}": its shape and build, what it is
+made of, its colours and its marks. Describe the thing alone: never what it lies, rests, stands or hangs on, never
+who holds it or what is done with it, never the place around it. Use plain words for what is to be seen (a name
+the story itself gives a material or a thing says nothing to a prop maker). Answer with the sentence and nothing else."""
+
+
+THINGS_SHOTS = 8                 # shots in one ask of what is worn and carried
+
+
+def is_person(what: str, names) -> bool:
+    """A "thing" that is one of the story's people (carried, held or led by another): a person is staged as their
+    own figure, never made as an object (a woman a creature carried was listed as its held thing and modelled as a
+    prop 1.6 m long, 11-19)."""
+    w = re.sub(r"[^a-z ]", "", str(what or "").lower()).strip()
+    low = {re.sub(r"[^a-z ]", "", str(n).lower()).strip() for n in names}
+    return bool(w) and (w in low or any(w == re.sub(r"^(the|a|an) ", "", n) for n in low))
 
 
 def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
@@ -271,17 +364,26 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
     says he pulled his helmet off after landing). {} when the answer is not usable."""
     sys.path.insert(0, str(HERE))
     import staging_pass as SP
-    lines = "\n".join(
+    line = lambda i: (
         f"{i}: " + "; ".join(p["name"] + (f" (holding: {p['holds']})" if str(p.get("holds") or "").strip() else "")
                              for p in plan[i][0].get("people") or [])
-        + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}" for i in ids)
-    try:
-        got = parse(ask(url, THINGS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9), shots=lines), cache))
-    except OSError:                         # (no director to ask: no account, and the figures' usual look stands)
-        return {}
-    if not isinstance(got, dict):
+        + f" | {(plan[i][0].get('action') or '').strip() or '(no words)'}")
+    # asked a few shots at a time: the answer for a long place ran past the answer's length and was no JSON at
+    # all, so a place of 34 shots had nothing worn or carried in any of them (11-18)
+    got = {}
+    for k in range(0, len(ids), THINGS_SHOTS):
+        try:
+            part = parse(ask(url, THINGS_ASK.format(place=place, story=SP.span(timeline, -1.0, 1e9),
+                                                    shots="\n".join(line(i) for i in ids[k:k + THINGS_SHOTS])), cache))
+        except OSError:                     # (no director to ask: no account, and the figures' usual look stands)
+            return {}
+        if isinstance(part, dict):
+            got.update(part)
+    if not got:
         return {}
     out = {}
+    cast_names = {p["name"] for i in plan if isinstance(plan[i], (list, tuple)) and plan[i] and isinstance(plan[i][0], dict)
+                  for p in plan[i][0].get("people") or []}
     for i in ids:
         row = got.get(i) if isinstance(got.get(i), dict) else {}
         who = {p["name"] for p in plan[i][0].get("people") or []}
@@ -293,9 +395,68 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
                    "size_cm": float(t["size_cm"]) if isinstance(t.get("size_cm"), (int, float)) and 2 <= t["size_cm"] <= 200
                    else None}
                   for t in (v if isinstance(v, list) else []) if isinstance(t, dict) and str(t.get("what") or "").strip()]
-            ok = [t for t in ok if t["on"] in THING_ON]
+            ok = [t for t in ok if t["on"] in THING_ON and not is_person(t["what"], cast_names)]
             if n in who and ok:
                 out[i][n] = ok
+    # a held thing is asked about on its own: a part of something fixed is not a prop (the prompt rules it out and
+    # a lever's handle was listed all the same, and made as a bell, 11-18); and how the thing looks alone, from the
+    # story (a look that named what the thing lay on was modelled with the block under it)
+    act = {}
+    for i in ids:
+        for ts in out[i].values():
+            for t in ts:
+                if t["on"] in ("held", "worked"):
+                    act.setdefault(t["what"], (plan[i][0].get("action") or "").strip())
+    try:
+        part = {w for w, a in act.items() if (lambda r: "part" in r and "whole" not in r)(
+            ask(url, PART_ASK.format(act=a or "(no words)", what=w), cache).lower())}
+        look = {w: ask(url, LOOK_ASK.format(story=SP.span(timeline, -1.0, 1e9), what=w, place=place), cache).strip()
+                for w in act if w not in part}
+        look = {w: v for w, v in look.items() if 8 <= len(v) <= 400 and not set("{}[]\n") & set(v)}   # (a sentence)
+        # (asked for the thing alone, a look still said where it hangs, and the keys drew it hanging there, 11-18:
+        # such a look is written again without those words)
+        for w, v in list(look.items()):
+            if ask(url, LOOK_WHERE_ASK.format(look=v), cache).strip().lower().startswith("yes"):
+                v2 = ask(url, LOOK_ALONE_ASK.format(look=v), cache).strip()
+                if 8 <= len(v2) <= 400 and not set("{}[]\n") & set(v2):
+                    look[w] = v2
+    except OSError:
+        part, look = set(), {}
+    for i in ids:
+        for n in list(out[i]):
+            out[i][n] = [dict(t, **({"look": look[t["what"]]} if look.get(t["what"]) else {}))
+                         for t in out[i][n] if t["what"] not in part]
+            if not out[i][n]:
+                del out[i][n]
+    # a worked thing that glows of itself in a shot (hot from a fire): asked shot by shot from the shot's own words,
+    # and it rides with the thing ("glow": the colour) to the staging's light and the key's words. (The thing's
+    # look is the story's cold one: a bar being hammered lay dark on the anvil in every key, 11-18)
+    glows = {}                               # the thing -> its shots where it glows
+    for i in ids:
+        a = (plan[i][0].get("action") or "").strip()
+        for ts in out[i].values():
+            for t in ts:
+                if t["on"] in ("worked", "held") and a:
+                    # (asked in one question, "its colour, or no", a bar the shot's words called glowing was no)
+                    try:
+                        # (with its look: a lantern whose look said it glowed, held in a shot whose words only
+                        # had it lifted, was "no" by its name alone and the room stayed dark, 11-19)
+                        wl = t["what"] + (f" ({t['look'].strip().rstrip('.')})" if str(t.get("look") or "").strip() else "")
+                        if ask(url, GLOW_ASK.format(act=a, what=wl), cache).strip().lower().startswith("yes"):
+                            glows.setdefault(t["what"], []).append((i, t))
+                    except OSError:
+                        pass
+    # its colour is asked once for the thing, over all the shots it glows in: asked shot by shot, a blade the
+    # first shot called orange was blue in the next, whose words named no colour, and "no colour" in a third
+    for what, rows in glows.items():
+        acts_ = "\n".join(dict.fromkeys(f"- {(plan[i][0].get('action') or '').strip()}" for i, _ in rows))
+        try:
+            g = re.sub(r"[^a-z \-]", "", ask(url, GLOW_COLOUR_ASK.format(acts=acts_, what=what), cache).strip().lower()).strip()
+        except OSError:
+            g = ""
+        if g and len(g.split()) <= 3 and not g.startswith("no"):
+            for _, t in rows:
+                t["glow"] = g
     # a thing a person has in the shot before and in the shot after, the same way, they have in between too (the
     # account left a helmet off for one shot of a flight)
     for a_, b_, c_ in zip(ids, ids[1:], ids[2:]):
@@ -315,6 +476,63 @@ def parse(txt: str):
         return None
 
 
+LOOSE_ASK = ("In a scene these things happen: {acts}\nA set builder lists this as a thing of the place: {look}\n"
+             "Is it a fixed thing of the place, one that stays where it stands while people work at, on or with it; or "
+             "is it the loose thing the work is done to, which is held, moved, changed by the work or carried away? "
+             "Answer with exactly one word: fixed or loose.")
+
+
+def loose(spec: dict, acts: list, url: str, cache: Path) -> list:
+    """The work pieces that are the thing worked on, not a thing of the place (the prompt rules it out and the
+    director listed it all the same: the smith's bar became a piece standing on the forge floor, 11-17), each asked
+    about on its own; -> the faults to put to the director again."""
+    out = []
+    for p in spec.get("pieces") or []:
+        if p.get("kind") != "work_piece":
+            continue
+        ans = ask(url, LOOSE_ASK.format(acts=" ".join(dict.fromkeys(acts)), look=str(p.get("look") or "").strip()), cache)
+        if re.search(r"\bloose\b", ans.lower()) and not re.search(r"\bfixed\b", ans.lower()):
+            out.append(f'piece {p["id"]} ({str(p.get("look") or "").split(",")[0].strip()}) is the loose thing work is '
+                       "done on, not a thing of the place: leave it out of \"pieces\" and \"relations\", and give each "
+                       "phrase that names it the named_places value of the piece it lies on")
+    return out
+
+
+# (a place in the open whose set sheet names one part of it, a door in a wall: its picture was that part, and the set
+# made from it one arch on bare ground, 11-18. The whole place, said once, for its picture)
+WHOLE_ASK = """A story has a place in the open air named "{place}". A painter who knows nothing else of the story paints one
+wide picture of this whole place from well back, empty of people. Write what the painter needs in three sentences of
+plain words{period}:
+1. What kind of place it is, and every building or built thing that belongs to it: for each, what it is for, how large
+it is, what its walls and its roof are made of, and what is built onto it and into it. In a place of bare land this
+sentence says what kind of land it is and how it lies: its rises and hollows, its water and the banks of it.
+2. What else stands on the ground: the things a place of this kind has standing about it for its work and its
+living; in a place of bare land, what grows and lies on it, each with its size and where it is: trees, bushes,
+boulders, fallen wood, reeds, whatever such land has.
+3. The ground itself underfoot, what it is made of and what covers it, and what lies round the place and beyond it.
+Write only what is there, never what is absent: no sentence says that a place has no buildings or lacks a thing.
+Use what the story and the shots say; for what they leave unsaid, what belongs in such a place. Say every thing by
+what it is and looks like, never by a name the story gave it. No people, no animals, nothing the story's people
+carry, make or bring, no weather.
+
+The story there:
+{story}
+The film's shots there:
+{shots}
+The set sheet's words for it: {room}
+
+Answer with the three sentences only."""
+
+
+def whole(place: str, spec: dict, acts: list, psg: str, url: str, cache: Path) -> str:
+    per = str(spec.get("period") or "").replace("_", " ")
+    txt = ask(url, WHOLE_ASK.format(place=place, period=f", as it was in a {per} time" if per and per != "not stated" else "",
+                                    story=psg, shots="\n".join(f"- {a}" for a in acts) or "(none)",
+                                    room=str(spec.get("room") or "").strip() or "(none)"), cache)
+    txt = re.sub(r"\s+", " ", re.sub(r"(?s)<think>.*?</think>", "", txt)).strip()
+    return re.sub(r"^\d[\.\)]\s*|(?<=[\.\!]\s)\d[\.\)]\s+", "", txt).strip()                # (its sentences only, without their numbers)
+
+
 def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache: Path) -> dict:
     ids = place_shots(plan, all_ids, place)
     names = {p["name"] for s in all_ids for p in plan[s][0].get("people") or []}
@@ -326,6 +544,8 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
         asks += 1
         spec = parse(ask(url, text, cache))
         faults = validate(spec, phr)
+        if not faults:
+            faults = loose(spec, acts, url, cache)
         usual = [] if advised or not isinstance(spec, dict) else usual_missing(spec)
         if not faults and not usual:
             break
@@ -345,6 +565,8 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
     if str(out.get("outside") or "").strip() and len(ids) > 1:
         out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
+    if out.get("kind") == "outdoors":
+        out["whole"] = whole(place, out, acts, passage(timeline, plan, ids, all_ids), url, cache)
     if faults:
         out["_faults"] = faults
     return out, base

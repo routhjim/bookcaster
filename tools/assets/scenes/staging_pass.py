@@ -1,7 +1,7 @@
 """Staging pass: the gaps a director's plan leaves, as small closed questions to the language model (stdlib).
 
     python tools/assets/scenes/staging_pass.py PLAN.json SHOTS.txt CAST.json TIMELINE.json SET_DIR OUT.json
-           [--cache DIR] [--url http://127.0.0.1:18100/v1/chat/completions] [--repeats 3]
+           [--cache DIR] [--url http://127.0.0.1:18100/v1/chat/completions] [--repeats 3] [--looks LOOK.json]
 
 The pass never overwrites a fact the plan gives; it asks only for these gaps, each its own question with a closed
 answer set built from data, "not stated" always among the options (code then keeps the previous state):
@@ -12,6 +12,11 @@ answer set built from data, "not stated" always among the options (code then kee
   worn_end    action shots, each listed person: one of that figure's variants
   pose        action shots, each listed person: one of the pose list, or "none"
   camera      talk shots: one of the camera kinds
+  face        every shot that lists two people or more, or someone at a named thing of the set, each of them: whom
+              of the shot's other people they face (by name), the thing they are at (offered only at a named thing,
+              never to a creature), or nobody in particular; from the shot's own words and the people's look phrases
+  creature_pose  every shot, each listed person who is a library creature (cast "creature": true): one of the poses
+              its own rig's clip holds (creature.py), from the shot's own words
 Each question carries the smallest passage span that covers the shot (the chapter's timeline from the shot before
 to the end of this one) and the carried state before it; a change of worn state is asked from the shot's OWN span
 only (its start to the next shot's start), and of the shots that claim the same change the first action shot wins. Temperature 0 and a fixed seed; each question is asked
@@ -36,16 +41,24 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "redraw"))
 import config as C  # noqa: E402
+import creature  # noqa: E402
 import seating  # noqa: E402
 import setfacts  # noqa: E402
+import wardrobe  # noqa: E402
 
 # what a person is doing as the shot starts (the posture, sitting or standing, is the plan's own): asked with
 # postures in the same list, the model answered "seated" for a shot whose action starts lifting a veil (11-12)
 POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm"]
+# the work a person does with a tool or with their hands at what is in front of them, whatever the task (11-17: a
+# smith stood arms down beside his anvil in every key); offered by these plain names, repeatable shot after shot
+WORK_POSES = ["tool_raised", "striking_down", "hands_at_work"]
 # gaze is not a pose: the listener/speaker rule sets it. Plain words for each, for the owner question
 POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gesture_point": "points at something",
               "veil_lift": "lifts a veil", "look_at_sleeve": "looks down at a sleeve",
-              "reach_to_forearm": "lays a hand on another person's forearm"}
+              "reach_to_forearm": "lays a hand on another person's forearm",
+              "tool_raised": "holds a tool raised high, ready to bring it down on the work in front of them",
+              "striking_down": "brings a tool down on the work in front of them",
+              "hands_at_work": "works with both hands on something in front of them at waist height"}
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
 SEED = 7
@@ -99,15 +112,43 @@ def audio_times(timeline: list, es: dict, ids: list) -> dict:
 
 
 def variants(library: Path, base: str) -> list:
-    """A figure's worn-state choices: "usual" and its library variants' suffixes (base_<suffix>, not stances)."""
+    """A figure's worn-state choices: "usual", its library variants recorded as such ("variant_of": base, named
+    base_<suffix>), and the older unrecorded ones (base_<suffix>, not stances: seated, lying, walking)."""
     out = {"usual"}
     for d in (library / "character").glob(f"{base}_*"):
         suf = d.name[len(base) + 1:]
+        p = d / "character.json"
+        rec = {}
+        if p.exists():
+            try:
+                rec = json.loads(p.read_text())
+            except ValueError:
+                rec = {}
+        if rec.get("variant_of"):
+            if rec["variant_of"] == base and not wardrobe.is_stance(suf):
+                out.add(suf)
+            continue
+        if rec.get("stance") or any(d.name.startswith(f"{x}_") for x in recorded(library, base)):
+            continue                              # a stance, or anything of a recorded variant (its stances)
         if "seated" in suf:
             suf = suf.split("_", 2)[-1] if suf.count("_") >= 2 else ""
-        if suf and not suf.startswith(("seated", "walk")):
+            if suf.isdigit():
+                suf = ""
+        if suf and not wardrobe.is_stance(suf):
             out.add(suf)
     return sorted(out)
+
+
+def recorded(library: Path, base: str) -> list:
+    """The ids of base's recorded wardrobe variants ("variant_of": base)."""
+    out = []
+    for p in (library / "character").glob(f"{base}_*/character.json"):
+        try:
+            if json.loads(p.read_text()).get("variant_of") == base:
+                out.append(p.parent.name)
+        except ValueError:
+            pass
+    return out
 
 
 class Asker:
@@ -177,6 +218,35 @@ def q_subset(psg: str, state: str, what: str, options: list) -> str:
             + "): " + "; ".join(options))
 
 
+NOBODY = "nobody in particular"
+AT_THING = "the thing they are at"
+
+
+def q_face(sh: dict, nm: str, people: list, looks: dict, at_thing: bool = True) -> str:
+    """Whom a person of the shot faces as it starts: the shot's own words, its people by name and by the look phrase
+    the words call them, and the general rule (between people, each faces the one they act with)."""
+    import shot_people
+    who = []
+    for p in people:
+        ph = shot_people.phrase(looks.get(p["name"], ""), {"creature": True} if p["name"] in looks.get("_creatures", ())
+                                else {})
+        who.append(f"- {p['name']}" + (f" (the words call them {ph})" if ph else "") + f": {p.get('pose') or ''}, "
+                   f"{p.get('at') or ''}")
+    return ("You help stage a shot of a film. The shot's own words: "
+            + " ".join(str(sh.get(k) or "") for k in ("keyshot", "action") if sh.get(k)).strip()
+            + "\nThe people in the shot:\n" + "\n".join(who)
+            + (f"\nQuestion: whom or what does {nm}'s body face as this shot starts? When the shot's action is "
+               f"{nm}'s own work on, at or with the thing of the place {nm} stands at (the place above names it), {nm} "
+               "faces that thing, whoever else is near: the answer is " + AT_THING + ". Otherwise, when the shot's "
+               "action " if at_thing else f"\nQuestion: whom does {nm}'s body face as this shot starts? When the shot's "
+               "action ")
+            + "is between people (one acts on, at, against or with another), each of them faces the one they act with, "
+            "whatever side of the picture they are on. When the person acts with nobody of the shot and with no thing "
+            "they stand at, or looks away, the answer is " + NOBODY + ".\nAnswer with exactly one of these, nothing "
+            "else: " + "; ".join([p["name"] for p in people if p["name"] != nm] + ([AT_THING] if at_thing else [])
+                                 + [NOBODY]))
+
+
 def main():
     a = sys.argv[1:]
     plan = json.loads(Path(a[0]).read_text())
@@ -189,23 +259,48 @@ def main():
     url = a[a.index("--url") + 1] if "--url" in a else "http://127.0.0.1:18100/v1/chat/completions"
     reps = int(a[a.index("--repeats") + 1]) if "--repeats" in a else 3
     library = Path(C.LIBRARY)
+    # the book's looks (--looks LOOK.json): the shot words name people by their look phrase, not by name
+    looks = (json.loads(Path(a[a.index("--looks") + 1]).read_text()).get("characters") or {}) if "--looks" in a else {}
     es = {e["id"]: e for e in plan.get("_es", [])}
     things = [t for t in setfacts.things(set_dir) if t["kind"] in ("fixture", "window", "door")]
+    np_ = set_dir / "named_places.json"            # the set's own map of the plan's place phrases to its things
+    set_named = json.loads(np_.read_text()) if np_.exists() else {}
     place_opts = [f"{t['name']} ({t['words'].replace('(', '').replace(')', '')}"
                   + (f", {t['place']}" if t.get("place") else "") + ")" for t in things]
     names = list(cast)
+    crt = {nm: r_ for nm, c in cast.items() if c.get("creature") and (r_ := creature.rig(library, c["id"]))}
+    looks = dict(looks, _creatures=[nm for nm, c in cast.items() if c.get("creature")])
     var = {nm: variants(library, c.get("base") or c.get("id")) for nm, c in cast.items()}
     ask = Asker(url, cache, reps)
     res = {"in_room": {}, "move_end": {}, "worn_start": {}, "worn_end": {}, "pose": {}, "camera": {}, "exits": {},
-           "enters": {}}
+           "enters": {}, "creature_pose": {}}
     gone = set()                                  # people the passage has taken out of the room
     state = {}                                    # name -> place words, carried from the plan's own facts
     worn_now = {}                                 # name -> worn state at the scene's start
     claims = {}                                   # name -> [(shot, worn when that shot ends)], raw
-    worn_at = lambda nm: (claims.get(nm) or [(None, worn_now.get(nm, NOT))])[-1][1]
+    now = {}                                      # name -> worn state as things stand (for the questions)
+    worn_at = lambda nm: now.get(nm, NOT)
     t0 = time.time()
     at = audio_times(timeline, es, ids)
+    # the book's wardrobe (the planner's change of clothes over the whole story, on the chapter's clock: the cast
+    # file's "wardrobe"): the outfit in force at each shot's time is where the worn state starts; a change the
+    # passage shows within the place still moves it, until the wardrobe's next change
+    ward = {nm: c["wardrobe"] for nm, c in cast.items() if c.get("wardrobe") and nm not in crt}
+    dflt = {nm: {} for nm in ward}                # name -> {shot: the wardrobe's outfit, where it changes}
+    for nm, rows in ward.items():
+        prev = None
+        for sid in ids:
+            v = wardrobe.variant_at(rows, wardrobe.shot_time(sid, at[sid]))
+            v = v if v in var[nm] else "usual"    # (an outfit with no figure: the usual one, said in words)
+            if v != prev:
+                dflt[nm][sid] = v
+            prev = v
+    res["worn_plan"] = {}
     for n, sid in enumerate(ids):
+        for nm in ward:
+            if n and sid in dflt[nm]:
+                now[nm] = dflt[nm][sid]
+                res["worn_plan"].setdefault(sid, {})[nm] = dflt[nm][sid]
         sh, e = plan[sid][0], es.get(sid, {})
         a0 = at[ids[n - 1]] if n else at[sid] - 20.0             # from the shot before to this shot's end
         a1 = at[ids[n + 1]] if n + 1 < len(ids) else at[sid] + max(8.0, e.get("speech_s") or e.get("dur") or 0)
@@ -221,12 +316,32 @@ def main():
         for p in sh.get("people") or []:
             state[p["name"]] = f"{p.get('pose')} {p.get('at')}"
         st = "; ".join(f"{k}: {v}" for k, v in state.items()) or NOT
+        # a creature's pose, from the shot's own words (its posture words name no pose of its clip): the clip's pose
+        # nearest to how the shot shows it as it starts
+        for p in sh.get("people") or []:
+            if p["name"] not in crt:
+                continue
+            opts = [creature.pose_words(x) for x in crt[p["name"]]["poses"]]
+            cp = ask.choose("You help stage a shot of a film. The shot's own words: "
+                            + str(sh.get("keyshot") or sh.get("picture") or "") + " " + str(sh.get("action") or "")
+                            + f"\n{p['name']} is {p.get('pose') or 'in the shot'}, {p.get('at') or ''}. {p['name']} is "
+                            "staged as a model that can hold only the poses listed below. Question: which of them is "
+                            f"closest to how {p['name']} is shown as this shot starts? Where none matches, take the "
+                            "one nearest to the body's shape the words describe.\nAnswer with exactly one of these, "
+                            "nothing else: " + "; ".join(opts), opts)
+            if cp in opts:
+                res["creature_pose"].setdefault(sid, {})[p["name"]] = crt[p["name"]]["poses"][opts.index(cp)]
         if n == 0:
             for nm in names:
+                if nm in crt:                     # (a creature wears nothing of a figure's wardrobe)
+                    continue
+                if nm in ward:                    # the book's wardrobe says what they have on
+                    res["worn_start"][nm] = worn_now[nm] = now[nm] = dflt[nm][sid]
+                    continue
                 res["worn_start"][nm] = ask.choose(q_choose(psg, st, f"What is {nm} wearing at this moment, among "
                                                             "these choices?", var[nm]), var[nm])
                 if res["worn_start"][nm] != NOT:
-                    worn_now[nm] = res["worn_start"][nm]
+                    worn_now[nm] = now[nm] = res["worn_start"][nm]
             # who is already in the place when the scene opens, and where the passage puts them (closed questions
             # over the cast and the set's numbered places): a person the passage has there is present from the
             # scene's first shot even when the plan's lists leave them out ("a lady ... who had been sitting in
@@ -266,6 +381,22 @@ def main():
         if isinstance(back, list) and back:
             res.setdefault("enters", {})[sid] = back
             gone.difference_update(back)
+        # whom each person faces as the shot starts: the plan's facing words are screen directions ("left"), which
+        # say nothing of whom; turned toward the others' middle, a man fighting a beast faced the woman behind him
+        # as much as the beast (11-16). Asked by name, over the shot's own people
+        listed = [p["name"] for p in sh.get("people") or [] if p.get("name") in names]
+        for nm in listed:
+            fo = [x for x in listed if x != nm]
+            # (what they stand at is offered only when their place is a named thing of the set and they are no
+            # creature: offered at a place on the open ground, a man fighting a beast was turned to "what he is at")
+            at_ok = nm not in crt and set_named.get(next((str(p.get("at") or "") for p in sh.get("people") or []
+                                                          if p.get("name") == nm), "")) not in (None, "floor")
+            if not fo and not at_ok:              # alone and at no named thing: nothing to ask
+                continue
+            ft = ask.choose(q_face(sh, nm, [p for p in sh.get("people") or [] if p.get("name") in listed], looks,
+                                   at_ok), fo + ([AT_THING] if at_ok else []) + [NOBODY])
+            if ft in fo or ft == AT_THING:
+                res.setdefault("face", {}).setdefault(sid, {})[nm] = ft
         # the eyes as the shot opens: a figure's eyes are open in every engine still, and the redraw drew a child
         # wide awake in each shot of her asleep (11-15)
         for p in sh.get("people") or []:
@@ -285,6 +416,8 @@ def main():
             named = json.dumps(sh.get("things") or {}, ensure_ascii=False)
             for p in sh.get("people") or []:
                 nm = p["name"]
+                if nm in crt:                     # (a creature's pose is asked above; it moves by the plan's places)
+                    continue
                 q = f"The shot's action: {act}\nThings the director names in it: {named}\n"
                 # a move only where the plan's own posture changes over the shot (sitting -> standing or back)
                 if (sh.get("pose_end") or {}).get(nm) not in (None, p.get("pose")):
@@ -296,22 +429,38 @@ def main():
                                               "number from this list:\n" + "\n".join(nums), keys), keys)
                     if end != NOT:
                         res["move_end"].setdefault(sid, {})[nm] = things[keys.index(end)]["name"]
+                # (someone of the plan with no figure of the cast, an extra, has no wardrobe to choose from: the
+                # pass asked anyway and stopped the place, 11-17)
                 w = ask.choose(q_choose(own, st + f"; {nm} wears: {worn_at(nm)}",
                                         q + f"What is {nm} wearing when this shot ends, among these choices?",
-                                        var[nm]), var[nm])
+                                        var[nm]), var[nm]) if nm in var else NOT
                 if w != NOT:
                     claims.setdefault(nm, []).append((sid, w))
+                    now[nm] = w
                 # from the shot's OWN span only (as the worn state): a later shot's action is not claimed early
-                ps = ask.choose(q_choose(own, st, q + f"{nm} is {p.get('pose') or 'in the shot'}. Most shots begin "
-                                                      f"with no special action. Which of these does {nm} begin to do "
-                                                      "as this shot starts?", ["none"] + POSES), ["none"] + POSES)
+                # (each choice offered with its plain words; the plan's own state of the person, when it gives one)
+                opts = ["none"] + [f"{x} ({POSE_WORDS[x]})" for x in POSES + WORK_POSES]
+                sw = f" The plan says of {nm} as the shot starts: {p['state']}." if str(p.get("state") or "").strip() else ""
+                ps = ask.choose(q_choose(own, st, q + f"{nm} is {p.get('pose') or 'in the shot'}.{sw} Most shots "
+                                                      f"begin with no special action. Which of these does {nm} begin "
+                                                      "to do as this shot starts?", opts), opts)
+                ps = ps.split(" (")[0]
                 if ps != NOT:
                     res["pose"].setdefault(sid, {})[nm] = ps
     # a change is taken once: of the shots in a row that claim the same new state, the first action shot (the one
     # that shows it) wins and the other claims are "not stated"
     for nm, cl in claims.items():
         cur, run = worn_now.get(nm), []
-        for sid, w in cl + [(None, None)]:
+        # (the wardrobe's own changes in among the claims: at such a shot the state is the wardrobe's again)
+        ev = sorted([(ids.index(x), 0, x, v) for x, v in (dflt.get(nm) or {}).items() if x != ids[0]]
+                    + [(ids.index(x), 1, x, v) for x, v in cl])
+        for _, kind, sid, w in [e for e in ev] + [(None, 1, None, None)]:
+            if kind == 0:
+                if run:
+                    pick = next((x for x in run if plan[x[0]][0].get("kind") == "action"), run[0])
+                    res["worn_end"].setdefault(pick[0], {})[nm] = pick[1]
+                cur, run = w, []
+                continue
             if run and w != run[-1][1]:
                 # own spans already keep a later shot's change out of an earlier one; of the shots that then name
                 # the same new state, the first action shot is where it happens, the rest only restate it
@@ -326,7 +475,7 @@ def main():
     by = {}
     for sid, pp in res["pose"].items():
         for nm, ps in pp.items():
-            if ps in POSES:
+            if ps in POSES:                       # (work is done shot after shot: not one shot's own)
                 by.setdefault((nm, ps), []).append(sid)
     res["_action_owner"] = {}
     for (nm, ps), sids in by.items():
@@ -375,8 +524,8 @@ def main():
     res["things"] = PS.things(plan, ids, place, timeline if isinstance(timeline, list) else
                               timeline.get("segments") or timeline.get("lines") or [], url, cache)
     # what is worn, in words for the redraw (the figures wear their usual look)
-    res["wears"] = {i: {n: [t["what"] for t in ts if t["on"] != "held"] for n, ts in row.items()
-                        if any(t["on"] != "held" for t in ts)} for i, row in res["things"].items()}
+    res["wears"] = {i: {n: [t["what"] for t in ts if t["on"] not in ("held", "worked")] for n, ts in row.items()
+                        if any(t["on"] not in ("held", "worked") for t in ts)} for i, row in res["things"].items()}
     out.write_text(json.dumps(res, indent=1, ensure_ascii=False))
     print(json.dumps({k: res[k] for k in ("_asked", "_calls", "_cached", "_split", "_s")}))
 

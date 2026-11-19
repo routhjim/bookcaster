@@ -31,6 +31,18 @@ def look_phrase(look: str) -> str | None:
     return f"the {m.group(1)} in the {w.group(1).strip()}"
 
 
+def creature_phrase(look: str) -> str | None:
+    """A creature's phrase as the director's lines name it: "the" and the last word of its look's head phrase (the
+    words before "with", "of", "that", "who" or the first comma)."""
+    head = re.split(r"\s+(?:with|of|that|who)\s+|,", re.sub(r"^\s*an?\s+", "", (look or "").strip()))[0].split()
+    return f"the {head[-1].lower()}" if head else None
+
+
+def phrase(look: str, entry: dict | None) -> str | None:
+    """The look phrase of a cast entry: a person's, or a creature's (cast "creature": true)."""
+    return creature_phrase(look) if (entry or {}).get("creature") else look_phrase(look)
+
+
 def heads_out(scene: Path, cam: str) -> set:
     """The people of this still whose head (head top or chin, the scene's frame check) is outside the frame."""
     rp = scene / "result.json"
@@ -60,7 +72,7 @@ def people(scene: Path, cam: str, looks: dict, cast: dict) -> dict:
             continue
         nm = key_name.get(k, k)
         deg = v.get("head_to_camera_deg") or 0.0
-        vis.append({"key": k, "name": nm, "look": look_phrase(looks.get(nm, "")) or nm,
+        vis.append({"key": k, "name": nm, "look": phrase(looks.get(nm, ""), cast.get(nm)) or nm,
                     "area": round(v["area"], 4), "seen": "front" if deg < 60 else "side" if deg < 115 else "back",
                     "box": v.get("box")})
     # a person whose head is out of the frame (a shoulder or a back at the picture's edge) is not one of the

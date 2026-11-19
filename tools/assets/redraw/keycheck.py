@@ -21,7 +21,10 @@ Per person whose body is within 100 deg of the camera:
           keys in the run (the accepted set);
   outfit  (head at least OUTFIT_MIN_HEAD of the frame) the judge, with the character's sheet and the crop of the
           neck and chest around the engine's chin: the collar and neckwear the same as on the sheet, or larger,
-          open, turned or missing (a forced choice: asked "do they agree", the judge said yes to everything).
+          open, turned or missing (a forced choice: asked "do they agree", the judge said yes to everything);
+  face    (facegate.due: not a creature or covered face, head within 60 deg, eyes in frame, head at least 0.12
+          of the frame) the judge on the head crop: a human face, or a creature, statue, mask or none (forced
+          choice, facegate.HUMAN_Q). accept.py makes a failure blocking: never the kept key.
 The same pose measures on the engine still (and its depth picture) are reported too: an arm the still itself does
 not show cleanly is the guide's fault, not the redraw's.
 """
@@ -42,6 +45,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))       # tools/ (vl_judge.py)
 import onnx_torch  # noqa: E402
+import facegate as FG  # noqa: E402
 
 IN_W, IN_H = 192, 256
 MEAN = torch.tensor([123.675, 116.28, 103.53]).view(3, 1, 1)
@@ -150,7 +154,7 @@ def gdino_hands(det, path: str, box) -> list:
     return out
 
 
-def gdino_person(det, path: str, box) -> float:
+def gdino_person(det, path: str, box, label: str = "person") -> float:
     """The largest "person" box Grounding DINO finds in a person's own engine box (enlarged), as a share of that
     box: a person present in the engine still and missing from the redraw finds none (11-12: a seated woman hidden
     in the redraw, an empty chair where she sat)."""
@@ -163,7 +167,7 @@ def gdino_person(det, path: str, box) -> float:
     if c.width < 16 or c.height < 16:
         return 0.0
     W, H = c.size
-    return max([((b[2] - b[0]) * (b[3] - b[1])) / max(1.0, W * H) for b in D.detect(dp, dm, c, ["person"]).get("person", [])],
+    return max([((b[2] - b[0]) * (b[3] - b[1])) / max(1.0, W * H) for b in D.detect(dp, dm, c, [label]).get(label, [])],
                default=0.0)
 
 
@@ -268,6 +272,15 @@ def main():
             b = p["box"]
             if (b[2] - b[0]) * (b[3] - b[1]) < 0.004:
                 continue
+            if p.get("creature"):
+                # a creature: no person's body to measure (arms, hands, neck, collar); only found in the picture at
+                # all, by its own noun
+                q = {"named": bool(p.get("named")), "creature": True}
+                if det is not None and (b[2] - b[0]) * (b[3] - b[1]) >= 0.01:
+                    q["person_found"] = {kk: round(gdino_person(det, it[kk], b, p.get("noun") or "animal"), 3)
+                                         for kk in ("engine", "redraw") if kk in it}
+                r["people"][p["key"]] = q
+                continue
             bp = [b[0] * 1152, b[1] * 640, b[2] * 1152, b[3] * 640]
             q = {}
             j2 = p.get("joints2d") or {}
@@ -304,6 +317,11 @@ def main():
                 a = judge.ask_images([Image.open(p["sheet"]).convert("RGB"), c], OUTFIT_Q, 6, 768).strip().lower()
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
+            if judge is not None and FG.due(p):
+                # the face gate (facegate.py, blocking in accept.py): a face toward the camera and large enough
+                # must be drawn as a human face (a close shot's head drawn as stone passed every face score, 11-18)
+                eng = Image.open(it["engine"]).convert("RGB").resize((1152, 640)) if it.get("engine") else None
+                q.update(FG.ask(judge, Image.open(it["redraw"]).convert("RGB").resize((1152, 640)), p, eng))
             q["named"], q["action"] = bool(p.get("named")), p.get("action")
             if det is not None and (b[2] - b[0]) * (b[3] - b[1]) >= 0.01:   # the person found in the picture at all
                 q["person_found"] = {kk: round(gdino_person(det, it[kk], b), 3) for kk in ("engine", "redraw")
@@ -312,7 +330,7 @@ def main():
         for p in it["people"]:            # each person's clothes below the chin, redraw and engine (accept.py judges)
             mk = p.get("mask")
             j2 = p.get("joints2d") or {}
-            if not mk or not Path(mk).exists():
+            if not mk or not Path(mk).exists() or p.get("creature"):
                 continue
             cut = j2["chin"][1] if "chin" in j2 and 0 <= j2["chin"][1] < 1 else 0.0
             m = np.asarray(Image.open(mk).convert("L").resize((1152, 640))).copy()
@@ -368,22 +386,26 @@ def main():
                                     else None}
                         for t in it["lit"]}
         out[it["id"]] = r
-        print(json.dumps({"id": it["id"], "people": {k: {"arms": (v["redraw"]["arms_found"], v["redraw"]["arms_shown"]),
-                                                          "hands": (v["redraw"]["hands_found"], v["redraw"]["hands_shown"]),
-                                                          "neck": v["redraw"]["neck_ratio"],
+        # (a creature's entry carries no body checks: no arms, hands or neck to count, 11-17)
+        print(json.dumps({"id": it["id"], "people": {k: {"arms": (v.get("redraw", {}).get("arms_found"),
+                                                                   v.get("redraw", {}).get("arms_shown")),
+                                                          "hands": (v.get("redraw", {}).get("hands_found"),
+                                                                    v.get("redraw", {}).get("hands_shown")),
+                                                          "neck": v.get("redraw", {}).get("neck_ratio"),
                                                           "neck_engine": v.get("engine", {}).get("neck_ratio"),
-                                                          "outfit": v.get("outfit")}
+                                                          "outfit": v.get("outfit"),
+                                                          "human_face": v.get("human_face")}
                                                       for k, v in r["people"].items()}}), flush=True)
     # neck: against the engine still and the character's own median in this run
     by_char = {}
     for iid, r in out.items():
         for k, v in r["people"].items():
-            if v["redraw"].get("neck_ratio") is not None:
+            if v.get("redraw", {}).get("neck_ratio") is not None:
                 by_char.setdefault(k, []).append(v["redraw"]["neck_ratio"])
     med = {k: statistics.median(v) for k, v in by_char.items()}
     for iid, r in out.items():
         for k, v in r["people"].items():
-            n = v["redraw"].get("neck_ratio")
+            n = v.get("redraw", {}).get("neck_ratio")
             e = v.get("engine", {}).get("neck_ratio")
             if n is None:
                 v["neck_ok"] = None

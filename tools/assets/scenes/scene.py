@@ -27,11 +27,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE.parent / "sets"))
+sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
+import creature  # noqa: E402
 import layout  # noqa: E402
 
 CHAR_TOOLS = Path(os.environ.get("SCENES_CHAR_TOOLS", str(HERE.parent / "characters")))
 SET_TOOLS = HERE.parent / "sets" / "ue"
+WORK_POSE_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")    # ue/pose.py WORK_ACTIONS (whole-body stance)
 RT_KEYS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.HardwareRayTracing": "True",
            "r.SkinCache.CompileShaders": "True"}
 
@@ -73,6 +76,35 @@ def ensure_raytracing(project):
     return missing
 
 
+KEY_LUX_EV = 6.0         # a place in the open: its key at least this many lux per unit of 2^EV100 (the exposure's
+#                          own scale), so a face reads at night as by day (measured on an outdoor place, 11-17)
+
+
+def key_light(set_spec_path, ev=None) -> dict | None:
+    """A place in the open (a set built as a world, sets/place_build.py world_stage) is lit per shot from the
+    camera's side (the editor job turns its sun for each still, framing.key_toward), in the world's own light
+    colour, at least KEY_LUX_EV x 2^EV100: at the panorama's own night level a face read as 6 of 255. A room
+    -> None."""
+    try:
+        ss = json.loads(Path(set_spec_path).read_text())
+    except (OSError, ValueError):
+        return None
+    sun = next((l for l in ss.get("lights") or [] if l.get("type") == "sun"), None)
+    if not ss.get("world") or not sun:
+        return None
+    ev = float(ev if ev is not None else ss.get("exposure_ev100") or 5.0)
+    return {"toward_sun": sun["toward_sun"], "lux": round(max(float(sun.get("lux") or 0), KEY_LUX_EV * 2 ** ev), 1)}
+
+
+def fixture_params(c: dict, pr: dict) -> dict:
+    """A person's pose params with the piece of the set they work with their hands (params "fixture": {"name"}):
+    a work action (WORK_POSE_ACTIONS) that from_plan stood them at a piece for ("work_at", its spec name: the set
+    builder's label of its actor) with nothing worked lying on it (no blow target): the piece itself is the work."""
+    if c.get("work_at") and pr.get("action") in WORK_POSE_ACTIONS and not pr.get("work_target_ue"):
+        return dict(pr, fixture={"name": c["work_at"]})
+    return pr
+
+
 def resolve(spec, cams_wanted=None):
     lib = Path(C.LIBRARY)
     sp = lib / "set" / spec["set"] / "asset.json"
@@ -91,6 +123,10 @@ def resolve(spec, cams_wanted=None):
             figs[key] = {"mesh": aj["ue"]["path"], "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                          "facing": [f[0] / n, f[1] / n], "position": pos, "height_m": aj["size_m"][2],
                          "id": c["asset"]}
+            rg = creature.rig(lib, c["asset"]) if creature.is_id(c["asset"]) else None
+            if rg:                     # a rigged creature: its skeletal mesh holding the named pose's frame of its clip
+                figs[key].update(mesh=rg["mesh"], anim=rg["anim"], t=creature.pose_time(rg, c.get("pose")),
+                                 pose=c.get("pose") or rg["poses"][0], creature=True, head_len_m=rg["head_len_m"])
             continue
         cp = lib / "character" / c["id"] / "character.json"
         if not cp.exists():
@@ -106,7 +142,9 @@ def resolve(spec, cams_wanted=None):
         bpose = c.get("body_pose")
         if (cj.get("relaxed_arm_steps") and bpose and bpose.get("pose") in ("stand", "stand_relaxed")
                 and not (bpose.get("params") or {}).get("hand_at_lapel", bpose.get("pose") == "stand_relaxed")
-                and not (bpose.get("params") or {}).get("lie")):        # (lying, the arms rest along the body)
+                and not (bpose.get("params") or {}).get("lie")         # (lying, the arms rest along the body)
+                # (an action that places the arms itself keeps them: the steps turned them again afterwards)
+                and (bpose.get("params") or {}).get("action") not in WORK_POSE_ACTIONS + ("veil_lift",)):
             # the character's own arm clearance (its builder measured it against its clothes) in place of the default
             pr = dict(bpose.get("params") or {})
             pr.setdefault("arm_clear_deg", 0.0)
@@ -119,6 +157,9 @@ def resolve(spec, cams_wanted=None):
             garments += [g for g in wj.get("garments", [])[1:] if g not in garments]
         chars[key] = {"id": c["id"], "path": cj["blueprint"], "garments": garments,
                       "wear_add": c.get("wear_add"), "face_covered": bool(c.get("face_covered")),
+                      # a wardrobe variant's own outfit words and sheet (they replace the usual ones in the redraw)
+                      "wear_set": c.get("wear_set"), "wear_back_set": c.get("wear_back_set"),
+                      "worn_sheet": c.get("worn_sheet"),
                       "body_swap": cj.get("body_swap"), "hide_body": bool(cj.get("hide_body")),
                       "hide_face": bool(cj.get("hide_face")),       # a whole generated figure: no face mesh shown
                       "hide_hair": bool(cj.get("hide_hair")),       # the figure wears its own drawn hair
@@ -150,8 +191,53 @@ def resolve(spec, cams_wanted=None):
                 ap = lib / "prop" / t["asset"] / "asset.json"
                 if t["asset"] not in carried and ap.exists():
                     aj = json.loads(ap.read_text())
-                    carried[t["asset"]] = {"mesh": aj["ue"]["path"], "size_m": aj["size_m"]}
-    return proj, {"carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
+                    carried[t["asset"]] = {"mesh": aj["ue"]["path"],    # (the model's measured box, when recorded)
+                                           "size_m": (aj.get("blender") or {}).get("dims_m") or aj["size_m"]}
+    # every thing in a person's hand goes to the pose (11-18: only a work action's first thing did, and anything
+    # else hung under an open hand): pose.py closes the hand on each one's grip in any pose, puts a second thing in
+    # the other hand, reaches a tool's working point to the work and puts the other hand on the handle of a
+    # two-handed one. Each thing's hand is from_plan's (the first the working hand, a second the other; older specs
+    # by order), its size the model's box; scene_job adds the grip measured from the model. A worked thing lying on
+    # the work top ("at": "on") gives the blow's point: its top, i.e. where it lies plus its thinnest side (it lies
+    # on its broadest face, scene_job), in UE cm (pose.py turns it into the body's own frame)
+    for c in cams:
+        for key, ts in (c.get("carried") or {}).items():
+            bp = (chars.get(key) or {}).get("body_pose") or {}
+            if not bp.get("pose"):
+                continue
+            pr = dict(bp.get("params") or {})
+            held = list(pr.get("held") or [])
+            for t in ts:
+                if t.get("at") == "hand" and t["asset"] in carried and t["asset"] not in {h["asset"] for h in held} \
+                        and len(held) < 2:
+                    used = {h["hand"] for h in held}
+                    hand = t.get("hand") if t.get("hand") in ("l", "r") and t.get("hand") not in used else \
+                        next(x for x in ("r", "l") if x not in used)
+                    held.append({"asset": t["asset"], "hand": hand, "size_m": list(carried[t["asset"]]["size_m"]),
+                                 "name": t.get("name")})
+            on = next((t for t in ts if t.get("at") == "on" and t.get("xyz") and t["asset"] in carried), None)
+            if held:
+                pr["held"] = held
+            if pr.get("action") in WORK_POSE_ACTIONS:
+                tool = next((h for h in held if h["hand"] == pr.get("hand", "r")), held[0] if held else None)
+                if tool and "tool_size_m" not in pr:
+                    pr.update(tool_size_m=tool["size_m"], tool_asset=tool["asset"])
+                if on and "work_target_ue" not in pr:
+                    x, y, z = on["xyz"]
+                    pr["work_target_ue"] = layout.ue_pt([x, y, z + min(carried[on["asset"]]["size_m"])])
+                    # (the recorded size is not the model the engine lays down: scene_job re-aims at the top of the
+                    # thing as laid, from its mesh's own box; 11-18, a blow aimed 7.75 cm over the laid top)
+                    pr["work_on"] = {"asset": on["asset"], "base_ue": layout.ue_pt([x, y, z])}
+            chars[key]["body_pose"] = dict(bp, params=pr)
+    # a piece of the set worked with the hands themselves (from_plan's "work_at": the piece a work action stands them
+    # at) with nothing worked lying on it: the hands that hold nothing take hold of a part of it (scene_job reads the
+    # piece's surface round the person, pose.py finds a part a hand closes round and puts the hands on it)
+    for key, c in spec["characters"].items():
+        bp = (chars.get(key) or {}).get("body_pose") or {}
+        if bp.get("pose"):
+            chars[key]["body_pose"] = dict(bp, params=fixture_params(c, bp.get("params") or {}))
+    kl = key_light(lib / "set" / spec["set"] / "spec.json", spec.get("exposure_ev100"))
+    return proj, {**({"key_light": kl} if kl else {}), "carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,
                   "characters": chars, "figures": figs, "cameras": cams, "lights": S.lights,
                   "figure_tools": str(HERE.parent / "img3d" / "ue_stage_figure.py"),

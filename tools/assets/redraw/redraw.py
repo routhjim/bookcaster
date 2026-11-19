@@ -44,6 +44,7 @@ away is said to be seen from behind with no face visible.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -52,6 +53,17 @@ SHOT = {
     "wide": "A wide shot: the whole room in view, the people small and full length, feet on the floor.",
     "medium": "A medium shot: the people seen from about the waist up, the room behind them.",
     "close": "A close shot: head and shoulders filling the frame, the room behind soft and out of focus.",
+}
+# a place in the open (its set built as a world, sets/place_build.py world_stage): said of the open place, not a
+# room. Told "the room behind", every close and medium of an outdoor place was drawn as a dark room with windows
+# and a stone floor while its wides showed the river and the hills (11-17)
+SHOT_OPEN = {
+    "wide": "A wide shot out of doors: the whole place in view under the open sky, the people small and full length, "
+            "feet on the ground.",
+    "medium": "A medium shot out of doors: the people seen from about the waist up, the open land and the sky "
+              "behind them.",
+    "close": "A close shot out of doors: head and shoulders filling the frame, the open land behind soft and out of "
+             "focus.",
 }
 
 
@@ -82,7 +94,7 @@ def people(shot: dict, poses: dict | None = None) -> list:
     scene posed them seated (pose name), the lying words for a lying stance, else "standing"."""
     poses = poses or {}
     out = [(k, v["box"], v.get("head_to_camera_deg", 0.0),
-            "lying in bed on the back, the bedclothes over the body" if "lying" in (poses.get(k) or "") else
+            "lying on the back on top of the made bed, no bedclothes over the body" if "lying" in (poses.get(k) or "") else
             "sitting" if any(w in (poses.get(k) or "") for w in ("sit", "seat")) else "standing",
             v.get("body_to_camera_deg", v.get("head_to_camera_deg", 0.0)), v.get("nearer_shoulder"))
            for k, v in shot["people"].items() if v.get("box") and v.get("area", 0) > 0.002]
@@ -135,11 +147,40 @@ def heads_out(res: dict, cam: str) -> set:
     return out
 
 
-def edge_words(edge: list) -> str:
+EDGE_MIN = 0.03              # someone at the frame's edge, head out, is said when this share of the frame is theirs
+
+
+def seen_share(sd: Path, cam: str) -> dict:
+    """Each person's own share of a camera's still (the staging check's depth-pass mask), {} when not recorded."""
+    try:
+        h = (json.loads((sd / "speakers.json").read_text()).get("shots") or {}).get(cam, {}).get("history") or []
+    except (OSError, ValueError):
+        return {}
+    ff = (h[-1].get("frame_facts") or {}) if h else {}
+    return {k: f["mask"]["area"] for k, f in ff.items() if isinstance(f.get("mask"), dict) and "area" in f["mask"]}
+
+
+def edge_words(edge: list, cast: dict | None = None) -> str:
+    """Someone at the frame's edge with the head out of it: only a shoulder and clothes, said as that person's own
+    clothes (told only "clothes", the redraw dressed a man in armour in the velvet of the person beside him)."""
     if not edge:
         return ""
-    return (" At the edge of the frame only part of another person's shoulder and clothes is seen, their head out of "
-            "the picture; no other face is in the picture.")
+    # (a creature at the edge is said as itself: listed with the people, its part of the frame was "another person's
+    # clothes" and was painted as the dress of the woman beside it, 11-18)
+    beasts = [str((cast or {}).get(x[0], {}).get("noun") or "") for x in edge
+              if not (cast or {}).get(x[0], {}).get("wear") and str((cast or {}).get(x[0], {}).get("noun") or "").lower()
+              not in ("", "man", "woman", "boy", "girl", "lady", "person", "child")]
+    folk = [x for x in edge if str((cast or {}).get(x[0], {}).get("noun") or "") not in beasts]
+    out = ""
+    if folk:
+        wear = [(cast or {}).get(x[0], {}).get("wear", "") for x in folk]
+        wear = [", ".join(q.strip() for q in w.replace(";", ",").split(",")[:2]) for w in wear if w]
+        out += (" At the edge of the frame only part of another person's shoulder and clothes is seen"
+                + (f" ({'; '.join(wear)})" if wear else "") + ", their head out of the picture; no other face is in the "
+                "picture.")
+    for n in dict.fromkeys(beasts):
+        out += f" At the edge of the frame only part of the {n}'s body is seen, its head out of the picture."
+    return out
 
 
 def scene_poses(sd: Path) -> dict:
@@ -171,7 +212,9 @@ def scene_wear(sd: Path) -> dict:
         return {}
     j = json.loads(jp.read_text())
     j = j.get("job", j)
-    return {k: {"wear_add": v.get("wear_add"), "face_covered": bool(v.get("face_covered")), "id": v.get("id")}
+    return {k: {"wear_add": v.get("wear_add"), "face_covered": bool(v.get("face_covered")), "id": v.get("id"),
+                "wear_set": v.get("wear_set"), "wear_back_set": v.get("wear_back_set"),
+                "worn_sheet": v.get("worn_sheet")}
             for k, v in (j.get("characters") or {}).items()}
 
 
@@ -196,12 +239,69 @@ def entry_facts(fig: str | None) -> dict:
     return {}
 
 
-def look_words(f: dict, pos: str) -> tuple:
-    """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names)."""
+def head_things(sd: Path, cam: str) -> dict:
+    """{scene key: [what they have on the head in this shot]} from the staged camera's carried things worn at the
+    head, each by its library record's own first words. The figure wears it in the engine's frame, and the key
+    said the person's hair and usual clothes first and the thing last in a list: it was drawn bareheaded (11-18)."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return {}
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import config as C
+    out = {}
+    for k, xs in (c.get("carried") or {}).items():
+        for x in xs or []:
+            if x.get("at") != "head":
+                continue
+            try:
+                rec = json.loads((Path(C.LIBRARY) / "prop" / str(x.get("asset")) / "asset.json").read_text())
+            except (OSError, ValueError):
+                continue
+            nm = str(rec.get("look") or "").split(";")[0].strip()
+            if nm:
+                out.setdefault(k, []).append(nm)
+    return out
+
+
+def laid_words(sd: Path, cam: str, ppl: list) -> str:
+    """The things the staging laid on a piece of the set in this shot (the staged camera's carried things "on"),
+    each by the plan's own name for it: they are in the engine's frame, and unsaid, a key drew another thing
+    in their place or none (a blade on an anvil was a piece of armour in one key and gone in the next, 11-18)."""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    try:                                     # (the plan's own name for each made thing: the place's carried.json)
+        made = {v: k for k, v in json.loads((sd.parent.parent / "carried.json").read_text()).items()}
+    except (OSError, ValueError):
+        made = {}
+    inf, names_ = {p[0] for p in ppl}, []
+    for k, xs in (c.get("carried") or {}).items():
+        for x in xs or []:
+            if x.get("at") != "on" or k not in inf:
+                continue
+            nm = str(made.get(str(x.get("asset"))) or "").strip()
+            if nm and x.get("glow"):         # (hot from the fire in this shot: said, or the key drew it cold)
+                nm += f", glowing {str(x['glow']).strip()} with its own heat and lighting what is near it"
+            if nm and nm not in names_:
+                names_.append(nm)
+    if not names_:
+        return ""
+    # (said only as "lying where the picture has it", a blade on the anvil was drawn in the striker's raised hand)
+    return (f" In nobody's hands, lying flat on the work in front of them where the picture has it, in its place and "
+            f"at its size: {', '.join(names_)}; nothing else lies there.")
+
+
+def look_words(f: dict, pos: str, covered: bool = False) -> tuple:
+    """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names).
+    `covered`: the head has a thing on it in this shot, the hair is not said."""
     miss = [k for k in LOOK_FACTS if not f.get(k)]
     w = []
     col, worn = f.get("hair_colour"), f.get("hair_worn") or ""
-    if col and "hair" in worn and " " not in col:
+    if covered:
+        pass
+    elif col and "hair" in worn and " " not in col:
         w.append(worn.replace("hair", f"{col} hair", 1))         # "short hair, slicked back" -> "short black hair, .."
     elif col:
         w.append((worn + f", the hair {col}") if worn else f"{col} hair")
@@ -267,12 +367,38 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
     c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
     held = c.get("holds") or {}
     nm = names(ppl, cast or {})
+    try:                                     # where each hand is, from the staged bodies (the engine's own facts)
+        subj = json.loads((sd / "result.json").read_text()).get("subjects") or {}
+    except (OSError, ValueError):
+        subj = {}
     out = []
     for k in [p[0] for p in ppl]:
-        if held.get(k):
+        if held.get(k) and str(held[k]).split(" (")[0].strip().lower() not in ("nothing", "none"):
             who = nm.get(k, "the person")
-            out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}.")
+            where = hand_place((subj.get(k) or {}).get("measured") or {})
+            # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
+            # smith's tongs as pointed ears, 11-17)
+            out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}"
+                       + (f", {where}" if where else "") + "; it is in the hand and nowhere else, its whole length "
+                       "joined to the hand, nothing of it floating or behind the head.")
     return (" " + " ".join(out)) if out else ""
+
+
+def hand_place(m: dict) -> str:
+    """Where the working (right) hand is, in plain words, from a measured body: raised above the head, in front at
+    the chest or the waist, or down at the side; "" without joints."""
+    j = (m.get("joints") or {}).get("hand_r")
+    if not j or "head_top_z" not in m:
+        return ""
+    f = m.get("facing") or [0.0, -1.0]
+    n = (f[0] ** 2 + f[1] ** 2) ** 0.5 or 1.0
+    fwd = ((j[0] - m["pelvis_xy"][0]) * f[0] + (j[1] - m["pelvis_xy"][1]) * f[1]) / n
+    if j[2] >= m["head_top_z"] - 0.05:
+        return "in the right hand raised above the head"
+    if fwd >= 0.2:
+        return "in the right hand held out in front of the body at " + ("chest" if j[2] > m.get("waist_z", 1.0) + 0.25
+                                                                         else "waist") + " height"
+    return "in the right hand hanging down at the side, below the waist"
 
 
 def cam_wears(sd: Path, cam: str) -> dict:
@@ -390,7 +516,60 @@ def names(ppl: list, cast: dict) -> dict:
     return out
 
 
-def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, speaker: str | None = None) -> str:
+BEAST_HEAD = (0.45, 0.18)    # a creature's head height in the frame: at or over the first, its head alone is the
+                             # picture; at or over the second, its head, neck and upper body; under it, the whole of it
+BEAST_PITCH = 15.0           # the camera looking up or down at it by this many degrees is said
+
+
+def beast_part(v: dict) -> str:
+    """How much of a creature the engine's frame shows, from its measured head in the frame: "head", "upper" or
+    "whole"."""
+    j = (v or {}).get("joints2d") or {}
+    if "chin" in j and "head_top" in j:
+        hh = j["chin"][1] - j["head_top"][1]
+    else:                                   # no measured head: by how much of the frame its box fills
+        b = (v or {}).get("box") or [0, 0, 0, 0]
+        hh = BEAST_HEAD[1] if (b[3] - b[1]) > 0.95 and (b[2] - b[0]) > 0.5 else 0.0
+    return "head" if hh >= BEAST_HEAD[0] else "upper" if hh >= BEAST_HEAD[1] else "whole"
+
+
+def beast_words(noun: str, v: dict, cam: dict | None) -> str:
+    """What of a creature is in the picture, and from where it is seen. A creature said in a person's words
+    ("standing", "from the waist up") with only its head in the engine's frame was redrawn as a rock in one key and
+    a skull in another (11-18)."""
+    part = beast_part(v)
+    out = {"head": f"Only the {noun}'s head is in the picture, large and close, filling much of the frame: its whole "
+                   f"head with its eyes, snout or muzzle and jaws, drawn as on its character sheet; its body is out "
+                   f"of the frame.",
+           "upper": f"The {noun}'s head, its neck and the upper part of its body are in the picture, its head drawn "
+                    f"as on its character sheet; the rest of its body is out of the frame.",
+           "whole": f"The whole {noun} is in the picture, head to tail."}[part]
+    pos, tgt = (cam or {}).get("position"), (cam or {}).get("target")
+    if pos and tgt:
+        pitch = math.degrees(math.atan2(tgt[2] - pos[2], math.hypot(tgt[0] - pos[0], tgt[1] - pos[1]) or 1e-6))
+        if pitch >= BEAST_PITCH:
+            out += f" It is seen from below, the camera looking up at it: the underside of its jaw and its throat show."
+        elif pitch <= -BEAST_PITCH:
+            out += f" It is seen from above, the camera looking down on it."
+    return out
+
+
+def beast_shot(ppl: list, cast: dict, shot: dict | None, outdoors: bool) -> str:
+    """The shot's opening words when everyone in it is a creature: said by what of the creature shows, never as
+    people "from the waist up" or "head and shoulders"."""
+    if not ppl or not shot or not all((cast.get(p[0]) or {}).get("creature") for p in ppl):
+        return ""
+    parts = [beast_part((shot.get("people") or {}).get(p[0])) for p in ppl]
+    part = "head" if "head" in parts else "upper" if "upper" in parts else "whole"
+    n = who_of(cast, ppl[0][0])["noun"] if len(ppl) == 1 else "creature"
+    o, behind = (" out of doors", "the open land and the sky") if outdoors else ("", "the room")
+    return {"head": f"A close shot{o} of a {n}'s head, {behind} behind it soft and out of focus.",
+            "upper": f"A shot{o} of a {n}'s head, neck and upper body, {behind} behind it.",
+            "whole": f"A wide shot{o}: the whole {n} in view, {behind} around it."}[part]
+
+
+def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, speaker: str | None = None,
+                 shot: dict | None = None) -> str:
     if not ppl:
         return ""
     cast = cast or {}
@@ -411,6 +590,11 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
         w = ws[i]
         who = nm[k][0].upper() + nm[k][1:]
         placed = nm[k] != f"the {w['noun']}"           # the name already says where they are
+        if w.get("creature"):               # a creature: what of it shows, where, and how it is turned
+            parts.append(beast_words(w["noun"], ((shot or {}).get("people") or {}).get(k) or {"box": box},
+                                     (shot or {}).get("camera")))
+            parts.append(f"It is {place_words(box).split(',')[0]} and {facing_words(ang, w['pos'])}.")
+            continue
         parts.append(f"{who} is {post} and {facing_words(ang, w['pos'])}." if placed else
                      f"{who} is {post} {place_words(box)} and {facing_words(ang, w['pos'])}.")
         if with_body:
@@ -419,7 +603,9 @@ def people_words(ppl: list, with_body: bool = False, cast: dict | None = None, s
             parts.append(f"{w['subj'].capitalize() if n == 1 else who} sits in {w['seat']}.")
     out = " ".join(parts)
     if speaker and speaker in nm:
-        out += f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, mouth slightly open mid-word."
+        out += (f" {nm[speaker][0].upper() + nm[speaker][1:]} is speaking, "
+                + ("its jaws a little parted." if (cast.get(speaker) or {}).get("creature")
+                   else "mouth slightly open mid-word."))
     for i, w in enumerate(ws):
         out = out.replace(f"{{T{i}}}", w.get("trigger") or w["noun"])
     return out
@@ -492,9 +678,20 @@ PROP_AREA = 0.004     # share of the frame its box covers
 MAX_THINGS = 10       # the biggest things in frame; more words only dilute the prompt
 
 
-def set_words(shot: dict) -> str:
+def open_air_words(text: str) -> str:
+    """A place in the open said as one: the concept tells every place's "floor" and "ceiling" as a room's; out of
+    doors they are the ground and the sky (told of a "stone floor", the redraw laid flagstones on a river bank and
+    walled it in, 11-17)."""
+    def keep_case(word):
+        return lambda m: word.capitalize() if m.group(0)[0].isupper() else word
+    return re.sub(r"\bceiling\b", keep_case("sky"), re.sub(r"\bfloor\b", keep_case("ground"), text, flags=re.I),
+                  flags=re.I)
+
+
+def set_words(shot: dict, outdoors: bool = False) -> str:
     """The set's things the engine sees in this frame (guides.py --set), with their place and whether they burn or
-    are lit, plus where the daylight comes from. Nothing that is out of frame is named, except the daylight."""
+    are lit, plus where the daylight comes from. Nothing that is out of frame is named, except the daylight (in a
+    room: from a window; out of doors the place's own words say its light)."""
     def area(t):
         b = t["box"]
         return (b[2] - b[0]) * (b[3] - b[1])
@@ -504,6 +701,9 @@ def set_words(shot: dict) -> str:
           (t.get("lit") and t["visible_frac"] >= 0.02) or
           (t["kind"] == "prop" and t["visible_frac"] >= PROP_SEEN and area(t) >= PROP_AREA)]
     th = [t for t in th if t["name"] != "rug" or t["visible_frac"] >= 0.2]
+    # a place on the open ground is no thing to draw: the place's own words say its land ("the land at5 in the
+    # middle; the land at7 on the right" went into every wide's words, 11-19)
+    th = [t for t in th if t["kind"] != "mark"]
     big = [t for t in th if t.get("large")]                   # large furniture always: never dropped by the cap
     th = big + [t for t in sorted(th, key=area, reverse=True) if not t.get("large")][:max(0, MAX_THINGS - len(big))]
     parts = []
@@ -518,7 +718,7 @@ def set_words(shot: dict) -> str:
             w += ", bright with " + shot["daylight"] + " outside"
         parts.append(f"{w} {frame_place(t['box'])}")
     out = ("In the frame: " + "; ".join(parts) + ".") if parts else ""
-    if shot.get("daylight") and not any(t["kind"] == "window" for t in th):
+    if shot.get("daylight") and not outdoors and not any(t["kind"] == "window" for t in th):
         out += f" Soft {shot['daylight']} comes from a window out of frame."
     lit = [t for t in th if (t.get("fire") or t.get("lit")) and t.get("flame_in_view") is not False]
     # a fire whose grate is just out of view but whose fireplace shows: lit all the same (a lit source is a fact of
@@ -561,6 +761,8 @@ def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = 
         who = w["subj"].capitalize() if len(ppl) == 1 else nm[k][0].upper() + nm[k][1:]
         if same and len(ppl) > 1 and not wb:
             return f"Each wears {wr}."
+        if not str((wb if wb and max(ang, bdeg) > 100 else wr) or "").strip():
+            continue                             # (a creature wears nothing: "It wears ." was said of one)
         out.append(f"{who} is seen from behind: we see only {wb}." if wb and max(ang, bdeg) > 100
                    else f"{who} wears {wr}.")
         if neck and max(ang, bdeg) <= 100 and w.get("wear"):
@@ -570,13 +772,22 @@ def wear_words(ppl: list, wear: str, wear_back: str | None, cast: dict | None = 
 
 def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, things: str = "",
                  wear_back: str | None = None, with_body: bool = False, cast: dict | None = None,
-                 look: str = "", speaker: str | None = None, shot: dict | None = None, facts: bool = False) -> str:
+                 look: str = "", speaker: str | None = None, shot: dict | None = None, facts: bool = False,
+                 outdoors: bool = False) -> str:
     cast = cast or {"*": {"trigger": trigger}}
     return " ".join(x for x in [
-        f"A photographed frame from a period film. {SHOT[kind]}", people_words(ppl, with_body, cast, speaker),
+        f"A photographed frame from a period film. "
+        f"{beast_shot(ppl, cast, shot, outdoors) or (SHOT_OPEN if outdoors else SHOT)[kind]}",
+        people_words(ppl, with_body, cast, speaker, shot),
         limb_words(ppl, shot, cast) if facts and shot else "",
         wear_words(ppl, wear, wear_back, cast, neck=facts and kind != "wide"),
-        (f"The room: {room}" if not things else f"{room.split(':')[0]}. {things.replace(', as in Picture 1', '')}"),
+        # (out of doors the place's words are its land, kept whole: cut at their first colon as a room's list is,
+        # only "In the open air, <period>" was left of them; what stands there is named by the frame's things)
+        # (with none of them in the frame, what stands in the place is not said at all: a close shot of a man, told
+        # of the place's boulder, was drawn with a head of rough stone, 11-18)
+        (room.split('; standing there')[0].rstrip('.') + "." if outdoors and not things else f"The room: {room}" if not things
+         else f"{room.split('; standing there')[0].rstrip('.')}. {things.replace(', as in Picture 1', '')}" if outdoors
+         else f"{room.split(':')[0].rstrip('.')}. {things.replace(', as in Picture 1', '')}"),
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
@@ -664,6 +875,9 @@ def main():
         run.setdefault("set_words", ssp.get("words") or ssp.get("description") or "")
         run.setdefault("room_surfaces", ssp.get("surfaces_words") or "")
         run.setdefault("crowd", ssp.get("crowd") or "")
+        run.setdefault("outdoors", bool(ssp.get("world")))
+    if run.get("outdoors"):
+        run["room_surfaces"] = open_air_words(run.get("room_surfaces") or "")
     out = Path(run["out"])
     out.mkdir(parents=True, exist_ok=True)
     seed = int(run.get("seed", 7))
@@ -688,6 +902,10 @@ def main():
             out_heads = heads_out(res, cam)
             edge = [x for x in ppl if x[0] in out_heads and len(ppl) > 1]
             ppl = [x for x in ppl if x not in edge]
+            # (a sliver of someone at the edge is not said: told of a dress at the edge where 1.5% of a woman showed
+            # beside a beast's head, the redraw painted the dress over the beast, 11-18)
+            seen = seen_share(sd, cam)
+            edge = [x for x in edge if seen.get(x[0], 1.0) >= EDGE_MIN]
             seats = seats_of(ppl, sh)
             base = {"scene": sd.name, "cam": cam, "kind": kind, "still": sh["still"],
                     "people": [{"key": k, "box": b, "head_to_camera_deg": a, "posture": q, "body_to_camera_deg": bd,
@@ -704,16 +922,30 @@ def main():
                 lw = float((run.get("lora_w") or {}).get(str(min(n, 2)), 0.8 if n == 1 else 0.63))
                 cast = run.get("cast") or {}
                 cast = {k: (dict(v, seat=seats[k]) if k in seats else v) for k, v in cast.items()}
+                on_head = head_things(sd, cam)
                 for k, wv in scene_wear(sd).items():       # this scene's wardrobe on top of the cast's
                     if k in cast:
                         c2 = dict(cast[k])
+                        # a wardrobe variant (the book's change of clothes): its own outfit words and sheet in place
+                        # of the usual ones (the figure wears that outfit; added on top, the usual clothes were said too)
+                        if wv.get("wear_set"):
+                            c2["wear"] = wv["wear_set"]
+                            if wv.get("wear_back_set"):
+                                c2["wear_back"] = wv["wear_back_set"]
+                                c2["back_detail"] = wv["wear_back_set"].split(" and the back of ")[0]
+                        if wv.get("worn_sheet"):           # (its sheet, not another of the person's worn sheets)
+                            c2["sheet"], c2["worn_sheets"] = wv["worn_sheet"], {}
                         # hair, facial hair, missing layers: the built figure's own facts (library entry), never
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
                         # one fixed wording from the entry's facts in every key (the text is the fact; the hair check
                         # holds the keys together against the person's median and re-draws outliers)
                         # (a stand-in figure's hair is not this person's: their own sheet and words say theirs)
                         lw_, miss = ("", []) if c2.get("stand_in") else look_words(
-                            entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his")
+                            entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his",
+                            covered=bool(on_head.get(k)))
+                        if on_head.get(k):   # (said with the person, before the place and the shot)
+                            c2["wear"] = (c2.get("wear", "") + "; on the head, worn over the hair and covering it: "
+                                          + ", ".join(on_head[k]))
                         if lw_:
                             c2["wear"] = c2.get("wear", "") + "; " + lw_
                         if miss:
@@ -752,13 +984,14 @@ def main():
                     tag = f"__s{int(round(st * 100))}" + (f"__r{seed}" if run.get("seeds") else "")
                     j = {"id": f"{sd.name}__{cam}{tag}",
                          "prompt": image_prompt(kind, ppl, run.get("wear", ""), room, run.get("trigger", ""),
-                                                set_words(sh) if run.get("set_facts") else "", run.get("wear_back"),
-                                                run.get("body_words", False), cast or None,
+                                                set_words(sh, run.get("outdoors", False)) if run.get("set_facts")
+                                                else "", run.get("wear_back"), run.get("body_words", False), cast or None,
                                                 " ".join(x for x in (run.get("room_surfaces", ""), lights,
                                                                      run.get("look", "")) if x),
-                                                sh.get("speaker"), sh, run.get("facts", False)) + edge_words(edge)
+                                                sh.get("speaker"), sh, run.get("facts", False),
+                                                run.get("outdoors", False)) + edge_words(edge, cast)
                          + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
-                         + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast)
+                         + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast) + laid_words(sd, cam, ppl)
                          + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
                          "size": [1152, 640], "refs": sheets + faces(ppl, cast) + list(run.get("extra_refs") or [])

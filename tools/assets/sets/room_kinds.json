@@ -439,6 +439,24 @@
     1.75
    ],
    "front_clear_m": 0.3
+  },
+  "landmark": {
+   "place": "free",
+   "size_m": [
+    4.0,
+    4.0,
+    4.0
+   ],
+   "all_round_clear_m": 1.0
+  },
+  "work_piece": {
+   "place": "free",
+   "size_m": [
+    1.0,
+    0.8,
+    0.9
+   ],
+   "all_round_clear_m": 0.8
   }
  },
  "room_kinds": {
@@ -743,6 +761,29 @@
    "dressing": [
     "vehicle_cabin"
    ]
+  },
+  "outdoors": {
+   "sizes_m": {
+    "small": [
+     8.0,
+     8.0,
+     6.0
+    ],
+    "medium": [
+     10.0,
+     10.0,
+     6.0
+    ],
+    "large": [
+     12.0,
+     12.0,
+     6.0
+    ]
+   },
+   "openings": [],
+   "outer_walls": [],
+   "focal": "door",
+   "dressing": []
   }
  },
  "room_kinds_like": {

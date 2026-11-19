@@ -9,6 +9,7 @@ Spec keys:
     "rough"        [lo, hi]: roughness from luminance, bright -> lo, dark -> hi              [0.45, 0.8]
     "keep_uvs": true (the port's atlas is non-overlapping and inside 0-1)
     "seen_from_inside": true for a shell whose faces look inward (img3d/pano_shell.py): its winding is kept
+    "emit_texture" strength: the texture also as emission (an outdoor place's land and sky give their own light)
 
 The port gives base colour only. A normal map and a roughness map are derived here as node maths on the colour (a
 bump from its luminance, roughness from its luminance) and the harness bakes them on its GPU like any material.
@@ -186,6 +187,9 @@ if bump_m > 0:
     nt.links.new(bp.outputs["Normal"], pr.inputs["Normal"])
 pr.inputs["Specular IOR Level"].default_value = 0.4
 pr.inputs["Metallic"].default_value = 0.0
+if SPEC.get("emit_texture"):            # a place's land and sky that give their own picture's light (img3d/shell_one.py)
+    nt.links.new(tx.outputs["Color"], pr.inputs["Emission Color"])
+    pr.inputs["Emission Strength"].default_value = float(SPEC["emit_texture"])
 ob.data.materials.clear()
 ob.data.materials.append(m)
 for p in ob.data.polygons:
@@ -193,7 +197,11 @@ for p in ob.data.polygons:
 # regions (as models/from_views.py): faces whose texture colour (hsv) and place (box, 0..1 of the bounds) match get a
 # real material instead: "glass" (transmissive; the harness exports it as glass), "emit" (a flame, coals: emissive in
 # the region's colour x strength). The generator makes glass and flames solid and unlit; this gives them back.
-regs = SPEC.get("regions") or []
+regs = list(SPEC.get("regions") or [])
+# a place's water (shell_one: "water_region", its faces by their own corner of the texture): the same picture, but
+# smooth and bright to the light, so it shines where the land beside it does not (as the land's it lay matt, 11-18)
+if isinstance(SPEC.get("water_region"), dict) and SPEC["water_region"].get("uv"):
+    regs.append(dict(SPEC["water_region"], material="water"))
 if regs:
     import colorsys
     import numpy as np
@@ -211,7 +219,17 @@ if regs:
         bs = mat.node_tree.nodes["Principled BSDF"]
         c = r.get("color", [1.0, 0.8, 0.5])
         bs.inputs["Base Color"].default_value = (*c, 1.0)
-        if r["material"] == "glass":
+        if r["material"] == "water":
+            tw = mat.node_tree.nodes.new("ShaderNodeTexImage")
+            tw.image = src
+            mat.node_tree.links.new(tw.outputs["Color"], bs.inputs["Base Color"])
+            bs.inputs["Roughness"].default_value = r.get("rough", 0.04)
+            bs.inputs["Specular IOR Level"].default_value = 1.0
+            bs.inputs["IOR"].default_value = 1.33
+            if SPEC.get("emit_texture"):
+                mat.node_tree.links.new(tw.outputs["Color"], bs.inputs["Emission Color"])
+                bs.inputs["Emission Strength"].default_value = float(SPEC["emit_texture"]) * r.get("emit_share", 0.6)
+        elif r["material"] == "glass":
             bs.inputs["Transmission Weight"].default_value = 1.0
             bs.inputs["Roughness"].default_value = r.get("rough", 0.05)
             bs.inputs["IOR"].default_value = r.get("ior", 1.5)
@@ -226,7 +244,9 @@ if regs:
             rgb = pxa[min(H_ - 1, int(u[1] * H_)), min(W_ - 1, int(u[0] * W_)), :3]
             h, s_, v = colorsys.rgb_to_hsv(*rgb)
             ok = True
-            if "hsv" in r:
+            if "uv" in r:
+                ok = r["uv"][0] <= u[0] <= r["uv"][1] and r["uv"][2] <= u[1] <= r["uv"][3]
+            if ok and "hsv" in r:
                 (h0, h1), (s0, s1), (v0, v1) = r["hsv"]
                 ok = (h0 <= h <= h1 or (h0 > h1 and (h >= h0 or h <= h1))) and s0 <= s_ <= s1 and v0 <= v <= v1
             if ok and "box" in r:

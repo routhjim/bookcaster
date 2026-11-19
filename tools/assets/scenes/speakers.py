@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import os
 import struct
 import subprocess
@@ -199,7 +200,9 @@ def frame_facts(cam, m, res):
     side_in = [q for k, q in pr.items() if q and SIDE_EDGE < q[0] < 1 - SIDE_EDGE and q[1] < 1 - EDGE]
     # (a lying body runs out of a close frame sideways as a standing one runs out of its bottom: only the head's own
     # points count as cut there; every close on a sleeper failed as "cut by the frame's edge", 11-15)
-    edge = [pr[k] for k in ("head_top", "eyes", "chin", "head_l", "head_r")] if m.get("lying") else list(pr.values())
+    # (a creature's body runs out of any frame tighter than a full one: as for a lying body, its head counts)
+    edge = [pr[k] for k in ("head_top", "eyes", "chin", "head_l", "head_r")] if m.get("lying") or m.get("creature") \
+        else list(pr.values())
     left = any(q and q[0] <= SIDE_EDGE for q in edge)
     right = any(q and q[0] >= 1 - SIDE_EDGE for q in edge)
     top = bool(pr["head_top"]) and pr["head_top"][1] <= EDGE and bool(pr["chin"]) and pr["chin"][1] > EDGE
@@ -230,6 +233,31 @@ def mask_facts(shot, key, nx=72, ny=40):
     cols = [(i + 0.5) / nx for i in range(nx)]
     return {"area": round(n / (nx * ny), 4), "left": edge([(0.002, v) for v in rows]),
             "right": edge([(0.998, v) for v in rows]), "top": edge([(u, 0.002) for u in cols])}
+
+
+FG_THING_AREA = 0.15         # a thing (no person) between the camera and the shot's subject covers at most this share
+FG_THING_NEAR = 0.5          # of the frame; "between": nearer than this share of the subject's distance
+
+
+def fg_thing_share(shot, keys, dist_cm, nx=48, ny=27) -> float | None:
+    """The share of a rendered still that a thing, no person, fills nearer the camera than FG_THING_NEAR of the
+    subject's distance: a rock or a post in the foreground (a blurred rock took a third of a woman's close, 11-16)."""
+    g = shot.get("guides") or {}
+    if not g.get("depth") or not dist_cm:
+        return None
+    sc = Exr(g["depth"])
+    ps = [Exr(g[f"depth_{k}"]) for k in keys if g.get(f"depth_{k}")]
+    n = 0
+    for i in range(nx):
+        for j in range(ny):
+            u, v = (i + 0.5) / nx, (j + 0.5) / ny
+            ds = sc.at(u, v)
+            if ds is None or ds >= FG_THING_NEAR * dist_cm:
+                continue
+            if any((dp := p.at(u, v)) is not None and dp < 5e4 and abs(dp - ds) <= max(3.0, 0.015 * ds) for p in ps):
+                continue                     # a person's own pixel (an over-the-shoulder's listener is meant)
+            n += 1
+    return n / (nx * ny)
 
 
 def head_worn(c: dict) -> set:
@@ -283,6 +311,7 @@ READ_DEG = 65.0              # a named person's head turned at most this far fro
 READ_FACE = 0.5              # and this share of their face points seen on the still (a three-quarter face reads;
                              # the speaker's own bar is MIN_FACE_VISIBLE)
 FG_AREA = 0.10               # a person turned away from the camera covers at most this share of the frame
+BACK_AREA = 0.25             # the shot's own subject, seen from behind with nobody leading, covers at most this share
 SEATED = ("sit", "seat")
 
 
@@ -353,9 +382,9 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             f["mask"] = mf
             # cut: the person's visible part reaches the left or right edge (any of it), or the top edge with the
             # head (a medium's waist at the bottom edge is the shot, not a cut)
-            if subjects[k]["measured"].get("lying"):
-                # a lying body runs out of the frame's side, and the cover over it is wider than a close frame is
-                # high: its mask reaches every edge. Only the head's own points say it is cut (frame_facts)
+            if subjects[k]["measured"].get("lying") or subjects[k]["measured"].get("creature"):
+                # a lying body runs out of the frame's side: its mask can reach every edge. Only the head's own points say it is cut (frame_facts)
+                # (so does a creature's long body, wings and tail in any frame tighter than a full one)
                 pass
             else:
                 f["cut"] = mf["area"] > 0 and (mf["left"] or mf["right"] or (mf["top"] and f["head_any"]))
@@ -377,10 +406,24 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     if lead and not speaker and (not facts[lead]["head_in"] or facts[lead].get("cut")) \
             and not behind_in_cabin(cam, subjects[lead]["measured"]):
         why.append(f"{lead} (the shot is about {lead}) is cut by the frame's edge")
+    for k in [x for x in dict.fromkeys((lead, opts.get("subject"))) if x in subjects]:
+        why += creature_view_why(cam, k, subjects[k]["measured"], kind, res)     # a creature's head from its distance
+    bk = opts.get("back")
+    if bk and bk.get("key") in subjects:     # a still that showed nothing: its re-framing stands farther back
+        bm = subjects[bk["key"]]["measured"]
+        bd = math.dist(cam["position"], [bm["eye_xy"][0], bm["eye_xy"][1], bm["eye_z"]])
+        if bd < bk["min_m"] - 1e-6:
+            why.append(f"{TOO_NEAR}: {bd:.1f} m from {bk['key']}, where a still from nearer showed nothing "
+                       f"(at least {bk['min_m']:.1f} m)")
     for k, v in subjects.items():
         if k == lead or not facts[k]["any_in"]:
             continue
         h = head_h(cam, v["measured"], res)
+        if lead and (v["measured"].get("creature") or subjects[lead]["measured"].get("creature")):
+            # a creature's head is bigger than a person's at any distance: it is the bigger head in the frame only
+            # when it stands nearer the camera, each head taken at its own size (held to a person's head, a beast's
+            # head two metres beyond the woman the shot was about failed every camera of the search, 11-18)
+            h = h * head_size(subjects[lead]["measured"]) / head_size(v["measured"])
         if lead and facts[k]["head_any"] and h > sh_spk * 1.02:
             why.append(f"{k}'s head ({h:.3f}) is bigger than the {role}'s ({sh_spk:.3f})")
         if lead and k not in keep and turned_away(cam, v["measured"]):
@@ -390,6 +433,22 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                 continue                     # candidates (area_excess); the render's own mask decides (11-11)
             if ma > FG_AREA:
                 why.append(f"{k}, turned away, covers {ma:.0%} of the frame")
+    sj = opts.get("subject")
+    if not lead and sj in subjects and facts[sj]["any_in"] and not subjects[sj]["measured"].get("creature") \
+            and turned_away(cam, subjects[sj]["measured"]):
+        # with nobody leading the shot, its subject may show their back (an action toward what they face), but not
+        # as a back filling the frame: a quiet shot of a man before a beast was the back of his head, 64% of the
+        # frame, and passed (11-18)
+        ma = (facts[sj].get("mask") or {}).get("area")
+        if ma is not None and ma > BACK_AREA:
+            why.append(f"{sj}, turned away, covers {ma:.0%} of the frame")
+    fg_k = lead or opts.get("subject")
+    if shot is not None and fg_k in subjects:  # the shot's subject seen past a thing filling the foreground
+        em = subjects[fg_k]["measured"]
+        dcm = 100.0 * math.dist(cam["position"], [em["eye_xy"][0], em["eye_xy"][1], em["eye_z"]])
+        fs = fg_thing_share(shot, list(subjects), dcm)
+        if fs is not None and fs > FG_THING_AREA:
+            why.append(f"a thing in the foreground covers {fs:.0%} of the frame")
     for q3 in opts.get("points") or []:      # a move's start, path and end place: all inside the one frame
         q = framing.project(cam, q3, res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
@@ -405,7 +464,7 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
     if at_:
         q = framing.project(cam, [at_["center"][0], at_["center"][1], at_["top"]], res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
-            why.append(f"the {at_['name']} (where the subject sits) is out of the frame")
+            why.append(f"the {at_['name']} (where the subject sits or works) is out of the frame")
     if lm:                                   # the end place's landmark seen from its front, not from behind it
         d = [cam["position"][0] - lm["center"][0], cam["position"][1] - lm["center"][1]]
         if d[0] * lm["front"][0] + d[1] * lm["front"][1] < 0.3 * math.hypot(*d):
@@ -486,6 +545,13 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             q = framing.project(cam, [sp_[0], sp_[1], 0.6], res)
             if q and 0.05 < q[0] < 0.95 and 0.05 < q[1] < 0.95:
                 why.append(f"{k}'s seat is in view with {k} hidden (it reads as empty)")
+    listed = opts.get("listed")
+    for k in (subjects if listed else ()):   # someone present whom the plan does not list for the shot: out of it
+        if k in listed or k in (speaker, listener) or k not in facts or not in_picture(facts[k]):
+            continue
+        hs = head_share(cam, subjects[k]["measured"], res)
+        if hs is None or hs >= SLIVER:
+            why.append(f"{k} (not in the shot's plan) is in the picture")
     for k in show or []:                     # a person the director names: in the picture (any of them), no more
         hs = head_share(cam, subjects[k]["measured"], res) if k in subjects else None
         if k in facts and (not in_picture(facts[k]) or (hs is not None and hs < SLIVER)):
@@ -539,6 +605,16 @@ SHARED_HEAD_DEG = 100.0      # the subject of a shot that shows others too: a pr
 SHARED_FACE_VISIBLE = 0.4    # and part of the face behind another person is how a room looks
 
 
+def face_rule_applies(c: dict, spec: dict | None = None) -> bool:
+    """Whether the face of whom a speakerless shot is about must be shown (subject_face_why): in a quiet shot, yes;
+    in an action shot, no: a fighter turned to the enemy may show the camera his back (the user's rule, 11-17); nor
+    when the subject faces someone else the shot shows (the two square up: one of them is seen from behind)."""
+    if c.get("speaker") or c.get("shot_kind") == "action":
+        return False
+    to = (((spec or {}).get("characters") or {}).get(c.get("line_subject") or "") or {}).get("facing_to")
+    return not (to and to in (c.get("listed") or c.get("show") or []))
+
+
 def subject_face_why(shot, k, subjects, res, covered=False, shared=False) -> list:
     """The face of the person a shot is about, shown as a speaker's is: turned toward the camera and seen on the
     still (a woman whose line it was showed only the back of her head in the foreground, 11-12). In a shot that
@@ -551,7 +627,10 @@ def subject_face_why(shot, k, subjects, res, covered=False, shared=False) -> lis
     if plan_angle(m["head_fwd_xy"], m["eye_xy"], cam["position"]) > (SHARED_HEAD_DEG if shared else MAX_HEAD_DEG + 15):
         return [f"{k}'s face (the shot is about {k}) is turned from the camera"]
     fv = face_seen(shot, k, m, res, covered)
-    if fv is not None and fv < (SHARED_FACE_VISIBLE if shared else MIN_FACE_VISIBLE):
+    # (a face inside something worn on the head is not held to the share: a helmet's rim hides brow, ears and chin
+    # by itself, and every close of a helmeted pilot turned to the camera read 58% and was thrown away, 11-15; the
+    # turn above still holds)
+    if fv is not None and not covered and fv < (SHARED_FACE_VISIBLE if shared else MIN_FACE_VISIBLE):
         return [f"{k}'s face (the shot is about {k}) {fv:.0%} visible"]
     return []
 
@@ -652,6 +731,26 @@ ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # a
                                                                              # near the chin (both / either), measured
 
 
+WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work")     # the work start poses (ue/pose.py), measured
+
+
+def work_hands_why(act: str, m: dict) -> list:
+    """A work pose as measured: the tool raised has the working (right) hand over the head; striking down and
+    working have both hands in front of the body between the waist and the chin."""
+    j = m.get("joints") or {}
+    if not all(h in j for h in ("hand_l", "hand_r")):
+        return [f"action '{act}': hands not measured"]
+    if act == "tool_raised":
+        return [] if j["hand_r"][2] >= m["head_top_z"] - 0.05 else [f"action '{act}': the hand is not raised"]
+    f = unit2(m.get("facing") or [0.0, -1.0])
+    out = []
+    for h in ("hand_l", "hand_r"):
+        fwd = (j[h][0] - m["pelvis_xy"][0]) * f[0] + (j[h][1] - m["pelvis_xy"][1]) * f[1]
+        if fwd < 0.15 or not (m.get("waist_z", 0.9) - 0.25 <= j[h][2] <= m["chin_z"]):
+            out.append(f"action '{act}': {h} not at the work in front")
+    return out
+
+
 def assets_action_steps(spec):
     """Start actions the assets' pose solver writes without a measured body (characters/poses_extra): the look
     at a sleeve (one forearm lifted, turned up, the head down on it), put first in the person's pose steps."""
@@ -706,7 +805,8 @@ def solve_reach(spec, subjects):
 
 def staged_facts(spec, subjects):
     """What the plan asks of each person that the engine still must hold: the worn state's figure (the variant
-    resolved, its words carried for the redraw) and the action's start pose (measured hands). {key: [failures]}."""
+    resolved, its words carried for the redraw), the action's start pose (measured hands) and each held thing's
+    grip and blow (measured on the placed prop). {key: [failures]}."""
     out = {}
     for k, c in spec["characters"].items():
         bad = []
@@ -714,7 +814,7 @@ def staged_facts(spec, subjects):
         if w and w != "usual":
             if not (c.get("id") or "").endswith("_" + w):
                 bad.append(f"worn '{w}': the staged figure is {c.get('id')}")
-            if not c.get("wear_add"):
+            if not (c.get("wear_add") or c.get("wear_set")):
                 bad.append(f"worn '{w}': no words for it reach the redraw")
         t = c.get("facing_to")
         m_ = (subjects.get(k) or {}).get("measured") or {}
@@ -736,7 +836,9 @@ def staged_facts(spec, subjects):
         if act:
             m = (subjects.get(k) or {}).get("measured") or {}
             j = m.get("joints") or {}
-            if act not in ACTION_HANDS_M:
+            if act in WORK_HANDS:
+                bad += work_hands_why(act, m)
+            elif act not in ACTION_HANDS_M:
                 bad.append(f"action '{act}': no start pose for it")
             elif not all(h in j for h in ("hand_l", "hand_r")):
                 bad.append(f"action '{act}': hands not measured")
@@ -746,6 +848,15 @@ def staged_facts(spec, subjects):
                 ds = [math.dist(j[h][:3], chin) for h in ("hand_l", "hand_r")]
                 if not how(d <= lim for d in ds):
                     bad.append(f"action '{act}': hands {min(ds):.2f}-{max(ds):.2f} m from the chin")
+        # each held thing as placed (scene_job's contact, pose.held_contact): the handle in the palm, a blow's face
+        # on the work and flat on it (11-18: a hammer hung under an open hand, its face a hand's breadth short of
+        # the metal and turned sideways, and nothing said so)
+        for _a, hd_ in sorted((((subjects.get(k) or {}).get("held")) or {}).items()):
+            bad += list((((hd_ or {}).get("contact")) or {}).get("why") or [])
+        # a blow at a worked thing with no contact measured at all, and each hand on a piece of the set it works
+        # (scene_job: pose.blow_contact_why, pose.fixture_contact)
+        bad += list(((subjects.get(k) or {}).get("contact_missing")) or [])
+        bad += list((((subjects.get(k) or {}).get("fixture")) or {}).get("why") or [])
         out[k] = bad
     return out
 
@@ -765,8 +876,12 @@ def aim_bodies(spec):
         t = c.get("facing_to")
         if not t or t not in ch or t == k or any(w in ((c.get("body_pose") or {}).get("pose") or "") for w in SEATED):
             continue
+        if math.dist(ch[t]["position"][:2], c["position"][:2]) < 1e-3:
+            continue                         # (standing on the one they face: no way to turn, the facing is kept)
         d = unit2([ch[t]["position"][0] - c["position"][0], ch[t]["position"][1] - c["position"][1]])
-        if ch[t].get("facing_to") == k:
+        if ch[t].get("facing_to") == k and not (c.get("creature") or ch[t].get("creature")):
+            # (not a creature and whoever fights it: they stand its reach apart and square up to each other; the
+            # cheat is for two people nose to nose)
             # two people who face each other stand open to one side, each turned CHEAT_DEG off the line between
             # them toward the room's middle (squared up nose to nose, every camera on one man's face looked through
             # the other's head: measured on such a pair, 1 camera in 4 passed the framing; opened 30 degrees, 5 in 6)
@@ -999,12 +1114,13 @@ def cam_opts(spec, c):
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")} | head_worn(c)
-    return {"seated": seated, "subject": c.get("subject"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
+    return {"seated": seated, "subject": c.get("subject"), "listed": c.get("listed"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
             "landmark": c.get("_landmark"), "at_thing": c.get("_at_thing"),
             "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
             "seat_xy": {k: v["position"] for k, v in spec["characters"].items()
                         if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)},
-            "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {}}
+            "points": c.get("_points") or [], "mover": c.get("mover"), "area_scale": spec.get("_area_scale") or {},
+            "back": c.get("_back")}
 
 
 def listener_of(c, spec_line, speaker):
@@ -1052,10 +1168,15 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                        sm["eye_z"] - 0.1]
     out = []
     m0 = subjects[spk]["measured"] if spk else ms[0]
-    xr, yr = near_people(subjects, room)
+    xr, yr = near_people(subjects, room, keys=[k for k in keys + [opts.get("subject")] if k])
+    zs = {1.45, 1.6} | ({round(subjects[lis]["measured"]["eye_z"] + 0.12, 2)} if lis else set())
+    for k in dict.fromkeys(keys + [opts.get("subject")]):
+        cm = (subjects.get(k) or {}).get("measured") or {}
+        if cm.get("creature") and "eye_z" in cm:   # a creature's head from its own height and from over it (a rock
+            zs |= {round(cm["eye_z"], 2), round(cm["eye_z"] + head_size(cm), 2)}   # before it, a man under it)
     for x in xr:
         for y in yr:
-            for z in sorted({1.45, 1.6} | ({round(subjects[lis]["measured"]["eye_z"] + 0.12, 2)} if lis else set())):
+            for z in sorted(zs):
                 p = [x / 10.0, y / 10.0, z]
                 if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried):
                     continue
@@ -1066,6 +1187,9 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                 for mode, aim in aims.items():
                     others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
                     if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
+                        continue
+                    if any(solid_between(p, [subjects[k]["measured"]["eye_xy"][0], subjects[k]["measured"]["eye_xy"][1],
+                                             subjects[k]["measured"]["eye_z"]]) for k in keys if k in subjects):
                         continue
                     if opts.get("_lens"):
                         lens = opts["_lens"]
@@ -1118,18 +1242,26 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
 CAMERA_REACH_M = 9.0     # a camera stands within this of the people it shows (the floor beyond is not searched)
 
 
-def near_people(subjects, room, step=1):
+FLOOR_POINTS = 4000      # a wide floor is searched at no more standpoints than this (160 m2 at 20 cm)
+
+
+def near_people(subjects, room, step=1, keys=None):
     """The floor a camera is looked for on, as two ranges of tenths of a metre: the room, no farther than
     CAMERA_REACH_M from the people (a hangar's whole floor at 10 cm was fifty times a sitting room's and the search
-    did not end)."""
+    did not end). keys: the people the shot shows, when the caller knows them: the floor round them only (three
+    people apart on an open ground eighty metres across gave a floor of 90 000 standpoints, each tried at every
+    height, aim and lens: one camera took six minutes and a place's staging three hours, 11-19). A wide floor is
+    searched at a spacing that keeps its standpoints to FLOOR_POINTS."""
     W, D, _ = room
-    xs = [v["measured"]["pelvis_xy"][0] for v in subjects.values()] or [0.0]
-    ys = [v["measured"]["pelvis_xy"][1] for v in subjects.values()] or [0.0]
+    who = [v for k, v in subjects.items() if not keys or k in keys] or list(subjects.values())
+    xs = [v["measured"]["pelvis_xy"][0] for v in who] or [0.0]
+    ys = [v["measured"]["pelvis_xy"][1] for v in who] or [0.0]
     wd = wild_m(room)
     x0, x1 = max(-W / 2 - wd, min(xs) - CAMERA_REACH_M), min(W / 2 + wd, max(xs) + CAMERA_REACH_M)
     y0, y1 = max(-D / 2 - wd, min(ys) - CAMERA_REACH_M), min(D / 2 + wd, max(ys) + CAMERA_REACH_M)
-    if (x1 - x0) * (y1 - y0) > 60.0:           # a wide floor is searched at twice the spacing
-        step *= 2
+    area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    if area > 60.0:                            # a wide floor is searched at twice the spacing, or wider
+        step *= max(2, math.ceil(10 * math.sqrt(area / FLOOR_POINTS)))
     return (range(int(math.floor(x0 * 10)), int(math.ceil(x1 * 10)) + 1, step),
             range(int(math.floor(y0 * 10)), int(math.ceil(y1 * 10)) + 1, step))
 
@@ -1145,9 +1277,392 @@ def wild_m(room) -> float:
     return WILD_M if room[0] * room[1] < WILD_ROOM_M2 else 0.0
 
 
+SOLIDS: list = []             # standing things as boxes [cx, cy, hx, hy, top, fx, fy]: half widths across and along
+#                               their facing (fx, fy) (main() fills it: the set's things, the staged creatures)
+SOLID_CLEAR_M = 0.3          # a camera stands this far clear of a thing's box
+
+
+def set_solids(things: list) -> None:
+    """The set's own standing things (setfacts "fixture": furniture, a rock, a cave mouth) as boxes for the camera
+    search: a camera inside one, or one between the camera and a face, sees only the thing (on an open stage the
+    search set cameras inside a cave's rock and behind a ledge, and every frame was rock, 11-17)."""
+    SOLIDS[:] = [[t["center"][0], t["center"][1], t["half"][0], t["half"][1], t["center"][2] + t["half"][2], 0.0, 1.0]
+                 for t in things if t.get("kind") == "fixture" and t.get("half")]
+
+
+CREATURE_BODY = (0.2, 0.25, 0.8)    # a creature's body as a box: its width, length and height shares, half each way
+#                                     across and along (wing and tail tips stand out of it)
+
+
+def add_creatures(spec: dict, library: Path) -> None:
+    """The scene's creatures as solid boxes too: a camera set inside a beast's body saw only its hide (11-17)."""
+    import creature
+    for c in spec.get("characters", {}).values():
+        r = creature.rig(library, c.get("asset", "")) if c.get("creature") else None
+        if r:
+            f = unit2(c.get("facing") or [0.0, -1.0])
+            sx, sy, sz = r["size_m"]
+            SOLIDS.append([c["position"][0], c["position"][1], CREATURE_BODY[0] * sx, CREATURE_BODY[1] * sy,
+                           CREATURE_BODY[2] * sz, f[0], f[1]])
+
+
+def _in_box(p, b, m=0.0) -> bool:
+    dx, dy = p[0] - b[0], p[1] - b[1]
+    along, across = dx * b[5] + dy * b[6], dx * b[6] - dy * b[5]
+    return abs(across) < b[2] + m and abs(along) < b[3] + m and p[2] < b[4] + m
+
+
+HEADS: list = []              # the staged creatures' measured heads as spheres [x, y, z, r] (set_heads, each round)
+NECKS: list = []              # and their necks as capsules [[x, y, z] base, [x, y, z] head, r] (set_heads)
+NECK_R = 0.6                 # a creature's neck's radius, as a share of its head's height (top to chin), at least 0.3 m
+
+
+def set_heads(subjects: dict) -> None:
+    """A creature's head reaches far out of its body's box: a close camera on it was set inside the head and drew
+    its inside, grey or black (11-17). Its measured head, as a sphere a little bigger than the head's height; and
+    its neck, from the neck's base (the measured chest) at its waist's height up to the head, as a capsule: a beast's
+    head held 4 m before its middle left the neck between its body's box and its head unguarded, and cameras stood
+    in it or looked through it at the people beyond (11-18)."""
+    ms = [m for m in (v.get("measured") or {} for v in subjects.values()) if m.get("creature") and "eye_xy" in m]
+    HEADS[:] = [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"], max(0.5, 1.2 * (m["head_top_z"] - m["chin_z"]))]
+                for m in ms]
+    NECKS[:] = [[[m["chest_xy"][0], m["chest_xy"][1], m.get("waist_z", m["eye_z"] / 2)],
+                 [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]], max(0.3, NECK_R * head_size(m))]
+                for m in ms if m.get("chest_xy")]
+
+
+def seg_point_dist(p, a, b) -> float:
+    """The distance from the point p to the segment a-b (3D)."""
+    ab = [b[i] - a[i] for i in range(3)]
+    L2 = sum(x * x for x in ab) or 1e-12
+    t = max(0.0, min(1.0, sum((p[i] - a[i]) * ab[i] for i in range(3)) / L2))
+    return math.dist(p, [a[i] + ab[i] * t for i in range(3)])
+
+
+CREATURE_MAX_PITCH_DEG = 35.0      # a creature's head seen from at most this far below or above its own height
+CREATURE_HEAD_MAX = {"close": 1.0, "medium": 0.85, "full": 0.4, "wide": 0.4}   # its head's height, as a share of
+#                                    the frame's height at the head, at most (framing.shot's own: a close 1 / CLOSE_HEADS
+#                                    = 0.48, a beast's medium from its waist 0.40-0.43; a tight talk medium that read
+#                                    well 0.77; the black stills 1.4-3.2)
+FILL_MAX = 0.95              # a person or creature whose own pixels cover this share of a still: the camera is in them
+STILL_DARK = 10.0            # a still's mean brightness (of 255) under this: nearly black (story_keys.KEY_DARK)
+BACK_FACTOR = 1.5            # a still that failed for either is re-framed at least this much farther from its subject
+TOO_NEAR = "the camera is too near"    # (the words story_keys.keyless reads as an unreadable staging)
+
+
+def head_size(m) -> float:
+    return max(0.05, m["head_top_z"] - m["chin_z"])
+
+
+def creature_view_why(cam, k, m, kind, res=(1152, 640)) -> list:
+    """A creature's head is framed from a distance its own head's size sets, at about the head's height: the human
+    camera heights (1.45, 1.6 m) and distances put a camera 0.2 m in front of a 4 m beast's eye and 1.3 m under it,
+    looking straight up into its throat: the still was black, its mask the whole frame, and every check passed
+    (11-17). Its measured head's height as a share of the frame's height at the head (from the lens and the
+    distance, not the projection, which a steep view foreshortens) at most CREATURE_HEAD_MAX of the shot's kind,
+    and the view to its eyes at most CREATURE_MAX_PITCH_DEG from level. [] for a person."""
+    if not m.get("creature") or "eye_xy" not in m:
+        return []
+    p = cam["position"]
+    eye = [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]]
+    d = math.dist(p, eye)
+    why = []
+    pitch = math.degrees(math.atan2(abs(eye[2] - p[2]), math.hypot(p[0] - eye[0], p[1] - eye[1])))
+    if pitch > CREATURE_MAX_PITCH_DEG:
+        why.append(f"{k}'s head is seen {pitch:.0f} deg from under or over its head: {TOO_NEAR} for its size")
+    share = head_size(m) / max(1e-6, d * framing.sensor_h(res) / float(cam["focal_mm"]))
+    if share > CREATURE_HEAD_MAX.get(kind, CREATURE_HEAD_MAX["medium"]):
+        why.append(f"{k}'s head is {share:.0%} of the frame's height {d:.1f} m away: {TOO_NEAR} for its size")
+    return why
+
+
+def still_mean(path, box=None) -> float | None:
+    """A still's mean brightness (0-255), of the whole frame or of box (u0, v0, u1, v1, in 0..1 of the frame); None
+    when it cannot be read or the box is empty."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return _png_mean(path, box)
+    try:
+        im = Image.open(path).convert("L")
+    except OSError:
+        return None
+    if box:
+        W, H = im.size
+        x0, y0 = max(0, int(box[0] * W)), max(0, int(box[1] * H))
+        x1, y1 = min(W, max(x0 + 1, int(box[2] * W))), min(H, max(y0 + 1, int(box[3] * H)))
+        if x0 >= W or y0 >= H:
+            return None
+        im = im.crop((x0, y0, x1, y1))
+        h = im.histogram()
+    else:
+        h = im.resize((64, 36)).histogram()
+    return sum(i * n for i, n in enumerate(h)) / max(1, sum(h))
+
+
+def _png_mean(path, box=None) -> float | None:
+    """still_mean without PIL: an 8-bit, non-interlaced grey, RGB or RGBA PNG (what the engine writes)."""
+    import zlib
+    try:
+        b = Path(path).read_bytes()
+    except OSError:
+        return None
+    if b[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    i, idat, w = 8, b"", None
+    while i < len(b):
+        n, t = struct.unpack(">I4s", b[i:i + 8])
+        if t == b"IHDR":
+            w, h, depth, ct, _, _, il = struct.unpack(">IIBBBBB", b[i + 8:i + 21])
+            if depth != 8 or il or ct not in (0, 2, 6):
+                return None
+            bpp = {0: 1, 2: 3, 6: 4}[ct]
+        elif t == b"IDAT":
+            idat += b[i + 8:i + 8 + n]
+        i += 12 + n
+    if w is None:
+        return None
+    raw = zlib.decompress(idat)
+    stride = w * bpp
+    prev, tot, cnt = bytearray(stride), 0, 0
+    for y in range(h):
+        o = y * (stride + 1)
+        f, row = raw[o], bytearray(raw[o + 1:o + 1 + stride])
+        for x in range(stride):
+            a = row[x - bpp] if x >= bpp else 0
+            c = prev[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            if f == 1:
+                row[x] = (row[x] + a) & 255
+            elif f == 2:
+                row[x] = (row[x] + up) & 255
+            elif f == 3:
+                row[x] = (row[x] + (a + up) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(up - c), abs(a - c), abs(a + up - 2 * c)
+                row[x] = (row[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else c)) & 255
+        prev = row
+        ch = 3 if bpp >= 3 else 1
+        if box:                              # every pixel of the box
+            if box[1] * h <= y < max(box[1] * h + 1, box[3] * h):
+                for x in range(max(0, int(box[0] * w)), min(w, max(int(box[0] * w) + 1, int(box[2] * w)))):
+                    tot += sum(row[x * bpp:x * bpp + ch]) / ch
+                    cnt += 1
+        elif y % 8 == 0:                     # every eighth row is enough for a mean
+            for x in range(0, w, 4):
+                tot += sum(row[x * bpp:x * bpp + ch]) / ch
+                cnt += 1
+    return tot / cnt if cnt else None
+
+
+FACE_DARK = 7.0              # a speaker's face whose own pixels' mean brightness (of 255) is under this reads as a
+#                              silhouette (measured 11-18 over 50 talk stills: faces in a creature's shadow against a lit
+#                              sky 3; the dimmest that read, by a shed's wall and in a hangar's back light, 10-11)
+KEY_FLIP = "key_flip"        # a camera's key light comes round its other side (scene_job, framing.key_toward)
+
+
+def sh_pos(shot) -> tuple:
+    return tuple(round(x, 2) for x in shot["camera"]["position"])
+
+
+def face_box(cam, m, res):
+    """The frame box (u0, v0, u1, v1) over a measured head's face points (face_points); None when off the frame."""
+    pr = [framing.project(cam, p, res) for p in face_points(m)]
+    pr = [q for q in pr if q]
+    if not pr:
+        return None
+    u0, u1 = min(q[0] for q in pr), max(q[0] for q in pr)
+    v0, v1 = min(q[1] for q in pr), max(q[1] for q in pr)
+    if u1 <= 0 or v1 <= 0 or u0 >= 1 or v0 >= 1:
+        return None
+    return (max(0.0, u0), max(0.0, v0), min(1.0, u1), min(1.0, v1))
+
+
+def face_light_why(shot, k, m, res) -> list:
+    """A speaker's face in shadow: a dark shape against a lit sky reads as no face at all (the key from the camera's
+    side, on the world sun's side, came through a creature's body and wings beside the speaker, 11-18). The mean
+    brightness of the still over the face's own points, under FACE_DARK. [] when it reads or cannot be measured."""
+    if not shot.get("path"):
+        return []
+    box = face_box(shot["camera"], m, res)
+    lum = still_mean(shot["path"], box) if box else None
+    if lum is None or lum >= FACE_DARK:
+        return []
+    return [f"{k}'s face is in shadow (mean {lum:.0f} of 255)"]
+
+
+STILL_BLACK = (12, 0.7)      # a still with this share of it under this brightness (of 255) is nearly black too: a
+#                              frame from inside a shadow with a strip of bright sky stood at a mean of 13 to 21,
+#                              74 to 87% of it black, and passed (the darkest good stills of a firelit room: 61%)
+
+
+def still_black(path) -> float | None:
+    """The share of a still that is black (under STILL_BLACK's brightness); None when it cannot be read."""
+    try:
+        from PIL import Image
+        px = list(Image.open(path).convert("L").resize((128, 72)).getdata())
+    except (ImportError, OSError):
+        return None
+    return sum(1 for v in px if v < STILL_BLACK[0]) / len(px) if px else None
+
+
+def still_why(shot, chk) -> list:
+    """A rendered still that shows nothing: nearly black, or one person's or creature's own pixels over nearly the
+    whole frame (the camera is inside them or against them). A failed staging, re-framed farther back (BACK_FACTOR):
+    such a still passed every framing rule and was kept as a key (11-17)."""
+    why = []
+    for k, f in ((chk or {}).get("frame_facts") or {}).items():
+        a = (f.get("mask") or {}).get("area")
+        if a is not None and a >= FILL_MAX:
+            why.append(f"{k} fills {a:.0%} of the frame: {TOO_NEAR}")
+    lum = still_mean(shot["path"]) if shot.get("path") else None
+    if lum is not None and lum < STILL_DARK:
+        why.append(f"the still is nearly black (mean {lum:.1f} of 255)")
+    elif shot.get("path") and (bl := still_black(shot["path"])) is not None and bl >= STILL_BLACK[1]:
+        why.append(f"the still is nearly black ({bl:.0%} of it black)")
+    return why
+
+
+def back_of(c, shot, subjects) -> dict | None:
+    """The shot's subject (the speaker, whom its line is about, its subject, else whoever fills the most of it) and
+    how far from its eyes its re-framed camera stands at least: BACK_FACTOR times the failed camera's distance."""
+    ff = (shot.get("speaker_check") or {}).get("frame_facts") or {}
+    k = next((x for x in (c.get("speaker"), c.get("line_subject"), c.get("subject")) if x in subjects), None) or \
+        max((x for x in ff if x in subjects), key=lambda x: (ff[x].get("mask") or {}).get("area", 0.0), default=None)
+    if not k:
+        return None
+    m = subjects[k]["measured"]
+    d = math.dist(shot["camera"]["position"], [m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]])
+    old = (c.get("_back") or {}).get("min_m", 0.0) if (c.get("_back") or {}).get("key") == k else 0.0
+    return {"key": k, "min_m": round(max(old, BACK_FACTOR * d, 0.5), 3)}
+
+
+def inside_solid(p) -> bool:
+    return any(_in_box(p, b, SOLID_CLEAR_M) for b in SOLIDS) or \
+        any(math.dist(p, h[:3]) < h[3] + SOLID_CLEAR_M for h in HEADS) or \
+        any(seg_point_dist(p, nk[0], nk[1]) < nk[2] + SOLID_CLEAR_M for nk in NECKS)
+
+
+def solid_between(p, q, n=24) -> bool:
+    """A thing's box, or a creature's head or neck, on the straight line from the camera p to the point q (its last
+    stretch, where q stands, left out: someone sits in a chair, lies in a bed, stands at a bench; and the head or
+    neck q is in: a creature's own eye is seen on its head)."""
+    heads =[h for h in HEADS if math.dist(q, h[:3]) > h[3]]
+    necks = [nk for nk in NECKS if seg_point_dist(q, nk[0], nk[1]) > nk[2]]
+    for i in range(1, n):
+        t = i / n
+        if t > 0.85:
+            break
+        pt = [p[j] + (q[j] - p[j]) * t for j in range(3)]
+        if any(_in_box(pt, b) for b in SOLIDS) or any(math.dist(pt, h[:3]) < h[3] for h in heads) or \
+                any(seg_point_dist(pt, nk[0], nk[1]) < nk[2] for nk in necks):
+            return True
+    return False
+
+
+OPEN_GROUND: list = []        # a place in the open: [cx, cy, r] of the flat ground round its stage (main() fills it)
+OPEN_SKY_M = 12.0            # how high a camera may stand there (no ceiling)
+
+
+def open_ground(set_spec: dict, library: Path) -> list:
+    """The flat ground of a place in the open: its world's flat radius round the point under the panorama's eye
+    (the world fixture's position plus the eye's own place in its shell), less half a metre; [] for a room."""
+    w = set_spec.get("world") or {}
+    fx = next((f for f in set_spec.get("fixtures") or [] if f.get("world")), None)
+    if not (w.get("flat_r_m") and fx):
+        return []
+    try:
+        st = (json.loads((library / "prop" / fx["asset"] / "asset.json").read_text()).get("world") or {}).get("stand_m")
+    except (OSError, ValueError):
+        st = None
+    st = st or [0.0, 0.0]
+    return [fx["position"][0] + st[0], fx["position"][1] + st[1], float(w["flat_r_m"]) - 0.5]
+
+
+FALLBACK_MM = 24             # the last resort wide's lens
+
+
+FALLBACK_CLEAR_M = 0.45      # the last resort's line to its first person passes this clear of the others
+
+
+SAME_MISS_ROUNDS = 4         # a shot that misses the same way this many tries running is not tried again
+
+
+def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
+    """Whether a shot's last n tries all missed for the same reasons."""
+    last = [tuple(sorted(h.get("why") or [])) for h in (history or [])[-n:]]
+    return len(last) == n and bool(last[0]) and len(set(last)) == 1
+
+
+def fallback_camera(ms: list, room, tried=()) -> dict | None:
+    """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
+    widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
+    of its things and of the cameras already tried, with a clear line to every one of their eyes, else to the
+    first one's; aimed at their middle. None when there is no such standpoint. (Started at twice their spread plus
+    2 m, a wide on two people 8 m apart began 10 m out, past the flat ground on every side the rocks left open, and a
+    shot that had rendered black was rendered black again, 11-18.)"""
+    if not ms:
+        return None
+    eyes = [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms]
+    mid = [sum(e[i] for e in eyes) / len(eyes) for i in range(3)]
+    spread = max([math.dist(e[:2], mid[:2]) for e in eyes] + [0.5])
+    half_fov = math.atan(framing.SENSOR_W / 2.0 / FALLBACK_MM)
+    r0 = max(1.5, 1.15 * spread / math.tan(half_fov))
+    # (a creature among them is seen from its head's height too and from as far as its head's size asks
+    # (creature_view_why): from 1.6 m, 3 m off, the wide was under a beast's head, black, 11-17)
+    zs = [1.6] + sorted({round(m["eye_z"], 2) for m in ms if m.get("creature")} - {1.6})
+    # from before the first one's face round to behind them (the first clear standpoint of a plain sweep stood a
+    # pace behind the listener: her back was 71% of the frame, the speaker unseen, and the shot had no key, 11-19),
+    # and never with another of them standing in the line to the first one's eyes
+    f0 = ms[0].get("head_fwd_xy")
+    a0 = math.degrees(math.atan2(f0[1], f0[0])) if f0 and math.hypot(*f0) > 1e-6 else 0.0
+    sweep = [a0 + sg * d for d in range(0, 181, 15) for sg in ((1,) if d in (0, 180) else (1, -1))]
+    for need in (eyes, eyes[:1]):
+        for r in [r0 + d for d in (0.0, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 12.0)]:
+            for z in zs:
+                for a in sweep:
+                    p = [mid[0] + r * math.cos(math.radians(a)), mid[1] + r * math.sin(math.radians(a)), z]
+                    if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or \
+                            any(solid_between(p, e) for e in need):
+                        continue
+                    if any(seg_point_dist(e, p, eyes[0]) < FALLBACK_CLEAR_M for e in eyes[1:]):
+                        continue
+                    q = {"position": [round(x, 3) for x in p],
+                         "target": [round(mid[0], 3), round(mid[1], 3), round(mid[2] - 0.3, 3)], "focal_mm": FALLBACK_MM}
+                    if any(creature_view_why(q, "", m, "wide") for m in ms):
+                        continue
+                    return q
+    return None
+
+
+SHOWED_NOTHING = ("the still is nearly black", "the camera is outside the room", "the camera is inside ")
+
+
+def showed_nothing(why: list) -> bool:
+    """A try whose still showed nothing of the shot: black, the camera inside a thing or a body, or a thing in the
+    foreground over half the frame (still_why, placement_why, framing_why's words)."""
+    return any(w.startswith(SHOWED_NOTHING) or (TOO_NEAR in w and " fills " in w) for w in why) or \
+        any(int(x) >= 50 for w in why for x in re.findall(r"foreground covers (\d+)%", w))
+
+
+def fallback_people(c: dict, subjects: dict) -> list:
+    """The people a shot's last resort wide holds, whom it is about first: the plan's list for it, else its speaker
+    and listener, else everyone."""
+    lead = next((x for x in (c.get("speaker"), c.get("line_subject"), c.get("subject")) if x in subjects), None)
+    ks = c.get("listed") or c.get("show") or [x for x in (c.get("speaker"), c.get("listener") or c.get("ots"))
+                                              if x] or list(subjects)
+    return [k for k in dict.fromkeys(([lead] if lead else []) + list(ks)) if k in subjects]
+
+
 def in_room(p, room):
     W, D, H = room
+    if OPEN_GROUND:
+        # no walls: anywhere on the flat ground round the stage, clear of its standing things (a 13 m stage held a
+        # 10 m beast and the man it fought, and no camera on it could step back far enough, 11-17)
+        return 0.3 < p[2] < OPEN_SKY_M and math.dist(p[:2], OPEN_GROUND[:2]) < OPEN_GROUND[2] and not inside_solid(p)
     if not 0.3 < p[2] < H - 0.2:
+        return False
+    if inside_solid(p):
         return False
     wd = wild_m(room)
 
@@ -1273,7 +1788,7 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
             continue
         if est_side and kind not in ("wide", "full") and side(line, p) not in (0, est_side):
             continue
-        if blocked(p, eye, others):
+        if blocked(p, eye, others) or solid_between(p, eye):
             continue
         keep.append(q)
     return keep
@@ -1306,7 +1821,18 @@ def main():
     spec = json.loads(Path(a.spec).read_text())
     odir = Path(os.path.expanduser(os.environ.get("SCENES_OUT", str(Path(C.UE_HOME) / "lab" / "scenes" / "out")))) / spec["id"]
     odir.mkdir(parents=True, exist_ok=True)
-    room = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())["size_m"]
+    set_spec = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())
+    room = set_spec["size_m"]
+    OPEN_GROUND[:] = open_ground(set_spec, Path(C.LIBRARY))
+    if OPEN_GROUND:                          # the camera search reaches over the whole flat ground
+        r_ = OPEN_GROUND[2] + max(abs(OPEN_GROUND[0]), abs(OPEN_GROUND[1]))
+        room = [max(room[0], 2 * r_), max(room[1], 2 * r_), max(room[2], OPEN_SKY_M)]
+    try:                                     # the set's standing things, for the camera search
+        sys.path.insert(0, str(HERE.parent / "redraw"))
+        import setfacts
+        set_solids(setfacts.things(Path(C.LIBRARY) / "set" / spec["set"]))
+    except (OSError, ValueError, KeyError):
+        set_solids([])
     res = spec.get("res", [1152, 640])
     spec["guides"] = True
     # listeners face the speaker: one staging per speaker (a quiet group keeps its poses); several groups run as
@@ -1349,6 +1875,7 @@ def main():
     assets_action_steps(spec)
     walks = clear_walks(spec, set(seat_plan.get("seats") or {}))   # before any render: clear floor paths for walks
     aimed = aim_bodies(spec)                 # bodies turned to whom they face, from where everyone now stands
+    add_creatures(spec, Path(C.LIBRARY))     # (as they now face)
     if aimed:
         log(f"bodies re-aimed: {aimed}")
     if (walks["moved"] or aimed) and relook:   # heads re-aimed at the speaker from the new places
@@ -1387,7 +1914,7 @@ def main():
         log(f"walks: moved {walks['moved']} blocked {walks['blocked']}")
     todo = [c["name"] for c in spec["cameras"]]
     tried = {c["name"]: [] for c in spec["cameras"]}
-    tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "wide": 0, "n": 0} for c in spec["cameras"]}
+    tries = {c["name"]: {"same": 0, "single": 0, "mark": 0, "wide": 0, "fallback": 0, "n": 0} for c in spec["cameras"]}
     tried_marks, pending, master = {}, None, None
     reach_done = not any(v.get("reach") for v in spec["characters"].values())
     least_bad = []                           # shots whose least-bad try is not the last render: rendered again
@@ -1430,6 +1957,8 @@ def main():
             tc = two_shot_candidates(dict(c, show=[c.get("subject")]), shots[c["name"]], None, None, subj2, res,
                                      room, line, est_side, list(tried_c), cam_opts(spec, c)) if c.get("subject") else []
             return (tc[0][0], "tight") if tc else None
+        if c.get("keep_listener"):           # the plan's picture has the listener: no single instead
+            return None
         tc = two_shot_candidates(dict(c, show=None), shots[c["name"]], spk, None, subj2, res, room, line, est_side,
                                  list(tried_c), dict(cam_opts(spec, c), _single=True))
         return (tc[0][0], "single") if tc else None
@@ -1484,15 +2013,31 @@ def main():
         the least-bad rendered try becomes it, labelled with its misses and counted as not shippable."""
         n_ = c["name"]
         hist = report["shots"].get(n_, {}).get("history") or []
-        best = min(hist, key=badness) if hist else None
+        # (a try whose still showed something before one that showed nothing, however few its other misses)
+        best = min(hist, key=lambda h: (showed_nothing(h.get("why") or []),) + badness(h)) if hist else None
         chk = shots[n_]["speaker_check"]
         why = (best or chk)["why"]
         shots[n_]["framing_miss"] = why
         shots[n_]["least_bad"] = {"round": (best or {}).get("round"), "misses": why}
         shots[n_]["tried_stills"] = sorted(str(p_) for p_ in tries_dir.glob(f"{n_}_r*.png"))
-        if best and math.dist(best["camera"]["position"], shots[n_]["camera"]["position"]) > 1e-3:
-            c.update(position=best["camera"]["position"], target=best["camera"]["target"],
-                     focal_mm=best["camera"]["focal_mm"])
+        cam_b = (best or {}).get("camera") or shots[n_]["camera"]
+        walled = showed_nothing(why) or any(TOO_NEAR in w for w in why)
+        fb_for = os.environ.get("SPEAKERS_FALLBACK_ALL") or ""
+        if not in_room(cam_b["position"], room) or walled or fb_for == "1" or \
+                (c.get("plan_id") and c["plan_id"] in fb_for.split(",")):
+            # (SPEAKERS_FALLBACK_ALL: the restage of a place whose last staging left shots without a key: those
+            # shots, by their plan ids; "1": every shot. Given to every shot, the restage for one shot took the
+            # wide for two talk shots that had keys, and both lost them, 11-19)
+            # every try stood inside a thing or off the ground (its still is a wall of rock or black): the last
+            # resort is a wide from the open floor on the shot's people (fallback_camera), never no picture
+            fb = fallback_camera([subjects[k]["measured"] for k in fallback_people(c, subjects)], room)
+            if fb:
+                cam_b = fb
+                shots[n_]["least_bad"]["fallback"] = True
+        flip_b = bool((best or {}).get(KEY_FLIP))      # (the key light's side that try was rendered with)
+        if math.dist(cam_b["position"], shots[n_]["camera"]["position"]) > 1e-3 or flip_b != bool(c.get(KEY_FLIP)):
+            c.update(position=cam_b["position"], target=cam_b["target"], focal_mm=cam_b["focal_mm"])
+            c[KEY_FLIP] = flip_b
             for kk in ("az", "el", "screen_x"):
                 c.pop(kk, None)
             least_bad.append(n_)
@@ -1507,6 +2052,7 @@ def main():
             new = {s["name"]: s for s in res_j["shots"]}
             master["shots"] = [new.get(s["name"], s) for s in master["shots"]]
         subjects = master["subjects"]
+        set_heads(subjects)
         shots = {s["name"]: s for s in master["shots"]}
         # seating first: a person not sitting in their chair is moved and every camera rendered again
         moved = False
@@ -1551,17 +2097,36 @@ def main():
                   if not w.startswith("the camera is inside ") or
                   ((chk.get("frame_facts") or {}).get(w.rsplit(" ", 1)[1], {}).get("mask") or {}).get("area", 0) > 0.3]
             # the subject of an action or quiet shot (whom the plan's line is about) has a face shown, as a speaker
-            if not c.get("speaker") and c.get("line_subject") in subjects:
+            # (not in an action shot: there a fighter may face away from the camera, toward whom they act on; the
+            # redraw paints their back from their sheet. The user's rule, 11-17: half the reason for staging in 3D)
+            if face_rule_applies(c, spec) and c.get("line_subject") in subjects:
                 pw += subject_face_why(sh, c["line_subject"], subjects, res,
                                        c["line_subject"] in (cam_opts(spec, c).get("covered") or ()),
                                        shared=len([k for k in c.get("show") or [] if k in subjects]) >= 2)
+            sw = still_why(sh, chk)          # a still of nothing (black, or someone's own pixels everywhere)
+            if sw:
+                pw += sw
+                if in_room(sh["camera"]["position"], room):
+                    # re-framed farther back. (Not when the camera stood inside a thing of the set or off the ground:
+                    # that is why it showed nothing, and the search keeps out of there. Held to 1.5x the distance of
+                    # a camera inside a rock 1.5 m before a woman's face, no standpoint was left in front of her and
+                    # the search ended after one black try, 11-18)
+                    c["_back"] = back_of(c, dict(sh, speaker_check=chk), subjects)
+            elif c.get("speaker") in subjects:   # the speaker's face lit, not a silhouette
+                pw += face_light_why(sh, c["speaker"], subjects[c["speaker"]]["measured"], res)
+            elif (not c.get("speaker") and c.get("shot_kind") != "action" and c.get("subject") in subjects
+                  and not subjects[c["subject"]]["measured"].get("creature")):
+                # ... nor the face a quiet shot is about (its face is asked toward the camera as a speaker's is: two
+                # quiet close-ups were black heads against the sky, 11-18)
+                pw += face_light_why(sh, c["subject"], subjects[c["subject"]]["measured"], res)
             if pw:                           # outside the room, a body filling the frame, the subject's face unseen
                 chk["why"] = pw + chk["why"]
                 chk["framing"] = pw + chk.get("framing", [])
                 chk["ok"] = False
             sh["speaker_check"] = chk
             report["shots"].setdefault(c["name"], {"history": []})
-            report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"]))
+            report["shots"][c["name"]]["history"].append(dict(chk, round=rnd, camera=sh["camera"],
+                                                              **{KEY_FLIP: bool(c.get(KEY_FLIP))}))
             report["shots"][c["name"]].update(speaker=c.get("speaker"), ok=chk["ok"], rounds=rnd)
             if not chk["ok"]:
                 fails.append(c)
@@ -1622,7 +2187,10 @@ def main():
                 todo = [c["name"] for c in spec["cameras"]]
                 continue
             pending = None
-        if not fails or rnd == a.rounds:
+        if not fails or rnd == a.rounds or all(same_miss(report["shots"][c["name"]]["history"]) for c in fails):
+            # (... or every shot still failing has missed the same way SAME_MISS_ROUNDS tries running: more tries
+            # find nothing new. One shot missed one way 13 rounds running, twenty seconds each, in five scene
+            # groups of one place: 25 minutes of its staging, 11-19)
             for c in fails:
                 give_up(c)
             break
@@ -1634,11 +2202,26 @@ def main():
             face_fail = [w for w in chk["why"] if w not in chk.get("framing", [])]
             # the person the shot is about is searched for as a speaker in every try (only on the tries that
             # failed for their face, the search fell back to cameras behind her on the others, 11-12)
-            spk = c.get("speaker") or (c.get("line_subject") if c.get("line_subject") in subjects else None)
+            # ... where the face rule holds for them (face_rule_applies): an action shot's subject may show the camera
+            # their back, and searched as a speaker only standpoints before a woman facing a rock were offered, all of
+            # them inside the rock (11-18)
+            spk = c.get("speaker") or (c.get("line_subject") if c.get("line_subject") in subjects
+                                       and face_rule_applies(c, spec) else None)
             lis = listener_of(c, keys, spk)
             if t["n"] >= MAX_TRIES:
                 give_up(c)
                 continue
+            shade = [w for w in chk["why"] if " face is in shadow " in w]
+            if shade and OPEN_GROUND and c.get("_flipped_at") != sh_pos(shots[n_]):
+                # the speaker's face in a body's shadow: the key light round the lens's other side (scene_job:
+                # framing.key_toward flip; a place in the open, lit per shot); with no other miss the same camera
+                # again, else the next camera with it. (In a room the misses go down the ladder: another camera)
+                c[KEY_FLIP] = not c.get(KEY_FLIP)
+                c["_flipped_at"] = sh_pos(shots[n_])
+                if len(shade) == len(chk["why"]):
+                    t["n"] += 1
+                    todo.append(n_)
+                    continue
             cands, stage = [], None
             if t["same"] < (TRY_SAME if spk else TRY_SAME + 1):   # 1: another camera of the same kind
                 if (face_fail or c.get("ots")) and spk:
@@ -1657,7 +2240,8 @@ def main():
             # about stood in as its speaker here, so it was given singles of him the check then failed for the
             # others missing, eight of fifteen rounds, 11-14)
             many = not c.get("speaker") and len(named) >= 2
-            if not cands and spk and not many and t["single"] < TRY_SINGLE:     # 2: a clean single of the speaker
+            if not cands and spk and not many and t["single"] < TRY_SINGLE and not c.get("keep_listener"):
+                # 2: a clean single of the speaker (not where the plan's picture has the listener in it)
                 tc = two_shot_candidates(dict(c, show=None), shots[n_], spk, None, subjects, res, room, line, est_side,
                                          tried[n_], dict(cam_opts(spec, c), _single=True))
                 cands = [(q, "single") for q, _ in tc[:1]]
@@ -1682,6 +2266,18 @@ def main():
                 if pick:
                     mark_req = (c, pick)
                     continue
+            if not cands and c.get("_back"):
+                # the farther-back rule left no standpoint for the shot's own kind of camera: it is dropped, not the
+                # search (a camera nearer than the black one, clear of every thing and body, is still a camera)
+                c.pop("_back")
+                tc = two_shot_candidates(c, shots[n_], spk, lis, subjects, res, room, line, est_side, tried[n_],
+                                         cam_opts(spec, c)) if (spk or c.get("show")) else []
+                cands = [(q, md) for q, md in tc[:1]]
+            if not cands and t["fallback"] < 1 and showed_nothing(chk["why"]):
+                # a still that showed nothing with no camera left on the ladder: the clear wide on the shot's people
+                # is rendered and checked as one more try, before the search ends (it ended on the black try)
+                fb = fallback_camera([subjects[k]["measured"] for k in fallback_people(c, subjects)], room, tried[n_])
+                cands = [(fb, "fallback")] if fb else []
             if not cands:
                 give_up(c)
                 continue
@@ -1700,6 +2296,10 @@ def main():
                 t["wide"] += 1
             elif md == "tighter":
                 t["single"] += 1
+            elif md == "fallback":       # a wide on the shot's people: held to a wide's framing rules
+                c["kind"] = "full"
+                c.pop("ots", None)
+                t["fallback"] += 1
             else:
                 if md == "ots":
                     c["ots"] = lis
@@ -1751,6 +2351,26 @@ def main():
                 keep = {kk: s_.get(kk) for kk in ("framing_miss", "least_bad", "tried_stills", "speaker",
                                                    "speaker_check")}
                 master["shots"][i_] = dict(new[s_["name"]], **keep)
+                lb = keep.get("least_bad") or {}
+                if lb.get("fallback"):
+                    # the last-resort wide is another picture than the try its misses were read from: it is read
+                    # itself (four wides that held everyone were counted unreadable by the misses of the tries
+                    # before them, and staged again for nothing, 11-19)
+                    c_ = next(x for x in spec["cameras"] if x["name"] == s_["name"])
+                    try:
+                        chk_ = check_shot(master["shots"][i_], c_.get("speaker"), master["subjects"], res, c_["kind"],
+                                          line, est_side, listener_of(c_, keys, c_.get("speaker")), bool(c_.get("ots")),
+                                          c_.get("show"),
+                                          bool((spec["characters"].get(c_.get("speaker") or "") or {}).get("face_covered"))
+                                          or c_.get("speaker") in head_worn(c_), cam_opts(spec, c_))
+                        why_ = still_why(master["shots"][i_], chk_) + list(chk_["why"])
+                    except (KeyError, TypeError, ValueError) as e_:
+                        why_ = lb.get("misses") or []
+                        log(f"{s_['name']}: the last-resort wide could not be read ({e_})")
+                    lb = dict(lb, misses=why_, before=lb.get("misses"))
+                    master["shots"][i_].update(least_bad=lb, framing_miss=why_)
+                # (the kept try and what it missed, in the report the flow counts its shots from)
+                report["shots"].setdefault(s_["name"], {}).update(least_bad=lb, framing_miss=master["shots"][i_].get("framing_miss"))
         log(f"least-bad tries as keys: {least_bad}")
     report["staged_facts"] = staged_facts(spec, master["subjects"])
     for sh in master["shots"]:

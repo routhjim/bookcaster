@@ -1000,6 +1000,53 @@
    "needs": null,
    "placement": "floor",
    "sized_by": "longest"
+  },
+  "terrain": {
+   "synonyms": [
+    "terrain"
+   ],
+   "parent": null,
+   "size_m": [
+    60.0,
+    60.0,
+    20.0
+   ],
+   "needs": null,
+   "placement": "floor",
+   "made_as": "world",
+   "about": "a place in the open as one built thing: the land round where its people stand, the sky, the ground under them (made from a panorama, never named by a place spec: the set builder adds it)"
+  },
+  "landmark": {
+   "synonyms": [
+    "landmark"
+   ],
+   "parent": null,
+   "size_m": [
+    4.0,
+    4.0,
+    4.0
+   ],
+   "needs": null,
+   "placement": "floor",
+   "sized_by": "longest",
+   "about": "a large separate thing standing on open ground near the people of a place in the open; its look says what it is, its longest_m how big",
+   "front": "auto"
+  },
+  "work_piece": {
+   "synonyms": [
+    "work piece",
+    "working piece"
+   ],
+   "parent": null,
+   "size_m": [
+    1.0,
+    0.8,
+    0.9
+   ],
+   "needs": null,
+   "placement": "floor",
+   "sized_by": "longest",
+   "about": "a fixed thing of the place that people work on, at or with and that no other kind is: its look says what it is, its longest_m how big"
   }
  }
 }

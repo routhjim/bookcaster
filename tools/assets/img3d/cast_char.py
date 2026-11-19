@@ -150,6 +150,133 @@ def ue_job(work, name, script, job, timeout=1800):
     return json.loads(Path(job["result"]).read_text())
 
 
+HAIR_GRID = (0.15, 0.3, 0.45, 0.6, 0.75)     # whiteness values rendered when a colour word has no measured value
+CLOSE_LIGHT = {"map": "/Engine/Maps/Templates/Template_Default", "warm_frames": 120, "settle_frames": 30,
+               "key_cd": 22, "fill_cd": 22, "rim_cd": 8, "exposure_bias": -0.5}     # the faces jobs' studio portrait
+
+
+def hair_colours():
+    """choose_mh.py's COLOURS (word -> melanin, redness, whiteness), read from its source: that module needs torch,
+    this one runs on the plain interpreter."""
+    import ast
+    tree = ast.parse((ASSETS / "characters" / "choose_mh.py").read_text())
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "COLOURS" for t in n.targets):
+            return ast.literal_eval(n.value)
+    raise RuntimeError("choose_mh.py: no COLOURS table")
+
+
+def set_groom_colour(W, mh_name, name, melanin, redness, whiteness):
+    """The hair colour on the built character's own groom materials (char_groom_colour.py, one engine job)."""
+    return ue_job(W, name, str(ASSETS / "characters" / "char_groom_colour.py"), {
+        "folder": f"/Game/MetaHumans/{mh_name}", "melanin": melanin, "redness": redness, "whiteness": whiteness}, 600)
+
+
+def calibrate_hair(W, ch, mh_name, blueprint, map_path, tag, grid=HAIR_GRID, force=False):
+    """The whiteness of the chosen hair colour word measured on the built character itself, when the library's map
+    (<library>/presets/hair_colour.json, read by choose_mh.py) has no value for the word (11-18: "grey hair" built
+    with the table's whiteness 0.75 rendered pure white, and viewers and the image redraw read it as a white cap).
+
+    The rule, for any word whose table whiteness is above 0 (a dark colour has no grey to search): the built
+    character's head is rendered close (the faces jobs' studio portrait, of the assembled Blueprint, whose groom
+    materials carry the colour) at each whiteness of the grid and the table's own value; hair_calibrate.py has the
+    vision model name each render's hair colour from the same closed word list, with the drawn sheet head as the
+    target (the model's own word for the drawn hair); the smallest value named with the target word is merged into
+    the map and set on the grooms, the character's record and choice.json (a rebuild uses it). No value named so:
+    the table's value is kept and set back (the grooms hold the last render's value), and the miss is logged.
+    A word already measured in the map: its value is used, nothing rendered (FORCE: measured again, old renders
+    removed).
+    Returns the record (also written to W/hair_calibrate.json)."""
+    W = Path(W)
+    sc = ch.setdefault("scores", {})
+    word = sc.get("hair_colour")
+    hp = dict((ch.get("params") or {}).get("Bindings/Hair/") or {})
+    table = hair_colours()
+    rec = {"word": word}
+    if not word or word not in table or not hp:
+        rec["skipped"] = "no chosen colour word or no hair parameters"
+    elif table[word][2] <= 0:
+        rec["skipped"] = "a colour with no whiteness: nothing to search"
+    if "skipped" in rec:
+        (W / "hair_calibrate.json").write_text(json.dumps(rec, indent=1))
+        return rec
+    mel, red = hp.get("Melanin", table[word][0]), hp.get("Redness", table[word][1])
+    built = float(hp.get("Whiteness", table[word][2]))
+    map_path = Path(map_path)
+    mp = json.loads(map_path.read_text()) if map_path.exists() else {}
+    have = None if force else (mp.get(word) or {}).get("whiteness")
+    if have is not None:
+        # measured before: use it (choose_mh.py already did, unless the map got the word after this choice)
+        rec.update({"in_map": True, "whiteness": float(have)})
+        if abs(float(have) - built) > 1e-6:
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, float(have))
+            rec["materials"] = len(r_.get("set") or {})
+            pick = float(have)
+        else:
+            pick = None
+    else:
+        pdir = W / "ue" / "hair_portraits"
+        pdir.mkdir(parents=True, exist_ok=True)
+        if force:
+            for old in pdir.glob("*.png"):
+                old.unlink()
+        values = sorted(set([float(v) for v in grid] + [built]))
+        for i, v in enumerate(values):
+            png = pdir / f"{word}_{v:g}.png"
+            if png.exists():
+                continue
+            set_groom_colour(W, mh_name, f"hair_colour_{i}", mel, red, v)
+            ue_job(W, f"hair_shot_{i}", str(ASSETS / "characters" / "char_render.py"), dict(CLOSE_LIGHT, **{
+                "out": str(pdir), "characters": {"a": {"path": blueprint}},
+                "shots": [{"name": f"hair_{i}", "char": "a", "frame": "close", "az": 0}]}), 1200)
+            shot = pdir / f"hair_{i}.png"
+            if not shot.exists():
+                raise RuntimeError(f"hair calibration: no close portrait at whiteness {v:g} ({shot})")
+            shot.replace(png)                 # hair_calibrate.py reads <word>_<value>.png
+        # the search's own map in the work folder: the library map gets a word only with a measured value
+        out = W / "hair_calibrate_map.json"
+        p = line(["--line-cmd", "image", "choose", "--id", f"cast_{tag}_hair_cal", "--", "bash", CARD, "05", HY_PY, "-I",
+                  str(ASSETS / "characters" / "hair_calibrate.py"), "portraits", str(pdir), "--word", word,
+                  "--values", *[f"{v:g}" for v in values], "--out", str(out), "--sheet", str(W / "sheet_head.png"),
+                  "--vl-python", QWEN_PY], W / "hair_calibrate.log")
+        if p.returncode or not out.exists():
+            raise RuntimeError(f"hair calibration failed: {(p.stdout or '')[-800:]}")
+        got = json.loads(out.read_text()).get(word) or {}
+        rec.update({"values": values, "target_answer": got.get("target_answer"), "answers": got.get("answers")})
+        pick = got.get("whiteness")
+        if pick is None:
+            rec["whiteness"] = built
+            rec["no_hit"] = True
+            log(f"hair colour '{word}': no whiteness of {values} was named '{got.get('target_answer') or word}' "
+                f"(answers {got.get('answers')}): the table's {built:g} kept")
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, built)
+            rec["materials"] = len(r_.get("set") or {})
+        else:
+            pick = float(pick)
+            rec["whiteness"] = pick
+            mp = json.loads(map_path.read_text()) if map_path.exists() else {}
+            mp[word] = dict(got, whiteness=pick, measured_on=W.name)
+            map_path.parent.mkdir(parents=True, exist_ok=True)
+            map_path.write_text(json.dumps(mp, indent=1))
+            log(f"hair colour '{word}': whiteness {pick:g} (table {built:g}) measured, into {map_path}")
+            r_ = set_groom_colour(W, mh_name, "hair_colour_set", mel, red, pick)
+            rec["materials"] = len(r_.get("set") or {})
+    if pick is not None:
+        # every groom binding wears the colour (choose_mh.py sets all four alike)
+        for k, b in (ch.get("params") or {}).items():
+            if k.startswith("Bindings/") and isinstance(b, dict) and "Whiteness" in b:
+                b["Whiteness"] = pick
+        sc["hair_measured"] = {"melanin": mel, "redness": red, "whiteness": pick}
+        cp = W / "choice.json"
+        if cp.exists():
+            cj = json.loads(cp.read_text())
+            cj["params"] = ch.get("params")
+            cj.setdefault("scores", {})["hair_measured"] = sc["hair_measured"]
+            cp.write_text(json.dumps(cj, indent=1))
+    (W / "hair_calibrate.json").write_text(json.dumps(rec, indent=1))
+    return rec
+
+
 def legs_apart(png):
     """Measured on the drawing: is there background between the legs at shin height (trousers), or one
     run of figure (a floor-length skirt)? Also: does the cloth below the hips stand off the legs (a coat's skirt)?"""
@@ -204,8 +331,11 @@ def main():
                          "toward -Y")
     ap.add_argument("--rounds", type=int, default=5)
     ap.add_argument("--pose-deg", type=float, default=None, help="the first round's arm angle (default 42, 48 for a dress)")
-    ap.add_argument("--whole", action="store_true",
-                    help="the whole generated figure (its own head, hair, hands and clothes, one mesh) on the "
+    ap.add_argument("--metahuman", dest="whole", action="store_false",
+                    help="the MetaHuman route: its body and face, wearing the generated outfit (the default since 11-15 "
+                         "is the whole figure below)")
+    ap.add_argument("--whole", dest="whole", action="store_true", default=True,
+                    help="(the default) the whole generated figure (its own head, hair, hands and clothes, one mesh) on the "
                          "MetaHuman's skeleton, the MetaHuman's body and face not shown: no join between a MetaHuman "
                          "head and generated clothes (11-14: the redrawn key from it kept the sheet's own garment)")
     ap.add_argument("--from", dest="from_step", default=None, choices=STEPS)
@@ -219,12 +349,19 @@ def main():
     ap.add_argument("--skin-age", action="store_true",
                     help="the face texture index nearest the drawn face's age, from the measured table "
                          "(<library>/presets/face_texture_age.json, skin_age_calibrate.py); set before the rig")
+    ap.add_argument("--redo-hair", action="store_true",
+                    help="measure the hair colour word's whiteness on the built character again (renders at the grid's "
+                         "values, the vision model's names, the map entry replaced); the steps after it are skipped "
+                         "when their outputs exist")
     ap.add_argument("--fit-base", default=None,
                     help="an accepted build's fit job (bl_combo JSON): its fit settings are kept in this rebuild")
     ap.add_argument("--mh", default=None, help="an existing MetaHuman Character name (/Game/Char/<name>): skip choose and"
                     " mh; --mh-fbx DIR holds its <name>_Body.fbx / _Head.fbx, --mh-blueprint its assembled Blueprint")
     ap.add_argument("--mh-fbx", default=None)
     ap.add_argument("--mh-blueprint", default=None)
+    ap.add_argument("--variant-of", default=None,
+                    help="a wardrobe variant of this library figure (the same person in other clothes, usually on its "
+                         "MetaHuman, --mh): the entry records it (\"variant_of\") and takes its look facts")
     a = ap.parse_args()
     W = Path(a.work)
     W.mkdir(parents=True, exist_ok=True)
@@ -504,6 +641,19 @@ def main():
             if "face_blend" in face_extra and not mk_.get("coeff_set"):
                 raise RuntimeError("FACE BLEND: the built character's make did not set the blend")
             groom_colour()
+    # ---------------------------------------------------------------- hair: the colour word's whiteness measured
+    # a colour word with no measured whiteness in the library's map is measured on this character (calibrate_hair;
+    # 11-18: "grey hair" at the table's whiteness rendered as a white cap); a given MetaHuman (--mh) keeps its colour
+    if not a.mh and (a.redo_hair or not a.whole) and (a.redo_hair or not done("mh", W / "hair_calibrate.json")):
+        @timed("hair_calibrate")
+        def _():
+            bp_ = (CH.get("mh_build") or {}).get("blueprint") or f"/Game/MetaHumans/{mh_name}/BP_{mh_name}"
+            rec = calibrate_hair(W, ch, mh_name, bp_, Path(C.LIBRARY) / "presets" / "hair_colour.json", tag,
+                                 force=a.redo_hair)
+            CH["hair_calibrate"] = rec
+            if "materials" in rec:
+                CH["groom_colour"] = {"values": (ch.get("params") or {}).get("Bindings/Hair/"),
+                                      "materials": rec["materials"], "measured": not rec.get("no_hit")}
     # ---------------------------------------------------------------- draw, gate, shape, mesh gate
     draw = W / "draw"
     draw.mkdir(exist_ok=True)
@@ -705,6 +855,13 @@ def main():
                 raise RuntimeError(f"combo failed: {p.stdout[-800:]}")
             if not a.whole:                 # (the whole figure keeps its own head: nothing to check for one left on)
                 head_check()
+            else:
+                # the whole figure's hands: the body's jointed hands in the statue's colour, or (a side that could
+                # not be fitted) the statue's own rigid hand, and why
+                sh_ = json.loads((combo / "report.json").read_text()).get("statue_hands") or {}
+                CH["statue_hands"] = {s_: {k_: v_.get(k_) for k_ in ("jointed", "why", "cut_m_from_wrist", "hand_len_cm")}
+                                      | {"covered": (v_.get("colour") or {}).get("covered")}
+                                      for s_, v_ in sh_.items() if isinstance(v_, dict)}
     # ---------------------------------------------------------------- the body fits the clothes at the neck
     # the fit measures the bare neck (chin to the generated collar's front top) and both girths (the collar's inner
     # one, the MetaHuman's neck); where the collar sits low or tight, the MetaHuman's neck is changed to meet it
@@ -815,20 +972,25 @@ def main():
                 "import_outfit": {"outfit_fbx": str(combo / "outfit.fbx"), "textures": str(combo / "textures"),
                                   "dest": dest, "cloth_slots": False}}, 900)
             bp = (CH.get("mh_build") or {}).get("blueprint") or f"/Game/MetaHumans/{mh_name}/BP_{mh_name}"
-            # the character's own masked copy of its face skin, wearing the fit's mask (the shared material untouched)
-            sk = ue_job(W, "skin_mask", str(ASSETS / "characters" / "char_skinmask.py"), {
-                "face_folder": bp.rsplit("/", 1)[0], "mask_png": str(combo / "textures" / "T_head_mask.png"),
-                "dest": f"{dest}/Skin", "blueprint": bp, "name": tag}, 1200)
-            bp = sk["blueprint"]          # the character's own Blueprint copy, its face wearing the masked skin
-            CH["skin_mask"] = {"fit": json.loads((combo / "report.json").read_text()).get("skin_mask"), "engine": sk}
+            # the character's own masked copy of its face skin, wearing the fit's mask (the shared material untouched);
+            # a whole figure hides the MetaHuman face and its fit makes no mask: nothing to mask (11-16: every whole
+            # figure of a new book stopped here on the missing mask file)
+            sk = None
+            if not a.whole:
+                sk = ue_job(W, "skin_mask", str(ASSETS / "characters" / "char_skinmask.py"), {
+                    "face_folder": bp.rsplit("/", 1)[0], "mask_png": str(combo / "textures" / "T_head_mask.png"),
+                    "dest": f"{dest}/Skin", "blueprint": bp, "name": tag}, 1200)
+                bp = sk["blueprint"]      # the character's own Blueprint copy, its face wearing the masked skin
+                CH["skin_mask"] = {"fit": json.loads((combo / "report.json").read_text()).get("skin_mask"), "engine": sk}
             lib.mkdir(parents=True, exist_ok=True)
             (lib / "character.json").write_text(json.dumps({
                 "class": "character", "kind": "metahuman", "project": "CharLab", "blueprint": bp,
                 "rebuild_from": f"/Game/Char/{mh_name}", "bp_deps": ["/MetaHumanCharacter/Animation/ABP_MH_LiveLink"],
                 "character_asset": f"/Game/Char/{mh_name}", "hide_body": True, "id": a.id,
                 **({"hide_face": True, "whole_figure": True} if a.whole else {}),
-                "garments": [f"{dest}/Outfit/outfit", f"@face_material={sk['instance']}"], "body_swap": None,
-                "garment_material": None, "skin_mask": {"material": sk["instance"], "mask": sk["mask"]},
+                "garments": [f"{dest}/Outfit/outfit"] + ([f"@face_material={sk['instance']}"] if sk else []),
+                "body_swap": None, "garment_material": None,
+                "skin_mask": {"material": sk["instance"], "mask": sk["mask"]} if sk else None,
                 "missing_layers": ([" ".join(ch["garment"]["outer_words"])]
                                    if (ch.get("garment") or {}).get("outer_layer") and ch["garment"].get("outer_words")
                                    else []),
@@ -839,7 +1001,12 @@ def main():
                 "hide_hair": bool(((json.loads((combo / "report.json").read_text()).get("hair_kept") or {}).get("verts")))
                 and not a.whole,
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
-                "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name}},
+                "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name},
+                # a whole figure's visible head against the hidden MetaHuman one (bl_combo, statue_head.head_box):
+                # what a thing worn on the head must be fitted to (it is sized from the hidden head's bones)
+                **({"statue_head_box": ((json.loads((combo / "report.json").read_text()).get("statue_head") or {})
+                                        .get("box"))} if a.whole else {}),
+                **variant_rec(a.variant_of)},
                 indent=1))
     # ---------------------------------------------------------------- arms: abduction by measurement
     scene_py = Path(a.scene_tool) / "scene.py"
@@ -988,8 +1155,8 @@ def main():
     # tool's pose steps on the standing pose (the whole body turned onto its back about the hips, head to the head
     # end, the back on the surface; "propped": the chest raised on the pillow, for someone talking in bed); the
     # bed placed in a lab spot of the set, the engine poses and measures the joints, bl_settle.py lays the cloth
-    # with no relaxation and nothing through the mattress, shows the body's skin the cloth leaves open and builds the
-    # bed's cover over the body (set dressing for this stance and bed: head and shoulders out); each is a stance
+    # with no relaxation and nothing through the mattress, shows the body's skin the cloth leaves open. People lie
+    # on top of the made bed, never under a cover (a made cover drew as a stiff slab or a satin bag, 11-15); each is a stance
     # entry <id>_lying_<bed>[_propped] recording the support it was settled on (format agreed with the scene side)
     lie_p = W / "lie.json"
     if a.lie and not done("seats", lie_p):
@@ -1262,60 +1429,6 @@ def lie_frame(spot, sup):
             "facing": f if sgn > 0 else [-f[0], -f[1]], "bed_facing": f, "bed_xy": [x0, y0]}
 
 
-def bed_cover(bed: str, top_z_m: float | None = None) -> dict:
-    """The cover's colour: the bed's own bedding, read where the bed's texture lies on its upward faces at the
-    lying surface (the mattress and bedding, not the frame). {} when the bed has no mesh or texture to read: the
-    cover keeps its plain linen. (Given the character's folder for the library's, it found no texture and every
-    cover stayed off-white beside tan bedding, 11-15.)"""
-    import struct
-    import numpy as np
-    from PIL import Image
-    d = Path(C.LIBRARY) / "prop" / bed
-    tex, glb = d / "textures" / f"T_{bed}_BaseColor.png", d / "export" / f"{bed}.glb"
-    if not (tex.exists() and glb.exists()):
-        return {}
-    b = glb.read_bytes()
-    n = struct.unpack_from("<I", b, 12)[0]
-    j = json.loads(b[20:20 + n])
-    bin_ = b[20 + n + 8:]
-
-    def acc(i, dt, w):
-        a = j["accessors"][i]
-        v = j["bufferViews"][a["bufferView"]]
-        off = v.get("byteOffset", 0) + a.get("byteOffset", 0)
-        step = v.get("byteStride") or np.dtype(dt).itemsize * w
-        raw = np.frombuffer(bin_, np.uint8, count=(a["count"] - 1) * step + np.dtype(dt).itemsize * w, offset=off)
-        if step == np.dtype(dt).itemsize * w:
-            return raw.view(dt).reshape(a["count"], w)
-        return np.stack([raw[k * step:k * step + np.dtype(dt).itemsize * w].view(dt) for k in range(a["count"])])
-    cols = []
-    img = np.asarray(Image.open(tex).convert("RGB"), np.float32) / 255.0
-    for m in j["meshes"]:
-        for pr in m["primitives"]:
-            at = pr["attributes"]
-            if "TEXCOORD_0" not in at or "indices" not in pr:
-                continue
-            P, U = acc(at["POSITION"], np.float32, 3), acc(at["TEXCOORD_0"], np.float32, 2)
-            ct = j["accessors"][pr["indices"]]["componentType"]
-            F = acc(pr["indices"], {5121: np.uint8, 5123: np.uint16, 5125: np.uint32}[ct], 1).reshape(-1, 3)
-            a_, b_, c_ = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
-            nrm = np.cross(b_ - a_, c_ - a_)
-            up = nrm[:, 1] / np.maximum(np.linalg.norm(nrm, axis=1), 1e-9)          # glTF: y is up
-            hy = (a_[:, 1] + b_[:, 1] + c_[:, 1]) / 3
-            top = float(top_z_m) if top_z_m else float(np.percentile(hy[up > 0.8], 70)) if (up > 0.8).any() else None
-            if top is None:
-                continue
-            ok = (up > 0.8) & (np.abs(hy - top) < 0.12)
-            uv = U[F[ok]].mean(1)
-            if len(uv):
-                px = img[np.clip((uv[:, 1] % 1.0) * img.shape[0], 0, img.shape[0] - 1).astype(int),
-                         np.clip((uv[:, 0] % 1.0) * img.shape[1], 0, img.shape[1] - 1).astype(int)]
-                cols.append(px)
-    if not cols:
-        return {}
-    return {"cover_rgb": [round(float(v), 3) for v in np.median(np.concatenate(cols), 0)]}
-
-
 def lie_pose(pelvis_z_cm, top_z_m, variant):
     """the scene tool's pose steps on the standing pose: onto the back about the hips (head to the actor's back,
     face up), the back on the surface; propped: the chest raised and the head forward"""
@@ -1363,7 +1476,7 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     jt = meas["joints"]
     lj = {"combo": str(combo), "joints": jt, "position": c["position"], "facing": c["facing"], "mode": "push",
           "iters": 0, "shoulder_ease_m": 0.0, "thigh_from": 0.0,
-          "lie": dict(fr, top_z_m=top_z, **bed_cover(bed, top_z)), "out": str(W / f"lying_{bed}_{variant}")}
+          "lie": dict(fr, top_z_m=top_z), "out": str(W / f"lying_{bed}_{variant}")}
     jp = W / f"settle_lie_{bed}_{variant}.json"
     jp.write_text(json.dumps(lj, indent=1))
     p = line(["--line-cmd", "igpu", "settle", "--id", f"cast_{tag}_lie_{bed}_{variant}", "--", "flock",
@@ -1378,23 +1491,13 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     key = ("".join(ch for ch in bed.upper() if ch.isalnum())[:8] + hashlib.sha1(bed.encode()).hexdigest()[:4].upper()
            + variant[:1].upper())
     dest = f"/Game/Char/Outfit{tag}L{key}"
-    whole = bool(cj0.get("whole_figure"))        # (a whole figure lies as it is; only the bed's cover is the settle's)
+    whole = bool(cj0.get("whole_figure"))        # (a whole figure lies as it is)
     if not whole:
         ue_job(W, f"import_lie_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
             "out": str(W / "ue" / f"import_lie_{bed}_{variant}"),
             "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "outfit.fbx"),
                               "textures": str(W / f"lying_{bed}_{variant}" / "textures"), "dest": dest,
                               "cloth_slots": False}}, 900)
-    cover = None
-    if (W / f"lying_{bed}_{variant}" / "cover.fbx").exists():
-        ue_job(W, f"import_cover_{bed}_{variant}", str(ASSETS / "characters" / "char_render.py"), {
-            "out": str(W / "ue" / f"import_cover_{bed}_{variant}"),
-            "import_outfit": {"outfit_fbx": str(W / f"lying_{bed}_{variant}" / "cover.fbx"),
-                              "textures": str(W / f"lying_{bed}_{variant}" / "cover_textures"), "dest": dest + "C",
-                              "cloth_slots": False}}, 900)
-        # (the imported mesh is named after its file: the import's own result says where it is)
-        cover = json.loads((W / "ue" / f"import_cover_{bed}_{variant}" / "result.json").read_text())[
-            "import_outfit"]["outfit"]
     # the lie points in the stance's actor frame (metres): x along the actor's left, y forward, z up
     import math as _m
     f_ = c["facing"]
@@ -1408,18 +1511,17 @@ def lie_stance(W, a, tag, lib, cj0, bed, sup, variant, combo, scene_py, env):
     st = {"base": a.id, "pose": "lying", "variant": variant,
           "support": {"asset": bed, "posture": "lying", "top_z_m": top_z, "length_m": sup.get("length_m")}}
     ent = dict(cj0, id=lid, garments=([g for g in cj0["garments"] if not g.startswith("@")][:1] if whole
-                                      else [f"{dest}/Outfit/outfit"]) + ([cover] if cover else [])
+                                      else [f"{dest}/Outfit/outfit"])
                + [g for g in cj0["garments"] if g.startswith("@")],
                stance=st, body_pose=c["body_pose"],
                lie={"head_m": to_actor(jt["head"]), "pelvis_m": to_actor(pel), "heels_m": to_actor(heel)},
-               face_up=True, cover={"asset": cover, "over": "chest" if cover else None},
+               face_up=True,
                note=f"Lying only, on {bed} ({variant}): {a.id} on its back with its cloth laid on the mattress "
-                    f"(bl_settle, no relaxation) and the bed's cover over the body (a separate piece, listed in "
-                    f"garments and in cover)")
+                    f"(bl_settle, no relaxation), on top of the made bed: no cover over the body")
     ent.pop("relaxed_arm_steps", None)
     (Path(C.LIBRARY) / "character" / lid).mkdir(parents=True, exist_ok=True)
     (Path(C.LIBRARY) / "character" / lid / "character.json").write_text(json.dumps(ent, indent=1))
-    return {"id": lid, "settle": {k: sr.get(k) for k in ("lie_cloth_lifted", "lie_min_cloth_z_m", "body_skin", "cover",
+    return {"id": lid, "settle": {k: sr.get(k) for k in ("lie_cloth_lifted", "lie_min_cloth_z_m", "body_skin",
                                                          "pose_err_cm")}, "position": c["position"],
             "facing": c["facing"], "bed": spec_bed, "frame": fr}
 
@@ -1496,12 +1598,22 @@ def entry_facts(ch, missing=None):
             "missing_layers": list(missing or []), "grooms": {k: v for k, v in g.items() if k != "Eyebrows"}}
 
 
+def variant_rec(base):
+    """A wardrobe variant's entry fields: what it is a variant of, and the base figure's look facts (hair, facial
+    hair: the same person; a variant made on the base's MetaHuman has no chooser facts of its own)."""
+    if not base:
+        return {}
+    bp = Path(C.LIBRARY) / "character" / base / "character.json"
+    bj = json.loads(bp.read_text()) if bp.exists() else {}
+    return {"variant_of": base, **({"facts": bj["facts"]} if bj.get("facts") else {})}
+
+
 def spread_look(look, outer_words=None):
     """The look line for the spread drawing: what the hands carry or hold and any headwear go (the hands must be open
     and empty for the gate and the fit; the MetaHuman keeps its own head and hair)."""
     import re
     held = re.compile(r"\b(carrying|holding)\b")
-    head = re.compile(r"hat\b|top-hat|bonnet|\bcap\b|veil|deerstalker")
+    head = re.compile(r"hat\b|top-hat|bonnet|\bcap\b|veil|deerstalker|\bhelm(?:et)?s?\b|\bvisor")
     text = look.rstrip(". ")
     before, _, worn = text.partition("wearing ")
     desc = [p.strip() for p in before.split(",") if p.strip() and not held.search(p)]

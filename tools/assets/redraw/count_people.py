@@ -3,9 +3,11 @@ say it.
 
     DETECT_DEVICE=cuda python -I tools/assets/redraw/count_people.py COUNT.json     (writes COUNT["out"])
 
-COUNT: {"out": "/abs/people.json", "items": [{"id", "path": "/abs/x.png"}]}
+COUNT: {"out": "/abs/people.json", "items": [{"id", "path": "/abs/x.png", "labels": ["person", ...]}]}
 -> {id: {"boxes": [[left, top, right, bottom], ...]}}: each 0-1 of the picture, left to right. A box inside a
-bigger one (a head found again in its own body's box) is not a second person.
+bigger one of the same label (a head found again in its own body's box) is not a second one. "labels" (default
+["person"]) adds what else counts as one of the picture's people: a creature of the cast, by its own noun; each
+label's boxes are kept apart (a person held by a creature is inside its box and still a person).
 """
 from __future__ import annotations
 
@@ -46,8 +48,11 @@ def main():
     for it in cfg["items"]:
         if not Path(it["path"]).exists():
             continue
-        det = D.detect(dp, dm, Image.open(it["path"]).convert("RGB"), ["person"])
-        out[it["id"]] = {"boxes": distinct(det.get("person", []))}
+        labels = list(dict.fromkeys(it.get("labels") or ["person"]))
+        det = D.detect(dp, dm, Image.open(it["path"]).convert("RGB"), labels)
+        per = {lb: distinct(det.get(lb, [])) for lb in labels}
+        out[it["id"]] = {"boxes": sorted((b for v in per.values() for b in v), key=lambda b: (b[0] + b[2]) / 2),
+                         "by_label": {lb: len(v) for lb, v in per.items()}}
     Path(cfg["out"]).write_text(json.dumps(out, indent=1))
     return 0
 
