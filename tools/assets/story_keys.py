@@ -546,6 +546,7 @@ class Story:
             ok = (C.LIBRARY / "character" / vid / "character.json").exists()
             if not ok and not (w / "FAILED").exists():
                 log(f"{place}: {name}'s figure in {r['id']} ({vid})")
+                self._fit_mark(w)                # (built now with every fitting rule)
                 if sh(cmd + ["--until", "seats"], w / "run.log") and \
                         not (C.LIBRARY / "character" / vid / "character.json").exists():
                     sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log")
@@ -558,21 +559,25 @@ class Story:
             out[r["variant"]] = (vid if ok else None, r)
         return out
 
+    FITS = ("hands_again", "head_again")     # the fittings a whole figure has had since its first build, by marker
+
     def _hands_again(self, who, w, cmd) -> None:
-        """A whole figure built before its hands were jointed (its build's choices carry no "statue_hands": the
-        statue's own fused hands stayed open round every handle, 11-18) is made again from its fitting, once."""
+        """A whole figure built before a fitting rule changed is made again from its fitting, once per rule (FITS):
+        before its hands were jointed the statue's own fused hands stayed open round every handle (11-18); before
+        its head followed the head joint by the head's own line its ears and nape followed the shoulders and stood
+        out as points when the arms came down (11-19). A figure built new has them all (_fit_mark)."""
         ch = w / "w" / "choices.json" if (w / "w" / "choices.json").exists() else w / "choices.json"
-        if not getattr(self, "whole", True) or not ch.exists() or (w / "hands_again").exists():
+        if not getattr(self, "whole", True) or not ch.exists() or all((w / f).exists() for f in self.FITS):
             return
-        try:
-            if "statue_hands" in json.loads(ch.read_text()):
-                return
-        except ValueError:
-            return
-        (w / "hands_again").write_text(time.strftime("%F %T"))
-        log(f"{who}: its figure is fitted again with jointed hands")
+        self._fit_mark(w)
+        log(f"{who}: its figure is fitted again (jointed hands, the head on the head joint)")
         if sh(cmd + ["--from", "combo", "--until", "seats"], w / "run.log"):
-            log(f"{who}: the fitting with jointed hands FAILED; see {w / 'run.log'}")
+            log(f"{who}: the fitting again FAILED; see {w / 'run.log'}")
+
+    def _fit_mark(self, w) -> None:
+        for f in self.FITS:
+            if not (w / f).exists():
+                (w / f).write_text(time.strftime("%F %T"))
 
     def _built(self, name) -> bool:
         if name in self.cast and CRE.is_id(self.cast[name]):            # a library creature with its rig
@@ -625,6 +630,7 @@ class Story:
             if (w / "FAILED").exists():
                 log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'})")
                 continue
+            self._fit_mark(w)                    # (built now with every fitting rule)
             if sh(base + ["--until", "seats"], w / "run.log") and not self._built(name):
                 sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")          # (a new round of drawings)
             if not self._built(name):
