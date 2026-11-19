@@ -545,8 +545,26 @@ class Story:
                 if not ok:
                     log(f"{place}: no figure for {name} in {r['id']} ({vid}); see {w / 'run.log'}")
                     (w / "FAILED").write_text(time.strftime("%F %T"))
+            if ok:
+                self._hands_again(f"{name} in {r['id']}", w, cmd)
             out[r["variant"]] = (vid if ok else None, r)
         return out
+
+    def _hands_again(self, who, w, cmd) -> None:
+        """A whole figure built before its hands were jointed (its build's choices carry no "statue_hands": the
+        statue's own fused hands stayed open round every handle, 11-18) is made again from its fitting, once."""
+        ch = w / "w" / "choices.json" if (w / "w" / "choices.json").exists() else w / "choices.json"
+        if not getattr(self, "whole", True) or not ch.exists() or (w / "hands_again").exists():
+            return
+        try:
+            if "statue_hands" in json.loads(ch.read_text()):
+                return
+        except ValueError:
+            return
+        (w / "hands_again").write_text(time.strftime("%F %T"))
+        log(f"{who}: its figure is fitted again with jointed hands")
+        if sh(cmd + ["--from", "combo", "--until", "seats"], w / "run.log"):
+            log(f"{who}: the fitting with jointed hands FAILED; see {w / 'run.log'}")
 
     def _built(self, name) -> bool:
         if name in self.cast and CRE.is_id(self.cast[name]):            # a library creature with its rig
@@ -594,6 +612,7 @@ class Story:
                 continue
             fid, w, base = self._cast_cmd(name)
             if self._built(name):
+                self._hands_again(name, w, base)
                 continue
             if (w / "FAILED").exists():
                 log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'})")
