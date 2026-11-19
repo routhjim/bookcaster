@@ -780,7 +780,9 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         wear_words(ppl, wear, wear_back, cast, neck=facts and kind != "wide"),
         # (out of doors the place's words are its land, kept whole: cut at their first colon as a room's list is,
         # only "In the open air, <period>" was left of them; what stands there is named by the frame's things)
-        (room if outdoors and not things else f"The room: {room}" if not things
+        # (with none of them in the frame, what stands in the place is not said at all: a close shot of a man, told
+        # of the place's boulder, was drawn with a head of rough stone, 11-18)
+        (room.split('; standing there')[0].rstrip('.') + "." if outdoors and not things else f"The room: {room}" if not things
          else f"{room.split('; standing there')[0].rstrip('.')}. {things.replace(', as in Picture 1', '')}" if outdoors
          else f"{room.split(':')[0].rstrip('.')}. {things.replace(', as in Picture 1', '')}"),
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
