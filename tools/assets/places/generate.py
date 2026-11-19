@@ -232,8 +232,10 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
     # (a world's panorama keeps its own id, ref_id: a world made again for new map words takes the panorama drawn)
-    pic = REFS / steps["draw"].get("ref_id", did) / steps["draw"].get("picture", "three_quarter.png")
-    if not pic.exists():
+    relief = steps["spec"]["spec"].get("made_as") == "relief"     # (shaped already, from its place's picture)
+    pic = Path(steps["spec"]["spec"]["relief_glb"]) if relief else \
+        REFS / steps["draw"].get("ref_id", did) / steps["draw"].get("picture", "three_quarter.png")
+    if not pic.exists() and not relief:
         dv = list(steps["draw"]["argv"])
         if unsourced and "--sources" in dv:              # (drawn from its look and its needs alone this time)
             dv = dv[:dv.index("--sources")]

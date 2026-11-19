@@ -236,3 +236,70 @@ def test_room_light_in_a_closed_dark_room():
     assert not PB.room_light({"size_m": [3.0, 6.0, 3.0], "structure": [{"kind": "ceiling"}],
                               "lights": [{"type": "strip_lights"}]}, {})    # (a room with its own strip of lights)
     assert not PB.room_light({"size_m": [9, 9, 6], "structure": [], "lights": []}, {})   # (in the open)
+
+
+def _cliff_picture():
+    """A camera 2 m up looking level: open ground, and from 45% across a rock face about 17 m off that the top
+    and the right edge of the frame cut."""
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    ground = np.where(ray[..., 1] > 1e-6, 2.0 / np.maximum(ray[..., 1], 1e-6), 1e9)
+    cliff = np.where(u > w * 0.45, 10.0 / 0.6 + 2 * np.sin(u / 17.0), 1e9)
+    t = np.minimum(ground, cliff)
+    return ray * t[..., None], t < 60
+
+
+def test_relief_is_a_closed_form_carried_on_past_the_frame():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    pts, mask = _cliff_picture()
+    n, d, _ = CD.fit_floor(pts, mask)
+    vtx, faces, uv = CD.relief(pts, mask, CD.frame(n, d), d, [0.5, 0.0, 0.8, 0.5], lambda q: q)
+    # closed: every edge has two faces, wound against each other; its volume positive (its faces look outward)
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    k = e[:, 0] * len(vtx) + e[:, 1]
+    assert len(np.unique(k)) == len(k) and set(k) == set(e[:, 1] * len(vtx) + e[:, 0])
+    a, b, c = (vtx[faces[:, i]] for i in range(3))
+    assert float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) > 0
+    lo, hi = vtx.min(0), vtx.max(0)
+    seen_top = float(CD.to_room(pts[0, 300][None], CD.frame(n, d), d)[0][2])
+    assert hi[2] > seen_top + 0.9 * CD.RELIEF_ON_M[0]         # carried on up past the frame's top
+    assert hi[0] > float(pts[:, -1, 0].max()) + 0.9 * CD.RELIEF_ON_M[1]   # ... and past its right edge
+    assert abs(lo[2]) < 1e-6 and 0.0 <= uv.min() and uv.max() <= 1.0
+    # nothing rising in the box: no form
+    assert CD.relief(pts, mask, CD.frame(n, d), d, [0.05, 0.6, 0.3, 0.95], lambda q: q) is None
+
+
+def test_land_form_key():
+    import concept_depth as CD
+    con = {"spec": {"p1": {"box": [0, 0, .2, .2], "natural": True}, "p2": {"box": [0, 0, .5, .5], "natural": True}},
+           "_spec_kinds": {"p1": "landmark", "p2": "landmark"}, "seen": []}
+    assert CD.land_form_key(con) == "spec:p2"                 # the largest of the land's own landmarks
+    con["spec"]["p1"]["land_form"] = True
+    assert CD.land_form_key(con) == "spec:p1"
+    assert CD.land_form_key({"spec": {"p1": {"box": [0, 0, 1, 1]}}, "_spec_kinds": {"p1": "landmark"}}) is None
+
+
+def test_relief_piece_is_placed_whole_and_made_without_a_drawing(tmp_path):
+    glb = tmp_path / "concept_relief.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.0], "relief": {"of": "spec:p1", "glb": str(glb), "size_m": [20.0, 6.0, 12.0]},
+                     "things": {"spec:p1": {"xy": [2.0, 9.0], "size_m": [20.0, 6.0, 12.0]},
+                                "seen:0": {"xy": [1.0, 0.0], "size_m": [1.9, 0.6, 0.85]}}},
+           "spec": {"p1": {"natural": True, "real_m": [5.0, 3.0]}}, "seen": [{"kind": "bench", "real_m": [1.2, 0.4]}]}
+    pcs = [{"id": "p1", "kind": "landmark", "look": "a rock face", "phrases": ["x"]}, {"id": "c1", "kind": "bench"}]
+    # neither the land's own thing nor a small one sets the picture's scale
+    assert PB.open_scale(pcs, con) == 1.0
+    out, stage = PB.open_places(pcs, con)
+    p1 = next(p for p in out if p["id"] == "p1")
+    assert p1["relief"]["glb"] == str(glb) and p1["_seen_size_m"] == [20.0, 6.0, 12.0] and stage[2] == 12.0
+    req = P.generation_request(dict(p1, source="crop.png"))
+    steps = [s["step"] for s in req["plan"]["steps"]]
+    assert steps == ["spec", "shape"] and req["asset_id"].endswith("_tr")
+    sp = req["plan"]["steps"][0]["spec"]
+    assert sp["made_as"] == "relief" and sp["size_m"] == [20.0, 6.0, 12.0] and "longest_m" not in sp
+    assert "relief_one.py" in " ".join(req["plan"]["steps"][1]["argv"])
+    # another shape of the same piece is another asset
+    glb.write_bytes(b"glb2")
+    assert P.generation_request(dict(p1, source="crop.png"))["asset_id"] != req["asset_id"]

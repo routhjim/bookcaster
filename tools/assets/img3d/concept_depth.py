@@ -133,8 +133,138 @@ def stand_before(things: dict) -> None:
             ta["xy"][j] = round(tb["xy"][j] + sg * (tb["size_m"][1] / 2 + ta["size_m"][1] / 2 + 0.05), 3)
 
 
-def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
-    """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}."""
+RELIEF_RISE_M = 0.4         # what stands this far above the ground is the land's form, not the ground
+RELIEF_FRONT_M = 1.0        # ... and no nearer the eye than the form's own front, less this
+RELIEF_FAR_M = 26.0         # ... and no farther from the eye than this: the far land is the panorama's
+RELIEF_GRID = 200           # points across the picture
+RELIEF_ON_M = (8.0, 10.0)   # a form the frame cuts is carried on past it: this far up, this far sideways
+RELIEF_ON_STEP_M = 0.5
+RELIEF_GAP_M = 5.0          # a face this long joins two things: left out
+RELIEF_BACK_M = 1.0         # the form's back stands this far behind its farthest point
+RELIEF_LEAST = 40           # a form of fewer faces across than this is no form
+
+
+def relief(pts, mask, axes, d: float, box: list, to_set) -> tuple | None:
+    """The land's own form (a cliff, a rock face, a crag) as the picture shows it: every point of the picture that
+    rises from the ground and is joined to the form's box, at the form's distance or beyond it, as one solid whose
+    front is the picture's own surface and whose back is flat; where the frame cuts the form it is carried on, up
+    and to the sides. -> (points [n, 3] in the set's frame, faces, uv in a picture twice as wide as the place's:
+    the front on its left half, the back on its right), or None when no form is found.
+
+    Why not a shape made from the form's part of the picture: a picture-to-3D model makes a whole separate thing of
+    what it is given, and a rock face with a cave mouth, cut from its picture, came back as a stone hut three metres
+    across standing alone on a plain (11-19). The form runs out of its picture; only the picture's depth has it
+    where it is and as it is."""
+    import scipy.ndimage as ndi
+    h0, w0 = pts.shape[:2]
+    st = max(1, w0 // RELIEF_GRID)
+    rr, cc = np.arange(st // 2, h0, st), np.arange(st // 2, w0, st)
+    P = to_room(pts[rr][:, cc], axes, d)
+    ok = mask[rr][:, cc] & np.isfinite(P).all(-1)
+    P = np.where(ok[..., None], P, 0.0)
+    h, w = ok.shape
+    near = ok & (np.hypot(P[..., 0], P[..., 1]) < RELIEF_FAR_M)
+    rise = near & (P[..., 2] > RELIEF_RISE_M)
+    r0, r1 = int(box[1] * h), max(int(box[3] * h), int(box[1] * h) + 1)
+    c0, c1 = int(box[0] * w), max(int(box[2] * w), int(box[0] * w) + 1)
+    seed = np.zeros_like(rise)
+    seed[r0:r1, c0:c1] = rise[r0:r1, c0:c1]
+    if seed.sum() < RELIEF_LEAST:
+        return None
+    front = float(np.percentile(P[..., 1][seed], 5)) - RELIEF_FRONT_M
+    lab, _ = ndi.label(rise & (P[..., 1] > front))
+    ids = np.unique(lab[seed & (lab > 0)])
+    if not len(ids):
+        return None
+    reg = np.isin(lab, ids)
+    # down to the ground it stands on (the points just under its foot)
+    reg = ndi.binary_dilation(reg, iterations=2) & near & (P[..., 1] > front)
+    U, V = np.meshgrid((cc + 0.5) / w0, (rr + 0.5) / h0)
+    # carried on past the frame's edges that cut it: up from its top row, sideways from its end columns
+    ku, ks = int(RELIEF_ON_M[0] / RELIEF_ON_STEP_M), int(RELIEF_ON_M[1] / RELIEF_ON_STEP_M)
+    if reg[0].any():
+        k = np.arange(ku, 0, -1)[:, None]
+        up = np.repeat(P[:1], ku, 0) + np.stack([0 * k, 0 * k, k * RELIEF_ON_STEP_M], -1) * np.ones((1, w, 1))
+        P, reg = np.concatenate([up, P]), np.concatenate([np.repeat(reg[:1], ku, 0), reg])
+        U = np.concatenate([np.repeat(U[:1], ku, 0), U])
+        V = np.concatenate([np.repeat(V[1:ku + 1][::-1], 1, 0) if ku < h else np.repeat(V[:1], ku, 0), V])
+    for side in (0, -1):
+        col = reg[:, side]
+        if not col.any():
+            continue
+        k = (np.arange(ks, 0, -1) if side == 0 else np.arange(1, ks + 1))[None, :]
+        sg = -1.0 if side == 0 else 1.0
+        edge = P[:, side][:, None, :]
+        on = edge + np.stack([sg * k * RELIEF_ON_STEP_M, 0 * k, 0 * k], -1)
+        ue = (U[:, 1:ks + 1][:, ::-1] if side == 0 else U[:, -ks - 1:-1][:, ::-1]) if ks < w else np.repeat(U[:, side][:, None], ks, 1)
+        ve = np.repeat(V[:, side][:, None], ks, 1)
+        re = np.repeat(col[:, None], ks, 1)
+        P = np.concatenate([on, P], 1) if side == 0 else np.concatenate([P, on], 1)
+        U = np.concatenate([ue, U], 1) if side == 0 else np.concatenate([U, ue], 1)
+        V = np.concatenate([ve, V], 1) if side == 0 else np.concatenate([V, ve], 1)
+        reg = np.concatenate([re, reg], 1) if side == 0 else np.concatenate([reg, re], 1)
+    P[..., 2] = np.maximum(P[..., 2], 0.0)
+    h, w = reg.shape
+    # the faces: each square of four of its points, none of them a stretch between two things
+    q = reg[:-1, :-1] & reg[1:, :-1] & reg[:-1, 1:] & reg[1:, 1:]
+    q &= (np.linalg.norm(P[:-1, :-1] - P[1:, 1:], axis=-1) < RELIEF_GAP_M) & \
+         (np.linalg.norm(P[1:, :-1] - P[:-1, 1:], axis=-1) < RELIEF_GAP_M)
+    q = ndi.binary_opening(q, structure=np.ones((2, 2), bool))
+    lab, n_ = ndi.label(q)
+    if not n_:
+        return None
+    q = lab == (1 + int(np.argmax(ndi.sum(q, lab, range(1, n_ + 1)))))
+    if q.sum() < RELIEF_LEAST:
+        return None
+    qi, qj = np.nonzero(q)
+    idx = np.arange(h * w).reshape(h, w)
+    a, b, c, e = idx[qi, qj], idx[qi + 1, qj], idx[qi, qj + 1], idx[qi + 1, qj + 1]
+    front_f = np.concatenate([np.stack([a, b, c], -1), np.stack([c, b, e], -1)])
+    used = np.unique(front_f)
+    F = to_set(P.reshape(-1, 3))
+    # its back: the same points on an even grid, flat, behind its farthest point
+    lo, hi = F[used].min(0), F[used].max(0)
+    gx, gz = np.meshgrid(np.linspace(lo[0], hi[0], w), np.linspace(hi[2], 0.0, h))
+    B = np.stack([gx, np.full_like(gx, hi[1] + RELIEF_BACK_M), gz], -1).reshape(-1, 3)
+    n0 = h * w
+    back_f = front_f[:, ::-1] + n0
+    # its sides: every edge of the front that only one face has, joined to the back
+    ed = np.concatenate([front_f[:, [0, 1]], front_f[:, [1, 2]], front_f[:, [2, 0]]])
+    key = np.sort(ed, 1)
+    _, inv, cnt = np.unique(key[:, 0] * (2 * n0) + key[:, 1], return_inverse=True, return_counts=True)
+    rim = ed[cnt[inv] == 1]
+    u_, v_ = rim[:, 0], rim[:, 1]
+    side_f = np.concatenate([np.stack([u_, u_ + n0, v_ + n0], -1), np.stack([u_, v_ + n0, v_], -1)])
+    vtx = np.concatenate([F, B])
+    faces = np.concatenate([front_f, back_f, side_f])
+    uv = np.stack([U.reshape(-1) / 2, 1.0 - V.reshape(-1)], -1)
+    uv = np.concatenate([uv, uv + [0.5, 0.0]])
+    keep = np.unique(faces)
+    re_ = np.full(len(vtx), -1)
+    re_[keep] = np.arange(len(keep))
+    return vtx[keep], re_[faces], uv[keep]
+
+
+def write_relief(out: Path, vtx, faces, uv, image: np.ndarray) -> dict:
+    """The form's .glb (asset frame: z up, its front toward -y, standing on z 0, the middle of its footprint at the
+    origin; written y-up) with the place's picture as its texture. -> where it stands in the set's frame, its size."""
+    import trimesh
+    from PIL import Image
+    lo, hi = vtx.min(0), vtx.max(0)
+    mid = np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
+    v = vtx - mid
+    im = Image.fromarray(image)
+    im = im.resize((min(2048, im.width), int(im.height * min(2048, im.width) / im.width)), Image.LANCZOS)
+    tex = Image.fromarray(np.concatenate([np.asarray(im), np.asarray(im)], 1))
+    yup = np.stack([v[:, 0], v[:, 2], -v[:, 1]], -1)
+    trimesh.Trimesh(yup, faces, visual=trimesh.visual.TextureVisuals(uv=uv, image=tex), process=False).export(out)
+    return {"glb": str(out), "xy": [round(float(mid[0]), 3), round(float(mid[1]), 3)],
+            "size_m": [round(float(x), 3) for x in hi - lo], "faces": int(len(faces))}
+
+
+def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None = None) -> dict:
+    """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}.
+    keep: filled with the frame the room was measured in (for relief())."""
     n, d, fit = fit_floor(pts, mask)
     axes = frame(n, d)
     q = to_room(pts[mask], axes, d)
@@ -224,9 +354,29 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
             h.update(hangs_m=round(h["hangs_m"] * scale, 3), wall=near, xy=[round(x_, 3), round(y_, 3)],
                      size_m=[round(h.pop("width_m") * scale, 3), 0.15, round(h.pop("height_m") * scale, 3)])
     stand_before(out)
+    if keep is not None:
+        keep.update(axes=axes, d=d, cx=cx, cy=cy, scale=scale)
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
             "things": out, "off_floor": hung, "scale": round(scale, 3), "floor_fit": round(fit, 3)}
+
+
+def land_form_key(concept: dict) -> str | None:
+    """The thing of the picture that is the land's own main form: the spec's piece the concept reader found it in,
+    or the form it saw itself; else a landmark of the land itself (the largest)."""
+    sp = concept.get("spec") or {}
+    for pid, v in sp.items():
+        if v.get("land_form") and v.get("box"):
+            return f"spec:{pid}"
+    for i, sn in enumerate(concept.get("seen") or []):
+        if sn.get("group") and sn.get("natural") and sn.get("box"):
+            return f"seen:{i}"
+    kinds = concept.get("_spec_kinds") or {}
+    nat = [(pid, v) for pid, v in sp.items() if v.get("natural") and v.get("box") and kinds.get(pid) == "landmark"]
+    if nat:
+        area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
+        return "spec:" + max(nat, key=lambda t: area(t[1]["box"]))[0]
+    return None
 
 
 def boxes_of(concept: dict) -> dict:
@@ -262,7 +412,22 @@ def main():
     fxi, cxi = np.linalg.lstsq(A, (u_[ok] + 0.5) / w, rcond=None)[0]
     fyi, cyi = np.linalg.lstsq(np.stack([yz, np.ones_like(yz)], 1), (v_[ok] + 0.5) / h, rcond=None)[0]
     intr = np.array([[fxi, 0, cxi], [0, fyi, cyi], [0, 0, 1]])
-    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()})
+    fr = {}
+    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()}, fr)
+    # the land's own form of a place in the open (scenes/concept.py: a piece of the land itself), made from the
+    # picture's depth where it stands
+    lf = land_form_key(concept) if concept.get("space") == "outdoors" else None
+    if lf and lf in res["things"] and fr:
+        k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
+        try:
+            got = relief(pts, mask, fr["axes"], fr["d"], bx[lf][0], lambda q: (q - off) * k_)
+        except ImportError as e:
+            got = None
+            print(f"no relief: {e}", file=sys.stderr)
+        if got:
+            rl = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_relief.glb"), *got, image)
+            res["relief"] = dict(rl, of=lf)
+            res["things"][lf].update(xy=rl["xy"], size_m=rl["size_m"], against=None)
     out_p.write_text(json.dumps(res, indent=1))
     print(json.dumps({"room_m": res["room_m"], "things": len(res["things"]), "scale": res["scale"]}))
 

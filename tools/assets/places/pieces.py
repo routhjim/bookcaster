@@ -409,6 +409,29 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
+    rl = piece.get("relief") if isinstance(piece.get("relief"), dict) else None
+    if rl and rl.get("glb") and Path(str(rl["glb"])).exists():
+        # the land's own form of a place in the open, already shaped from the depth of the place's picture where it
+        # stands (img3d/concept_depth.py relief): nothing is drawn and no shape model is run, only the asset chain.
+        # As tall as the set has it, its other sides as the shape's own
+        g = [float(v) for v in rl["size_m"]]
+        k = float(seen[2]) / g[2] if seen and len(seen) == 3 and g[2] > 0 else 1.0
+        aid = _asset_id(kind, f"{look} relief {hashlib.sha1(Path(str(rl['glb'])).read_bytes()).hexdigest()[:10]} {k:.3f}")
+        spec.update(id=aid, made_as="relief", relief_glb=str(rl["glb"]), size_m=[round(v * k, 3) for v in g],
+                    size_tolerance=0.05, tier="hero")
+        for key in ("longest_m", "shape_res", "yaw_deg"):
+            spec.pop(key, None)
+        steps = [
+            {"step": "spec", "what": "the piece's source spec", "write": f"<library>/prop/{aid}/source/spec.json",
+             "spec": spec},
+            {"step": "shape", "what": "the form shaped from the picture's depth, through the asset chain",
+             "station": C.IMAGE_STATION, "kind": "shape",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "shape", "--id", f"gen_shape_{aid}", "--log",
+                             str(work / f"{aid}.log"), "--", python, str(tools / "img3d" / "relief_one.py"), aid],
+             "result_id": f"{aid}_tr", "gate": "the asset's own checks pass", "on_fail": "none: the same picture "
+             "gives the same form"}]
+        return {"kind": kind, "look": look, "size_m": spec["size_m"], "needs": [], "asset_id": f"{aid}_tr",
+                "dry_run": True, "plan": {"draw_id": aid, "max_redraws": 1, "steps": steps}}
     if d.get("made_as") == "world":
         # a place in the open is made from where its people stand: one panorama of it from a standing eye, drawn with
         # the place's concept picture as its reference, then a shell of the land with a sky dome and a flat ground

@@ -436,20 +436,28 @@ OPEN_STAGE_M = (16.0, 70.0)      # the stage's side, least and most
 OPEN_LIKE = 0.4                  # two boxes are one thing seen twice only when the smaller is this much of the larger
 OPEN_SEEN_MOST = 8               # the things of the picture built besides the plan's own, at most
 OPEN_SCALE = (0.6, 3.0)          # how far the picture's measured metres may be corrected by its things' real sizes
+OPEN_SCALE_BY_M = 1.5            # ... those of them that are really this tall or taller
 
 
 def open_scale(pcs: list, concept: dict) -> float:
     """The measured picture's metres corrected by how tall its things really are (the judge's "real_m" for each,
     scenes/concept.py): the middle one of their ratios, within OPEN_SCALE. A whole smithy measured 4 m wide and 3 m
     tall, and was built so (11-18)."""
-    things = (concept.get("depth") or {}).get("things") or {}
+    dp_ = concept.get("depth") or {}
+    things = dp_.get("things") or {}
     chk, seen = concept.get("spec") or {}, concept.get("seen") or []
     rs = []
     for p in pcs:
         i = int(p["id"][1:]) - 1 if p["id"].startswith("c") and p["id"][1:].isdigit() else -1
         src = chk.get(p["id"]) or (seen[i] if 0 <= i < len(seen) else {})
-        t = things.get(f"spec:{p['id']}") or things.get(f"seen:{i}")
-        if t and src.get("real_m") and t["size_m"][2] > 0.2:
+        key = f"spec:{p['id']}" if f"spec:{p['id']}" in things else f"seen:{i}"
+        t = things.get(key)
+        # (not by the land's own things: how big a rock or a cliff really is is anyone's guess, and the form made
+        # from the picture's depth is measured with what the frame cut carried on; nor by a small thing, whose box
+        # is loose: a bench judged 0.4 m tall made a cave mouth 3 m wide for a dragon to live in, 11-19)
+        if src.get("natural") or p.get("natural") or (dp_.get("relief") or {}).get("of") == key:
+            continue
+        if t and src.get("real_m") and t["size_m"][2] > 0.2 and float(src["real_m"][1]) >= OPEN_SCALE_BY_M:
             rs.append(float(src["real_m"][1]) / float(t["size_m"][2]))
     if not rs:
         return 1.0
@@ -467,13 +475,22 @@ def open_places(pcs: list, concept: dict) -> tuple:
     seen_key = {f"c{i + 1}": f"seen:{i}" for i in range(len(concept.get("seen") or []))}
     at, out = {}, []
     sc = open_scale(pcs, concept)
+    rl = dp.get("relief") or {}
     for p in pcs:
-        t = things.get(f"spec:{p['id']}") or things.get(seen_key.get(p["id"], ""))
+        key = f"spec:{p['id']}" if f"spec:{p['id']}" in things else seen_key.get(p["id"], "")
+        t = things.get(key)
         if not t:
             out.append(p)
             continue
         t = dict(t, size_m=[float(v) * sc for v in t["size_m"]])
         x, y = (t["xy"][0] - eye[0]) * sc, (t["xy"][1] - eye[1]) * sc
+        if rl.get("of") == key and rl.get("glb"):
+            # the land's own form, shaped from the picture's depth (img3d/concept_depth.py relief): where and as
+            # big as that shape is, whole
+            p["relief"] = {"glb": rl["glb"], "size_m": rl["size_m"]}
+            at[p["id"]] = (x, y, list(t["size_m"]))
+            out.append(p)
+            continue
         far = math.hypot(x, y) > OPEN_FAR_M or max(t["size_m"]) > OPEN_BIG_M
         if far and not p.get("phrases"):
             continue                         # (it lies beyond the set: the panorama's)
