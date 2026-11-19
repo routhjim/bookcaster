@@ -52,6 +52,7 @@ import creature as CRE  # noqa: E402
 import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
+DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
 LAB = C.UE_HOME / "lab"
@@ -61,6 +62,13 @@ COUNT_SH = Path(os.environ.get("STORY_COUNT_SH", LAB / "redraw5" / "count.sh"))
 CHECK_SH = Path(os.environ.get("STORY_CHECK_SH", LAB / "redraw5" / "check.sh"))
 POSE_MODEL = Path(os.environ.get("STORY_POSE_MODEL", LAB / "redraw5" / "models" / "rtmw_x_256x192.pt"))
 CARD_SH = HERE / "orbit" / "card.sh"
+IMAGE_PY = Path(os.environ.get("STORY_IMAGE_PY", Path.home() / "tts-ab" / ".venv-qwenimage" / "bin" / "python"))
+# the cards the keys are drawn on, each with the line's station and job kind that hold it: the image card, and the
+# engine's (a command there borrows it: the editor unloads, line.py). The drawing is its own phase after every
+# place is staged, so the engine has no work then and both cards draw (run())
+DRAW_CARDS = [c for c in os.environ.get("STORY_DRAW_CARDS", "05,65").split(",") if c.strip()]
+CARD_LINE = {os.environ.get("ASSETS_BLENDER_CARD", "05"): ("image", "refs"),
+             os.environ.get("ASSETS_UE_CARD", "65"): ("engine", "refs")}
 GUIDES_PY = Path(os.environ.get("STORY_GUIDES_PY", Path.home() / "tts-ab" / ".venv-hyworld" / "bin" / "python"))
 
 
@@ -206,6 +214,67 @@ def line(station: str, kind: str, jid: str, logf: Path, cmd: list, env=None) -> 
 
 
 LLM_NEED_GB = 96                 # what the directing model needs free to start (tts_reader/animate.py STRATA_NEED_GB)
+
+
+def split_even(rows: list, n: int) -> list:
+    """rows in n runs of near equal length, each run's rows together and in order (one scene's shots draw one after
+    another: they share their references)."""
+    n = max(1, min(n, len(rows)))
+    k, r = divmod(len(rows), n)
+    out, i = [], 0
+    for j in range(n):
+        m = k + (1 if j < r else 0)
+        out.append(rows[i:i + m])
+        i += m
+    return [x for x in out if x]
+
+
+def on_cards(parts: list, cmd_of, tag: str, logd: Path) -> bool:
+    """One job per part, each on its own card of DRAW_CARDS at the same time (through the line). cmd_of(part, card,
+    n) -> the shell words run on that card. True when every one ended well."""
+    import threading
+    root = HERE.parents[1]
+    rcs = {}
+
+    def one(n, part):
+        card = DRAW_CARDS[n % len(DRAW_CARDS)]
+        station, kind = CARD_LINE.get(card, ("image", "refs"))
+        rcs[n] = line(station, kind, f"{tag}_{card}", logd / f"{tag}_{card}.log",
+                      ["bash", "-c", f"cd {root} && bash {CARD_SH} {card} {cmd_of(part, card, n)}"])
+    ths = [threading.Thread(target=one, args=(n, p)) for n, p in enumerate(parts)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    return all(rc == 0 for rc in rcs.values()) and len(rcs) == len(parts)
+
+
+def draw_jobs(files: list, tag: str, logd: Path) -> bool:
+    """Every drawing job of these job files (JSON lines), shared between the drawing cards: one image server on
+    each, fed its share."""
+    rows = [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
+    if not rows:
+        return True
+    parts = split_even(rows, len(DRAW_CARDS))
+
+    def cmd(part, card, n):
+        pf = logd / f"{tag}_{card}.jsonl"
+        pf.write_text("\n".join(part) + "\n")
+        return f"{IMAGE_PY} -I tools/qwen_image.py --serve < {pf}"
+    log(f"drawing: {len(rows)} picture(s) on {len(parts)} card(s)")
+    return on_cards(parts, cmd, tag, logd)
+
+
+def check_files(files: list, tag: str, logd: Path) -> bool:
+    """The key checks (redraw/keycheck.py) of these check files, shared between the drawing cards."""
+    files = [str(f_) for f_ in files if Path(f_).exists()]
+    if not files:
+        return True
+
+    def cmd(part, card, n):
+        py = f"env DETECT_DEVICE=cuda {IMAGE_PY} -I tools/assets/redraw/keycheck.py"
+        return "bash -c " + repr(" && ".join(f"{py} {c}" for c in part))
+    return on_cards(split_even(files, len(DRAW_CARDS)), cmd, tag, logd)
 
 
 def llm(jid: str, logf: Path, cmds: list) -> int:
@@ -889,8 +958,13 @@ class Story:
         return bool(list((d / "seq").glob("*/result.json")))
 
     def step_redraw(self, place, only=None):
-        """only: the groups whose shots are drawn again; their rows and pictures replace those groups' in the
-        place's run, the other shots' keys kept as they are."""
+        """One place's keys drawn (draw_phase for it alone). only: the groups whose shots are drawn again; their
+        rows and pictures replace those groups' in the place's run, the other shots' keys kept as they are."""
+        return self.draw_phase({place: only}).get(place, False)
+
+    def redraw_prepare(self, place, only=None):
+        """A place's drawing jobs written (its guides, then redraw.py's job file). -> its run's facts {"out", "rp",
+        "only"}; None when it has no scene to draw; False when a step failed."""
         d = self.d(place)
         out = d / "run" if only is None else d / "run_again"
         shutil.rmtree(out, ignore_errors=True)
@@ -914,7 +988,7 @@ class Story:
         if not ss.get("world"):
             run.update(strength_bg=ROOM_BG, mask_people="heads")   # (redraw/guides.py HEADS_*: these two strengths)
         if not run["scenes"]:
-            return only is not None
+            return None
         rp = d / ("run.json" if only is None else "run_again.json")
         rp.write_text(json.dumps(run, indent=1))
         tag = self.places[place]["slug"] + ("" if only is None else "_again")
@@ -923,25 +997,58 @@ class Story:
                 ["bash", "-c", f"cd {root} && bash {CARD_SH} 05 {GUIDES_PY} -I tools/assets/redraw/guides.py --set "
                                f"{self.set_dir(place)} {' '.join(run['scenes'])}"]):
             return False
-        acc = [PY, HERE / "redraw" / "accept.py"]
         if sh([PY, HERE / "redraw" / "redraw.py", rp], out / "redraw.log", cwd=root):
             return False
-        if line("image", "refs", f"draw_{tag}", out / "run.log", ["bash", IMAGE_SH, out / "image_jobs.jsonl"]):
-            return False
-        sh(acc + ["checks", rp, out / "check.json", "--pose-model", POSE_MODEL], out / "accept.log", cwd=root)
-        if line("image", "check", f"check_{tag}", out / "check.log", ["bash", CHECK_SH, out / "check.json"]):
-            return False
-        sh(acc + ["retry", rp, out / "check_result.json", out / "retry_jobs.jsonl"], out / "accept.log", cwd=root)
-        if (out / "retry_jobs.jsonl").exists() and (out / "retry_jobs.jsonl").stat().st_size:
-            line("image", "refs", f"redraw_{tag}", out / "run_retry.log", ["bash", IMAGE_SH, out / "retry_jobs.jsonl"])
-            sh(acc + ["checks", rp, out / "check_x.json", "--ids-from", out / "retry_jobs.jsonl", "--pose-model",
-                      POSE_MODEL], out / "accept.log", cwd=root)
-            line("image", "check", f"checkx_{tag}", out / "check_x.log", ["bash", CHECK_SH, out / "check_x.json"])
-        sh(acc + ["pick", rp, out / "check_result.json", out / "check_x_result.json", out / "accepted.json"],
-           out / "accept.log", cwd=root)
-        if only is None or not (out / "accepted.json").exists():
-            return (out / "accepted.json").exists()
-        return self.merge_run(d / "run", out, [q.name for g in only for q in self.group_dirs(d / "seq", g)] + list(only))
+        return {"out": out, "rp": rp, "only": only}
+
+    def draw_phase(self, want: dict) -> dict:
+        """The keys of several places drawn together, after their staging: want = {place: None (every shot) or the
+        scene groups to draw again}. Each place's jobs are written, then every place's pictures are drawn as one
+        batch shared between the drawing cards, checked, the failed ones drawn and checked again, and each place's
+        best drawings picked. -> {place: whether it has its drawings}. (Drawn place by place on one card beside
+        the engine, a place's redraw was 10 to 20 minutes and two places waited on one card, 11-19)"""
+        root, acc = HERE.parents[1], [PY, HERE / "redraw" / "accept.py"]
+        res, ctx = {}, {}
+        for place, only in want.items():
+            c = self.redraw_prepare(place, only)
+            if c:
+                ctx[place] = c
+            else:
+                res[place] = (only is not None) if c is None else False
+        if not ctx:
+            return res
+        logd = self.work
+        tag = "keys_" + time.strftime("%H%M%S")
+        if not draw_jobs([c["out"] / "image_jobs.jsonl" for c in ctx.values()], f"draw_{tag}", logd):
+            log("drawing: a card's job FAILED")
+            return dict(res, **{p: False for p in ctx})
+        for c in ctx.values():
+            sh(acc + ["checks", c["rp"], c["out"] / "check.json", "--pose-model", POSE_MODEL], c["out"] / "accept.log", cwd=root)
+        if not check_files([c["out"] / "check.json" for c in ctx.values()], f"check_{tag}", logd):
+            log("drawing: a check job FAILED")
+            return dict(res, **{p: False for p in ctx})
+        again = []
+        for c in ctx.values():
+            sh(acc + ["retry", c["rp"], c["out"] / "check_result.json", c["out"] / "retry_jobs.jsonl"], c["out"] / "accept.log", cwd=root)
+            rj = c["out"] / "retry_jobs.jsonl"
+            if rj.exists() and rj.stat().st_size:
+                again.append(c)
+        if again:
+            draw_jobs([c["out"] / "retry_jobs.jsonl" for c in again], f"redraw_{tag}", logd)
+            for c in again:
+                sh(acc + ["checks", c["rp"], c["out"] / "check_x.json", "--ids-from", c["out"] / "retry_jobs.jsonl",
+                          "--pose-model", POSE_MODEL], c["out"] / "accept.log", cwd=root)
+            check_files([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+        for place, c in ctx.items():
+            out, only = c["out"], c["only"]
+            sh(acc + ["pick", c["rp"], out / "check_result.json", out / "check_x_result.json", out / "accepted.json"],
+               out / "accept.log", cwd=root)
+            if only is None or not (out / "accepted.json").exists():
+                res[place] = (out / "accepted.json").exists()
+            else:
+                d = self.d(place)
+                res[place] = self.merge_run(d / "run", out, [q.name for g in only for q in self.group_dirs(d / "seq", g)] + list(only))
+        return res
 
     @staticmethod
     def merge_run(run: Path, again: Path, groups: list) -> bool:
@@ -1242,6 +1349,59 @@ class Story:
             if st == "keys":
                 self.restage_keyless(place)
 
+    def _redo(self, place, redo) -> set:
+        sl = self.places[place]["slug"]
+        return {x for x in redo if ":" not in x} | {x.split(":", 1)[1] for x in redo if x.split(":", 1)[0] == sl}
+
+    def draw_all(self, places, steps, redo=()) -> None:
+        """The drawing phase for the whole batch: the keys of every staged place drawn together (draw_phase), each
+        place's keys picked, then the shots left without a key staged again in the engine, all of them, and drawn
+        again together, once."""
+        big = [p for p in places if not (0 < len(self.shots_of(p)) <= DRAWN_MAX_SHOTS) and self.done(p, "stage")]
+        drawn = []
+        if "redraw" in steps:
+            need = [p for p in big if not self.done(p, "redraw") or "redraw" in self._redo(p, redo)]
+            if need:
+                log(f"drawing phase: {len(need)} place(s): {', '.join(need)}")
+                llm_down()
+                t = time.time()
+                for p, ok in self.draw_phase({p: None for p in need}).items():
+                    if not ok:
+                        log(f"{p}: redraw FAILED; the place stops here")
+                        continue
+                    self.mark(p, "redraw")
+                    (self.d(p) / ".done_keys").unlink(missing_ok=True)
+                    drawn.append(p)
+                log(f"drawing phase: done in {time.time() - t:.0f} s")
+        if "keys" not in steps:
+            return
+        keyed = []
+        for p in big:
+            if self.done(p, "redraw") and (p in drawn or not self.done(p, "keys") or "keys" in self._redo(p, redo)):
+                if self.step_keys(p):
+                    self.mark(p, "keys")
+                    keyed.append(p)
+                else:
+                    log(f"{p}: keys FAILED")
+        # every shot ends with a key: the shots left without one, of every place, staged again (their scene groups
+        # only, each taking a clear wide on its people when its tries run out), then drawn together and keyed
+        again = {}
+        for p in keyed:
+            miss = self.keyless(p)
+            groups = self.groups_of(p, set(miss)) if miss else []
+            if groups:
+                log(f"{p}: {len(miss)} shot(s) without a key {miss}: scene(s) {groups} staged again with the clear-wide fallback")
+                if self.step_stage(p, only=groups, fallback=miss):
+                    again[p] = groups
+                else:
+                    log(f"{p}: the restage's stage FAILED")
+        if again:
+            for p, ok in self.draw_phase(again).items():
+                if ok and self.step_keys(p):
+                    log(f"{p}: after the restage, {len(self.keyless(p))} shot(s) without a key")
+                else:
+                    log(f"{p}: the restage's drawing FAILED")
+
     def run(self, only=None, first="shots", last="keys", redo=(), jobs=1):
         """jobs: how many places are worked at once. Each place's steps stay in order; their GPU work queues on the
         line by device, so with two places one draws on one card while the other stages or shapes on the other
@@ -1251,6 +1411,10 @@ class Story:
         self._shared = {k: threading.Lock() for k in set(self.SHARED_STEPS.values())}
         todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
         places = [p for p in self.places if not only or p in only or self.places[p]["slug"] in only]
+        # two phases for the whole batch: every place staged in 3D first (the engine's card and the shaping card),
+        # then every place's keys drawn together on both cards (draw_all). A place's own steps up to its staging:
+        after = [x for x in todo if x in DRAW_STEPS]
+        todo = [x for x in todo if x not in DRAW_STEPS]
         if jobs > 1 and len(places) > 1:
             with ThreadPoolExecutor(max_workers=jobs) as ex:
                 for fu in [ex.submit(self.run_place, p, todo, redo) for p in places]:
@@ -1261,6 +1425,8 @@ class Story:
         else:
             for place in places:
                 self.run_place(place, todo, redo)
+        if after:
+            self.draw_all(places, after, redo)
         report = {}
         for place in self.places:
             kp = self.d(place) / "keys.json"

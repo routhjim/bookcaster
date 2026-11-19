@@ -148,3 +148,61 @@ def test_a_step_is_redone_for_one_place_only(tmp_path, monkeypatch):
         (st.work / p / ".done_stage").write_text("x")
     st.run(first="stage", last="stage", redo={"q:stage"})
     assert ran == ["Q"]
+
+
+def test_every_place_is_staged_before_any_key_is_drawn_and_the_keys_are_drawn_together(tmp_path, monkeypatch):
+    st = _story(tmp_path, ["P", "Q"])
+    monkeypatch.setattr(SK.Story, "shots_of", lambda self, place: ["x"])
+    monkeypatch.setattr(SK, "llm_down", lambda: None)
+    monkeypatch.setattr(SK, "DRAWN_MAX_SHOTS", 0)
+    monkeypatch.setattr(SK.Story, "preflight", lambda self, place: [])
+    monkeypatch.setattr(SK.Story, "keyless", lambda self, place: [])
+    seen = []
+    monkeypatch.setattr(SK.Story, "step_stage", lambda self, place, **k: seen.append(("stage", place)) or True)
+    monkeypatch.setattr(SK.Story, "step_keys", lambda self, place: seen.append(("keys", place)) or True)
+    monkeypatch.setattr(SK.Story, "draw_phase",
+                        lambda self, want: seen.append(("draw", tuple(want))) or {p: True for p in want})
+    st.run(first="stage", last="keys")
+    assert seen == [("stage", "P"), ("stage", "Q"), ("draw", ("P", "Q")), ("keys", "P"), ("keys", "Q")]
+    assert all((st.work / p / ".done_keys").exists() for p in ("p", "q"))
+    seen.clear()
+    st.run(first="stage", last="keys")                       # all done: nothing staged or drawn again
+    assert seen == []
+    seen.clear()
+    st.run(first="stage", last="keys", redo={"q:redraw"})
+    assert seen == [("draw", ("Q",)), ("keys", "Q")]
+
+
+def test_shots_left_without_a_key_are_staged_again_then_drawn_together(tmp_path, monkeypatch):
+    st = _story(tmp_path, ["P", "Q"])
+    monkeypatch.setattr(SK.Story, "shots_of", lambda self, place: ["x"])
+    monkeypatch.setattr(SK, "llm_down", lambda: None)
+    monkeypatch.setattr(SK, "DRAWN_MAX_SHOTS", 0)
+    monkeypatch.setattr(SK.Story, "preflight", lambda self, place: [])
+    left = {"P": ["s1"], "Q": []}
+    monkeypatch.setattr(SK.Story, "keyless", lambda self, place: list(left[place]))
+    monkeypatch.setattr(SK.Story, "groups_of", lambda self, place, shots: ["pl_g03"])
+    seen = []
+    monkeypatch.setattr(SK.Story, "step_stage",
+                        lambda self, place, only=None, fallback=(): seen.append(("stage", place, only)) or True)
+    monkeypatch.setattr(SK.Story, "step_keys", lambda self, place: True)
+    monkeypatch.setattr(SK.Story, "draw_phase", lambda self, want: seen.append(("draw", dict(want))) or {p: True for p in want})
+    st.run(first="stage", last="keys")
+    assert seen[-2:] == [("stage", "P", ["pl_g03"]), ("draw", {"P": ["pl_g03"]})]
+
+
+def test_the_pictures_are_shared_between_the_drawing_cards(tmp_path, monkeypatch):
+    assert SK.split_even(list("abcde"), 2) == [["a", "b", "c"], ["d", "e"]]
+    assert SK.split_even(["a"], 2) == [["a"]]
+    monkeypatch.setattr(SK, "DRAW_CARDS", ["05", "65"])
+    monkeypatch.setattr(SK, "CARD_LINE", {"05": ("image", "refs"), "65": ("engine", "refs")})
+    calls = []
+    monkeypatch.setattr(SK, "line", lambda station, kind, jid, logf, cmd, env=None: calls.append((station, jid, cmd[-1])) or 0)
+    a, b = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
+    a.write_text('{"id": 1}\n{"id": 2}\n')
+    b.write_text('{"id": 3}\n')
+    assert SK.draw_jobs([a, b, tmp_path / "none.jsonl"], "draw_t", tmp_path)
+    assert sorted(c[0] for c in calls) == ["engine", "image"]
+    got = sorted((tmp_path / f"draw_t_{c}.jsonl").read_text().count("\n") for c in ("05", "65"))
+    assert got == [1, 2]
+    assert all("qwen_image.py --serve" in c[2] for c in calls)
