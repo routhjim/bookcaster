@@ -433,11 +433,13 @@ WHOLE_ASK = """A story has a place in the open air named "{place}". A painter wh
 wide picture of this whole place from well back, empty of people. Write what the painter needs in three sentences of
 plain words{period}:
 1. What kind of place it is, and every building or built thing that belongs to it: for each, what it is for, how large
-it is, what its walls and its roof are made of, and what is built onto it and into it. A place of bare land has
-none: then say only what the land is.
-2. What else stands on the ground round them: the things a place of this kind has standing about it for its work
-and its living. Bare land has none of these either.
-3. The ground itself, and what lies round the place and beyond it.
+it is, what its walls and its roof are made of, and what is built onto it and into it. In a place of bare land this
+sentence says what kind of land it is and how it lies: its rises and hollows, its water and the banks of it.
+2. What else stands on the ground: the things a place of this kind has standing about it for its work and its
+living; in a place of bare land, what grows and lies on it, each with its size and where it is: trees, bushes,
+boulders, fallen wood, reeds, whatever such land has.
+3. The ground itself underfoot, what it is made of and what covers it, and what lies round the place and beyond it.
+Write only what is there, never what is absent: no sentence says that a place has no buildings or lacks a thing.
 Use what the story and the shots say; for what they leave unsaid, what belongs in such a place. Say every thing by
 what it is and looks like, never by a name the story gave it. No people, no animals, nothing the story's people
 carry, make or bring, no weather.

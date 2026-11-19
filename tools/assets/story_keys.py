@@ -367,7 +367,7 @@ class Story:
                 room=str(spec.get("room") or "").strip(),
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
                 seats="a single seat in the middle, for one person" if want == 1 else f"{want} seats",
-                style=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
+                style=key_style(style.read_text()) if style.exists() else "")
             for n in range(CONCEPT_TRIES):
                 pid = f"concept_{self.prefix}_{slug}_w{n}"
                 pic = C.LIBRARY / "_refs" / pid / "picture.png"
@@ -401,7 +401,7 @@ class Story:
             words = OPEN_WORDS.format(
                 room=(f"{per[0].upper() + per[1:]}: " if per and per != "not stated" else "") + room,
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
-                style=(style.read_text().strip().rstrip(".") + ".") if style.exists() else "")
+                style=key_style(style.read_text()) if style.exists() else "")
             for n in range(CONCEPT_TRIES):
                 pid = f"concept_{self.prefix}_{slug}_v{n}_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
                 pic = C.LIBRARY / "_refs" / pid / "picture.png"
