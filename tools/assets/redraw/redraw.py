@@ -791,6 +791,20 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
+def sheet_ref(w: dict, worn: str | None, with_lora: bool = False) -> str | None:
+    """The sheet given as a person's reference picture in a job, or None. Someone drawn by their own LoRA in their
+    usual look needs none: the LoRA is their face, build and usual clothes, and every reference picture is paid for
+    in each drawing (a job with one took 6.5 s, with two 11.7 s, three 15.3 s, four 19.4 s, and with more than one
+    the card had no room to keep the references between steps, 11-19). Their sheet is given when they wear what the
+    LoRA never saw (an outfit's own sheet, a sheet of the thing they have on), or when they have no LoRA.
+    with_lora: the usual sheet beside the LoRA all the same (run "sheet_with_lora")."""
+    if worn:
+        return worn
+    if w.get("_outfit_sheet") or not w.get("lora") or with_lora:
+        return w.get("sheet")
+    return None
+
+
 def faces(ppl: list, cast: dict) -> list:
     """Each person's face reference (cast "face_ref": a crop of their face from the first accepted close shot,
     facecrop.py) for the people in frame whose face shows: beside the LoRA and the sheet, it holds one face from
@@ -935,6 +949,7 @@ def main():
                                 c2["back_detail"] = wv["wear_back_set"].split(" and the back of ")[0]
                         if wv.get("worn_sheet"):           # (its sheet, not another of the person's worn sheets)
                             c2["sheet"], c2["worn_sheets"] = wv["worn_sheet"], {}
+                            c2["_outfit_sheet"] = True     # (an outfit's own sheet: a reference their LoRA has not)
                         # hair, facial hair, missing layers: the built figure's own facts (library entry), never
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
                         # one fixed wording from the entry's facts in every key (the text is the fact; the hair check
@@ -975,7 +990,7 @@ def main():
                             loras.append([w["lora"], float(w.get("lora_w", lora_by_head(lw, run, hh, len(ppl)))), area])
                         # (wearing something the book has a sheet of them in, that sheet is their reference here:
                         # told in words alone that a pilot had his helmet on, no key drew it, 11-15)
-                        ws = worn_sheet(w, worn_now.get(k)) or w.get("sheet")
+                        ws = sheet_ref(w, worn_sheet(w, worn_now.get(k)), bool(run.get("sheet_with_lora")))
                         if ws and ws not in sheets:
                             sheets.append(ws)
                 else:

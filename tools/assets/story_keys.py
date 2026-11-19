@@ -92,7 +92,9 @@ VENV_PY = _venv_py()
 LLM_UP = ("import sys; sys.path.insert(0, '.'); from tts_reader import animate; animate.igpu('strata')")
 REDRAW = {"seed": 7, "method": "image", "strengths": [0.8], "control": {"type": "depth", "scale": 0.8, "end": 1.0},
           "set_facts": True, "mask_people": "tiered", "strength_bg": 0.5, "body_words": True, "light_words": True,
-          "facts": True, "regions": True, "seeds": [7], "max_piece_refs": 2}
+          "facts": True, "regions": True, "seeds": [7], "max_piece_refs": 2,
+          # (STORY_SHEETS=1: each person's usual sheet as a reference beside their LoRA, as before 11-19)
+          "sheet_with_lora": os.environ.get("STORY_SHEETS", "0") == "1"}
 
 
 STYLE_CONTENT = re.compile(r"\b(cathedral|church|chapel|temple|castle|spire|arch\w*|stone|iron|window|sky|skies|"

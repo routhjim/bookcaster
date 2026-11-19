@@ -45,3 +45,16 @@ def test_headwear_taken_off_is_not_worn():
     assert not CC.head_worn("a mail coat, with the cap removed, and boots")
     assert not CC.head_worn("a mail coat and boots")
     assert "cap" not in CC.spread_look("a man, wearing a mail coat, with the cap removed, boots", headwear=True)
+
+
+def test_a_person_drawn_by_their_lora_in_their_usual_look_takes_no_sheet():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "redraw"))
+    import redraw as RD
+    usual = {"lora": "x.safetensors", "sheet": "usual.png"}
+    assert RD.sheet_ref(usual, None) is None
+    assert RD.sheet_ref(usual, None, with_lora=True) == "usual.png"
+    assert RD.sheet_ref(usual, "in_a_hat.png") == "in_a_hat.png"                     # what the LoRA never saw
+    assert RD.sheet_ref(dict(usual, sheet="outfit.png", _outfit_sheet=True), None) == "outfit.png"
+    assert RD.sheet_ref({"sheet": "only.png"}, None) == "only.png"                   # nobody's LoRA: their sheet
