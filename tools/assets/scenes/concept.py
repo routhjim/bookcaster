@@ -132,6 +132,9 @@ def plain_name(p: dict) -> str:
         return str(p["look"]).split(",")[0].strip().lower()
     return (p.get("kind") or "").replace("_", " ")
 PIECE_AREA = 0.02
+ROOM_PIECE_AREA = 0.004          # a thing of a room's picture this much of it or more is built (its own cut-out)
+ROOM_OWN = re.compile(r"\b(walls?|floors?|ceilings?|roofs?|beams?|rafters?|trusses|arch(?:es)?|pillars?|columns?|steps?|"
+                      r"stairs?|dais|platform)\b", re.I)       # the room's own parts: its shell's, not things in it
 STRUCTURE_SPAN = 0.9       # a "thing" this much of the picture's width or more is the room itself (a ceiling, a floor)
 CARRY_WIDER = 1.4          # a thing under a piece carries it (a block, a stump, a plinth) when at most this much wider
 
@@ -248,7 +251,13 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         b = box_of(r.get("box"))
         # (a thing that takes under a fiftieth of the picture is a fitting on a wall, not a piece to build: asked
         # for a kind, the judge called a switch panel a bureau)
-        big = bool(b) and (b[2] - b[0]) * (b[3] - b[1]) >= (OPEN_PIECE_AREA if op else PIECE_AREA)
+        big = bool(b) and (b[2] - b[0]) * (b[3] - b[1]) >= (OPEN_PIECE_AREA if op else ROOM_PIECE_AREA)
+        if not op and kd not in kinds and "work_piece" in kinds and not ROOM_OWN.search(sn["name"]):
+            # a room is built from its picture as a place in the open is: a thing it shows that is none of the
+            # furniture kinds is still a thing of the room, made from its own part of the picture (only what the
+            # judge could file under a kind was built, one of each: a shed drawn full of tools, barrels and buckets
+            # was built with a bench and a lantern, 11-19)
+            kd = "work_piece"
         if op:                               # (in the open: every thing that stands by itself, of whatever kind)
             part = "part" in re.sub(r"[^a-z]", "", str(r.get("own") or "").lower())
             kd = None if part else (kd if kd in kinds and kd not in OPEN_NOT else "landmark")
@@ -290,10 +299,11 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
                                 **({"real_m": real_of(g.get("real"))} if real_of(g.get("real")) else {}),
                                 **({"words": re.sub(r"\s+", " ", str(g.get("words") or "")).strip().rstrip(".")}
                                    if str(g.get("words") or "").strip() else {})})
-    if op:                                   # each thing of the open said whole, from its own part of the picture
+    if True:                                 # each such thing said whole, from its own part of the picture
         its = [(res["spec"][p["id"]], f"b:{p['id']}") for p in pieces if res["spec"][p["id"]].get("crop")
-               and p.get("kind") == "landmark"]
-        its += [(sn, f"s:{i}") for i, sn in enumerate(res.get("seen") or []) if sn.get("kind") == "landmark" and sn.get("crop") and not sn.get("group")]
+               and p.get("kind") == "landmark"] if op else []
+        its += [(sn, f"s:{i}") for i, sn in enumerate(res.get("seen") or [])
+                if sn.get("kind") == ("landmark" if op else "work_piece") and sn.get("crop") and not sn.get("group")]
         w = ask([{"id": k, "image": t["crop"], "max_new_tokens": 80, "ask": {"words": WORDS_ASK}} for t, k in its]) if its else {}
         for t, k in its:
             ws = re.sub(r"\s+", " ", str((w.get(k) or {}).get("words") or "")).strip().rstrip(".")

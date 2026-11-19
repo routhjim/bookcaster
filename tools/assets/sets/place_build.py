@@ -226,6 +226,7 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
+ROOM_SEEN_MOST = 10              # the things of a room's picture built besides the plan's own, at most
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
 NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
@@ -273,8 +274,10 @@ def with_concept(spec: dict, concept: dict) -> dict:
                 p.update(source=twin["source"], look=twin.get("look") or p.get("look"))
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
+    in_room_ = concept.get("space") == "room" and sp.get("kind") != "outdoors"
     for i, sn in enumerate(concept.get("seen") or []):
-        if f"seen:{i}" in ((concept.get("depth") or {}).get("off_floor") or {}):
+        hung_ = ((concept.get("depth") or {}).get("off_floor") or {}).get(f"seen:{i}")
+        if hung_ is not None and not (in_room_ and hung_.get("hangs_m") and sn.get("kind") == "work_piece"):
             continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
         # (in the open every large thing standing on the ground is built, unless a piece of the spec is that thing:
         # mostly the same part of the picture)
@@ -288,8 +291,17 @@ def with_concept(spec: dict, concept: dict) -> dict:
         if sn.get("box") and any(_same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=0.5) for q in kept
                                  if (chk.get(q["id"]) or {}).get("in_picture")):
             continue
-        if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin or sn.get("group")) and sn["kind"] not in OPENING_KINDS:
+        # (a room takes every thing of its picture, as a place in the open does: each once, the first ROOM_SEEN_MOST)
+        more_ = in_room_ and sn.get("box") and sum(1 for q in kept if q["id"].startswith("c")) < ROOM_SEEN_MOST and \
+            not any(_same_part(sn["box"], o.get("box"), like=0.5) for o in (concept.get("seen") or [])[:i] if o.get("kind"))
+        if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin or sn.get("group") or more_) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
+            if hung_ is not None:            # on its wall, as high as the picture has it
+                kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [], "against": "wall",
+                             "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
+                             "source": sn["crop"], "hangs_m": hung_["hangs_m"], "longest_m": round(max(hung_["size_m"]), 2),
+                             **({"called": seen_called(sn)} if seen_called(sn) else {})})
+                continue
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
                          "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
                          "against": "not stated", "source": sn["crop"], **({"natural": True} if sn.get("natural") else {}),
@@ -311,6 +323,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
             t = (dp.get("things") or {}).get(f"spec:{p['id']}") or (dp.get("things") or {}).get(seen_key.get(p["id"], ""))
             if t:
                 p.update(at_xy=t["xy"], facing_xy=t["facing"], against="wall" if t.get("against") else "free")
+                if p.get("kind") == "work_piece" and not p.get("longest_m"):
+                    p["longest_m"] = round(max(t["size_m"]), 2)      # (a thing of the picture: as big as it shows it)
                 if size_agrees(p.get("longest_m"), t["size_m"]):
                     p["_seen_size_m"] = t["size_m"]
                 else:
@@ -903,7 +917,7 @@ def kit_for(period) -> dict:
     return kits.get(p) or kits["victorian"]
 
 
-ROOM_LM_M2 = 300.0               # a room whose own lights give less than this (lumens a square metre of floor; a
+ROOM_LM_M2 = 450.0               # a room whose own lights give less than this (lumens a square metre of floor; a
 ROOM_LIGHT_LM = 600              # fire inside a forge's hood lit nothing) gets soft lights over its floor, each at
 ROOM_LIGHT_GAP_M = 3.0           # least this, this far apart. (At 150 the forge's stills averaged 12 to 20 of 255
 #                                  and its faces were lost in the redraw, 11-17)
@@ -936,7 +950,10 @@ def room_light(out: dict, spec: dict) -> bool:
     if not any(w.get("kind") == "ceiling" for w in out.get("structure") or []):
         return False
     ls = out.get("lights") or []
-    if any(l.get("type") in ("sun", "strip_lights") for l in ls):        # (daylight through its windows; a strip)
+    # (daylight through a window does not excuse a room: with the sun at its one window a hall and a shed were dark
+    # with hot patches on their walls and nobody in them could be seen. The user's rule, 11-19: inside a building
+    # everyone is visible, whatever the time of day; the light from outside is kept on top of it)
+    if any(l.get("type") == "strip_lights" for l in ls):
         return False
     W, D, H = out["size_m"]
     own = sum(float(l.get("lumens") or 0) * (FIRE_ROOM_SHARE if is_fire(l) else 1.0)

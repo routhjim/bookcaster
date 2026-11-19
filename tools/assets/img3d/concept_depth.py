@@ -172,6 +172,15 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
             bq = to_room((bv * (yo / den))[None], axes, d)[0] if abs(den) > 1e-6 else None
             if bq is None or not (0.0 < float(bq[2]) <= RAISED_MOST_M):
                 hung[key] = {"kind": kind, "at_m": round(yo, 3)}
+                if bq is not None and float(bq[2]) > RAISED_MOST_M:
+                    # where it hangs: how high its lowest part is, how wide and tall it is at its own distance
+                    tv_ = ray(intr, (x0 + x1) / 2, y0)
+                    dn_ = float(tv_ @ axes[1])
+                    tq_ = to_room((tv_ * (yo / dn_))[None], axes, d)[0] if abs(dn_) > 1e-6 else None
+                    k_ = yo / max(1e-6, float(fq[1]))
+                    hung[key].update(hangs_m=round(float(bq[2]), 3), x=round(float(bq[0]), 3),
+                                     width_m=round(float(abs(rq[0] - lq[0])) * k_, 3),
+                                     height_m=round(max(0.1, float(tq_[2] - bq[2])) if tq_ is not None else 0.3, 3))
                 continue
             k = yo / max(1e-6, float(fq[1]))               # (its width, seen at its own distance and not the floor's)
             fq, lq, rq = bq, np.array([bq[0] - abs(rq[0] - lq[0]) * k / 2, yo, 0.0]), np.array([bq[0] + abs(rq[0] - lq[0]) * k / 2, yo, 0.0])
@@ -207,6 +216,13 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
         out[key] = {"xy": [round(x, 3), round(y, 3)], "size_m": [round(w, 3), round(dp, 3), round(hh, 3)],
                     "against": against, "facing": facing, "kind": t["kind"],
                     **({"raised_m": round(raised[key] * scale, 3)} if key in raised else {})}
+    for key, h in hung.items():                  # (a hung thing's measures in the room's own metres and middle)
+        if "hangs_m" in h:
+            x_ = (h.pop("x") - cx) * scale
+            y_ = (h["at_m"] - cy) * scale
+            near = min((("north", D / 2 - y_), ("west", x_ + W / 2), ("east", W / 2 - x_)), key=lambda t: t[1])[0]
+            h.update(hangs_m=round(h["hangs_m"] * scale, 3), wall=near, xy=[round(x_, 3), round(y_, 3)],
+                     size_m=[round(h.pop("width_m") * scale, 3), 0.15, round(h.pop("height_m") * scale, 3)])
     stand_before(out)
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
