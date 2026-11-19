@@ -701,6 +701,9 @@ def set_words(shot: dict, outdoors: bool = False) -> str:
           (t.get("lit") and t["visible_frac"] >= 0.02) or
           (t["kind"] == "prop" and t["visible_frac"] >= PROP_SEEN and area(t) >= PROP_AREA)]
     th = [t for t in th if t["name"] != "rug" or t["visible_frac"] >= 0.2]
+    # a place on the open ground is no thing to draw: the place's own words say its land ("the land at5 in the
+    # middle; the land at7 on the right" went into every wide's words, 11-19)
+    th = [t for t in th if t["kind"] != "mark"]
     big = [t for t in th if t.get("large")]                   # large furniture always: never dropped by the cap
     th = big + [t for t in sorted(th, key=area, reverse=True) if not t.get("large")][:max(0, MAX_THINGS - len(big))]
     parts = []

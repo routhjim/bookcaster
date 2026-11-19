@@ -1156,6 +1156,8 @@ def export(ctx: Ctx, placed: dict, unmet: list, how: str = "", pks: list | None 
              "yaw_deg": round(math.degrees(math.atan2(q["facing"][1], q["facing"][0])) + 90.0, 2),
              "size_m": q["size_m"], "rect": r3(q["rect"]), "flat": q["flat"], "seat": q["seat"],
              "look": (ctx.pieces.get(pid) or {}).get("look"), "generate": not (q.get("asset") or rec.get("asset"))}
+        if (ctx.pieces.get(pid) or {}).get("called"):
+            d["called"] = ctx.pieces[pid]["called"]
         for k in ("wall", "on", "on_z_m", "note"):
             if q.get(k) is not None:
                 d[k] = q[k]
@@ -1297,6 +1299,8 @@ def to_set_spec(spec: dict, layout: dict, data: dict | None = None) -> dict:
         item = {"asset": p["asset"], "name": p["name"], "position": list(p["position"]), "facing": list(p["facing"])}
         if p.get("look"):
             item["look"] = p["look"]
+        if p.get("called"):
+            item["called"] = p["called"]
         if p.get("on"):
             item["on"], item["on_z_m"] = p["on"], p["on_z_m"]
         if p.get("hang"):                        # (place_build.hang: fixed up on a wall, its lowest point at z_m)

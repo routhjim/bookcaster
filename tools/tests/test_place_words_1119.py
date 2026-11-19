@@ -1,0 +1,55 @@
+"""A place's words for the pictures: no sentence of what is absent, a piece by the story's own name, no ground mark
+as a thing (sets/place_build.py present_only, redraw/setfacts.py, redraw/redraw.py set_words)."""
+import json
+import sys
+from pathlib import Path
+
+A = Path(__file__).resolve().parents[1] / "assets"
+for d in ("sets", "redraw", "scenes", ""):
+    sys.path.insert(0, str(A / d))
+import place_build as PB  # noqa: E402
+import setfacts  # noqa: E402
+import redraw as R  # noqa: E402
+
+
+def test_absent_sentences_are_left_out():
+    t = "The place is a bare hill of ash. There are no houses or posts on it. The ground is grey. No trees stand."
+    assert PB.present_only(t) == "The place is a bare hill of ash. The ground is grey."
+
+
+def test_words_of_what_is_there_are_kept():
+    t = "A wide yard with a well. Nobody has swept it. North of it a wall."
+    assert PB.present_only(t) == t
+    assert PB.present_only("") == ""
+
+
+def _set(tmp_path, fixture, marks=()):
+    lib = tmp_path / "library"
+    (lib / "prop" / "pc_01").mkdir(parents=True)
+    (lib / "prop" / "pc_01" / "asset.json").write_text(json.dumps(
+        {"description": "landmark: a hollow in grey rock. Front -Y.", "size_m": [3, 2, 2]}))
+    sd = lib / "set" / "s1"
+    sd.mkdir(parents=True)
+    (sd / "spec.json").write_text(json.dumps({"size_m": [20, 20, 5], "fixtures": [fixture], "marks": list(marks)}))
+    return sd
+
+
+def test_a_piece_is_named_as_the_story_calls_it(tmp_path):
+    sd = _set(tmp_path, {"asset": "pc_01", "name": "landmark", "position": [0, 0, 0], "called": "hollow oak",
+                         "look": "a wide trunk split open"})
+    t = setfacts.things(sd)[0]
+    assert t["words"].startswith("the hollow oak (") and "landmark" not in t["words"]
+
+
+def test_a_piece_without_a_story_name_keeps_its_words(tmp_path):
+    sd = _set(tmp_path, {"asset": "pc_01", "name": "bench", "position": [0, 0, 0], "look": "oak, worn"})
+    assert setfacts.things(sd)[0]["words"].startswith("the bench (")
+
+
+def test_a_ground_mark_is_not_named_in_the_frame(tmp_path):
+    shot = {"things": [{"name": "land_at5", "kind": "mark", "words": "the land at5", "visible_frac": 1.0,
+                        "box": [0.4, 0.4, 0.6, 0.6]},
+                       {"name": "bench", "kind": "fixture", "words": "the bench", "visible_frac": 1.0,
+                        "box": [0.1, 0.4, 0.3, 0.6]}]}
+    w = R.set_words(shot, outdoors=True)
+    assert "bench" in w and "land at5" not in w

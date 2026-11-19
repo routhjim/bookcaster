@@ -210,6 +210,10 @@ def with_concept(spec: dict, concept: dict) -> dict:
         c = chk.get(p["id"]) or {}
         if not p.get("phrases") and not c.get("in_picture"):
             continue
+        if p.get("kind") in ("work_piece", "landmark") and str(p.get("look") or "").strip():
+            # what the story calls it (its look begins with its own name): its name in every picture's words. Named
+            # "the landmark" with the judge's words for its shape, a cave mouth was drawn as a built stone doorway
+            p["called"] = str(p["look"]).split(",")[0].strip().rstrip(".").lower()
         if c.get("words") and p.get("kind") == "landmark":
             p["look"] = c["words"]           # (a thing of the open: what it is, whole, as the picture shows it)
         elif c.get("look"):
@@ -376,6 +380,17 @@ def technique(style: str) -> str:
                   r"neo-?classical|renaissance|medieval)\b\s*", "", st).strip(" ,")
 
 
+ABSENT = re.compile(r"^\s*(there\s+(is|are)\s+(no|not|nothing)\b|no\s|nothing\s|it\s+(has|holds)\s+no\b)", re.I)
+
+
+def present_only(text: str) -> str:
+    """A place's words with the sentences that say what is absent left out: a picture model draws what it is told
+    of, absent or not ("There are no buildings, tools, or standing objects on the ground" stood in every key's
+    words of a bare summit, and its keys had a carved stone doorway, 11-19)."""
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return " ".join(x for x in parts if x and not ABSENT.match(x)).strip()
+
+
 def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     """A place in the open (its concept picture shows it outdoors, or its spec says so) is built as a world: the
     land round where its people stand, the sky, and a flat patch of ground under them, all one piece made from a
@@ -386,6 +401,7 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     sp.pop("_views", None)
     land = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
                   flags=re.I).strip().rstrip(".")
+    concept = dict(concept, land=present_only(concept.get("land")))
     if str(concept.get("land") or "").strip():     # (its picture was drawn anew as the whole place: those words)
         land = f"{str(concept['land']).strip().rstrip('.')}. With {land[0].lower() + land[1:]}" if land else str(concept["land"]).strip().rstrip(".")
     land = f"{str(spec.get('period') or '').replace('_', ' ')}: {land}".strip(": ") if spec.get("period") != "not stated" \
