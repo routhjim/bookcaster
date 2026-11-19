@@ -251,7 +251,9 @@ def with_concept(spec: dict, concept: dict) -> dict:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
                          "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
-                         "against": "not stated", "source": sn["crop"], **({"natural": True} if sn.get("natural") else {})})
+                         "against": "not stated", "source": sn["crop"], **({"natural": True} if sn.get("natural") else {}),
+                         # (a kind that holds any thing is called what the picture's judge named it)
+                         **({"called": seen_called(sn)} if sn["kind"] in ("work_piece", "landmark") and seen_called(sn) else {})})
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
@@ -313,6 +315,18 @@ def with_concept(spec: dict, concept: dict) -> dict:
         sp = outdoors(sp, spec, concept)
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
     return sp
+
+
+def seen_called(sn: dict) -> str:
+    """What a thing the picture shows is called in a picture's words: the head of the judge's words for its own
+    part of the picture (looked at alone: the surer of its two readings), else the name it was listed by; things
+    read together as one are the buildings."""
+    if sn.get("group"):
+        return "buildings"
+    w = re.split(r"[,.;:]|\b(?:with|topped|that|which|standing|made|forming)\b", str(sn.get("words") or ""), maxsplit=1)[0]
+    w = re.sub(r"^(a|an|the)\s+", "", w.strip(), flags=re.I).strip().lower()
+    # (a head of one word is as often its first adjective as its noun: "dark, gnarled ...")
+    return w if 2 <= len(w.split()) <= 5 else str(sn.get("name") or "").strip().lower()
 
 
 SIZE_OFF = 1.6                   # the picture's thing this many times longer or shorter than the story's is not it
