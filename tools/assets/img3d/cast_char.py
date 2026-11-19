@@ -855,6 +855,13 @@ def main():
                 raise RuntimeError(f"combo failed: {p.stdout[-800:]}")
             if not a.whole:                 # (the whole figure keeps its own head: nothing to check for one left on)
                 head_check()
+            else:
+                # the whole figure's hands: the body's jointed hands in the statue's colour, or (a side that could
+                # not be fitted) the statue's own rigid hand, and why
+                sh_ = json.loads((combo / "report.json").read_text()).get("statue_hands") or {}
+                CH["statue_hands"] = {s_: {k_: v_.get(k_) for k_ in ("jointed", "why", "cut_m_from_wrist", "hand_len_cm")}
+                                      | {"covered": (v_.get("colour") or {}).get("covered")}
+                                      for s_, v_ in sh_.items() if isinstance(v_, dict)}
     # ---------------------------------------------------------------- the body fits the clothes at the neck
     # the fit measures the bare neck (chin to the generated collar's front top) and both girths (the collar's inner
     # one, the MetaHuman's neck); where the collar sits low or tight, the MetaHuman's neck is changed to meet it
