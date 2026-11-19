@@ -349,6 +349,15 @@ the story itself gives a material or a thing says nothing to a prop maker). Answ
 THINGS_SHOTS = 8                 # shots in one ask of what is worn and carried
 
 
+def is_person(what: str, names) -> bool:
+    """A "thing" that is one of the story's people (carried, held or led by another): a person is staged as their
+    own figure, never made as an object (a woman a creature carried was listed as its held thing and modelled as a
+    prop 1.6 m long, 11-19)."""
+    w = re.sub(r"[^a-z ]", "", str(what or "").lower()).strip()
+    low = {re.sub(r"[^a-z ]", "", str(n).lower()).strip() for n in names}
+    return bool(w) and (w in low or any(w == re.sub(r"^(the|a|an) ", "", n) for n in low))
+
+
 def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: Path) -> dict:
     """{shot id: {person: [{"what", "on", "size_cm"}]}}: the director's account, from the whole story, of what each
     person has on or carries beyond their everyday clothes (a pilot flew bare-headed in every shot: the story only
@@ -373,6 +382,8 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
     if not got:
         return {}
     out = {}
+    cast_names = {p["name"] for i in plan if isinstance(plan[i], (list, tuple)) and plan[i] and isinstance(plan[i][0], dict)
+                  for p in plan[i][0].get("people") or []}
     for i in ids:
         row = got.get(i) if isinstance(got.get(i), dict) else {}
         who = {p["name"] for p in plan[i][0].get("people") or []}
@@ -384,7 +395,7 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
                    "size_cm": float(t["size_cm"]) if isinstance(t.get("size_cm"), (int, float)) and 2 <= t["size_cm"] <= 200
                    else None}
                   for t in (v if isinstance(v, list) else []) if isinstance(t, dict) and str(t.get("what") or "").strip()]
-            ok = [t for t in ok if t["on"] in THING_ON]
+            ok = [t for t in ok if t["on"] in THING_ON and not is_person(t["what"], cast_names)]
             if n in who and ok:
                 out[i][n] = ok
     # a held thing is asked about on its own: a part of something fixed is not a prop (the prompt rules it out and
