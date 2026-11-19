@@ -924,6 +924,21 @@ def run(job):
             # what the people of this shot wear on the head or carry in a hand (from_plan's "carried"): each made
             # object set on the head, sized to it, or gripped in its hand; those of other shots hidden
             shown, glow_on = set(), set()
+
+            def glow_at(tag, at):
+                """The light of a thing that glows of itself in this shot (the plan's "glow"), at `at` (UE cm)."""
+                try:
+                    if tag not in glow_lights:
+                        SBg_ = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
+                        glow_lights[tag] = SBg_.spawn_light({
+                            "type": "point", "c": [0, 0, 0], "lumens": GLOW_LIGHT["lumens"],
+                            "radius_m": GLOW_LIGHT["radius_m"], "color": GLOW_COLOR, "shadows": False,
+                            "f": "Scene/lights"})
+                        temp.append(glow_lights[tag])
+                    glow_lights[tag].set_actor_location(at, False, False)
+                    glow_on.add(tag)
+                except Exception as e_g:
+                    r["notes"].append(f"glow light: {e_g}")
             on_top_, in_hand_ = {}, []
             # (a worked thing lies first, so a blow's check finds its top)
             for key, things_ in (c.get("carried") or {}).items():
@@ -962,6 +977,8 @@ def run(job):
                         if got_:
                             in_hand_.append((key, t_) + got_)
                         shown.add(tag)
+                        if t_.get("glow"):       # (a held thing hot from a fire: its light at its own middle)
+                            glow_at(tag, worn_actors[tag].get_actor_bounds(False)[0])
                         continue
                     a_ = worn_actors[tag]
                     a_.set_actor_scale3d(unreal.Vector(k_, k_, k_))
@@ -985,19 +1002,7 @@ def run(job):
                         # a worked thing that glows of itself in this shot (the plan's "glow": metal hot from the
                         # fire) lights what is round it: unlit, it was a dark lump and the key drew cold iron (11-18)
                         if t_.get("glow"):
-                            try:
-                                if tag not in glow_lights:
-                                    SBg_ = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
-                                    glow_lights[tag] = SBg_.spawn_light({
-                                        "type": "point", "c": [0, 0, 0], "lumens": GLOW_LIGHT["lumens"],
-                                        "radius_m": GLOW_LIGHT["radius_m"], "color": GLOW_COLOR, "shadows": False,
-                                        "f": "Scene/lights"})
-                                    temp.append(glow_lights[tag])
-                                glow_lights[tag].set_actor_location(unreal.Vector(
-                                    o_.x, o_.y, o_.z + e_.z + GLOW_LIGHT["over_m"] * 100.0), False, False)
-                                glow_on.add(tag)
-                            except Exception as e_g:
-                                r["notes"].append(f"glow light: {e_g}")
+                            glow_at(tag, unreal.Vector(o_.x, o_.y, o_.z + e_.z + GLOW_LIGHT["over_m"] * 100.0))
                     else:
                         a_.set_actor_rotation(unreal.Rotator(0, 0, yaw_), False)
                     shown.add(tag)

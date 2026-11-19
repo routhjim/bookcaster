@@ -79,13 +79,21 @@ STYLE_CONTENT = re.compile(r"\b(cathedral|church|chapel|temple|castle|spire|arch
                            r"candle\w*|ruins?|tower)\b", re.I)
 
 
-def key_style(style: str) -> str:
+STYLE_SKY = re.compile(r"\b(sky|skies|storm\w*|cloud\w*|mist\w*|fog\w*|rain\w*|snow\w*|overcast|dusk|dawn|"
+                       r"twilight|night|moon\w*|sun\w*)\b", re.I)
+
+
+def key_style(style: str, open_air: bool = False) -> str:
     """A book's art style as a key is told it: its way of painting only (as shot_flow._key_style), its clauses that
     name things to draw left out. Told the style whole, "moody stormy skies", a key of the inside of a forge had a
     storm sky for its back wall (11-18)."""
     head, _, rest = (style or "").strip().partition(":")
     head = re.sub(r"(?i)\b(gothic|baroque|romanesque|victorian|byzantine|rococo|renaissance|medieval)\b\s*", "", head)
-    keep = [re.sub(r"(?i)\bgothic\s*", "", c).strip().rstrip(".") for c in rest.split(",") if c.strip() and not STYLE_CONTENT.search(c)]
+    # (in the open air the style's own sky and weather stay: without them a river bank was drawn under a blank
+    # white noon in a book of storm skies, 11-18; a room has no sky to draw)
+    keep = [re.sub(r"(?i)\bgothic\s*", "", c).strip().rstrip(".") for c in rest.split(",") if c.strip()
+            and (not STYLE_CONTENT.search(c) or (open_air and STYLE_SKY.search(c)
+                                                 and not STYLE_CONTENT.search(STYLE_SKY.sub("", c))))]
     return (head.strip(" ,.") + (": " + ", ".join(keep) if keep else "")).rstrip(".") + "." if head.strip() else ""
 
 
@@ -401,7 +409,7 @@ class Story:
             words = OPEN_WORDS.format(
                 room=(f"{per[0].upper() + per[1:]}: " if per and per != "not stated" else "") + room,
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
-                style=key_style(style.read_text()) if style.exists() else "")
+                style=key_style(style.read_text(), open_air=True) if style.exists() else "")
             for n in range(CONCEPT_TRIES):
                 pid = f"concept_{self.prefix}_{slug}_v{n}_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
                 pic = C.LIBRARY / "_refs" / pid / "picture.png"
@@ -781,7 +789,8 @@ class Story:
                    # (a cabin with views outside: its concept picture shows one view of its own, which the redraw
                    # then painted in every window; the cabin's look reaches the redraw through its pieces)
                    extra_refs=[ss["concept"]] if ss.get("concept") and not (ss.get("views") or {}).get("words") else [],
-                   look=key_style(style.read_text()) if style.exists() else "")
+                   look=key_style(style.read_text(), open_air=bool(ss.get("world")))
+                   if style.exists() else "")
         # a room's own walls and pieces are drawn ones: its background is held nearer the engine's frame than a
         # place in the open, whose ground and far land are rough. At the open's share a forge's keys moved its
         # hearth and door and hung lanterns the set does not have (11-18, seven shots at three strengths)

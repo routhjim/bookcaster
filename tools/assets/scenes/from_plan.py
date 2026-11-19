@@ -1052,7 +1052,8 @@ def main():
                     obj_.setdefault(names[n_], []).append({"asset": made_[t_["what"]], "at": "head", "name": t_["what"]})
                 elif (h_ := next(hands_, None)):
                     obj_.setdefault(names[n_], []).append({"asset": made_[t_["what"]], "at": "hand", "hand": h_,
-                                                           "name": t_["what"]})
+                                                           "name": t_["what"],
+                                                           **({"glow": t_["glow"]} if t_.get("glow") else {})})
         # the thing being worked on (the pass's "worked"): a made object lying on the top of the named thing its
         # worker stands at (a smith's bar on his anvil; drawn as a piece of the set, it came out a star, 11-17)
         for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items():
@@ -1076,6 +1077,11 @@ def main():
         held = {names[p_["name"]]: (str(p_["holds"]).strip() + (f" ({lk})" if (lk := next(
                     (v_ for t_, v_ in (sh.get("things") or {}).items() if t_.lower() in str(p_["holds"]).lower()), "")) else ""))
                 for p_ in sh.get("people") or [] if p_.get("name") in names and str(p_.get("holds") or "").strip()}
+        # (a held thing that glows of itself in this shot, the pass's "glow": said, or the key drew it cold)
+        for n_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items():
+            g_ = next((t_["glow"] for t_ in ts_ if t_["on"] == "held" and t_.get("glow")), None)
+            if g_ and names.get(n_) in held:
+                held[names[n_]] += f", glowing {g_} along its whole length with its own heat and lighting what is near it"
         if held:
             cam["holds"] = held
         if lis:

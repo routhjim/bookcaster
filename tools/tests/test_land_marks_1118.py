@@ -404,3 +404,12 @@ def test_a_still_that_is_mostly_black_is_nearly_black(tmp_path):
     dim.save(tmp_path / "m.png")
     assert any("nearly black" in w for w in SK.still_why({"path": str(tmp_path / "d.png")}, {}))
     assert SK.still_why({"path": str(tmp_path / "m.png")}, {}) == []
+
+
+def test_the_styles_sky_stays_for_a_place_in_the_open_only():
+    """The style's own sky and weather are told to a picture of the open air, never to a room's; its things to
+    draw (buildings, their stone) to neither."""
+    import story_keys as SKY
+    st = "Dark illustration: deep shadow, temple-like stone and iron, heavy storm skies, painterly"
+    assert "storm skies" in SKY.key_style(st, open_air=True) and "storm" not in SKY.key_style(st)
+    assert "temple" not in SKY.key_style(st, open_air=True) and "painterly" in SKY.key_style(st)
