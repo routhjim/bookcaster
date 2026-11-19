@@ -906,6 +906,8 @@ FIX_STEP_CM = 1.5           # the surface sampled at least this finely (a long f
 FIX_BAND = (0.35, 1.1)      # a workable height for the hands: shares of the stature above the floor
 FIX_REACH = 1.6             # a part within this many arm lengths of the shoulders (the body leans to the rest)
 FIX_OPEN_CM = 25.0          # nothing of the piece this far over the hand's place on a part (a table's leg under its top)
+FIX_REST_FAR = 0.2          # a part farther than this share of the stature from the working point: the hands rest on the top
+FIX_REST_THICK_CM = 8.0     # ... half closed, as on a beam
 FIX_SEEDS = 600             # at most this many surface points tried as a part's start
 FIX_MAX_PARTS = 8
 
@@ -1148,7 +1150,7 @@ def fixture_hands(parts, s, free, hs, H, floor, pts=None):
     other free hand the next part at least a palm's width away. -> {side: {"on" (the palm's point on the part's
     line), "a", "b", "dir", "thick_cm", "t" (the handle direction to grip it with: the thumb toward the body's
     middle and up)}}."""
-    if not parts or not free:
+    if not free or (not parts and not pts):
         return {}
     left, fwd = _body_axes(s)
     sh = scale(add(s.pos["upperarm_l"], s.pos["upperarm_r"]), 0.5)
@@ -1166,9 +1168,31 @@ def fixture_hands(parts, s, free, hs, H, floor, pts=None):
         near = next((p for p in cands if _open_above(grid, p, q["dir"])), None)
         if near is not None:
             ok.append((math.dist(near, want), near, q))
+    ok.sort(key=lambda x: x[0])
+    # no part to close a hand round near where the hands work (a made piece's lever is a thick beam, and the only
+    # thin part found was a stub at the hip a deep bend away, 11-18): the hands are laid on the piece's own top
+    # nearest the working point instead, side by side across the body
+    if (not ok or ok[0][0] > FIX_REST_FAR * H) and grid is not None:
+        top = sorted((p for p in pts if floor + FIX_BAND[0] * H <= p[2] <= floor + FIX_BAND[1] * H
+                      and math.dist(p, sh) <= FIX_REACH * arm), key=lambda p: math.dist(p, want))
+        at = next((p for p in top[:400] if _open_above(grid, p, [0.0, 0.0, 1.0])), None)
+        if at is not None and (not ok or math.dist(at, want) < ok[0][0] - 5.0):
+            ends = []
+            for sg in (1.0, -1.0):
+                e = list(at)
+                for _ in range(20):
+                    n = add(e, scale(left, 2.0 * sg))
+                    nb = [q for q in grid.near(n, 3.0) if math.dist(q, n) <= 3.0]
+                    if not nb or not _open_above(grid, max(nb, key=lambda q: q[2]), [0.0, 0.0, 1.0]):
+                        break
+                    e = [n[0], n[1], max(q[2] for q in nb)]
+                ends.append(e)
+            a_, b_ = ends
+            d_ = unit(sub(b_, a_)) if math.dist(a_, b_) > 1e-3 else scale(left, -1.0)
+            ok = [(math.dist(at, want), list(at), {"a": [round(x, 2) for x in a_], "b": [round(x, 2) for x in b_],
+                                                   "dir": d_, "thick_cm": FIX_REST_THICK_CM, "rest": True})]
     if not ok:
         return {}
-    ok.sort(key=lambda x: x[0])
     _, near, q = ok[0]
 
     def hand(side, pt, part):
@@ -1176,7 +1200,7 @@ def fixture_hands(parts, s, free, hs, H, floor, pts=None):
         d = part["dir"]
         t = d if dot(d, add([0.0, 0.0, 1.0], inward)) >= 0 else scale(d, -1.0)
         return {"on": [round(x, 2) for x in pt], "a": part["a"], "b": part["b"], "dir": part["dir"],
-                "thick_cm": part["thick_cm"], "t": [round(x, 4) for x in t]}
+                "thick_cm": part["thick_cm"], "t": [round(x, 4) for x in t], **({"rest": True} if part.get("rest") else {})}
     run = math.dist(q["a"], q["b"])
     free = [x for x in ("l", "r") if x in free]
     out = {}

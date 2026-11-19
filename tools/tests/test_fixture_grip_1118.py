@@ -128,7 +128,10 @@ def test_a_table_leg_under_its_top_is_not_taken():
     pts = surface(*TABLE)
     assert PO.grip_parts(pts, [0, 30, 127])                 # the legs are thin enough ...
     s = work(pts)
-    assert s.info["fixture"]["hands"] == {}                 # ... but no hand can come onto them from above
+    h = s.info["fixture"]["hands"]                          # ... but no hand can come onto them from above:
+    assert set(h) == {"l", "r"}                             # both hands are laid on the top instead, side by side
+    assert all(abs(x["on_cm"][2] - 90.0) < 1.0 and x["solver_palm_cm"] < 0.5 for x in h.values())
+    assert h["l"]["on_cm"][0] - h["r"]["on_cm"][0] > 20.0
 
 
 # ------------------------------------------------------------------ the hands on the part
