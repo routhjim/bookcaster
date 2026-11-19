@@ -819,13 +819,13 @@ class Story:
                 if not ok:
                     log(f"{place}: no figure for {name} in {r['id']} ({vid}); see {w / 'run.log'}")
                     (w / "FAILED").write_text(time.strftime("%F %T"))
-            if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_on").exists():
+            if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_drawn").exists():
                 # a figure built before an outfit's headwear was part of it: drawn and shaped again, once
                 log(f"{place}: {name} in {r['id']}: made again wearing its headwear")
                 sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log")
                 self._fit_mark(w)
             if ok and self.outfit_words(name, r).get("head_on"):
-                (w / "headwear_on").write_text(time.strftime("%F %T"))
+                (w / "headwear_drawn").write_text(time.strftime("%F %T"))
             if ok:
                 self._hands_again(f"{name} in {r['id']}", w, cmd)
             out[r["variant"]] = (vid if ok else None, r)

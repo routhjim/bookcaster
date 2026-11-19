@@ -58,3 +58,12 @@ def test_a_person_drawn_by_their_lora_in_their_usual_look_takes_no_sheet():
     assert RD.sheet_ref(usual, "in_a_hat.png") == "in_a_hat.png"                     # what the LoRA never saw
     assert RD.sheet_ref(dict(usual, sheet="outfit.png", _outfit_sheet=True), None) == "outfit.png"
     assert RD.sheet_ref({"sheet": "only.png"}, None) == "only.png"                   # nobody's LoRA: their sheet
+
+
+def test_the_head_gate_reads_a_plain_yes_or_no():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "img3d"))
+    import head_gate as HG
+    assert HG.worn("Yes") and HG.worn(" yes.") and not HG.worn("No") and not HG.worn("")
+    assert "{what}" in HG.ASK

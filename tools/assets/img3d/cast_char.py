@@ -48,6 +48,7 @@ CARD = str(ASSETS / "orbit" / "card.sh")
 BLENDER = str(C.BLENDER)
 HY_PY = os.path.expanduser(os.environ.get("ASSETS_IMG3D_TORCH_PY", "~/tts-ab/.venv-hy3d/bin/python"))
 QWEN_PY = os.path.expanduser(os.environ.get("ASSETS_QWEN_PY", "~/tts-ab/.venv-qwenimage/bin/python"))
+IGPU_PY = os.path.expanduser(os.environ.get("ASSETS_IGPU_PY", "~/tts-ab/.venv-charlora-igpu/bin/python"))
 GUIDES_PY = os.path.expanduser(os.environ.get("ASSETS_GUIDES_PY", "~/tts-ab/.venv-hyworld/bin/python"))
 OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
@@ -676,6 +677,13 @@ def main():
             look = spread_look(a.look, gf_.get("outer_words") if gf_.get("outer_layer") else None,
                                headwear=bool(a.headwear and a.whole))
             CH["draw_look"] = look
+            # what the outfit puts on the head, in the look's own words: said again by itself in the drawing's
+            # words, and looked for in each drawing (head_gate.py)
+            import re as _re
+            hw_ = [q.strip() for q in _re.split(r",| and ", look.partition("wearing ")[2])
+                   if _re.search(HEADWEAR, q, _re.I) and not HEAD_OFF.search(q)] if a.headwear and a.whole else []
+            head_words = (f" On the head: {hw_[0]}, worn on the head and covering the hair." if hw_ else "")
+            hw_say = _re.sub(r"[^A-Za-z0-9 -]", " ", hw_[0]).strip() if hw_ else ""
             tried, meshes, chosen = [], [], None
             # each run draws into its own folder with its own seeds (an earlier run's entries still on the line
             # must not overwrite this run's drawings)
@@ -695,7 +703,7 @@ def main():
                 CH.setdefault("pose_deg", []).append(deg)
                 seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
                 jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [cw, 1344],
-                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + (
+                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + head_words + (
                              " No outer layer over the shoulders: the arms, the sides of the body and the clothes "
                              "under it all in view." if gf_.get("outer_layer") else ""), "refs": [a.sheet],
                          "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
@@ -719,6 +727,18 @@ def main():
                         sides = [v for k, v in res.items() if isinstance(v, dict) and "angle_deg" in v]
                         passing.append((min((s_.get("angle_deg") or 0) * (s_.get("armpit") or 0) for s_ in sides),
                                         j["path"]))
+                if hw_ and passing:
+                    hg = rdir / f"head_r{rnd}.json"
+                    line(["--line-cmd", "igpu", "check", "--id", f"cast_{tag}_head{run_n}_{rnd}", "--", "bash", "-c",
+                          f"cd {REPO} && bash {CARD} igpu bash -c 'env HSA_CU_MASK=$HIP_VISIBLE_DEVICES:0-38 {IGPU_PY} -I "
+                          f"tools/assets/img3d/head_gate.py {hg} \"{hw_say}\" {' '.join(p_ for _, p_ in passing)}'"],
+                         W / f"head_r{rnd}.log")
+                    on_ = json.loads(hg.read_text()) if hg.exists() else {}
+                    for res in tried:
+                        if res.get("file") in on_:
+                            res["headwear"] = bool(on_[res["file"]])
+                    if on_:                  # (no answer: the judge did not run; the drawings stand as they are)
+                        passing = [(sc_, p_) for sc_, p_ in passing if on_.get(p_)]
                 # every drawing that passes goes to 3D, best first, until a mesh passes the mesh gate
                 for _sc, path in sorted(passing, reverse=True):
                     out = rdir / (Path(path).stem + ".glb")
