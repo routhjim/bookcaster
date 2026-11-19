@@ -223,3 +223,17 @@ def test_a_check_takes_each_picture_as_it_lands(tmp_path, monkeypatch):
         if x["id"] == "b":
             (tmp_path / "a.png").write_bytes(b"x")
     assert got == ["b", "a"]                      # as they land; the one never drawn is left out
+
+
+def test_the_books_own_word_for_a_places_time_of_day_comes_first(tmp_path, monkeypatch):
+    st = _story(tmp_path, ["P", "Q"])
+    st.book = tmp_path / "book"
+    st.book.mkdir()
+    (st.book / "place_times.json").write_text(json.dumps({"P": "Night", "Q": "sometime"}))
+    monkeypatch.setattr(SK, "llm", lambda *a, **k: 0)
+    for p in ("p", "q"):
+        (st.work / p).mkdir(parents=True, exist_ok=True)
+    (st.work / "q" / "place_time.json").write_text(json.dumps({"time": "day"}))
+    st.plan_p = st.timeline = tmp_path / "x"
+    assert st.place_time("P") == "night"
+    assert st.place_time("Q") == "day"                      # not one of the three: the asked answer stands

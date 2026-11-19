@@ -696,6 +696,16 @@ class Story:
         """The place's time of day ("day", "dusk", "night", or "" when the story does not say), asked of the
         directing model once (scenes/place_spec.py time_of_day) and kept in the place's place_time.json."""
         d = self.d(place)
+        # (the book's own word first: BOOK/place_times.json {place: day | dusk | night}, written by whoever knows
+        # the story; the model read a night scene's shed as no time at all, 11-19)
+        said = self.book / "place_times.json"
+        if said.exists():
+            try:
+                t = str(json.loads(said.read_text()).get(place) or "").strip().lower()
+                if t in ("day", "dusk", "night"):
+                    return t
+            except ValueError:
+                log(f"{said} cannot be read; the model's answers are used")
         tp = d / "place_time.json"
         if not tp.exists():
             llm(f"time_{self.places[place]['slug']}", d / "time.log", [[
