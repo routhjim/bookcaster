@@ -88,17 +88,6 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
                    "top_m": round(H - 0.02, 2), "rise_m": rise, "chord_m": [0.18, 0.14], "web_m": 0.1,
                    "panel_m": round(span / 2, 2), "columns": False, "material": "panel_wood"})
         st.append(dict(kit["ceiling"], height_m=round(H + rise + 0.2, 2), material="panel_wood"))
-        # the walls carried up to those boards (between the walls' tops and the boards the room stood open to the
-        # sky on every side: sunlight fell through it in sheets across a hall and a shed, 11-19)
-        up, th = round(rise + 0.2, 2), 0.25
-        for side, base, size in (("north", [0, D / 2 + th / 2, H], [W + 2 * th, th, up]),
-                                 ("south", [0, -D / 2 - th / 2, H], [W + 2 * th, th, up]),
-                                 ("east", [W / 2 + th / 2, 0, H], [th, D + 2 * th, up]),
-                                 ("west", [-W / 2 - th / 2, 0, H], [th, D + 2 * th, up])):
-            st.append({"kind": "box", "name": f"wall_top_{side}", "base": [round(v, 3) for v in base],
-                       "size_m": [round(v, 3) for v in size],
-                       "material": kit["wall_material_ns" if side in ("north", "south") else "wall_material_ew"]
-                       if "wall_material_ew" in kit else kit["wall_material_ns"]})
     else:
         st.append(dict(kit["ceiling"], height_m=H))
     out["structure"] = st
@@ -137,6 +126,19 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
                                    radius_m=round(max(cl.get("radius_m", 12), 2.5 * H), 1),
                                    position=[round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2),
                                              round(H - 0.12, 3)]))
+    rise_ = next((w.get("rise_m") for w in st if w.get("kind") == "trusses"), None)
+    if wins and kit["lights"].get("sun") and rise_:
+        # under a timber roof the wall the sun stands behind is carried up to the roof's boards: over that wall's
+        # top the sun fell into the room in sheets (a hall and a shed, 11-19). The other walls' tops stay open to
+        # the sky's light: closed all round, a room with one small window was black
+        side, th, up = wins[0]["wall"], 0.25, round(rise_ + 0.2, 2)
+        base, size = {"north": ([0, D / 2 + th / 2, H], [W + 2 * th, th, up]),
+                      "south": ([0, -D / 2 - th / 2, H], [W + 2 * th, th, up]),
+                      "east": ([W / 2 + th / 2, 0, H], [th, D + 2 * th, up]),
+                      "west": ([-W / 2 - th / 2, 0, H], [th, D + 2 * th, up])}[side]
+        st.append({"kind": "box", "name": f"wall_top_{side}", "base": [round(v, 3) for v in base],
+                   "size_m": [round(v, 3) for v in size],
+                   "material": kit["wall_material_ns" if side in ("north", "south") else "wall_material_ew"]})
     if wins and kit["lights"].get("sun"):       # daylight from the first window's side
         n = NORMAL[wins[0]["wall"]]
         lights.insert(0, dict(kit["lights"]["sun"], toward_sun=[round(-n[0] * 0.8 + n[1] * 0.3, 3),
