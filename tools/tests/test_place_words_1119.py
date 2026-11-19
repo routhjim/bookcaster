@@ -79,3 +79,11 @@ def test_a_rooms_words_call_a_thing_what_the_story_calls_it_and_a_seen_window_pl
     w, _ = PB.room_words(out, lay, kit, recs)
     assert "landmark" not in w and "dark stone (low and long, faintly lit)" in w
     assert "drapes" not in w and "a window" in w and "a panelled door" in w
+
+
+def test_what_a_thing_is_likened_to_is_not_in_the_words_it_is_drawn_from():
+    import place_build as PB
+    assert PB.no_likeness("grey rock, size of a sleeping cat, faintly lit") == "grey rock, faintly lit"
+    assert PB.no_likeness("a lump as big as a cart wheel; rough") == "a lump; rough"
+    assert PB.no_likeness("oak chest, iron bound") == "oak chest, iron bound"
+    assert PB.no_likeness("the size of a barn") == "the size of a barn"       # (nothing else to draw it from)

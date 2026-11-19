@@ -219,6 +219,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
         c = chk.get(p["id"]) or {}
         if not p.get("phrases") and not c.get("in_picture"):
             continue
+        if p.get("look"):
+            p["look"] = no_likeness(p["look"])
         if p.get("kind") in ("work_piece", "landmark") and str(p.get("look") or "").strip():
             # what the story calls it (its look begins with its own name): its name in every picture's words. Named
             # "the landmark" with the judge's words for its shape, a cave mouth was drawn as a built stone doorway
@@ -324,6 +326,19 @@ def with_concept(spec: dict, concept: dict) -> dict:
         sp = outdoors(sp, spec, concept)
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
     return sp
+
+
+LIKENESS = re.compile(r"\s*[,;]?\s*\b(?:(?:about |roughly |nearly )?(?:the )?(?:size|shape|height|length|width) of|"
+                      r"(?:as|about as) (?:big|large|small|long|tall|wide|heavy) as|"
+                      r"no (?:bigger|larger|taller|longer) than|(?:shaped|sized) like)\s+[^,;.]+", re.I)
+
+
+def no_likeness(look: str) -> str:
+    """A thing's look without what it is likened to for its size or shape: the words go to a picture model, which
+    draws every thing they name (a stone "the size of a sleeping dog" was made a stone statue of a sleeping dog,
+    11-19). Its size is the spec's own number."""
+    out = LIKENESS.sub("", str(look or "")).strip(" ,;")
+    return out or str(look or "")
 
 
 def seen_called(sn: dict) -> str:
