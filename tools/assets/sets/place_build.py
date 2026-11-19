@@ -233,6 +233,7 @@ NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
 NIGHT_SKY = 0.08                 # the sky's own light at night, of the day's
 NIGHT_SUN = 0.06                 # the moon's light over open land, of the sun's the place's picture shows
 DUSK_SUN = 0.35                  # ... and the low sun's at dusk
+SEEN_OPENINGS = ("window", "door")   # the kinds of opening a room takes from its picture
 SEEN_OPENING = "oc"              # the id of an opening taken from the place's concept picture begins with this
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
 
@@ -338,7 +339,9 @@ def with_concept(spec: dict, concept: dict) -> dict:
         # layout finds for it
         stated = {o.get("kind") for o in sp.get("openings") or []}
         for i, sn in enumerate(concept.get("seen") or []):
-            if sn.get("kind") in OPENING_KINDS and sn.get("box") and sn["kind"] not in stated:
+            # (a window or a door only: a fire the picture shows is the room's own thing, built from the picture.
+            # Taken as the kind's fireplace, a forge got the period kit's white mantelpiece on a panelled breast, 11-19)
+            if sn.get("kind") in SEEN_OPENINGS and sn.get("box") and sn["kind"] not in stated:
                 stated.add(sn["kind"])
                 sp.setdefault("openings", []).append({"id": f"{SEEN_OPENING}{i + 1}", "kind": sn["kind"], "wall": "not stated",
                                                       "words": "; ".join(x for x in (sn.get("name"), sn.get("look")) if x)})

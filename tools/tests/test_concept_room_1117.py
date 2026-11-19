@@ -297,3 +297,11 @@ def test_a_room_with_the_sun_at_its_window_is_lit_inside_all_the_same():
     added = [l for l in out["lights"] if l["type"] == "point"]
     assert sum(l["lumens"] for l in added) >= PB.ROOM_LM_M2 * 80 - 1300 - 1
     assert any(l["type"] == "sun" for l in out["lights"])            # the light from outside is kept
+
+
+def test_a_fire_the_picture_shows_is_not_made_the_kinds_fireplace():
+    c = concept_with_depth()
+    c["seen"] = [{"name": "hearth", "look": "stone", "kind": "fireplace", "box": [0.3, 0.3, 0.6, 0.7]},
+                 {"name": "door", "look": "wood", "kind": "door", "box": [0.8, 0.2, 0.95, 0.8]}]
+    sp = PB.with_concept(dict(place_spec(), openings=[]), c)
+    assert [o["kind"] for o in sp["openings"]] == ["door"]
