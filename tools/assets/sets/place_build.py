@@ -92,7 +92,11 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
         st.append(dict(kit["ceiling"], height_m=H))
     out["structure"] = st
     fixtures, props = list(ss["fixtures"]), list(ss["props"])
-    lights = [dict(kit["lights"]["sky"])]
+    dark = spec.get("_time") in DARK_TIMES
+    sky = dict(kit["lights"]["sky"])
+    if dark:                                       # (the night sky gives a room next to nothing)
+        sky["intensity"] = round(float(sky.get("intensity", 1.0)) * NIGHT_SKY, 3)
+    lights = [sky]
     wins = [o for o in layout["openings"] if o["kind"] == "window"]
     dress_by = {d["name"]: d["asset"] for d in kit.get("window_dressing") or []}
     for i, o in enumerate(wins):
@@ -105,14 +109,21 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             fixtures.append({"asset": dress_by["drapes"], "name": "drapes" + sfx,
                              "position": [round(p[0] + n[0] * 0.125, 3), round(p[1] + n[1] * 0.125, 3), 0.0],
                              "facing": list(n), "hang": True, "look": kit.get("drapes_look")})
-        if "street_backdrop" in dress_by:
+        if "street_backdrop" in dress_by and not dark:     # (at night nothing is seen outside a window)
             fixtures.append({"asset": dress_by["street_backdrop"], "name": "street_backdrop" + sfx,
                              "position": [round(p[0] - n[0] * 9.5, 3), round(p[1] - n[1] * 9.5, 3), -6.0],
                              "facing": list(n), "outside": True})
         if not kit["lights"].get("window_rect"):
             continue                              # (a period whose windows give no daylight: a ship's viewport)
-        lights.append(dict(kit["lights"]["window_rect"], position=[round(p[0] + n[0] * 0.1, 3), round(p[1] + n[1] * 0.1, 3), 1.75],
-                           toward=[round(p[0] + n[0] * 3.5, 3), round(p[1] + n[1] * 3.5, 3), 1.45]))
+        wl = dict(kit["lights"]["window_rect"], position=[round(p[0] + n[0] * 0.1, 3), round(p[1] + n[1] * 0.1, 3), 1.75],
+                  toward=[round(p[0] + n[0] * 3.5, 3), round(p[1] + n[1] * 3.5, 3), 1.45])
+        if dark:
+            # no daylight comes in: what the window gives at night is a little cold light, the room's own lamps
+            # and fires the rest (lit(): every room is lit inside)
+            wl = {**wl, **{k: round(wl[k] * NIGHT_WINDOW, 1) for k in ("lumens", "lux", "intensity") if isinstance(wl.get(k), (int, float))},
+                  "kelvin": NIGHT_KELVIN}
+            wl.pop("color", None)
+        lights.append(wl)
     if kit["lights"].get("ceiling"):
         # a room lit from its ceiling (the period's own fitting): a grid over the floor, wider apart and stronger
         # the higher the ceiling (one fitting's light at the floor falls with the square of the height)
@@ -127,7 +138,7 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
                                    position=[round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2),
                                              round(H - 0.12, 3)]))
     rise_ = next((w.get("rise_m") for w in st if w.get("kind") == "trusses"), None)
-    if wins and kit["lights"].get("sun") and rise_:
+    if wins and kit["lights"].get("sun") and rise_ and not dark:
         # under a timber roof the wall the sun stands behind is carried up to the roof's boards: over that wall's
         # top the sun fell into the room in sheets (a hall and a shed, 11-19). The other walls' tops stay open to
         # the sky's light: closed all round, a room with one small window was black
@@ -139,7 +150,7 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
         st.append({"kind": "box", "name": f"wall_top_{side}", "base": [round(v, 3) for v in base],
                    "size_m": [round(v, 3) for v in size],
                    "material": kit["wall_material_ns" if side in ("north", "south") else "wall_material_ew"]})
-    if wins and kit["lights"].get("sun"):       # daylight from the first window's side
+    if wins and kit["lights"].get("sun") and not dark:       # daylight from the first window's side
         n = NORMAL[wins[0]["wall"]]
         lights.insert(0, dict(kit["lights"]["sun"], toward_sun=[round(-n[0] * 0.8 + n[1] * 0.3, 3),
                                                                round(-n[1] * 0.8 - n[0] * 0.3, 3), 0.35]))
@@ -215,6 +226,12 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
+DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
+NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
+NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
+NIGHT_SKY = 0.08                 # the sky's own light at night, of the day's
+NIGHT_SUN = 0.06                 # the moon's light over open land, of the sun's the place's picture shows
+DUSK_SUN = 0.35                  # ... and the low sun's at dusk
 SEEN_OPENING = "oc"              # the id of an opening taken from the place's concept picture begins with this
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
 
@@ -804,17 +821,24 @@ def world_stage(out: dict, spec: dict, library) -> dict:
                                                                            round(-st[2], 3)], "facing": [0.0, -1.0],
                                "outside": True, "surface": True, "world": True})
     sun = w.get("sun")
-    lights = [{"type": "sky", "intensity": WORLD_SKY, "atmosphere": False}]
+    lights = [{"type": "sky", "intensity": round(WORLD_SKY * (NIGHT_SKY * 2 if spec.get("_time") in DARK_TIMES else 1.0), 4),
+               "atmosphere": False}]
+    tod = spec.get("_time")
     if sun:
+        # the place's own time of day (the picture it was made from is drawn by day whatever the story says): at
+        # night its one light from the sky is the moon's, low and cold; at dusk a low sun
+        k_ = NIGHT_SUN if tod in DARK_TIMES else DUSK_SUN if tod == "dusk" else 1.0
         lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
-                          "lux": round(WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or 0.3))), 1),
-                          "kelvin": kelvin_of(sun.get("color") or "#ffffff"), "volumetric": 0.0})
+                          "lux": round(k_ * WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or 0.3))), 1),
+                          "kelvin": NIGHT_KELVIN if tod in DARK_TIMES else kelvin_of(sun.get("color") or "#ffffff"),
+                          "volumetric": 0.0})
     out["lights"] = lights
     # what the redraw is told of the place: the open land and what stands on it, its ground, sky and light (a
     # room's "walls" and "ceiling" are not said of it)
     held = str(out.get("words") or "").partition(": ")[2].strip().rstrip(".")
     if t.get("land_words"):
-        out["words"] = f"In the open air, {t['land_words']}" + (f"; standing there: {held}" if held else "") + "."
+        when = {"night": " at night under a dark sky", "dusk": " at dusk, the light low"}.get(tod, "")
+        out["words"] = f"In the open air{when}, {t['land_words']}" + (f"; standing there: {held}" if held else "") + "."
     if t.get("surface_words"):
         sw = str(t["surface_words"])
         out["surfaces_words"] = sw[0].upper() + sw[1:] + "."
@@ -1096,6 +1120,8 @@ def main():
         spec["_style"] = Path(a[a.index("--style") + 1]).read_text().strip().rstrip(".")
     if "--concept" in a:
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
+    if "--time" in a:                                  # the place's time of day (scenes/place_spec.py time_of_day)
+        spec["_time"] = a[a.index("--time") + 1]
     spec = with_crowd(spec)
     if "--emit" in a:                                  # the spec as it is built (after the concept check)
         Path(a[a.index("--emit") + 1]).write_text(json.dumps(spec, indent=1))

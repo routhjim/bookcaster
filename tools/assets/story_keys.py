@@ -690,9 +690,25 @@ class Story:
         else:
             log(f"{place}: the concept could not be measured (concept_depth.log)")
 
+    def place_time(self, place) -> str:
+        """The place's time of day ("day", "dusk", "night", or "" when the story does not say), asked of the
+        directing model once (scenes/place_spec.py time_of_day) and kept in the place's place_time.json."""
+        d = self.d(place)
+        tp = d / "place_time.json"
+        if not tp.exists():
+            llm(f"time_{self.places[place]['slug']}", d / "time.log", [[
+                PY, HERE / "scenes" / "place_spec.py", self.plan_p, d / "shots.txt", self.timeline, place, tp,
+                "--cache", d / "cache", "--time-only"]])
+        try:
+            return str(json.loads(tp.read_text()).get("time") or "")
+        except (OSError, ValueError):
+            return ""
+
     def _build(self, place, *extra) -> int:
         d = self.d(place)
         con = ["--concept", d / "concept.json"] if (d / "concept.json").exists() else []
+        tod = self.place_time(place) if "--time" in extra else ""
+        extra = tuple(x for x in extra if x != "--time") + (("--time", tod) if tod else ())
         sty = ["--style", self.book / "art_style.txt"] if (self.book / "art_style.txt").exists() else []
         return sh([PY, HERE / "sets" / "place_build.py", d / "place_spec.json", self.places[place]["set"]] + con
                   + sty + list(extra), d / "place_build.log")
@@ -707,7 +723,7 @@ class Story:
 
     def step_set(self, place):
         d = self.d(place)
-        if self._build(place, "--write"):
+        if self._build(place, "--write", "--time"):
             return False
         rep = json.loads((self.set_dir(place) / "place_build_report.json").read_text())
         gone = [ph for ph, at in (rep.get("named_places") or {}).items() if not at]

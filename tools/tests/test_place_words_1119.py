@@ -87,3 +87,25 @@ def test_what_a_thing_is_likened_to_is_not_in_the_words_it_is_drawn_from():
     assert PB.no_likeness("a lump as big as a cart wheel; rough") == "a lump; rough"
     assert PB.no_likeness("oak chest, iron bound") == "oak chest, iron bound"
     assert PB.no_likeness("the size of a barn") == "the size of a barn"       # (nothing else to draw it from)
+
+
+def test_a_place_at_night_has_no_sun_in_its_room_and_the_moon_over_open_land(tmp_path):
+    import place_build as PB
+    import inspect
+    src = inspect.getsource(PB)
+    # the rule's own numbers hold together: at night a window gives a little, the sky less, the moon is not the sun
+    assert 0 < PB.NIGHT_WINDOW < 0.2 and 0 < PB.NIGHT_SKY < 0.2 and 0 < PB.NIGHT_SUN < PB.DUSK_SUN < 1
+    assert "night" in PB.DARK_TIMES and "dusk" not in PB.DARK_TIMES
+    assert 'kit["lights"].get("sun") and not dark' in src
+
+
+def test_the_time_of_day_is_read_from_one_word_of_the_answer(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "scenes"))
+    import place_spec as PS
+    plan = {"s1": [{"place": "P", "setting": "A yard.", "action": "They wait."}], "_es": []}
+    monkeypatch.setattr(PS, "passage", lambda *a: "text")
+    for said, want in (("Night", "night"), ("<think>day?</think>\ndusk.", "dusk"), ("unknown", ""), ("day", "day")):
+        monkeypatch.setattr(PS, "ask", lambda url, text, cache, said=said: said)
+        assert PS.time_of_day(plan, ["s1"], [], "P", "u", tmp_path) == want

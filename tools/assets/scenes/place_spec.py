@@ -533,6 +533,35 @@ def whole(place: str, spec: dict, acts: list, psg: str, url: str, cache: Path) -
     return re.sub(r"^\d[\.\)]\s*|(?<=[\.\!]\s)\d[\.\)]\s+", "", txt).strip()                # (its sentences only, without their numbers)
 
 
+TIMES = ("day", "dusk", "night")
+TIME_ASK = """A story has these shots, in order, in the place "{place}". The story's text around them:
+<<<
+{story}
+>>>
+What the director wrote for each shot (its setting, then what happens):
+{shots}
+
+What time of day is it in this place during these shots: is the sun up? Go by what the text and the shot lines say
+of the light, the sky, the dark, lamps and fires that are lit, and the hour. A dark or dim room says nothing by
+itself; lamps lit because it is dark outside, a black sky, moon or stars say night. Answer with one word and nothing
+else: day, dusk, night, or unknown."""
+
+
+def time_of_day(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache: Path) -> str:
+    """The time of day of a place's shots, as the directing model reads it from the text and the shot lines: one of
+    TIMES, or "" when they do not say. (Nothing carried it: every room with a window was built with the sun behind
+    it, and a night scene in a shed was staged in daylight, 11-19.)"""
+    ids = place_shots(plan, all_ids, place)
+    rows = []
+    for s_ in ids:
+        r = plan[s_][0]
+        rows.append("- " + " | ".join(x for x in (str(r.get("setting") or "").strip(), str(r.get("moment") or "").strip(),
+                                                   str(r.get("action") or "").strip()) if x))
+    txt = ask(url, TIME_ASK.format(place=place, story=passage(timeline, plan, ids, all_ids), shots="\n".join(rows)), cache)
+    w = re.sub(r"(?s)<think>.*?</think>", "", txt).strip().lower()
+    return next((t for t in TIMES if re.search(rf"\b{t}\b", w)), "")
+
+
 def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache: Path) -> dict:
     ids = place_shots(plan, all_ids, place)
     names = {p["name"] for s in all_ids for p in plan[s][0].get("people") or []}
@@ -581,6 +610,11 @@ def main():
     place, out = a[3], Path(a[4])
     cache = Path(a[a.index("--cache") + 1]) if "--cache" in a else out.parent / "place_cache"
     url = a[a.index("--url") + 1] if "--url" in a else "http://127.0.0.1:18100/v1/chat/completions"
+    if "--time-only" in a:                # the place's time of day alone: {"time": day | dusk | night | ""}
+        t = time_of_day(plan, ids, tl, place, url, cache)
+        out.write_text(json.dumps({"place": place, "time": t}, indent=1))
+        print(json.dumps({"place": place, "time": t}))
+        return 0
     spec, base = write(plan, ids, tl, place, url, cache)
     out.write_text(json.dumps(spec, indent=1))
     out.with_suffix(".prompt.txt").write_text(base)
