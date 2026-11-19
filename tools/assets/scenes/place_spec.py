@@ -318,6 +318,13 @@ THING_ON = ("head", "face", "hands", "feet", "body", "held", "worked")
 PART_ASK = ("In a scene this happens: {act}\nA prop list for it names this as a thing in a person's hand: {what}\n"
             "Is it a whole thing of its own that a person can pick up and carry away; or is it a part of something "
             "bigger that stays in its place? Answer with exactly one word: whole or part.")
+LOOK_WHERE_ASK = ("A prop maker is given this sentence to make one object from: {look}\nDoes the sentence say anything "
+                  "but how the object itself looks: where it is, what it hangs, lies, rests or stands on or over, who "
+                  "has it, or what is done with it? Answer with exactly one word: yes or no.")
+LOOK_ALONE_ASK = ("A prop maker is given this sentence to make one object from: {look}\nWrite the sentence again with "
+                  "every word left out that says where the object is, what it hangs, lies, rests or stands on or "
+                  "over, who has it, or what is done with it: only how the object itself looks stays. Answer with "
+                  "the sentence and nothing else.")
 GLOW_ASK = ("In a scene this happens: {act}\nThe thing this work is done on: {what}\nAt that moment, does this thing "
             "glow with its own heat or its own light (as a thing just out of a fire does)? If it does, answer with "
             "the colour of its glow in one or two plain words; if it does not, or the words do not say, answer no.")
@@ -391,6 +398,13 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
         look = {w: ask(url, LOOK_ASK.format(story=SP.span(timeline, -1.0, 1e9), what=w, place=place), cache).strip()
                 for w in act if w not in part}
         look = {w: v for w, v in look.items() if 8 <= len(v) <= 400 and not set("{}[]\n") & set(v)}   # (a sentence)
+        # (asked for the thing alone, a look still said where it hangs, and the keys drew it hanging there, 11-18:
+        # such a look is written again without those words)
+        for w, v in list(look.items()):
+            if ask(url, LOOK_WHERE_ASK.format(look=v), cache).strip().lower().startswith("yes"):
+                v2 = ask(url, LOOK_ALONE_ASK.format(look=v), cache).strip()
+                if 8 <= len(v2) <= 400 and not set("{}[]\n") & set(v2):
+                    look[w] = v2
     except OSError:
         part, look = set(), {}
     for i in ids:
