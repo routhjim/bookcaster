@@ -825,6 +825,9 @@ class Story:
     def step_keys(self, place):
         d = self.d(place)
         acc = json.loads((d / "run" / "accepted.json").read_text())
+        # tries the pick rejected outright (redraw/facegate.py: a person whose face shows drawn as a creature, a
+        # statue or no face) are never a key, not even as the fallback or the replacement of a dark pick
+        rejected = {t for v in acc.values() for t in v.get("rejected") or []}
         rows = []
         for g in sorted((d / "seq").glob("pl_g*/"), key=lambda p: (len(p.name), p.name)):
             if not (g / "spec_round0.json").exists():
@@ -843,8 +846,13 @@ class Story:
                                                                    or st.get("why") or []))
                 a = next((v for k, v in acc.items() if k.startswith(f"{g.name}__{c['name']}__")), None)
                 flag = {"staging_miss": miss} if miss else {}
+                if a and a.get("no_key"):
+                    # every try failed the face gate: no key, said in plain words (keyless(): restaged)
+                    rows.append({"shot": c["plan_id"], "key": False, "why": a["no_key"], **flag})
+                    continue
                 if not a:
-                    tries = sorted((d / "run").glob(f"{g.name}__{c['name']}__*.png"), key=lambda q: ("__x" in q.stem, q.name))
+                    tries = sorted((q for q in (d / "run").glob(f"{g.name}__{c['name']}__*.png") if q.stem not in rejected),
+                                   key=lambda q: ("__x" in q.stem, q.name))
                     if tries:
                         a = {"path": str(tries[0])}
                         flag["redraw_miss"] = "no drawing passed its checks"
@@ -860,7 +868,8 @@ class Story:
                         # staging's other tries and its engine still), flagged; none at all: no key
                         # (another drawing only: a raw engine still is never a key, 11-17)
                         alt = [q for q in sorted((d / "run").glob(f"{g.name}__{c['name']}__*.png"))
-                               if q.exists() and str(q) != a["path"] and lum_of(q) >= KEY_DARK]
+                               if q.exists() and str(q) != a["path"] and q.stem not in rejected
+                               and lum_of(q) >= KEY_DARK]
                         if not alt:
                             rows.append({"shot": c["plan_id"], "key": False,
                                          "why": f"the picture is nearly black (mean {lum:.1f} of 255)"})

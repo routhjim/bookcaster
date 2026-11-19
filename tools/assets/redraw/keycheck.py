@@ -21,7 +21,10 @@ Per person whose body is within 100 deg of the camera:
           keys in the run (the accepted set);
   outfit  (head at least OUTFIT_MIN_HEAD of the frame) the judge, with the character's sheet and the crop of the
           neck and chest around the engine's chin: the collar and neckwear the same as on the sheet, or larger,
-          open, turned or missing (a forced choice: asked "do they agree", the judge said yes to everything).
+          open, turned or missing (a forced choice: asked "do they agree", the judge said yes to everything);
+  face    (facegate.due: not a creature or covered face, head within 60 deg, eyes in frame, head at least 0.12
+          of the frame) the judge on the head crop: a human face, or a creature, statue, mask or none (forced
+          choice, facegate.HUMAN_Q). accept.py makes a failure blocking: never the kept key.
 The same pose measures on the engine still (and its depth picture) are reported too: an arm the still itself does
 not show cleanly is the guide's fault, not the redraw's.
 """
@@ -42,6 +45,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))       # tools/ (vl_judge.py)
 import onnx_torch  # noqa: E402
+import facegate as FG  # noqa: E402
 
 IN_W, IN_H = 192, 256
 MEAN = torch.tensor([123.675, 116.28, 103.53]).view(3, 1, 1)
@@ -313,6 +317,10 @@ def main():
                 a = judge.ask_images([Image.open(p["sheet"]).convert("RGB"), c], OUTFIT_Q, 6, 768).strip().lower()
                 q["outfit"] = a
                 q["outfit_ok"] = a.startswith("same")
+            if judge is not None and FG.due(p):
+                # the face gate (facegate.py, blocking in accept.py): a face toward the camera and large enough
+                # must be drawn as a human face (a close shot's head drawn as stone passed every face score, 11-18)
+                q.update(FG.ask(judge, Image.open(it["redraw"]).convert("RGB").resize((1152, 640)), p))
             q["named"], q["action"] = bool(p.get("named")), p.get("action")
             if det is not None and (b[2] - b[0]) * (b[3] - b[1]) >= 0.01:   # the person found in the picture at all
                 q["person_found"] = {kk: round(gdino_person(det, it[kk], b), 3) for kk in ("engine", "redraw")
@@ -384,7 +392,8 @@ def main():
                                                                     v.get("redraw", {}).get("hands_shown")),
                                                           "neck": v.get("redraw", {}).get("neck_ratio"),
                                                           "neck_engine": v.get("engine", {}).get("neck_ratio"),
-                                                          "outfit": v.get("outfit")}
+                                                          "outfit": v.get("outfit"),
+                                                          "human_face": v.get("human_face")}
                                                       for k, v in r["people"].items()}}), flush=True)
     # neck: against the engine still and the character's own median in this run
     by_char = {}

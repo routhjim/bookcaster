@@ -11,7 +11,9 @@ checks: one item per redraw in the run's meta.json (or only the ids of a jobs fi
         with the cast's clothes words and sheet. keycheck.py runs it at a card station.
 retry:  for each key that fails a check (arms, hands, neck, outfit), the same job with another seed and the failed
         fact said once more (the cast's own words; nothing per shot), as "<id>__x".
-pick:   per key, the first that passes every check (the draw, else its re-draw), else the one with fewer failures.
+pick:   per key, the first that passes every check (the draw, else its re-draw), else the one with fewer failures;
+        a try failing the face gate (facegate.py) never wins over one passing it, and when every try fails it the
+        key has none (path None, "no_key" the reason): story_keys counts the shot keyless and restages it.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[0] / "scenes"))
 import framing  # noqa: E402
 import redraw as RD  # noqa: E402
+import facegate as FG  # noqa: E402
 
 JOINTS = ("head", "FACIAL_L_Eye", "FACIAL_R_Eye", "neck_01", "upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r",
           "hand_l", "hand_r", "thigh_l", "thigh_r")
@@ -66,6 +69,8 @@ def failures(v: dict) -> list:
         f.append("outfit")
     if v.get("face_ok") is False:
         f.append("face")
+    if v.get("human_face_ok") is False:
+        f.append("human face")           # blocking (facegate.py): a creature, statue or no face where one shows
     pf = v.get("person_found") or {}
     if pf.get("engine", 0) >= PERSON_FOUND and pf.get("redraw", 1.0) < PERSON_FOUND:
         f.append("missing")              # in the engine still, not in the redraw
@@ -341,6 +346,7 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
         acts = {k: ((v.get("body_pose") or {}).get("params") or {}).get("action") for k, v in
                 (spec.get("characters") or {}).items()}
         ppl = []
+        sw = RD.scene_wear(sd)          # (a face behind what this scene puts on them is not asked about)
         for p in m["people"]:
             tp = truth["people"].get(p["key"]) or {}
             j2 = tp.get("joints2d") or joints2d_from(res, p["key"], truth["camera"],
@@ -348,6 +354,7 @@ def cmd_checks(run: dict, out_p: Path, ids_from: str | None, pose_model: str):
             c = cast.get(p["key"]) or {}
             ppl.append(dict(p, joints2d=j2, wear=c.get("wear"), sheet=c.get("sheet"), noun=c.get("noun"),
                             creature=bool(c.get("creature")),
+                            face_covered=bool((sw.get(p["key"]) or {}).get("face_covered")),
                             mask=str(sd / "guides" / f"{m['cam']}_mask_{p['key']}.png"), named=p["key"] in named,
                             action=acts.get(p["key"]) if acts.get(p["key"]) in ACTION_SEEN else None))
         path = jobs[iid]["path"] if ids is not None else str(out / f"{iid}.png")
@@ -376,7 +383,9 @@ FIX = {"clothes colour": "{Who}'s clothes keep exactly the colours of the charac
        "arms": "{Who}'s arms hang in their sleeves clear of the body, both sleeves and hands drawn.",
        "hands": "{Who}'s hands are drawn where the engine frame shows them.",
        "neck": "{Who}'s neck is of natural length, the collar standing close under the jaw.",
-       "outfit": ""}
+       "outfit": "",
+       "human face": "{Who} has an ordinary living human face with natural skin, two eyes, a nose and a mouth, "
+                     "exactly as on the character sheet."}
 
 
 def cmd_retry(run: dict, checked: dict, out_jobs: Path):
@@ -493,19 +502,31 @@ def cmd_pick(run: dict, checked: dict, retry: dict, out_p: Path):
     look_eval(run, checked, retry)
     acc = {}
     for iid, rec in checked.items():
-        f0 = item_fails(rec)
-        x = retry.get(iid + "__x")
-        choice = (iid, f0)
-        if f0 and x is not None:
-            f1 = item_fails(x)
-            n0 = sum(len(v) for v in f0.values())
-            n1 = sum(len(v) for v in f1.values())
-            if n1 < n0:
-                choice = (iid + "__x", f1)
-        acc[iid] = {"path": str(out / f"{choice[0]}.png"), "id": choice[0], "fails": choice[1],
-                    "first_fails": f0, "redrawn": iid + "__x" in retry}
+        acc[iid] = pick_one(iid, item_fails(rec), item_fails(retry[iid + "__x"]) if iid + "__x" in retry else None,
+                            out, run.get("cast") or {})
     out_p.write_text(json.dumps(acc, indent=1))
-    print(out_p, sum(1 for v in acc.values() if not v["fails"]), "of", len(acc), "pass")
+    print(out_p, sum(1 for v in acc.values() if not v["fails"] and not v.get("no_key")), "of", len(acc), "pass;",
+          sum(1 for v in acc.values() if v.get("no_key")), "with no key (face gate)")
+
+
+def pick_one(iid: str, f0: dict, f1: dict | None, out: Path, cast: dict) -> dict:
+    """One shot's pick from its first draw's fails and its re-draw's (None: not re-drawn): the first draw unless the
+    re-draw ranks better (facegate.rank: a blocking failure ranks below any number of others, then fewer failures).
+    When the pick still fails a blocking check (a person whose face shows drawn as a creature, a statue or no face),
+    the shot has NO key: path and id None, "no_key" the reason in plain words, the tries kept as "rejected"
+    (story_keys.step_keys reads it as keyless and its restage takes over; nothing else may use those pictures)."""
+    choice = (iid, f0)
+    if f0 and f1 is not None and FG.rank(f1) < FG.rank(f0):
+        choice = (iid + "__x", f1)
+    row = {"path": str(out / f"{choice[0]}.png"), "id": choice[0], "fails": choice[1], "first_fails": f0,
+           "redrawn": f1 is not None}
+    bad = FG.blocked(choice[1])
+    if bad:
+        who = " and ".join((cast.get(k) or {}).get("name") or
+                           (f"the {cast[k]['noun']}" if (cast.get(k) or {}).get("noun") else f"person {k}") for k in bad)
+        row.update(path=None, id=None, no_key=FG.NO_KEY_WHY.format(who=who) + f" in {1 + (f1 is not None)} tries",
+                   rejected=[t for t, f in ((iid, f0), (iid + "__x", f1)) if f is not None and FG.blocked(f)])
+    return row
 
 
 def main():

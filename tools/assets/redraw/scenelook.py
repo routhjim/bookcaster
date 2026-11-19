@@ -419,7 +419,7 @@ def load_run(run: dict):
     checked, fails = {}, {}
     for it in items:
         a = acc.get(it["id"]) or {}
-        pick = a.get("id", it["id"])
+        pick = a.get("id") or it["id"]        # (None: no key, accept.pick_one)
         checked[it["id"]] = (xres if pick.endswith("__x") else res).get(pick) or res.get(it["id"]) or {}
         if a.get("path"):
             it["redraw"] = a["path"]
