@@ -413,3 +413,31 @@ def test_the_thing_worked_on_lies_on_the_piece_its_worker_stands_at(lib, tmp_pat
     t = c["carried"]["a"][0]
     assert t["asset"] == "bar_01" and t["at"] == "on" and t["xyz"][:2] == [-8.0, -8.0] and t["xyz"][2] > 0.5
     assert "worked" in PS.THING_ON
+
+
+def test_a_fight_is_someone_with_a_thing_in_hand_squared_up_to_a_creature_in_an_action_shot():
+    import from_plan as FP
+    crt = {"a": {"radius_m": 5.0, "size_m": [4.0, 10.0, 4.0]}}
+    cam = {"shot_kind": "action", "carried": {"d": [{"asset": "x", "at": "hand", "hand": "r"}]}}
+    v = {"pose": "standing", "face_target": "a"}
+    assert FP.fights("d", v, cam, crt)
+    assert not FP.fights("d", v, dict(cam, shot_kind="quiet"), crt)
+    assert not FP.fights("d", v, dict(cam, carried={}), crt)
+    assert not FP.fights("d", dict(v, face_target="b"), cam, crt)
+    assert not FP.fights("d", dict(v, pose="sitting"), cam, crt)
+    assert not FP.fights("a", v, cam, crt)                          # (the creature itself)
+    assert FP.FIGHT_POSE in FP.ACTION_NAMES
+
+
+def test_a_fights_camera_stands_at_the_fighters_scale():
+    import math
+    import from_plan as FP
+    rig = {"radius_m": 5.0, "size_m": [4.0, 10.0, 4.0]}
+    p, c = [0.0, 0.0], [8.0, 0.0]
+    over = FP.fight_camera(p, c, rig, over_shoulder=True)
+    assert over["position"][0] < 0 and abs(over["position"][1]) < 1.5       # behind the fighter, a little to a side
+    assert math.dist(over["position"][:2], p) < 3.0 and over["target"][0] > 4.0 and over["target"][2] >= 2.0
+    side = FP.fight_camera(p, c, rig, over_shoulder=False)
+    assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
+    assert 0 < side["target"][0] < 8.0
+    assert FP.fight_camera(p, [0.2, 0.0], rig, True) is None                # (on one spot: no line between them)

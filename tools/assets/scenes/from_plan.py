@@ -493,6 +493,44 @@ ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_s
 WORN_KEYS = ("wear_add", "face_covered", "wear_set", "wear_back_set", "worn_sheet")
 
 
+FIGHT_POSE = "tool_raised"     # the stance of someone who fights with a thing in the hand: it is held up
+FIGHT_BACK_M = (2.4, 0.9)      # the over-the-shoulder fight camera: this far behind the fighter and to their side
+FIGHT_SIDE_M = 5.0             # the side-on fight camera: at least this far off the line between the two
+FIGHT_EYE_M = 1.7
+
+
+def fights(k: str, v: dict, cam: dict, crt: dict) -> bool:
+    """Whether person k fights a creature in this shot: an action shot, k standing with a thing in a hand and facing
+    a creature of the scene (the pass's answer for whom they face)."""
+    return (k not in crt and cam.get("shot_kind") == "action" and v.get("pose") == "standing"
+            and v.get("face_target") in crt
+            and any(r.get("at") == "hand" for r in (cam.get("carried") or {}).get(k) or []))
+
+
+def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool) -> dict | None:
+    """A camera on a fight between a person (at ppos) and a far larger creature (at cpos; its rig's size), at the
+    person's scale: over their shoulder toward the creature's head, the fighter's back and raised arm on one side
+    and the creature filling the rest; or side-on, the fighter on one side and the creature's head and forequarters
+    on the other. (A camera that held the whole creature made the fighter a speck; one behind him showed his back
+    and a small beast far off: of seven fight shots one could be drawn as a fight, 11-19.)"""
+    d = math.dist(ppos[:2], cpos[:2])
+    if d < 1.0:
+        return None
+    u = [(cpos[0] - ppos[0]) / d, (cpos[1] - ppos[1]) / d]
+    n = [-u[1], u[0]]
+    r = float(rig.get("radius_m") or 2.0)
+    hz = max(2.0, 0.7 * float((rig.get("size_m") or [0, 0, 3.0])[2]))
+    head = [cpos[0] - u[0] * 0.5 * r, cpos[1] - u[1] * 0.5 * r, hz]       # (its head: toward whom it fights)
+    if over_shoulder:
+        p = [ppos[0] - u[0] * FIGHT_BACK_M[0] + n[0] * FIGHT_BACK_M[1],
+             ppos[1] - u[1] * FIGHT_BACK_M[0] + n[1] * FIGHT_BACK_M[1], FIGHT_EYE_M]
+        return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in head], "focal_mm": 28}
+    off = max(FIGHT_SIDE_M, 0.9 * d)
+    mid = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.4 + hz) / 2]
+    p = [ppos[0] + u[0] * 0.35 * d + n[0] * off, ppos[1] + u[1] * 0.35 * d + n[1] * off, 1.5]
+    return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in mid], "focal_mm": 35}
+
+
 def not_on_head(cam: dict, key: str) -> None:
     """A shot's carried things without what this person has on the head (their figure is made wearing it)."""
     rows = (cam.get("carried") or {}).get(key)
@@ -937,9 +975,21 @@ def main():
         here_ = {names[q["name"]] for q in sh.get("people") or [] if q.get("name") in names}
         for kc in [x for x in state if x in crt and x in here_]:
             for kp, v in state.items():
-                if kp in crt or kp not in here_ or v.get("pose") != "standing" or v.get("named_at") or \
-                        v.get("face_target") != kc or state[kc].get("face_target") != kp:
+                # (in an action shot the fight takes him off the mark the plan named: left at "the cave mouth" a man
+                # with his sword out stood sixteen metres from the beast he fought, 11-19)
+                # (... and there one of them facing the other is enough when the person has a thing in the hand: the
+                # pass had a man raising his sword at a beast face "the thing he is at", and a beast he faced turn
+                # to someone else; he stood twenty metres off in both)
+                armed_ = sh.get("kind") == "action" and any(
+                    t_.get("on") == "held" for nm_, ts_ in (((sp or {}).get("things") or {}).get(sid) or {}).items()
+                    if names.get(nm_) == kp for t_ in ts_ or [])
+                each_ = v.get("face_target") == kc and state[kc].get("face_target") == kp
+                one_ = armed_ and (v.get("face_target") == kc or state[kc].get("face_target") == kp)
+                if kp in crt or kp not in here_ or v.get("pose") != "standing" or \
+                        (v.get("named_at") and sh.get("kind") != "action") or not (each_ or one_):
                     continue
+                if one_ and not each_:       # they square up: each faces the other from here on
+                    v["face_target"], state[kc]["face_target"] = kc, kp
                 q = strike_place(state[kc]["position"], crt[kc]["radius_m"], v["position"],
                                  [list(o["position"][:2]) for kk, o in state.items() if kk not in (kp, kc)],
                                  things, room, walled)
@@ -1278,6 +1328,13 @@ def main():
                 for c_, _ in g:
                     facts[c_["plan_id"]].setdefault("pass", {}).setdefault("dropped", []).append(f"{k} {pz}: {bad}")
                 pz = None
+            if pz not in ACTION_NAMES and fights(k, v, cam0, crt):
+                # a fight: someone standing with a thing in the hand, squared up to a creature in an action shot,
+                # holds it up against it (the pass names a pose only where the shot's line names the act: in six of
+                # seven shots of a fight the man stood at ease, his sword hanging, 11-19)
+                pz = FIGHT_POSE
+                for c_, _ in g:
+                    facts[c_["plan_id"]].setdefault("pass", {}).setdefault("used", []).append(f"{k} {pz}: a fight")
             if pz in ACTION_NAMES:                           # what they begin to do as the shot starts
                 c["_pose_choice"] = pz
                 if pz in STAND_ACTIONS and v["pose"] != "sitting":
@@ -1337,6 +1394,14 @@ def main():
                 chars[kk]["position"] = list(m)
                 if chars[kk].get("marks"):
                     chars[kk]["marks"] = [list(m)] + [q for q in chars[kk]["marks"] if math.dist(q, m) >= 0.05]
+        for n_, (c_, s_) in enumerate(g):                # a fight shot's camera: at the fighter's scale (fight_camera)
+            kp = next((k for k in chars if k in s_ and fights(k, s_[k], c_, crt)), None)
+            if kp and not c_.get("insert"):
+                kc = s_[kp]["face_target"]
+                fc = fight_camera(chars[kp]["position"], chars[kc]["position"], crt[kc],
+                                  over_shoulder=(gi + n_) % 2 == 0)
+                if fc:
+                    c_.update(fc, fight={"person": kp, "creature": kc})
         for c_, _ in g:
             for kk in ("_looks", "_poses", "_worn"):
                 c_.pop(kk, None)

@@ -90,6 +90,18 @@ GROUP_WORDS_ASK = ("Describe everything built in this picture, as one group, in 
                    "all, for a builder who must make it: each building, wall and structure from left to right, its "
                    "shape, what its sides and its roof are made of, its doors and openings, and what stands against "
                    "it. Not the open ground, the sky, plants or the far land.")
+LAND_BOX_ASK = ("Locate the largest single form of the land that rises from the ground in this picture, whole: a "
+                "cliff, a rock face, a crag, a great boulder or a mound, with whatever opens in it or juts from it, "
+                "from its foot on the ground to its top (or to the picture's edge where it runs out of it). Not the "
+                "open ground in front, the sky, plants or the far land. Answer only with its bounding box as [x1, "
+                "y1, x2, y2], each number from 0 to 1000: thousandths of the picture's width (x) and height (y), x1 "
+                "y1 the top left corner. If the land in this picture is flat and nothing rises from it, answer none.")
+LAND_REAL_ASK = ("About how wide and how tall would that form of the land, the largest one that rises from the ground "
+                 "in this picture, be in real life, in metres? Answer with two numbers only: its width, then its height.")
+LAND_WORDS_ASK = ("Describe the largest single form of the land that rises from the ground in this picture, in two "
+                  "sentences of under 70 words in all, for someone who must model it: its shape, what it is made of, "
+                  "its colour, and what opens in it or juts from it and where. Not the open ground, the sky, plants "
+                  "or the far land.")
 GROUP_AREA = 0.04                # a group smaller than this share of the picture is no building to make
 OPEN_PIECE_AREA = 0.003          # in the open the picture is a wide one: a thing standing by a building is small in it
 OPEN_SEEN_MOST = 12
@@ -144,6 +156,13 @@ def same_place(a: list, b: list, k: float = 0.6) -> bool:
     w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
     small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
     return w > 0 and h > 0 and w * h >= k * small
+
+
+def within(a: list, b: list, k: float = 0.7) -> bool:
+    """Whether box a lies mostly (k of its own area) inside box b."""
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    area = (a[2] - a[0]) * (a[3] - a[1])
+    return w > 0 and h > 0 and area > 0 and w * h >= k * area
 
 
 def carried_by(b: list, sb: list) -> bool:
@@ -299,6 +318,24 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
                                 **({"real_m": real_of(g.get("real"))} if real_of(g.get("real")) else {}),
                                 **({"words": re.sub(r"\s+", " ", str(g.get("words") or "")).strip().rstrip(".")}
                                    if str(g.get("words") or "").strip() else {})})
+    if op and not built:
+        # a place with nothing built has its land's own main form instead: the cliff, crag or rock face that rises
+        # there, made as one piece from its part of the picture as a built place's buildings are (asked only for
+        # what is built, a summit drawn as a cliff with a wide cave mouth was made a flat plain with one small rock
+        # on it, 11-19). A piece of the spec found inside it is that form (the cave is the cliff it opens in)
+        g = ask([{"id": "l", "image": str(concept), "max_new_tokens": 160,
+                  "ask": {"box": LAND_BOX_ASK, "real": LAND_REAL_ASK, "words": LAND_WORDS_ASK}}]).get("l") or {}
+        gb = box_of(g.get("box"))
+        if gb and (gb[2] - gb[0]) * (gb[3] - gb[1]) >= GROUP_AREA:
+            form = {"box": gb, "crop": cut(concept, gb, out_dir / f"{tag}_land.png"), "natural": True,
+                    **({"real_m": real_of(g.get("real"))} if real_of(g.get("real")) else {}),
+                    **({"words": re.sub(r"\s+", " ", str(g.get("words") or "")).strip().rstrip(".")}
+                       if str(g.get("words") or "").strip() else {})}
+            inside = [p for p in pieces if res["spec"][p["id"]].get("box") and within(res["spec"][p["id"]]["box"], gb)]
+            if inside:
+                res["spec"][inside[0]["id"]].update(form, land_form=True)
+            else:
+                res["seen"].append(dict(form, name="the land's main form", kind="landmark", group=True, look=""))
     if True:                                 # each such thing said whole, from its own part of the picture
         its = [(res["spec"][p["id"]], f"b:{p['id']}") for p in pieces if res["spec"][p["id"]].get("crop")
                and p.get("kind") == "landmark"] if op else []

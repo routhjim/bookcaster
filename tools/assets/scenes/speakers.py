@@ -1895,6 +1895,12 @@ def main():
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
+    if OPEN_GROUND and line:
+        # a place in the open is made from one picture of it, seen from one side: what lies the way that picture
+        # looks is the place (its things, its water, its hills); behind the picture's eye the land is only more
+        # ground. The cameras keep to the eye's side of the people's line, so they look into the place (every shot
+        # of a river bank was framed away from the river, onto flat empty ground, 11-19)
+        est_side = side(line, [OPEN_GROUND[0], OPEN_GROUND[1] - 1000.0]) or None
     for c in spec["cameras"]:                # a wide sets the side of the line; with none, the first camera that
         if line and c.get("position") and c["kind"] in ("wide", "full"):     # passes does (in the rounds below):
             est_side = side(line, c["position"]) or est_side                 # a failing first camera set it and
@@ -2103,6 +2109,11 @@ def main():
                 pw += subject_face_why(sh, c["line_subject"], subjects, res,
                                        c["line_subject"] in (cam_opts(spec, c).get("covered") or ()),
                                        shared=len([k for k in c.get("show") or [] if k in subjects]) >= 2)
+            if c.get("fight") and rnd == 0 and not pw and not still_why(sh, chk):
+                # a fight's own camera (from_plan.fight_camera): its framing is the shot. What the measures of an
+                # ordinary shot miss in it (a head larger than the subject's, a back to the camera, a body cut by
+                # the edge) is kept as notes; only a still that shows nothing sends it to the search
+                chk = dict(chk, ok=True, notes=list(chk.get("why") or []), why=[], framing=[])
             sw = still_why(sh, chk)          # a still of nothing (black, or someone's own pixels everywhere)
             if sw:
                 pw += sw
