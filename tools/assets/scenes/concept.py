@@ -382,18 +382,22 @@ def main():
         ans = str((r.get("c") or {}).get("who") or "").strip().lower()
         print(json.dumps({"picture": sys.argv[2], "someone": ans}))
         sys.exit(0 if ans.startswith("n") else 1)
-    if sys.argv[1] == "--map":               # concept.py --map MAP.png PLACES.json OUT.json: a place's ground map read
+    if sys.argv[1] == "--map":               # concept.py --map MAP.png PLACES.json OUT.json [KEY.png]: a ground map read
         sys.path.insert(0, str(HERE.parent / "places"))
         import numpy as np
         from PIL import Image
         import ground_map as GM
         places = json.loads(Path(sys.argv[3]).read_text()).get("land_places") or {}
         try:
-            got = GM.read_map(sys.argv[2], places, CH.vl_ask, rgb=np.asarray(Image.open(sys.argv[2]).convert("RGB")))
+            # (KEY.png: the map with its water painted the key colour by the edit model; without it the judge's outline)
+            key = sys.argv[5] if len(sys.argv) > 5 and Path(sys.argv[5]).exists() else None
+            got = GM.read_map(sys.argv[2], places, CH.vl_ask, rgb=np.asarray(Image.open(sys.argv[2]).convert("RGB")),
+                              key_rgb=np.asarray(Image.open(key).convert("RGB")) if key else None)
         finally:
             CH.vl_close()
         Path(sys.argv[4]).write_text(json.dumps(got, indent=1))
-        print(json.dumps({"water_share": (got["water"] or {}).get("share", 0.0), "places": len(got["places"]),
+        print(json.dumps({"water_share": (got["water"] or {}).get("share", 0.0), "water_from": got["water_from"],
+                          "places": len(got["places"]),
                           "of": len(places)}))
         sys.exit(0)
     concept, spec_p, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])

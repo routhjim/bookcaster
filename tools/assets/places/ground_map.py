@@ -244,11 +244,96 @@ def nearest(water: dict | None, x: float, y: float, wet: bool, most: float = NEA
     return [round(best[1][0], 3), round(best[1][1], 3)] if best else None
 
 
+# ------------------------------------------------------------------ the water, painted by the edit model
+# (the judge cannot outline: on a map with a river as a strip down its right side its outline was a diagonal band
+# over half the map, half the grass made water, 11-18; a fill by colour from the river's points leaked into dark grass
+# and shadow at one setting and missed half the river at the next). The edit model paints the map's water one flat
+# key colour, and the water is the cells of that colour; the judge only says whether the map has water at all.
+READ_BUILD = 2              # the map's reading: 2 has its water from the edit model's key (map.json "read_build"; a
+#                             reading of an older build is made again)
+WATER_KEY = (255, 0, 255)   # the colour the edit model paints the water
+KEY_TOL = 120.0             # a point this near the key (summed over red, green, blue) is painted water ...
+KEY_SHARE = 0.5             # ... and a cell is water when at least this share of its points are
+WATER_EDIT_WORDS = (
+    "Paint every part of Picture 1 that is water (a river, a stream, a pond, a lake, the sea, a flooded ford) one "
+    "flat, pure magenta colour, covering the water completely right up to its banks and edges, with no texture, no "
+    "shading and no reflections. Change nothing else: the land, the banks, the paths and everything else stay "
+    "exactly as they are. If there is no water in the picture, change nothing.")
+WATER_HAS_ASK = ("This picture is a map of a piece of land seen from straight above. Is there any water on it: a "
+                 "river, a stream, a pond, a lake, the sea or a ford? Answer yes or no.")
+
+
+def edit_job(picture: str, out: str, seed: int = 11) -> dict:
+    """The edit model's job (tools/assets/qwen_edit.py) that paints the map's water the key colour."""
+    return {"id": "water_key", "prompt": WATER_EDIT_WORDS, "images": [str(picture)], "seed": int(seed),
+            "path": str(out), "size": [MAP_PX, MAP_PX]}
+
+
+def components(m) -> list:
+    """The 4-connected patches of a cell mask: [[(i, j), ...], ...] (pure Python over the cell grid)."""
+    n0, n1 = m.shape
+    seen = [[False] * n1 for _ in range(n0)]
+    out = []
+    for i in range(n0):
+        for j in range(n1):
+            if not m[i, j] or seen[i][j]:
+                continue
+            st, patch = [(i, j)], []
+            seen[i][j] = True
+            while st:
+                a, b = st.pop()
+                patch.append((a, b))
+                for c, d in ((a + 1, b), (a - 1, b), (a, b + 1), (a, b - 1)):
+                    if 0 <= c < n0 and 0 <= d < n1 and m[c, d] and not seen[c][d]:
+                        seen[c][d] = True
+                        st.append((c, d))
+            out.append(patch)
+    return out
+
+
+def clean(m, least: int = WATER_MIN_CELLS):
+    """Specks of water under `least` cells dropped, and pinholes in it (dry patches under `least` cells that do not
+    reach the map's edge) filled: a stone or a glint in the river is not a place to stand."""
+    m = m.copy()
+    for p in components(m):
+        if len(p) < least:
+            for a, b in p:
+                m[a, b] = False
+    n0, n1 = m.shape
+    for p in components(~m):
+        if len(p) < least and not any(a in (0, n0 - 1) or b in (0, n1 - 1) for a, b in p):
+            for a, b in p:
+                m[a, b] = True
+    return m
+
+
+def key_mask(key_rgb, n: int | None = None):
+    """The cells (n x n, row 0 at the top) the edit model painted the key colour: at least KEY_SHARE of each cell's
+    points within KEY_TOL of WATER_KEY. key_rgb: the edited map, any size."""
+    import numpy as np
+    from PIL import Image
+    n = n or cells()
+    k = np.asarray(Image.fromarray(np.asarray(key_rgb, np.uint8)).convert("RGB").resize((n * 4, n * 4), Image.NEAREST),
+                   np.float64)
+    hit = np.abs(k - np.array(WATER_KEY, np.float64)).sum(-1) <= KEY_TOL
+    return hit.reshape(n, 4, n, 4).mean((1, 3)) >= KEY_SHARE
+
+
+def water_from_key(key_rgb, half: float = HALF_M, cell: float = WATER_CELL_M) -> dict | None:
+    """The edited map -> a water record (cleaned), or None when it painted no water to keep people from, or nearly
+    the whole map (it painted the land)."""
+    m = clean(key_mask(key_rgb, cells(half, cell)))
+    if m.sum() < WATER_MIN_CELLS or m.mean() > WATER_MOST:
+        return None
+    return {"cell_m": cell, "half_m": half, "runs": runs_of(m), "share": round(float(m.mean()), 4)}
+
+
 # ------------------------------------------------------------------ the judge's reading of a map
-def map_items(picture: str, places: dict) -> list:
-    """The judge's questions about one map: where its water is, and for each land place where it is and whether a
-    person there stands in the water."""
-    items = [{"id": "water", "image": str(picture), "max_new_tokens": 400, "ask": {"outline": WATER_ASK}}]
+def map_items(picture: str, places: dict, outline: bool = True) -> list:
+    """The judge's questions about one map: whether it has water (and, with no edited key, its outline), and for each
+    land place where it is and whether a person there stands in the water."""
+    items = [{"id": "water", "image": str(picture), "max_new_tokens": 400 if outline else 4,
+              "ask": {"outline": WATER_ASK} if outline else {"has": WATER_HAS_ASK}}]
     for k, (ph, w) in enumerate((places or {}).items()):
         items.append({"id": f"l:{k}", "image": str(picture), "max_new_tokens": 30,
                       "ask": {"at": PLACE_AT_ASK.format(w=str(w).strip().rstrip(".")),
@@ -258,7 +343,8 @@ def map_items(picture: str, places: dict) -> list:
 
 def water_of(answer, rgb=None, half: float = HALF_M, cell: float = WATER_CELL_M) -> dict | None:
     """The judge's outline answer (and the map picture, to correct it by colour) -> a water record, or None when it
-    shows no water to keep people from (none, a puddle, or the whole map)."""
+    shows no water to keep people from (none, a puddle, or the whole map). Only when the edit model's key is not to
+    hand: the judge's outlines are rough."""
     n = cells(half, cell)
     m = poly_mask(polys_of(answer), n)
     if rgb is not None:
@@ -268,14 +354,20 @@ def water_of(answer, rgb=None, half: float = HALF_M, cell: float = WATER_CELL_M)
     return {"cell_m": cell, "half_m": half, "runs": runs_of(m), "share": round(float(m.mean()), 4)}
 
 
-def read_map(picture: str, places: dict, ask, rgb=None) -> dict:
-    """The judge's reading of a map -> {"half_m", "water": record or None, "places": {phrase: {"at": [x, y] set
-    frame, "wet": bool, "words"}}}. A place the judge says is not in the water but put in it is moved to the dry
-    ground by it (a water's edge put a few metres out in the river would stand people in it); one it says is in
-    the water is put on the nearest water. A place the map does not show is left out (its people stand on the open
-    ground, as before)."""
-    a = ask(map_items(picture, places))
-    water = water_of((a.get("water") or {}).get("outline"), rgb)
+def read_map(picture: str, places: dict, ask, rgb=None, key_rgb=None) -> dict:
+    """The judge's reading of a map -> {"half_m", "read_build", "water_from": "edit" | "outline", "water": record or
+    None, "places": {phrase: {"at": [x, y] set frame, "wet": bool, "words"}}}. With the edit model's key (key_rgb)
+    the water is its painted cells, kept only when the judge says the map has water; without it, the judge's outline.
+    A place the judge says is not in the water but put in it is moved to the dry ground by it (a water's edge put a
+    few metres out in the river would stand people in it); one it says is in the water is put on the nearest water.
+    A place the map does not show is left out (its people stand on the open ground, as before)."""
+    keyed = key_rgb is not None
+    a = ask(map_items(picture, places, outline=not keyed))
+    if keyed:
+        has = str((a.get("water") or {}).get("has") or "").strip().lower().startswith("y")
+        water = water_from_key(key_rgb) if has else None
+    else:
+        water = water_of((a.get("water") or {}).get("outline"), rgb)
     got = {}
     for k, (ph, w) in enumerate((places or {}).items()):
         r = a.get(f"l:{k}") or {}
@@ -288,7 +380,8 @@ def read_map(picture: str, places: dict, ask, rgb=None) -> dict:
         got[ph] = {"at": at, "wet": bool(wet and in_water(water, *at)), "words": str(w).strip().rstrip(".")}
     if water:
         water.pop("_rows", None)
-    return {"half_m": HALF_M, "water": water, "places": got}
+    return {"half_m": HALF_M, "read_build": READ_BUILD, "water_from": "edit" if keyed else "outline",
+            "water": water, "places": got}
 
 
 # ------------------------------------------------------------------ the ground's picture

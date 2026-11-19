@@ -170,28 +170,61 @@ def shell_too_big(req: dict, library: Path) -> str:
     return f"the shell is {max(got[:2]):.1f} m long, more than {P.SHELL_SPAN_K} times the {max(want[:2]):.1f} m asked for"
 
 
+EDIT_PY = os.path.expanduser(os.environ.get("ASSETS_GUIDES_PY", "~/tts-ab/.venv-hyworld/bin/python"))   # the edit model's
+CARD_SH = HERE.parent / "orbit" / "card.sh"                                                         # (as img3d/cast_char.py)
+
+
+def edit_card() -> str:
+    """The card the edit model runs on: the image station's when it is a card (the model needs a card's memory), else
+    the Blender card."""
+    st = str(C.IMAGE_STATION)
+    return st[4:] if st.startswith("card") and st[4:] else C.BLENDER_CARD
+
+
 def ground_map(steps: dict, seed: int, run) -> dict:
-    """A place in the open's ground map (places/ground_map.py): drawn through the line, then read by the vision judge
-    (scenes/concept.py --map) into map.json beside it. Neither stops the world: without the map its ground is the
-    panorama's own, as before; without the reading it has no water and its land places are the open ground.
-    -> {"map": bool, "read": bool}."""
-    st, rd = steps["map"], steps.get("map_read") or {}
+    """A place in the open's ground map (places/ground_map.py): drawn through the line, its water painted the key
+    colour by the edit model (water_key.png), then read by the vision judge (scenes/concept.py --map) into map.json
+    beside it. None of them stops the world: without the map its ground is the panorama's own, as before; without
+    the key the judge's outline is its water; without the reading it has no water and its land places are the open
+    ground. A reading of an older build (ground_map.READ_BUILD) is made again. -> {"map", "key", "read": bool}."""
+    import shlex
+    import ground_map as GM
+    st, rd, ky = steps["map"], steps.get("map_read") or {}, steps.get("water_key") or {}
     d = REFS / st["ref_id"]
     pic = d / st.get("picture", "picture.png")
     if not pic.exists():
         r = run([a.replace("{seed}", str(seed)) for a in st["argv"]])
         log(f"{st['ref_id']}: ground map, seed {seed} rc={r.returncode}")
     if not pic.exists():
-        return {"map": False, "read": False}
+        return {"map": False, "key": False, "read": False}
+    key = d / ky.get("picture", "water_key.png") if ky else None
+    if key and not key.exists():
+        jp = d / ky.get("jobs", "water_key_jobs.json")
+        jp.write_text(json.dumps([GM.edit_job(str(pic), str(key), seed)], indent=1))
+        repo = HERE.parents[2]
+        r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", ky.get("station", "image"),
+                 ky.get("kind", "edit"), "--id", f"gen_waterkey_{st['ref_id']}", "--", "bash", "-c",
+                 f"cd {shlex.quote(str(repo))} && bash {shlex.quote(str(CARD_SH))} {edit_card()} "
+                 f"{shlex.quote(EDIT_PY)} -I tools/assets/qwen_edit.py {shlex.quote(str(jp))}"])
+        log(f"{st['ref_id']}: the water painted by the edit model rc={r.returncode}")
     facts = d / rd.get("facts", "map.json")
+    if facts.exists():
+        try:
+            old = int(json.loads(facts.read_text()).get("read_build") or 1) < GM.READ_BUILD
+        except (OSError, ValueError):
+            old = True
+        if old:
+            facts.unlink()
+            log(f"{st['ref_id']}: a reading of an older build; read again")
     if rd and not facts.exists():
         pl = d / "land_places.json"
         pl.write_text(json.dumps({"land_places": rd.get("land_places") or {}}, indent=1))
         r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", "igpu", "choose", "--id",
                  f"gen_mapread_{st['ref_id']}", "--", str(os.environ.get("STORY_VENV_PY") or sys.executable),
-                 str(HERE.parent / "scenes" / "concept.py"), "--map", str(pic), str(pl), str(facts)])
+                 str(HERE.parent / "scenes" / "concept.py"), "--map", str(pic), str(pl), str(facts)]
+                + ([str(key)] if key and key.exists() else []))
         log(f"{st['ref_id']}: the map read rc={r.returncode}")
-    return {"map": True, "read": facts.exists()}
+    return {"map": True, "key": bool(key and key.exists()), "read": facts.exists()}
 
 
 def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> dict:

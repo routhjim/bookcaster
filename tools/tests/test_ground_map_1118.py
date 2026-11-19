@@ -25,6 +25,12 @@ import setfacts  # noqa: E402
 STORY_WORDS = ("knight", "smith", "forge", "anvil", "maren", "holmes", "dragon", "squire", "river bank")
 
 
+def disk_area(v, f, n0=0):
+    """The ground the faces cover, in square metres (f indexes v from n0)."""
+    a, b = v[f[:, 1] - n0] - v[f[:, 0] - n0], v[f[:, 2] - n0] - v[f[:, 0] - n0]
+    return float(np.abs(np.cross(a, b)[:, 2]).sum() / 2)
+
+
 def strip_water(y0=-2.0, y1=2.0):
     """A band of water across the whole map from y0 to y1 metres (set frame)."""
     m = np.zeros((GM.cells(), GM.cells()), bool)
@@ -197,10 +203,9 @@ def test_with_a_map_the_disk_is_one_picture_and_its_water_lies_under_the_ground(
     # one picture over the disk: a point's uv is its place on the map (the map's top, +y, at v 0.5)
     k = int(np.argmax(v[:, 1]))
     assert uv[k, 1] > 0.49
-    assert len(f) < 120000                                            # (under the asset chain's budget with the shell)
-    # no water: every cell is ground
-    _, f2, _, n2 = PS.map_disk(eye, 0, None)
-    assert n2 == 0 and len(f2) == len(f)
+    # no water: every block is ground, and the disk is as wide
+    v2, f2, _, n2 = PS.map_disk(eye, 0, None)
+    assert n2 == 0 and abs(disk_area(v2, f2) - disk_area(v, f, 7)) < 1e-6
 
 
 def test_without_a_map_the_ground_is_the_panoramas_as_before():
@@ -215,13 +220,14 @@ def test_the_world_draws_and_reads_its_ground_map_before_it_is_shaped():
          "map_style": "oil painting"}
     r = P.generation_request(t)
     steps = [s["step"] for s in r["plan"]["steps"]]
-    assert steps == ["draw", "map", "map_read", "spec", "shape"]
+    assert steps == ["draw", "map", "water_key", "map_read", "spec", "shape"]
     by = {s["step"]: s for s in r["plan"]["steps"]}
     mp = " ".join(map(str, by["map"]["argv"]))
     assert "looking straight down" in mp and "the edge of the water" in mp and "--sources" not in mp
     assert f"--size {GM.MAP_PX} {GM.MAP_PX}" in mp and by["map_read"]["land_places"] == t["land_places"]
     spec = by["spec"]["spec"]
-    assert spec["map_id"] == by["map"]["ref_id"] == by["map_read"]["ref_id"]
+    assert spec["map_id"] == by["map"]["ref_id"] == by["map_read"]["ref_id"] == by["water_key"]["ref_id"]
+    assert by["water_key"]["kind"] == "edit" and by["water_key"]["picture"] == "water_key.png"
     # the panorama keeps the id it had without a map (it is drawn once); the world is another asset per map words
     old = P.generation_request({k: v for k, v in t.items() if not k.startswith("map") and k != "land_places"})
     assert by["draw"]["ref_id"] == spec["panorama_id"] == old["plan"]["draw_id"]
@@ -242,30 +248,47 @@ def test_the_maps_words_name_no_story_and_no_standing_thing():
         assert not any(w in q.lower() for w in STORY_WORDS)
 
 
-def test_the_ground_map_is_drawn_then_read_and_neither_stops_the_world(tmp_path, monkeypatch):
+def test_the_ground_map_is_drawn_painted_then_read_and_none_of_it_stops_the_world(tmp_path, monkeypatch):
     monkeypatch.setattr(G, "REFS", tmp_path)
     t = {"id": "t1", "kind": "terrain", "look": "land", "map_words": "a plain", "land_places": {"x": "a path"}}
     steps = {s["step"]: s for s in P.generation_request(t)["plan"]["steps"]}
     mid = steps["map"]["ref_id"]
+    d = tmp_path / mid
     ran = []
 
     class R:
         returncode = 0
 
-    def run(argv):
+    def run(argv, key=True):
         ran.append(argv)
-        if "ref_draw.py" in " ".join(map(str, argv)):
-            (tmp_path / mid).mkdir(parents=True, exist_ok=True)
-            (tmp_path / mid / "picture.png").write_bytes(b"x")
+        cmd = " ".join(map(str, argv))
+        if "ref_draw.py" in cmd:
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "picture.png").write_bytes(b"x")
+        elif "qwen_edit.py" in cmd:
+            job = json.loads((d / "water_key_jobs.json").read_text())[0]
+            assert job["images"] == [str(d / "picture.png")] and job["path"] == str(d / "water_key.png")
+            assert "magenta" in job["prompt"] and "--line-cmd" in argv and "edit" in argv
+            if key:
+                (d / "water_key.png").write_bytes(b"x")
         else:
-            assert "--map" in argv and json.loads((tmp_path / mid / "land_places.json").read_text())["land_places"] == {"x": "a path"}
-            Path(argv[-1]).write_text("{}")
+            assert "--map" in argv and json.loads((d / "land_places.json").read_text())["land_places"] == {"x": "a path"}
+            assert (argv[-1] == str(d / "water_key.png")) == key
+            Path(argv[argv.index("--map") + 3]).write_text(json.dumps({"read_build": GM.READ_BUILD}))
         return R()
-    assert G.ground_map(steps, 11, run) == {"map": True, "read": True} and len(ran) == 2
+    assert G.ground_map(steps, 11, run) == {"map": True, "key": True, "read": True} and len(ran) == 3
     assert "11" in ran[0]
-    assert G.ground_map(steps, 11, run) == {"map": True, "read": True} and len(ran) == 2   # (made once)
+    assert G.ground_map(steps, 11, run) == {"map": True, "key": True, "read": True} and len(ran) == 3   # (made once)
+    # a reading of an older build (the judge's outline) is read again; the map and its key are kept
+    (d / "map.json").write_text(json.dumps({"read_build": 1, "water": {"runs": [[0, 0, 160]]}}))
+    G.ground_map(steps, 11, run)
+    assert len(ran) == 4 and "--map" in ran[-1] and json.loads((d / "map.json").read_text())["read_build"] == GM.READ_BUILD
+    # the edit model failed: the reading goes on without the key (the judge's outline)
+    (d / "water_key.png").unlink()
+    (d / "map.json").unlink()
+    assert G.ground_map(steps, 12, lambda a: run(a, key=False)) == {"map": True, "key": False, "read": True}
     monkeypatch.setattr(G, "REFS", tmp_path / "none")
-    assert G.ground_map(steps, 11, lambda a: R()) == {"map": False, "read": False}
+    assert G.ground_map(steps, 11, lambda a: R()) == {"map": False, "key": False, "read": False}
 
 
 def test_the_shape_step_is_given_the_map_that_was_made(tmp_path, monkeypatch):
@@ -352,3 +375,133 @@ def test_with_a_building_the_lands_own_things_stand_apart_from_the_group(tmp_pat
     spec = {"kind": "outdoors", "period": "not stated", "room": "A clearing.", "pieces": [], "named_places": {}}
     by = {p["id"]: p for p in PB.with_concept(spec, dict(res, concept=str(pic), surfaces={}))["pieces"]}
     assert "c3" in by and "c2" in by and by["c2"]["natural"]                 # the group and the boulder beside it
+
+
+# ------------------------------------------------------------------ the water from the edit model's key (11-18 run)
+def keyed(n=400, x0=0.72, x1=0.92, specks=(), holes=()):
+    """A map painted by the edit model: grass, a river strip from x0 to x1 of the width in the key colour, dark
+    trees at the right edge; specks of key colour on the grass, holes of grass in the river."""
+    k = np.full((n, n, 3), (70, 110, 50), np.uint8)
+    k[:, int(0.95 * n):] = (20, 40, 20)
+    k[:, int(x0 * n):int(x1 * n)] = GM.WATER_KEY
+    for (r, c) in specks:
+        k[r:r + 4, c:c + 4] = GM.WATER_KEY
+    for (r, c) in holes:
+        k[r:r + 4, c:c + 4] = (70, 110, 50)
+    return k
+
+
+def test_the_water_is_the_cells_the_edit_model_painted():
+    """A river strip down the right of the map is water there and nowhere else; a speck of key colour on the grass
+    is dropped, a pinhole of grass in the river filled; a key colour near the pure one still counts."""
+    k = keyed(specks=[(40, 40)], holes=[(200, 330)])
+    w = GM.water_from_key(k)
+    assert w and abs(w["share"] - 0.2) < 0.02
+    assert GM.in_water(w, GM.to_m(820, 500)[0], 0.0) and GM.in_water(w, GM.to_m(730, 100)[0], 30.0)
+    assert not GM.in_water(w, GM.to_m(600, 500)[0], 0.0) and not GM.in_water(w, GM.to_m(970, 500)[0], 0.0)
+    assert not GM.in_water(w, *GM.to_m(105, 105))                    # (the speck)
+    assert GM.in_water(w, *GM.to_m(830, 505))                        # (the pinhole, filled)
+    soft = k.copy()
+    soft[soft[..., 1] == 0] = (230, 30, 225)                          # (the model's magenta is never exact)
+    assert GM.water_from_key(soft)["runs"] == w["runs"]
+    c = np.zeros((40, 40), bool)
+    c[:, 10:30] = True
+    c[20:22, 20:22] = False                                          # a pinhole in the water: filled
+    c[2:4, 2:4] = True                                               # a speck on the land: dropped
+    c[0:2, 12:14] = False                                            # a gap at the map's edge: land, kept
+    k_ = GM.clean(c)
+    assert k_[20, 20] and not k_[2, 2] and not k_[0, 12] and k_[2:, 10:30].all()
+    # a cell is water by the share of its points: one point of key colour in a cell is not
+    m = GM.key_mask(keyed(x0=0.5, x1=0.5 + 1 / 400), 160)
+    assert not m.any()
+
+
+def test_the_key_keeps_the_sanity_limits():
+    grass = np.full((200, 200, 3), (70, 110, 50), np.uint8)
+    assert GM.water_from_key(grass) is None                           # painted nothing
+    allk = np.full((200, 200, 3), GM.WATER_KEY, np.uint8)
+    assert GM.water_from_key(allk) is None                            # painted the whole land
+
+
+def test_the_reading_takes_the_key_and_asks_the_judge_only_yes_no_and_points():
+    places = {"at the edge": "the edge of the water"}
+    asked = []
+
+    def ask(has):
+        def f(items):
+            asked.append(items)
+            assert "has" in items[0]["ask"] and "outline" not in items[0]["ask"]
+            return {"water": {"has": has}, "l:0": {"at": "[810, 500]", "wet": "no"}}
+        return f
+    got = GM.read_map("map.png", places, ask("Yes."), key_rgb=keyed())
+    assert got["water_from"] == "edit" and got["read_build"] == GM.READ_BUILD and abs(got["water"]["share"] - 0.2) < 0.02
+    edge = got["places"]["at the edge"]["at"]
+    assert not GM.in_water(got["water"], *edge) and abs(edge[0] - GM.to_m(720, 0)[0]) < 1.0   # (moved to the bank)
+    # the judge says the map has no water: none, whatever the edit painted
+    none = GM.read_map("map.png", places, ask("No"), key_rgb=keyed())
+    assert none["water"] is None and none["water_from"] == "edit" and none["places"]["at the edge"]["at"] == GM.to_m(810, 500)
+    # no key (the edit step failed): the judge's outline, recorded so
+    out = GM.read_map("map.png", places, lambda items: {"water": {"outline": "[700, 0], [900, 0], [900, 1000], [700, 1000]"},
+                                                         "l:0": {"at": "[810, 500]", "wet": "no"}})
+    assert out["water_from"] == "outline" and out["water"]
+    job = GM.edit_job("/m/picture.png", "/m/water_key.png", 3)
+    assert job["images"] == ["/m/picture.png"] and job["size"] == [GM.MAP_PX, GM.MAP_PX] and job["seed"] == 3
+    assert not any(w in GM.WATER_EDIT_WORDS.lower() + GM.WATER_HAS_ASK.lower() for w in STORY_WORDS)
+
+
+# ------------------------------------------------------------------ the world under the chain's budget (11-18 run)
+def test_the_merged_disk_keeps_every_points_place_on_the_map():
+    """Blocks of land or water are one quad each; a point anywhere on a block has the uv it had as a cell of its own:
+    its place on the map (water in the map's copy to the right). The disk covers the same ground."""
+    eye = [3.0, -2.0, 5.0]
+    m = np.zeros((GM.cells(), GM.cells()), bool)
+    m[:, 112:128] = True                                              # (a river strip, x 16..24 m)
+    m[60:70, 20:23] = True                                            # (a pond)
+    w = {"cell_m": GM.WATER_CELL_M, "half_m": GM.HALF_M, "runs": GM.runs_of(m)}
+    v, f, uv, n_wet = PS.map_disk(eye, 0, w)
+    rng = np.random.default_rng(1)
+    for t in rng.choice(len(f), 300, replace=False):
+        a, b = rng.random(2)
+        if a + b > 1:
+            a, b = 1 - a, 1 - b
+        i0, i1, i2 = f[t]
+        p = v[i0] + a * (v[i1] - v[i0]) + b * (v[i2] - v[i0])
+        q = uv[i0] + a * (uv[i1] - uv[i0]) + b * (uv[i2] - uv[i0])
+        x, y = p[0] - eye[0], p[1] - eye[1]
+        wet_face = t >= len(f) - n_wet
+        assert abs(q[0] - (0.5 if wet_face else 0.0) - (x / (2 * PS.FLAT_R_M) + 0.5) * 0.5) < 2e-3
+        assert abs(q[1] - (y / (2 * PS.FLAT_R_M) + 0.5) * 0.5) < 2e-3
+        assert wet_face == GM.in_water(w, x, y) or min(abs(x - 16.0), abs(x - 24.0)) < 1e-6
+    # the same ground as one quad a cell: the disk's cells within its round edge, water and land
+    cells_in = sum(1 for i in range(GM.cells()) for j in range(GM.cells()) if np.hypot(*GM.cell_mid(i, j)) <= PS.FLAT_R_M)
+    assert abs(disk_area(v, f) - cells_in * GM.WATER_CELL_M ** 2) < 1e-3
+    assert abs(disk_area(v, f[len(f) - n_wet:]) - (m & (np.hypot(*np.meshgrid(
+        (np.arange(160) + 0.5) * 0.5 - 40, ((np.arange(160) + 0.5) * 0.5 - 40)[::-1])) <= 40)).sum() * 0.25) < 1e-3
+    assert len(f) < 5000                                              # (40k faces as one quad a cell)
+    blocks = PS.disk_blocks(m, np.ones_like(m))
+    assert max(b[2] for b in blocks) == PS.MAP_BLOCK and sum(b[2] ** 2 for b in blocks) == m.size
+
+
+def test_a_world_with_a_map_and_a_river_stays_under_the_chains_budget():
+    """The shell's grid is made coarser until shell and ground together fit under BUDGET_SHARE of the chain's own
+    limit (read from its table); a shell that fits at the full grid keeps it."""
+    lim = PS.tier_limit()
+    src = (A / "img3d" / "model_img3d.py").read_text()
+    assert str(lim) in str(int(250000 * 0.98)) and "TIER_TRIS" in src
+    import shell_one as SO
+    assert SO.world_spec_for({"id": "w"}, {"size_m": [1, 1, 1], "eye_m": [0, 0, 1], "stand_m": [0, 0, 0],
+                                           "flat_r_m": 40.0}, Path("/w.glb"))["tier"] == PS.WORLD_TIER
+    _, f, _, _ = PS.map_disk([0, 0, 1.6], 0, strip_water(-10.0, 10.0))
+    room = int(PS.BUDGET_SHARE * lim) - len(f)
+    built = []
+
+    def build(g):                                                     # (a shell as dense as the 11-18 world: 245k)
+        built.append(g)
+        n = int(245498 * (g / PS.OUT_GRID) ** 2) - len(f)
+        return None, np.zeros((n, 3), int), None, [0, 0, 0]
+    (_, faces, _, _), g = PS.fit_shell(build, PS.OUT_GRID, room)
+    assert len(faces) + len(f) <= PS.BUDGET_SHARE * lim and g < PS.OUT_GRID and g % 2 == 0
+    assert len(built) <= 3
+    small = lambda g: (None, np.zeros((1000, 3), int), None, None)   # noqa: E731
+    assert PS.fit_shell(small, PS.OUT_GRID, room)[1] == PS.OUT_GRID
+    assert PS.WORLD_BUILD >= 6                                        # (worlds made thinned are made again)

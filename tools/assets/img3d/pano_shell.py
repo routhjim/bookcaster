@@ -293,8 +293,10 @@ SKY_R_M = 150.0             # the sky's dome: this far from the eye, the land in
 LAND_MAX_K = 0.9            # ... no land farther out than this share of the dome
 OUT_STEEP_DEG = 89.0        # far ground is seen nearly edge on from the eye: kept (at 78 degrees it was all dropped)
 SKY_SURE = 0.5              # the segmenter's least sureness for sky
-WORLD_BUILD = 5             # the outdoor shell's build (a library world of an older build is made again)
+WORLD_BUILD = 6             # the outdoor shell's build (a library world of an older build is made again)
 #                             4: the land's own things the plan sends people to are found in it (marks_m)
+#                             6: the ground map's disk in merged blocks and the whole world under the chain's budget,
+#                             its water from the edit model's key (a world of 5 was thinned: streaked ground, 11-18)
 
 
 def pano_dirs(h: int, w: int) -> np.ndarray:
@@ -551,34 +553,100 @@ def map_texture(map_rgb: np.ndarray, rgb: np.ndarray, d: np.ndarray, sky: np.nda
     return GM.blend(m, GM.edge_ring(rgb, d, sky, FLAT_R_M, EYE_STAND_M), MAP_FADE_M, FLAT_R_M)
 
 
+MAP_BLOCK = 32              # the disk's cells are merged in square blocks of at most this many cells a side (16 m):
+#                             a block all land or all water, wholly inside the disk, is one quad; only the edges of
+#                             the water and of the disk keep the 0.5 m cells. (One quad a cell, the disk was 40k faces,
+#                             the world went over the asset chain's budget and was thinned, and the thinned ground
+#                             showed chevrons and streaks of the wrong part of its picture in every frame, 11-18)
+
+
+def disk_blocks(wet: np.ndarray, inside: np.ndarray, top: int = MAP_BLOCK) -> list:
+    """The disk's cells as square blocks [(row, column, side, wet)] (row 0 at the top of the map): each block of
+    `top` cells split in four until it is all inside the disk and all of one kind (land or water), or one cell; a
+    cell outside the disk is left out."""
+    n = wet.shape[0]
+    out = []
+
+    def go(i, j, s):
+        ins = inside[i:i + s, j:j + s]
+        if not ins.any():
+            return
+        w = wet[i:i + s, j:j + s]
+        if s == 1 or (ins.all() and (w.all() or not w.any())):
+            out.append((i, j, s, bool(w[0, 0])))
+            return
+        h_ = s // 2
+        for di, dj in ((0, 0), (0, h_), (h_, 0), (h_, h_)):
+            go(i + di, j + dj, h_)
+    for i in range(0, n, top):
+        for j in range(0, n, top):
+            go(i, j, min(top, n - i, n - j))
+    return out
+
+
 def map_disk(eye: list, n0: int, water: dict | None = None) -> tuple:
-    """The set's real ground with a map: cells of ground_map.WATER_CELL_M within FLAT_R_M of the point under the eye,
-    each showing its own part of the map (one picture over the whole disk, in the lower left of the shell's picture);
-    the cells of the map's water (the judge's, ground_map) WATER_UNDER_M lower and showing the map's copy in the lower
-    right (WATER_UV), faces of their own. -> (vertices in the asset frame, faces looking up, uv, how many faces are
-    water)."""
+    """The set's real ground with a map: the disk within FLAT_R_M of the point under the eye as blocks of
+    ground_map.WATER_CELL_M cells (disk_blocks), each showing its own part of the map (one picture over the whole disk,
+    in the lower left of the shell's picture: a point's uv is its place on the map whatever block it is in); the
+    map's water (ground_map) WATER_UNDER_M lower and showing the map's copy in the lower right (WATER_UV), faces of
+    their own. -> (vertices in the asset frame, faces looking up, uv, how many faces are water)."""
     import ground_map as GM
     h, c = FLAT_R_M, GM.WATER_CELL_M
     n = GM.cells(h, c)
     wet = GM.mask_of(water) if water and water.get("runs") else np.zeros((n, n), bool)
     if wet.shape != (n, n):
         wet = np.zeros((n, n), bool)
+    mid = (np.arange(n) + 0.5) * c - h
+    inside = np.hypot(mid[None, :], mid[::-1][:, None]) <= h        # (row 0 is the top of the map: +y)
     z = eye[2] - EYE_STAND_M
     e = 2.0 / 2048
     vtx, uv, faces, wf = [], [], [], []
-    for a in range(n):                                 # (a: from the map's bottom, -y; b: from its left, -x)
-        for b in range(n):
-            x0, y0 = -h + b * c, -h + a * c
-            if np.hypot(x0 + c / 2, y0 + c / 2) > h:
-                continue
-            w_ = bool(wet[n - 1 - a, b])
-            du = 0.5 if w_ else 0.0
-            k = n0 + len(vtx)
-            for x, y in ((x0, y0), (x0 + c, y0), (x0 + c, y0 + c), (x0, y0 + c)):
-                vtx.append([eye[0] + x, eye[1] + y, z - (WATER_UNDER_M if w_ else 0.0)])
-                uv.append([du + min(0.5 - e, max(e, (x / (2 * h) + 0.5) * 0.5)), min(0.5 - e, max(e, (y / (2 * h) + 0.5) * 0.5))])
-            (wf if w_ else faces).extend([[k, k + 1, k + 2], [k, k + 2, k + 3]])
-    return np.array(vtx), np.array(faces + wf), np.array(uv), len(wf)
+    at = {}                                          # (blocks share their corners: the land, and each water, is one
+    #                                                   piece; a lone water quad was a "speck" the asset chain drops)
+
+    def corner(gi, gj, w_):
+        key = (gi, gj, w_)
+        if key not in at:
+            x, y = -h + gj * c, h - gi * c
+            at[key] = n0 + len(vtx)
+            vtx.append([eye[0] + x, eye[1] + y, z - (WATER_UNDER_M if w_ else 0.0)])
+            uv.append([(0.5 if w_ else 0.0) + min(0.5 - e, max(e, (x / (2 * h) + 0.5) * 0.5)),
+                       min(0.5 - e, max(e, (y / (2 * h) + 0.5) * 0.5))])
+        return at[key]
+    for i, j, s_, w_ in disk_blocks(wet, inside):
+        q = [corner(i + s_, j, w_), corner(i + s_, j + s_, w_), corner(i, j + s_, w_), corner(i, j, w_)]
+        (wf if w_ else faces).extend([[q[0], q[1], q[2]], [q[0], q[2], q[3]]])
+    return np.array(vtx), np.array(faces + wf, dtype=int).reshape(-1, 3), np.array(uv), len(wf)
+
+
+# the asset chain thins a mesh over its tier's budget (img3d/model_img3d.py TIER_TRIS, times its own factor): a world
+# is made under BUDGET_SHARE of it by construction, so it is never thinned
+WORLD_TIER = "hero"         # the tier img3d/shell_one.py gives a world
+BUDGET_SHARE = 0.9
+
+
+def tier_limit(tier: str = WORLD_TIER, src: Path | None = None) -> int:
+    """The asset chain's triangle limit for a tier, read from model_img3d.py's own table and factor (that file runs
+    inside Blender and cannot be imported here)."""
+    import ast
+    import re
+    t = (src or Path(__file__).resolve().parent / "model_img3d.py").read_text()
+    table = ast.literal_eval(re.search(r"TIER_TRIS\s*=\s*(\{[^}]*\})", t).group(1))
+    m = re.search(r"TIER_TRIS\[[^\]]*\]\s*\*\s*([0-9.]+)", t)
+    return int(table[tier] * (float(m.group(1)) if m else 1.0))
+
+
+def fit_shell(build, grid: int, room: int, tries: int = 6) -> tuple:
+    """The shell at the finest grid (at most `grid`) whose faces fit in `room`: build(grid) -> (vertices, faces, uv,
+    eye); made again at a coarser grid (faces go as its square) until they fit. -> (the shell, the grid)."""
+    g = int(grid)
+    for _ in range(tries):
+        res = build(g)
+        n = len(res[1])
+        if n <= room:
+            return res, g
+        g = max(16, int(g * (room / n) ** 0.5 * 0.97) // 2 * 2)
+    return res, g
 
 
 def sun_of(rgb: np.ndarray, sky: np.ndarray) -> dict | None:
@@ -669,12 +737,18 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     # the set's real ground (a flat round FLAT_R_M out, in the panorama's own ground seen from above) with the
     # panorama as what lies beyond it: nothing of the picture is built nearer than the ground's edge
     tile = ground_tile(rgb, d, sky)
-    vtx, faces, uv, eye = shell(backdrop(d, sky), np.zeros(d.shape, bool), grid, steep_deg=OUT_STEEP_DEG, lowest=True)
-    uv = np.stack([uv[:, 0], 0.5 + uv[:, 1] / 2], -1)                 # (the panorama: the upper half of the picture)
     mf = json.loads(Path(map_facts).read_text()) if map_facts and Path(map_facts).exists() else {}
     water = mf.get("water") if mf.get("water") and float(mf.get("half_m") or 0) == FLAT_R_M else None
+    with_map = bool(map_pic and Path(map_pic).exists())
+    # the shell's grid is chosen so the whole world, ground included, stays under the asset chain's budget
+    limit = tier_limit()
+    n_ground = len((map_disk([0.0, 0.0, 0.0], 0, water) if with_map else ground_disk([0.0, 0.0, 0.0], 0))[1])
+    bd = backdrop(d, sky)
+    (vtx, faces, uv, eye), grid = fit_shell(lambda g: shell(bd, np.zeros(d.shape, bool), g, steep_deg=OUT_STEEP_DEG,
+                                                            lowest=True), grid, int(BUDGET_SHARE * limit) - n_ground)
+    uv = np.stack([uv[:, 0], 0.5 + uv[:, 1] / 2], -1)                 # (the panorama: the upper half of the picture)
     n_wet = 0
-    if map_pic and Path(map_pic).exists():
+    if with_map:
         # the place's own ground drawn from above, over the whole disk (and its water a little under it)
         gv, gf, guv, n_wet = map_disk(eye, len(vtx), water)
         mt = map_texture(np.asarray(Image.open(map_pic).convert("RGB")), rgb, d, sky)
@@ -699,7 +773,8 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     facts = {"eye_m": [round(v, 3) for v in eye], "stand_m": [round(eye[0], 3), round(eye[1], 3),
                                                                round(eye[2] - EYE_STAND_M, 3)],
              "bounds_m": [lo.round(3).tolist(), hi.round(3).tolist()], "size_m": (hi - lo).round(3).tolist(),
-             "faces": int(len(faces)), "flat_r_m": FLAT_R_M, "sky_r_m": SKY_R_M, "land": info, "spot": spot or None,
+             "faces": int(len(faces)), "faces_limit": limit, "under_budget": bool(len(faces) <= BUDGET_SHARE * limit),
+             "shell_grid": int(grid), "ground_faces": int(len(gf)), "flat_r_m": FLAT_R_M, "sky_r_m": SKY_R_M, "land": info, "spot": spot or None,
              "spot_m": [round(eye[0] + sp[0], 3), round(eye[1] + sp[1], 3), round(eye[2] - EYE_STAND_M, 3)] if sp else None,
              "marks_m": found, "sun": sun_of(rgb, sky), "world_build": WORLD_BUILD,
              # the ground's map, its water and its land places: in the set's frame (the point under the eye at 0, 0)
@@ -709,6 +784,9 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
                               "faces": int(n_wet)} if n_wet else None}
     o.with_suffix(".json").write_text(json.dumps(facts, indent=1))
     print(json.dumps(facts))
+    if not facts["under_budget"]:
+        print(f"the world has {len(faces)} faces, over {BUDGET_SHARE} of the chain's {limit}: it will be thinned",
+              file=sys.stderr)
     return 0
 
 

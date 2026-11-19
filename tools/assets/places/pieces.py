@@ -451,7 +451,11 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
                                  python, str(tools / "refs" / "ref_draw.py"), "picture", mid, "--desc", mdesc,
                                  "--size", str(GM.MAP_PX), str(GM.MAP_PX), "--seed", "{seed}"],
                  "gate": "none: without a map the ground is the panorama's own, as before", "on_fail": "go on without it"},
-                {"step": "map_read", "what": "the vision judge reads the map: where its water is, and where each part of "
+                {"step": "water_key", "what": "the edit model paints the map's water one flat key colour (the water is "
+                 "the cells of that colour: the judge cannot outline it)", "station": "image", "kind": "edit",
+                 "ref_id": mid, "picture": "water_key.png", "jobs": "water_key_jobs.json",
+                 "gate": "none: without it the judge's outline is the water", "on_fail": "go on without it"},
+                {"step": "map_read", "what": "the vision judge reads the map: whether it has water, and where each part of "
                  "the land the plan sends people to is", "station": "igpu", "kind": "choose", "ref_id": mid,
                  "facts": "map.json", "land_places": dict(piece.get("land_places") or {}),
                  "gate": "none: without it the ground has no water and the land places are the open ground",
