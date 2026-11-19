@@ -80,8 +80,13 @@ Region rules (in `bl_combo.py`, general; the numbers are job keys):
   skirt to drape, which this does not do). Trousers stay on the legs;
 - shoes (under 11 cm) are rigid on the foot bones; weights are smoothed over the mesh (8 rounds, 25 at the
   armholes);
-- mode statue: the head (above the collar plane) is rigid on the head bone and scaled to enclose the hidden
-  MetaHuman head (else its face shows through); the hands past the wrists are rigid on the hand bones.
+- mode statue: the head is rigid on the head bone: everything above a level line 1 cm over neck_02 within 22 cm
+  of the neck's axis, plus what the collar plane gave it (`statue_head.py`; job keys `statue_head_*`). A drawn head
+  sits lower than the hidden one: under the collar plane its ear lobes and nape hair had the shoulders' weights and
+  the ears were pulled into points when the arms came down. Below the line the neck blends from the head to the
+  body's weights over 5 cm, without arm weights. `report.json` `statue_head.box`: the visible head against the hidden
+  one (copied to the library entry as `statue_head_box`; `statue_head.worn_fit` turns it into the scale and shift a
+  thing worn on the head needs). The hands past the wrists: `statue_hands.py`.
 
 What the outfit covers (job keys `liner*`, `flap_*`): the MetaHuman head mesh reaches down over the trapezius and
 collarbones (weighted to spine_04, the clavicles and the arms' corrective joints) and showed through the coat's

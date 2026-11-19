@@ -1995,7 +1995,30 @@ if STATUE:
     P = np.array([v.co[:] for v in fig.data.vertices])
     rig = {}
     hd = (P[:, 2] - cut_z) * math.cos(tilt) - (P[:, 1] - J("neck_01").y) * math.sin(tilt) > 0
-    rig["head"] = np.nonzero(hd)[0]
+    # the head as the head, not the collar line: what lies under the line (a drawn head sits lower than the hidden
+    # one: ear lobes, jaw corners, the hair over the nape) had the shoulders' weights and the ears were pulled into
+    # points when the arms came down. statue_head.py has the rule: a level line over the neck's upper joint within
+    # a head's reach of the neck's axis, a blend down the neck, no arm weights on the neck (JOB "statue_head_follow")
+    import statue_head as SHD  # noqa: E402
+    HEAD_W = None
+    if JOB.get("statue_head_follow", True):
+        HEAD_W = SHD.head_follow(P, np.array(J("neck_01")), np.array(J("head")), float(J("neck_02").z),
+                                 line_m=float(JOB.get("statue_head_line_m", SHD.HEAD_LINE_M)),
+                                 blend_m=float(JOB.get("statue_head_blend_m", SHD.BLEND_M)),
+                                 reach_m=float(JOB.get("statue_head_reach_m", SHD.REACH_M)),
+                                 reach_above_m=float(JOB.get("statue_head_reach_above_m", SHD.REACH_ABOVE_M)),
+                                 rigid=hd)
+        rig["head"] = np.nonzero(HEAD_W >= 1.0 - 1e-6)[0]
+        REP["statue_head"] = {"collar_line_verts": int(hd.sum()), "rigid_verts": len(rig["head"]),
+                              "blend_verts": int(((HEAD_W > 1e-6) & (HEAD_W < 1.0 - 1e-6)).sum())}
+        if HEAD is not None:
+            # the visible head against the hidden one (a worn thing is sized from the hidden head; cast_char
+            # copies this into the library entry as "statue_head_box" for the scene to fit it to the visible one)
+            _hv = np.array([(HEAD.matrix_world @ v.co)[:] for v in HEAD.data.vertices])
+            REP["statue_head"]["box"] = SHD.head_box(P[rig["head"]], _hv, np.array(J("head")),
+                                                     float(J("neck_02").z) + 0.02)
+    else:
+        rig["head"] = np.nonzero(hd)[0]
     _fcs = np.empty(len(P) * 4, np.float32)
     fig.data.attributes["fcol"].data.foreach_get("color", _fcs)
     _fcs = _fcs.reshape(-1, 4)[:, :3].astype(float)
@@ -2075,6 +2098,21 @@ if STATUE:
             fig.vertex_groups[gn].remove(ids)
         (fig.vertex_groups.get(bone) or fig.vertex_groups.new(name=bone)).add(ids, 1.0, "REPLACE")
     REP["rigid_verts"] = {k: len(v) for k, v in rig.items()}
+    if HEAD_W is not None:
+        # the neck's blend: the head's share on the head bone, the rest the body's own weights without the arms
+        _gname = {g.index: g.name for g in fig.vertex_groups}
+        _armw = 0
+        for i in np.nonzero((HEAD_W > 1e-6) & (HEAD_W < 1.0 - 1e-6))[0]:
+            v_ = fig.data.vertices[int(i)]
+            old_ = {_gname[g.group]: g.weight for g in v_.groups}
+            _armw += any(SHD.is_arm(k) and w_ > 1e-6 for k, w_ in old_.items())
+            new_ = SHD.blend_weights(old_, float(HEAD_W[i]))
+            for k in old_:
+                if k not in new_:
+                    fig.vertex_groups[k].remove([int(i)])
+            for k, w_ in new_.items():
+                (fig.vertex_groups.get(k) or fig.vertex_groups.new(name=k)).add([int(i)], w_, "REPLACE")
+        REP["statue_head"]["blend_verts_off_the_arms"] = int(_armw)
     if JOINTED:
         # the cut, side by side: the faces round the hand split on the plane, everything of the hand past it
         # removed (only within the hand's tube on its own side: the old rigid hand's region, so nothing the hand

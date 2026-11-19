@@ -1002,6 +1002,10 @@ def main():
                 and not a.whole,
                 "note": f"Made by cast_char.py from the sheet: {a.look}", "made_by": "cast_char.py",
                 "choices": {"preset": ch["base"], "grooms": ch["grooms"], "drawing": Path(drawing).name},
+                # a whole figure's visible head against the hidden MetaHuman one (bl_combo, statue_head.head_box):
+                # what a thing worn on the head must be fitted to (it is sized from the hidden head's bones)
+                **({"statue_head_box": ((json.loads((combo / "report.json").read_text()).get("statue_head") or {})
+                                        .get("box"))} if a.whole else {}),
                 **variant_rec(a.variant_of)},
                 indent=1))
     # ---------------------------------------------------------------- arms: abduction by measurement
