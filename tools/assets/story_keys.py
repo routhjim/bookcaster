@@ -822,10 +822,12 @@ class Story:
             if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_drawn").exists():
                 # a figure built before an outfit's headwear was part of it: drawn and shaped again, once
                 log(f"{place}: {name} in {r['id']}: made again wearing its headwear")
-                sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log")
-                self._fit_mark(w)
-            if ok and self.outfit_words(name, r).get("head_on"):
-                (w / "headwear_drawn").write_text(time.strftime("%F %T"))
+                if sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log") == 0:
+                    self._fit_mark(w)
+                    (w / "headwear_drawn").write_text(time.strftime("%F %T"))
+                else:
+                    # (the figure made before stays, bare-headed, and so does the thing set on its head)
+                    log(f"{place}: {name} in {r['id']}: NOT made with its headwear; see {w / 'run.log'}")
             if ok:
                 self._hands_again(f"{name} in {r['id']}", w, cmd)
             out[r["variant"]] = (vid if ok else None, r)
@@ -952,7 +954,9 @@ class Story:
             for v, (vid, r) in vs.items():
                 ow = self.outfit_words(n, r)
                 worn[v] = {"wear_set": ow["wear"], "wear_back_set": ow["wear_back"], "worn_sheet": ow["sheet"],
-                           **({"head_on": True} if ow.get("head_on") else {})}
+                           # (only a figure really made wearing it: else the thing is still set on its head)
+                           **({"head_on": True} if ow.get("head_on") and (
+                               self.work / "cast" / self.person(n)["slug"] / r["variant"] / "headwear_drawn").exists() else {})}
                 if not vid:
                     continue
                 ps = {str(p.get("pose") or "") for i in self.shots_of(place) if (self.outfit(n, i) or {}).get("variant") == v

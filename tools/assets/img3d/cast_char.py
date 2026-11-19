@@ -750,6 +750,9 @@ def main():
                         meshes.append({"file": str(out), "error": p.stdout[-300:]})
                         continue
                     ca_ = child_armpit(a.look)                 # (a child's armpit and elbow sit lower: see there)
+                    # (headwear stands over the crown: the armpit and the elbow are lower shares of a taller whole.
+                    # Nine helmed meshes in a row missed the gate at 0.66 to 0.68 of 0.70, 11-19)
+                    ca_ -= HEADWEAR_TALLER if hw_ else 0.0
                     g = subprocess.run([HY_PY, "-I", str(HERE / "mesh_gate.py"), str(out), "--min-free", str(ca_),
                                         "--elbow", str(round(0.68 - (0.70 - ca_), 3))], capture_output=True, text=True)
                     res = json.loads(g.stdout.strip().splitlines()[-1]) if g.stdout.strip() else {"file": str(out)}
@@ -1634,6 +1637,7 @@ def variant_rec(base):
 HEADWEAR = r"hat\b|top-hat|bonnet|\bcap\b|veil|deerstalker|\bhelm(?:et)?s?\b|\bvisor"
 
 
+HEADWEAR_TALLER = 0.04       # what headwear adds to a figure's height, as a share of it (the mesh gate's measures)
 HEAD_OFF = __import__("re").compile(r"\b(removed|off|without|no|missing|gone|lost|in (?:his|her|their) hands?|under (?:his|her|their) arm)\b", __import__("re").I)
 
 
