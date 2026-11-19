@@ -1040,10 +1040,14 @@ class Story:
             kp = self.d(place) / "keys.json"
             rows = json.loads(kp.read_text()) if kp.exists() else []
             have = sum(bool(r["key"]) and (self.keys / f"{r['shot']}_s0.png").exists() for r in rows)
-            report[place] = {"shots": len(self.shots_of(place)), "keys": have,
+            # (a key kept from a least-bad staging that shows nobody readable is a picture, not a good key: the
+            # count said 34 of 34 with five such among them, 11-18)
+            poor = [x for x in self.keyless(place) if x in {r["shot"] for r in rows if r["key"]}]
+            report[place] = {"shots": len(self.shots_of(place)), "keys": have, "unreadable": poor,
                              "missing": [r for r in rows if not r["key"]]}
         (self.work / "report.json").write_text(json.dumps(report, indent=1))
-        log("keys: " + "; ".join(f"{p} {v['keys']}/{v['shots']}" for p, v in report.items()))
+        log("keys: " + "; ".join(f"{p} {v['keys']}/{v['shots']}" + (f" ({len(v['unreadable'])} unreadable)" if v["unreadable"] else "")
+                                 for p, v in report.items()))
         return report
 
 
