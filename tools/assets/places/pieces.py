@@ -24,6 +24,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(1, str(HERE))                      # (ground_map, beside this file)
 import config as C  # noqa: E402
 
 KINDS_FILE = HERE / "piece_kinds.json"
@@ -417,20 +418,46 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             spec["spot"] = piece["spot"]
         if piece.get("marks"):               # the land's own things the plan sends people to: found in the panorama
             spec["marks"] = dict(piece["marks"])
-        aid = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
-                        + (" " + piece["spot"] if piece.get("spot") else "")
-                        + (" " + str(piece["source"]) if piece.get("source") else ""))
+        pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
+                         + (" " + piece["spot"] if piece.get("spot") else "")
+                         + (" " + str(piece["source"]) if piece.get("source") else ""))
+        aid = pano
+        mdesc = ""
+        if piece.get("map_words"):
+            # the place's own ground seen from straight above, laid over the set's real ground (places/ground_map.py):
+            # the world is another asset whenever the map's words change, and its panorama, whose words did not, is
+            # the one already drawn (the panorama keeps its own id)
+            import ground_map as GM
+            mdesc = GM.map_desc(piece["map_words"], piece.get("land_places"), piece.get("map_style") or "")
+            aid = _asset_id(kind, f"{pano} map {hashlib.sha1((mdesc + str(piece.get('map_source') or '')).encode()).hexdigest()[:8]}")
+            spec.update(panorama_id=pano, map_id=f"{aid}_map")
         spec["id"] = aid
         steps = [
             {"step": "draw", "what": "one panorama of the place from a standing eye", "station": C.IMAGE_STATION,
-             "kind": "refs", "picture": "picture.png",
-             "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{aid}", "--",
-                             python, str(tools / "refs" / "ref_draw.py"), "picture", aid, "--desc",
+             "kind": "refs", "picture": "picture.png", "ref_id": pano,
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{pano}", "--",
+                             python, str(tools / "refs" / "ref_draw.py"), "picture", pano, "--desc",
                              WORLD_WORDS.format(look=look.rstrip("."))
                              + (f" A few steps ahead, close by, part of the ground itself: {piece['spot']}." if piece.get("spot")
                                 else ""), "--size", "2048", "1024", "--seed", "{seed}"]
                      + (["--sources", str(piece["source"])] if piece.get("source") else []),
-             "gate": "nobody in the panorama", "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS}"},
+             "gate": "nobody in the panorama", "on_fail": f"re-draw with the next seed, at most {MAX_REDRAWS}"}]
+        if mdesc:
+            mid = spec["map_id"]
+            steps += [
+                {"step": "map", "what": "the place's ground seen from straight above, over the whole real ground",
+                 "station": C.IMAGE_STATION, "kind": "refs", "picture": "picture.png", "ref_id": mid,
+                 "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_map_{mid}", "--",
+                                 python, str(tools / "refs" / "ref_draw.py"), "picture", mid, "--desc", mdesc,
+                                 "--size", str(GM.MAP_PX), str(GM.MAP_PX), "--seed", "{seed}"]
+                         + (["--sources", str(piece["map_source"])] if piece.get("map_source") else []),
+                 "gate": "none: without a map the ground is the panorama's own, as before", "on_fail": "go on without it"},
+                {"step": "map_read", "what": "the vision judge reads the map: where its water is, and where each part of "
+                 "the land the plan sends people to is", "station": "igpu", "kind": "choose", "ref_id": mid,
+                 "facts": "map.json", "land_places": dict(piece.get("land_places") or {}),
+                 "gate": "none: without it the ground has no water and the land places are the open ground",
+                 "on_fail": "go on without it"}]
+        steps += [
             {"step": "spec", "what": "the piece's source spec", "write": f"<library>/prop/{aid}/source/spec.json",
              "spec": spec},
             {"step": "shape", "what": "the panorama's depth as the land, a sky dome and the ground under the eye, then "

@@ -92,7 +92,8 @@ def things(set_dir) -> list:
     for mk in spec.get("marks", []):         # a thing of the land itself (a place in the open): a place on the ground
         out.append({"name": mk["name"], "asset": None, "kind": "mark", "short": mk.get("look") or mk["name"],
                     "look": mk.get("look") or "", "center": [mk["position"][0], mk["position"][1], 0.0],
-                    "half": [0.0, 0.0, 0.0], "toward": mk.get("toward"), "on": None, "lit": False, "fire": False})
+                    "half": [0.0, 0.0, 0.0], "toward": mk.get("toward"), "on": None, "lit": False, "fire": False,
+                    "wet": bool(mk.get("wet"))})
     for w in spec.get("structure", []):
         if w.get("kind") != "wall":
             continue

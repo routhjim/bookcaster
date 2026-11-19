@@ -242,7 +242,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
             have.add(sn["kind"])
             kept.append({"id": f"c{i + 1}", "kind": sn["kind"], "phrases": [],
                          "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
-                         "against": "not stated", "source": sn["crop"]})
+                         "against": "not stated", "source": sn["crop"], **({"natural": True} if sn.get("natural") else {})})
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
@@ -407,11 +407,13 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     gi = next((i for i, sn in enumerate(concept.get("seen") or []) if sn.get("group")), None)
     grp = next((p for p in pcs if gi is not None and p["id"] == f"c{gi + 1}"), None)
     gone = {}
-    if grp:
-        gone = {p["id"]: grp["id"] for p in pcs if p is not grp}
-        grp["phrases"] = list(dict.fromkeys(ph for p in pcs for ph in p.get("phrases") or []))
-        pcs = [grp]
+    # (the land's own things, a boulder or a bush, are not built: they stand apart, each where the picture has it)
     chk = concept.get("spec") or {}
+    nat = {p["id"] for p in pcs if p.get("natural") or (chk.get(p["id"]) or {}).get("natural")}
+    if grp:
+        gone = {p["id"]: grp["id"] for p in pcs if p is not grp and p["id"] not in nat}
+        grp["phrases"] = list(dict.fromkeys(ph for p in pcs if p["id"] not in nat for ph in p.get("phrases") or []))
+        pcs = [grp] + [p for p in pcs if p["id"] in nat]
     pcs = [p for p in pcs if not (p.get("kind") == "landmark" and not p.get("source")
                                   and p["id"] in chk and not chk[p["id"]].get("in_picture"))]
     pcs, stage = open_places(pcs, concept)
@@ -437,10 +439,16 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
         "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")), ("overhead", sf.get("ceiling"))) if v),
         (f"painted as a {technique(str(spec.get('_style') or ''))}" if technique(str(spec.get("_style") or "")) else "")) if x) \
         if far else ""
+    # the place's own ground seen from straight above (places/ground_map.py), drawn from the whole land's words and
+    # its ground's, the parts of the land the plan sends people to on it, the concept picture as the land's look
+    ground = "; ".join(x for x in (land, f"the ground: {str(sf['floor']).strip().rstrip('.')}" if sf.get("floor") else "") if x)
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
                 "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
                 **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
-                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
+                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {}),
+                **({"map_words": ground, "land_places": {ph: str(lp[ph]).strip().rstrip(".") for ph in order},
+                    "map_style": technique(str(spec.get("_style") or ""))} if ground else {}),
+                **({"map_source": concept["concept"]} if ground and concept.get("concept") else {})})
     sp["pieces"] = pcs
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     sp["named_places"] = {ph: (gone.get(v, v) if gone.get(v, v) in ids else "floor")
@@ -708,9 +716,38 @@ def world_stage(out: dict, spec: dict, library) -> dict:
         sw = str(t["surface_words"])
         out["surfaces_words"] = sw[0].upper() + sw[1:] + "."
     out["world"] = {"asset": aid, "flat_r_m": w.get("flat_r_m"), "sun": sun, "spot": t.get("spot"),
-                    "at_spot": bool(w.get("spot_m"))}
+                    "at_spot": bool(w.get("spot_m")), "ground_map": bool(w.get("ground_map")),
+                    "water_region": w.get("water_region")}
+    if (w.get("water") or {}).get("runs"):
+        # the map's water (set frame: the world is set with the point under its eye at the origin): nobody is stood
+        # in it unless the plan's place is in the water (scenes/from_plan.py)
+        out["water"] = w["water"]
     out["validation"] = {"figures": [{"position": [0.0, 0.0], "facing": [0, -1]}]}
     return {"world": aid, "why": "placed"}
+
+
+def land_marks(spec: dict, world: dict, half: float = 0.0) -> tuple:
+    """The parts of the land the plan sends people to (the director's land_places, named_places "floor") that the
+    vision judge found on the place's ground map (img3d/pano_shell.py "places_m", set frame): each a place on the
+    ground, "land_at<n>", with its words and whether it is in the water; kept on the stage (half: its half side).
+    -> (marks, {phrase: mark name}). A land place the map did not show stays the open ground. (Before the map every
+    one was "floor", and people sent to a water's edge were stood anywhere, 11-18.)"""
+    got = (world or {}).get("places_m") or {}
+    lp = spec.get("land_places") if isinstance(spec.get("land_places"), dict) else {}
+    marks, named = [], {}
+    for ph, v in (spec.get("named_places") or {}).items():
+        g = got.get(ph)
+        if v != "floor" or ph not in lp or not g or not g.get("at"):
+            continue
+        x, y = float(g["at"][0]), float(g["at"][1])
+        r = math.hypot(x, y)
+        if half > 0 and r > half:
+            x, y = x * half / r, y * half / r
+        nm = f"land_at{len(marks) + 1}"
+        marks.append({"name": nm, "position": [round(x, 3), round(y, 3)], "toward": None,
+                      "look": g.get("words") or str(lp[ph]), "wet": bool(g.get("wet"))})
+        named[ph] = nm
+    return marks, named
 
 
 def world_marks(spec: dict, library) -> dict:
@@ -929,6 +966,15 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         for ph, v in (spec0.get("named_places") or {}).items():
             if v in marks:
                 ss["named_places"][ph] = f"land_{v}"
+    if world:                                 # the land's places the ground map shows: places on the ground
+        import config as C
+        t_ = next((p for p in spec0.get("pieces") or [] if p.get("kind") == "terrain"), None)
+        rp_ = Path(library or C.LIBRARY) / "prop" / P.generation_request(t_)["asset_id"] / "asset.json" if t_ else None
+        lm, ln = land_marks(spec0, (json.loads(rp_.read_text()).get("world") or {}) if rp_ and rp_.exists() else {},
+                            min(out["size_m"][:2]) / 2 - 1.0)
+        if lm:
+            out["marks"] = list(out.get("marks") or []) + lm
+            ss["named_places"].update(ln)
     report = {"pieces": res["summary"], "left_out": [p for p in res["pieces"] if p["status"] != "library"],
               "layout_ok": lay["ok"], "unmet": lay["unmet"], "status": lay.get("status"),
               "ladder": lay.get("ladder"), "dropped": lay.get("dropped"), "reask": lay.get("reask"), "checks": L.check_layout(lay, spec),

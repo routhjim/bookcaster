@@ -53,20 +53,32 @@ def world_spec_for(spec0: dict, facts: dict, glb: Path) -> dict:
     return dict(keep, id=f"{spec0['id']}_tr", source="generated", keep_uvs=True, source_glb=str(glb), tier="hero",
                 size_m=facts["size_m"], height_m=facts["size_m"][2], size_tolerance=0.05, yaw_deg=0, bump_m=0,
                 seen_from_inside=True, eye_m=facts["eye_m"], stand_m=facts["stand_m"], flat_r_m=facts["flat_r_m"],
-                spot_m=facts.get("spot_m"),
+                spot_m=facts.get("spot_m"), ground_map=facts.get("ground_map"), water=facts.get("water"),
+                places_m=facts.get("places_m"), water_region=facts.get("water_region"),
                 sun=facts.get("sun"), world_build=facts.get("world_build", 1), emit_texture=WORLD_EMIT,
                 tags=list(keep.get("tags", [])) + ["img3d", "panorama_world"], replaces=spec0["id"],
                 licence="internal: panorama drawn by the local image model; depth by MoGe-2 (MIT), sky by CLIPSeg (MIT)")
 
 
+def map_args(spec0: dict) -> list:
+    """pano_shell.py's --map (the place's ground drawn from above) and --map-facts (the judge's reading of it), for
+    those of them that were made (places/generate.py ground_map)."""
+    if not spec0.get("map_id"):
+        return []
+    d = REFS / spec0["map_id"]
+    out = ["--map", str(d / "picture.png")] if (d / "picture.png").exists() else []
+    return out + (["--map-facts", str(d / "map.json")] if out and (d / "map.json").exists() else [])
+
+
 def main():
     aid = sys.argv[1]
     WORK.mkdir(parents=True, exist_ok=True)
-    pic = REFS / aid / "picture.png"
+    spec0 = json.loads((C.LIBRARY / "prop" / aid / "source" / "spec.json").read_text())
+    # (a world's panorama keeps its own id: one made again for new map words takes the panorama already drawn)
+    pic = REFS / (spec0.get("panorama_id") or aid) / "picture.png"
     if not pic.exists():
         raise SystemExit(f"no panorama {pic}")
     glb = WORK / f"{aid}.glb"
-    spec0 = json.loads((C.LIBRARY / "prop" / aid / "source" / "spec.json").read_text())
     import pano_shell
     world = spec0.get("made_as") == "world"             # a place in the open (pano_shell.py --outdoor)
     key, now = ("world_build", pano_shell.WORLD_BUILD) if world else ("shell_build", pano_shell.SHELL_BUILD)
@@ -74,7 +86,8 @@ def main():
     if not glb.exists() or old < now:                     # (a shell of an older build is made again)
         r = subprocess.run([os.environ.get("ASSETS_SHELL_PY") or sys.executable, str(HERE / "pano_shell.py"), str(pic), str(glb)]
                            + (["--outdoor"] if world else []) + (["--spot", spec0["spot"]] if world and spec0.get("spot") else [])
-                           + [x for k, v in ((spec0.get("marks") or {}).items() if world else []) for x in ("--mark", f"{k}={v}")])
+                           + [x for k, v in ((spec0.get("marks") or {}).items() if world else []) for x in ("--mark", f"{k}={v}")]
+                           + map_args(spec0 if world else {}))
         if r.returncode:
             glb.unlink(missing_ok=True)
             raise SystemExit(r.returncode)

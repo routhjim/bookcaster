@@ -1217,6 +1217,8 @@ def check_layout(layout: dict, spec: dict | None = None, data: dict | None = Non
             pts.append(stand_point({"opening_kind": "door", "c": o["point"], "facing": o["normal"]}, data))
             labels.append(o["name"])
     for phrase, i in named.items():
+        if i == "floor":                     # (the open floor, or the open land: a place with no piece, as in solve)
+            continue
         if i in by_id and not by_id[i].get("flat"):
             p = by_id[i]
             if p.get("on"):

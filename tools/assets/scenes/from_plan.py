@@ -48,6 +48,8 @@ import lying  # noqa: E402
 import stature  # noqa: E402
 import creature  # noqa: E402
 import setfacts  # noqa: E402
+sys.path.insert(0, str(HERE.parent / "places"))
+import ground_map as GM  # noqa: E402
 
 FRAMING = {"wide": "full", "full": "full", "medium": "medium", "close": "close", "two": "medium",
            "over-the-shoulder": "medium"}
@@ -188,6 +190,19 @@ def bounds(room: list, own_r: float = 0.0, walls: bool = True) -> tuple:
     return room[0] / 2 - 0.35 - (own_r if walls else 0.0), room[1] / 2 - 0.35 - (own_r if walls else 0.0)
 
 
+def dry(p: list, things: list) -> bool:
+    """Not on the water of a place in the open (a "water" thing: the set's ground-map water, places/ground_map.py).
+    People are never stood in it unless their place is in the water (the caller then leaves the water out)."""
+    return not any(t["kind"] == "water" and GM.in_water(t.get("grid"), p[0], p[1]) for t in things)
+
+
+def water_things(set_spec: dict) -> list:
+    """The set's water as a thing of the place (no name a plan phrase can land on; its middle under the ground)."""
+    w = set_spec.get("water")
+    return [{"name": "_water", "asset": None, "kind": "water", "grid": w, "center": [0.0, 0.0, -0.05],
+             "half": [0.0, 0.0, 0.0], "on": None, "lit": False, "fire": False}] if w and w.get("runs") else []
+
+
 def clear_of_fixtures(p: list, things: list, r: float = 0.0) -> bool:
     return not any(t["kind"] == "fixture" and abs(p[0] - t["center"][0]) < t["half"][0] + 0.25 + r
                    and abs(p[1] - t["center"][1]) < t["half"][1] + 0.25 + r for t in things)
@@ -236,7 +251,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
             if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r) or not before(p, target, front):
                 continue
-            if not clear_of_fixtures(p, things, fr):
+            if not clear_of_fixtures(p, things, fr) or not dry(p, things):
                 continue
             out.append((r + 0.3 * math.hypot(*p) / max(W, D), [round(p[0], 3), round(p[1], 3)]))
     out.sort(key=lambda x: x[0])
@@ -268,7 +283,7 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
                 continue
             if too_near(p, others, own_r):
                 continue
-            if not clear_of_fixtures(p, things, fr):
+            if not clear_of_fixtures(p, things, fr) or not dry(p, things):
                 continue
             # nearer the thing, then nearer the middle; and with whoever is already at the place rather than across
             # it (two men sent to one craft stood on opposite sides of it, the craft between them)
@@ -291,7 +306,7 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
         r = r10 / 10
         for a in range(0, 360, 10):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or not clear_of_fixtures(p, things):
+            if abs(p[0]) > W or abs(p[1]) > D or not clear_of_fixtures(p, things) or not dry(p, things):
                 continue
             room_ = min((math.dist(p, o[:2]) - PERSON_GAP_M - own_r - (o[2] if len(o) > 2 else 0.0) for o in others),
                         default=0.0)
@@ -352,7 +367,7 @@ def strike_place(cpos: list, reach: float, ppos: list, others: list, things: lis
             for sgn in ((1,) if da in (0, 180) else (1, -1)):
                 a = a0 + sgn * math.radians(da)
                 q = [cpos[0] + r * math.cos(a), cpos[1] + r * math.sin(a)]
-                if abs(q[0]) > W or abs(q[1]) > D or not clear_of_fixtures(q, things):
+                if abs(q[0]) > W or abs(q[1]) > D or not clear_of_fixtures(q, things) or not dry(q, things):
                     continue
                 if too_near(q, others):
                     continue
@@ -618,6 +633,7 @@ def main():
     set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
     set_spec_ = json.loads((set_dir / "spec.json").read_text())
     room = set_spec_["size_m"]
+    things += water_things(set_spec_)              # (a place in the open's water: nobody is stood in it)
     walled = bool(set_spec_.get("structure"))       # (a place in the open has none: no walls round its stage)
     views_ = set_spec_.get("views") or {}          # a cabin's backdrops, one for each thing the story sees outside
     seats = seating.seats(library, set_dir)
@@ -851,10 +867,12 @@ def main():
                 fro = None if (rel and rel in state) or k in crt else front_of(thing)
                 if fro and fix_r is None:
                     fix_r = stand_clear(thing)
-                entry.update(seat=None, position=free_mark(tgt, others, things, room, near, own_r, fix_r, walled, fro))
+                # (a part of the land in the water itself, a ford, by the ground map's judge: the water is no bar)
+                th_ = [t_ for t_ in things if t_["kind"] != "water"] if (thing or {}).get("wet") else things
+                entry.update(seat=None, position=free_mark(tgt, others, th_, room, near, own_r, fix_r, walled, fro))
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
-                entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, things, room, near,
+                entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, th_, room, near,
                                                                               own_r=own_r, fix_r=fix_r, walls=walled,
                                                                               front=fro)
                                                         if math.dist(m, entry["position"]) > 0.2]

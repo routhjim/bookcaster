@@ -531,6 +531,56 @@ def ground_disk(eye: list, n0: int) -> tuple:
     return np.array(vtx), np.array(faces), np.array(uv)
 
 
+# ------------------------------------------------------------------ the ground's own map (places/ground_map.py)
+# With a map of the place's ground drawn from straight above, the whole real ground is that one picture (its land's
+# water, banks and paths where the people are), fading at its edge into the panorama's ground colour; its water is
+# its own faces a little under the ground, which the asset chain and the engine can give a water material.
+MAP_FADE_M = 6.0            # the map fades into the panorama's own ground over this many metres inside the disk's edge
+WATER_UNDER_M = 0.04        # the water's faces lie this far under the real ground (its banks stand over it)
+WATER_UV = [0.5, 1.0, 0.0, 0.5]   # the water's faces show the map's copy in the lower right of the shell's picture:
+#                                   the faces in this part of the picture (u0, u1, v0, v1) are the water's
+sys.path.insert(1, str(Path(__file__).resolve().parents[1] / "places"))
+
+
+def map_texture(map_rgb: np.ndarray, rgb: np.ndarray, d: np.ndarray, sky: np.ndarray, px: int = 1024) -> np.ndarray:
+    """The real ground's picture from the drawn map (any size, row 0 at +y): resized to px a side, fading into the
+    panorama's own ground at the disk's edge (ground_map.edge_ring and blend)."""
+    import ground_map as GM
+    from PIL import Image
+    m = np.asarray(Image.fromarray(np.asarray(map_rgb, np.uint8)).convert("RGB").resize((px, px), Image.LANCZOS))
+    return GM.blend(m, GM.edge_ring(rgb, d, sky, FLAT_R_M, EYE_STAND_M), MAP_FADE_M, FLAT_R_M)
+
+
+def map_disk(eye: list, n0: int, water: dict | None = None) -> tuple:
+    """The set's real ground with a map: cells of ground_map.WATER_CELL_M within FLAT_R_M of the point under the eye,
+    each showing its own part of the map (one picture over the whole disk, in the lower left of the shell's picture);
+    the cells of the map's water (the judge's, ground_map) WATER_UNDER_M lower and showing the map's copy in the lower
+    right (WATER_UV), faces of their own. -> (vertices in the asset frame, faces looking up, uv, how many faces are
+    water)."""
+    import ground_map as GM
+    h, c = FLAT_R_M, GM.WATER_CELL_M
+    n = GM.cells(h, c)
+    wet = GM.mask_of(water) if water and water.get("runs") else np.zeros((n, n), bool)
+    if wet.shape != (n, n):
+        wet = np.zeros((n, n), bool)
+    z = eye[2] - EYE_STAND_M
+    e = 2.0 / 2048
+    vtx, uv, faces, wf = [], [], [], []
+    for a in range(n):                                 # (a: from the map's bottom, -y; b: from its left, -x)
+        for b in range(n):
+            x0, y0 = -h + b * c, -h + a * c
+            if np.hypot(x0 + c / 2, y0 + c / 2) > h:
+                continue
+            w_ = bool(wet[n - 1 - a, b])
+            du = 0.5 if w_ else 0.0
+            k = n0 + len(vtx)
+            for x, y in ((x0, y0), (x0 + c, y0), (x0 + c, y0 + c), (x0, y0 + c)):
+                vtx.append([eye[0] + x, eye[1] + y, z - (WATER_UNDER_M if w_ else 0.0)])
+                uv.append([du + min(0.5 - e, max(e, (x / (2 * h) + 0.5) * 0.5)), min(0.5 - e, max(e, (y / (2 * h) + 0.5) * 0.5))])
+            (wf if w_ else faces).extend([[k, k + 1, k + 2], [k, k + 2, k + 3]])
+    return np.array(vtx), np.array(faces + wf), np.array(uv), len(wf)
+
+
 def sun_of(rgb: np.ndarray, sky: np.ndarray) -> dict | None:
     """Where the picture's light comes from: the brightest part of its sky (the sun, the moon, the bright side of
     the clouds), its direction (asset frame), its colour and how bright the sky is (0..1). None without a sky."""
@@ -598,7 +648,8 @@ def mark_of(prob: np.ndarray, d: np.ndarray, sky: np.ndarray) -> dict | None:
             "sure": round(top, 3), "share": round(float(at.mean()), 5)}
 
 
-def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", marks: dict | None = None) -> int:
+def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", marks: dict | None = None,
+            map_pic: str = "", map_facts: str = "") -> int:
     """The outdoor place's shell: OUT.glb and OUT.json (the eye, where people stand, the sky's light)."""
     import trimesh
     from PIL import Image
@@ -620,12 +671,22 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     tile = ground_tile(rgb, d, sky)
     vtx, faces, uv, eye = shell(backdrop(d, sky), np.zeros(d.shape, bool), grid, steep_deg=OUT_STEEP_DEG, lowest=True)
     uv = np.stack([uv[:, 0], 0.5 + uv[:, 1] / 2], -1)                 # (the panorama: the upper half of the picture)
-    gv, gf, guv = ground_disk(eye, len(vtx))
+    mf = json.loads(Path(map_facts).read_text()) if map_facts and Path(map_facts).exists() else {}
+    water = mf.get("water") if mf.get("water") and float(mf.get("half_m") or 0) == FLAT_R_M else None
+    n_wet = 0
+    if map_pic and Path(map_pic).exists():
+        # the place's own ground drawn from above, over the whole disk (and its water a little under it)
+        gv, gf, guv, n_wet = map_disk(eye, len(vtx), water)
+        mt = map_texture(np.asarray(Image.open(map_pic).convert("RGB")), rgb, d, sky)
+        low = np.concatenate([mt, mt], 1)
+    else:
+        # (no map: the panorama's own ground near the eye and its bare tile repeated, as before)
+        gv, gf, guv = ground_disk(eye, len(vtx))
+        gm = ground_map(rgb, d, sky, tile)
+        t4 = np.concatenate([np.concatenate([tile, tile], 1)] * 2, 0)
+        low = np.concatenate([np.asarray(Image.fromarray(gm).resize((1024, 1024), Image.LANCZOS)),
+                              np.asarray(Image.fromarray(t4).resize((1024, 1024), Image.LANCZOS))], 1)
     vtx, faces, uv = np.concatenate([vtx, gv]), np.concatenate([faces, gf]), np.concatenate([uv, guv])
-    gm = ground_map(rgb, d, sky, tile)
-    t4 = np.concatenate([np.concatenate([tile, tile], 1)] * 2, 0)
-    low = np.concatenate([np.asarray(Image.fromarray(gm).resize((1024, 1024), Image.LANCZOS)),
-                          np.asarray(Image.fromarray(t4).resize((1024, 1024), Image.LANCZOS))], 1)
     im = Image.fromarray(np.concatenate([np.asarray(im.resize((2048, 1024), Image.LANCZOS)), low], 0))
     for mk in found.values():                # (asset frame, as stand_m and spot_m are)
         mk["stand"] = [round(eye[0] + mk["stand"][0], 3), round(eye[1] + mk["stand"][1], 3), round(eye[2] - EYE_STAND_M, 3)]
@@ -640,7 +701,12 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
              "bounds_m": [lo.round(3).tolist(), hi.round(3).tolist()], "size_m": (hi - lo).round(3).tolist(),
              "faces": int(len(faces)), "flat_r_m": FLAT_R_M, "sky_r_m": SKY_R_M, "land": info, "spot": spot or None,
              "spot_m": [round(eye[0] + sp[0], 3), round(eye[1] + sp[1], 3), round(eye[2] - EYE_STAND_M, 3)] if sp else None,
-             "marks_m": found, "sun": sun_of(rgb, sky), "world_build": WORLD_BUILD}
+             "marks_m": found, "sun": sun_of(rgb, sky), "world_build": WORLD_BUILD,
+             # the ground's map, its water and its land places: in the set's frame (the point under the eye at 0, 0)
+             "ground_map": {"picture": str(map_pic), "half_m": FLAT_R_M, "fade_m": MAP_FADE_M} if map_pic and Path(map_pic).exists() else None,
+             "water": water if n_wet else None, "places_m": mf.get("places") or {},
+             "water_region": {"name": "water", "material": "water", "uv": WATER_UV, "under_m": WATER_UNDER_M,
+                              "faces": int(n_wet)} if n_wet else None}
     o.with_suffix(".json").write_text(json.dumps(facts, indent=1))
     print(json.dumps(facts))
     return 0
@@ -655,10 +721,12 @@ def main():
     ap.add_argument("--outdoor", action="store_true", help="a place in the open, from a standing eye (outdoor())")
     ap.add_argument("--spot", default="", help="outdoors: words for the part of the land people are sent to")
     ap.add_argument("--mark", action="append", default=[], help="outdoors: ID=WORDS, a thing of the land to find")
+    ap.add_argument("--map", default="", help="outdoors: the place's ground drawn from straight above (ground_map)")
+    ap.add_argument("--map-facts", default="", help="outdoors: the vision judge's reading of that map (map.json)")
     a = ap.parse_args()
     if a.outdoor:
         return outdoor(a.picture, a.out, a.grid or OUT_GRID, a.device, a.spot,
-                       dict(m.split("=", 1) for m in a.mark if "=" in m))
+                       dict(m.split("=", 1) for m in a.mark if "=" in m), a.map, a.map_facts)
     a.grid = a.grid or 512
     import trimesh
     from PIL import Image

@@ -50,10 +50,18 @@ VIEW_ASK = ("Does this picture show a place as a whole, seen from far enough bac
 # (a place in the open: what stands on its ground is built as pieces of the set, each cut from the picture, 11-18)
 # (and the smaller things standing about them: with only its buildings made, a yard was two bare blocks on empty
 # ground, 11-18)
-SEEN_OPEN_ASK = ("List every separate thing standing on the ground in this picture, the largest first: each building "
-                 "and structure, then each other solid thing standing by them or on the open ground. One per line, "
-                 "as: name; what it is made of and its colour. Not the ground, plants, the sky or the far land. No "
-                 "people. At most twelve lines.")
+# (and what stands or lies on open land by nature: told "not plants", a river bank's concept with reeds, a bush,
+# stones and a fallen branch listed only two sentences saying there was nothing, and its set had no piece, 11-18)
+SEEN_OPEN_ASK = ("List every separate thing standing or lying on the ground in this picture, the largest first: each "
+                 "building and structure, then each other solid thing standing by them or on the open ground, then "
+                 "each thing of the land itself that stands out on its own: a boulder or large stone, a tree or dead "
+                 "tree, a bush, a clump of reeds or tall plants, a fallen log or branch. One per line, as: name; what it "
+                 "is made of and its colour. Not the ground itself, grass, water, paths, the sky or the far land. No "
+                 "people. At most twelve lines. If there is no such thing, answer none.")
+# (a thing made by people, or one of the land itself: what is built in an open place is made as one group piece, and
+# the land's own things stand apart from it, each where the picture has it)
+MADE_ASK = ("Is the {n} in this picture made by people (a building, a wall, a structure, a made object) or a natural "
+            "thing (a rock, a tree, a bush, a plant, fallen wood)? Answer with exactly one word: made or natural.")
 OPEN_KIND = " A thing standing on open ground that is none of the other kinds is a landmark."
 # (a door, a chimney: listed with the building it is part of, each was made again as a thing of its own)
 OWN_ASK = ("Is the {n} in this picture a separate thing standing on the ground by itself, or a part of something "
@@ -98,6 +106,23 @@ KIND_ASK = ("In this picture there is a {n}. Which one of these kinds of thing i
             "(its walls, floor, ceiling, roof, beams or rafters) is none of them. A thing people work on or at, that "
             "is none of the other kinds, is a work piece.{open} Answer with exactly one of those words, or none when "
             "it is none of them.")
+
+
+NAME_MOST_WORDS = 7         # a thing's name is a few words: a longer line with no ";" is a sentence about the picture
+
+
+def thing_name(name: str) -> bool:
+    """Whether a line of the judge's list names a thing, not a sentence about the picture ("there are no buildings
+    in this picture.": two such lines were taken as things and built, 11-18)."""
+    n = re.sub(r"\s+", " ", str(name or "")).strip().lower().rstrip(".")
+    if not n or re.match(r"^(none|nothing|no |there |the (picture|image)|this (picture|image)|i |it )", n):
+        return False
+    return len(n.split()) <= NAME_MOST_WORDS and not re.search(r"\b(picture|image|is|are)\b", n)
+
+
+def natural(ans) -> bool:
+    """The judge's made-or-natural answer says natural."""
+    return "natural" in re.sub(r"[^a-z]", "", str(ans or "").lower())
 
 
 def plain_name(p: dict) -> str:
@@ -184,14 +209,16 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
     pieces = [p for p in spec.get("pieces") or [] if (res["spec"].get(p["id"]) or {}).get("in_picture")]
     op = res.get("space") == "outdoors"
     items = [{"id": f"b:{p['id']}", "image": str(concept), "max_new_tokens": 30,
-              "ask": {"box": BOX_ASK.format(n=plain_name(p)), **({"real": REAL_ASK.format(n=plain_name(p))} if op else {})}}
+              "ask": {"box": BOX_ASK.format(n=plain_name(p)), **({"real": REAL_ASK.format(n=plain_name(p)),
+                                                                "made": MADE_ASK.format(n=plain_name(p))} if op else {})}}
              for p in pieces]
     for i, sn in enumerate(res.get("seen") or []):
         items.append({"id": f"s:{i}", "image": str(concept), "max_new_tokens": 30, "ask": {
             "box": BOX_ASK.format(n=sn["name"]),
             "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds),
                                     open=OPEN_KIND if op else ""),
-            **({"own": OWN_ASK.format(n=sn["name"]), "real": REAL_ASK.format(n=sn["name"])} if op else {})}})
+            **({"own": OWN_ASK.format(n=sn["name"]), "real": REAL_ASK.format(n=sn["name"]),
+                 "made": MADE_ASK.format(n=sn["name"])} if op else {})}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
     items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
@@ -202,6 +229,8 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             res["spec"][p["id"]].update(box=b, crop=cut(concept, b, out_dir / f"{tag}_{p['id']}.png"))
             if real_of((a.get(f"b:{p['id']}") or {}).get("real")):
                 res["spec"][p["id"]]["real_m"] = real_of(a[f"b:{p['id']}"]["real"])
+            if op and natural((a.get(f"b:{p['id']}") or {}).get("made")):
+                res["spec"][p["id"]]["natural"] = True
     # two pieces of the spec found in the same part of the picture are one thing seen twice (the forge's sword was
     # "found" on the bench, 11-17): it is the piece whose look the picture gave, else the first; the other is not
     # in the picture
@@ -223,6 +252,11 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         if op:                               # (in the open: every thing that stands by itself, of whatever kind)
             part = "part" in re.sub(r"[^a-z]", "", str(r.get("own") or "").lower())
             kd = None if part else (kd if kd in kinds and kd not in OPEN_NOT else "landmark")
+            # (a thing of the land itself is a landmark made from its own part of the picture, whatever kind the
+            # judge named: a bush called a plant would be drawn as a pot plant on a floor)
+            if kd and natural(r.get("made")):
+                kd = "landmark"
+                sn["natural"] = True
         # (and a thing as wide as the picture is the room's own ceiling, floor or wall: the forge's beams came
         # back a "lantern", 11-17)
         room = bool(b) and b[2] - b[0] >= STRUCTURE_SPAN
@@ -242,7 +276,11 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             sn.update(box=b, crop=cut(concept, b, out_dir / f"{tag}_seen{i}.png"))
             if real_of(r.get("real")):
                 sn["real_m"] = real_of(r["real"])
-    if op:
+    # everything built, as one group: asked only when something of the picture is made by people (on bare land the
+    # judge boxed the rocks as "everything built", and they would have been made one block with the rest folded in)
+    built = any(not sn.get("natural") for sn in res.get("seen") or [] if sn.get("kind")) or \
+        any(not res["spec"][p["id"]].get("natural") for p in pieces if res["spec"][p["id"]].get("box"))
+    if op and built:
         g = ask([{"id": "g", "image": str(concept), "max_new_tokens": 160,
                   "ask": {"box": GROUP_BOX_ASK, "real": GROUP_REAL_ASK, "words": GROUP_WORDS_ASK}}]).get("g") or {}
         gb = box_of(g.get("box"))
@@ -301,6 +339,8 @@ def read(concept: Path, spec: dict, ask) -> dict:
         if not ln:
             continue
         nm, _, lk = ln.partition(";")
+        if not thing_name(nm):
+            continue
         seen.append({"name": nm.strip().lower(), "look": lk.strip().rstrip(".")})
     sc = {}
     for p in pieces:
@@ -342,6 +382,20 @@ def main():
         ans = str((r.get("c") or {}).get("who") or "").strip().lower()
         print(json.dumps({"picture": sys.argv[2], "someone": ans}))
         sys.exit(0 if ans.startswith("n") else 1)
+    if sys.argv[1] == "--map":               # concept.py --map MAP.png PLACES.json OUT.json: a place's ground map read
+        sys.path.insert(0, str(HERE.parent / "places"))
+        import numpy as np
+        from PIL import Image
+        import ground_map as GM
+        places = json.loads(Path(sys.argv[3]).read_text()).get("land_places") or {}
+        try:
+            got = GM.read_map(sys.argv[2], places, CH.vl_ask, rgb=np.asarray(Image.open(sys.argv[2]).convert("RGB")))
+        finally:
+            CH.vl_close()
+        Path(sys.argv[4]).write_text(json.dumps(got, indent=1))
+        print(json.dumps({"water_share": (got["water"] or {}).get("share", 0.0), "places": len(got["places"]),
+                          "of": len(places)}))
+        sys.exit(0)
     concept, spec_p, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     try:
         spec = json.loads(spec_p.read_text())

@@ -52,10 +52,11 @@ def line_env() -> list:
     return ["env"] + kv if kv else []
 
 
-def _clear(did: str, aid: str, library: Path) -> None:
-    """A try that failed its gate is taken away whole: the next seed draws and shapes afresh."""
+def _clear(did: str, aid: str, library: Path, refs: tuple = ()) -> None:
+    """A try that failed its gate is taken away whole: the next seed draws and shapes afresh (refs: the try's own
+    drawings kept under another id, a world's panorama; its ground map is kept, it failed no gate)."""
     import shutil
-    for d in (REFS / did, library / "prop" / did, library / "prop" / aid):
+    for d in [REFS / did] + [REFS / r for r in refs if r] + [library / "prop" / did, library / "prop" / aid]:
         shutil.rmtree(d, ignore_errors=True)
     for f in (C.UE_HOME / "lab" / "img3d_props").glob(f"{did}*"):
         if f.is_file() and ".failed" in f.name:
@@ -169,11 +170,36 @@ def shell_too_big(req: dict, library: Path) -> str:
     return f"the shell is {max(got[:2]):.1f} m long, more than {P.SHELL_SPAN_K} times the {max(want[:2]):.1f} m asked for"
 
 
+def ground_map(steps: dict, seed: int, run) -> dict:
+    """A place in the open's ground map (places/ground_map.py): drawn through the line, then read by the vision judge
+    (scenes/concept.py --map) into map.json beside it. Neither stops the world: without the map its ground is the
+    panorama's own, as before; without the reading it has no water and its land places are the open ground.
+    -> {"map": bool, "read": bool}."""
+    st, rd = steps["map"], steps.get("map_read") or {}
+    d = REFS / st["ref_id"]
+    pic = d / st.get("picture", "picture.png")
+    if not pic.exists():
+        r = run([a.replace("{seed}", str(seed)) for a in st["argv"]])
+        log(f"{st['ref_id']}: ground map, seed {seed} rc={r.returncode}")
+    if not pic.exists():
+        return {"map": False, "read": False}
+    facts = d / rd.get("facts", "map.json")
+    if rd and not facts.exists():
+        pl = d / "land_places.json"
+        pl.write_text(json.dumps({"land_places": rd.get("land_places") or {}}, indent=1))
+        r = run([sys.executable, str(HERE.parent / "run_asset.py"), "--line-cmd", "igpu", "choose", "--id",
+                 f"gen_mapread_{st['ref_id']}", "--", str(os.environ.get("STORY_VENV_PY") or sys.executable),
+                 str(HERE.parent / "scenes" / "concept.py"), "--map", str(pic), str(pl), str(facts)])
+        log(f"{st['ref_id']}: the map read rc={r.returncode}")
+    return {"map": True, "read": facts.exists()}
+
+
 def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> dict:
     aid, plan = req["asset_id"], req["plan"]
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
-    pic = REFS / did / steps["draw"].get("picture", "three_quarter.png")
+    # (a world's panorama keeps its own id, ref_id: a world made again for new map words takes the panorama drawn)
+    pic = REFS / steps["draw"].get("ref_id", did) / steps["draw"].get("picture", "three_quarter.png")
     if not pic.exists():
         dv = list(steps["draw"]["argv"])
         if unsourced and "--sources" in dv:              # (drawn from its look and its needs alone this time)
@@ -191,6 +217,8 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
                                                          f"{'place' if world else 'cabin'}"}
     if world and nobody_seen(did, pic, run):
         return {"asset_id": aid, "ok": False, "why": "the vision judge sees someone in its panorama"}
+    if world and "map" in steps:
+        ground_map(steps, seed, run)
     sp = library / "prop" / did / "source" / "spec.json"
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(steps["spec"]["spec"], indent=1))
@@ -222,7 +250,7 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         fj = json.loads(facts.read_text()) if facts.exists() else {}
         rec0["panorama_people"] = 0
         rec0["world"] = {k: fj.get(k) for k in ("eye_m", "stand_m", "spot_m", "spot", "marks_m", "flat_r_m", "sky_r_m", "sun",
-                                                "world_build", "land")}
+                                                "world_build", "land", "ground_map", "water", "places_m", "water_region")}
     if steps["spec"]["spec"].get("seats_abreast"):
         rec0["seats_abreast"] = steps["spec"]["spec"]["seats_abreast"]
     rp0.write_text(json.dumps(rec0, indent=1))
@@ -439,6 +467,12 @@ def stale_world(req: dict, library: Path) -> bool:
     return True
 
 
+def draw_refs(plan: dict) -> tuple:
+    """The drawing a try is made from, when it is kept under its own id (a world's panorama)."""
+    return tuple(s_["ref_id"] for s_ in plan.get("steps") or [] if s_.get("step") == "draw" and s_.get("ref_id")
+                 and s_["ref_id"] != plan.get("draw_id"))
+
+
 def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     """One request -> {"asset_id", "ok", "why", "seed"}: drawn, shaped and measured; a try that fails a gate is
     made again from the next seed's drawing, at most the plan's max_redraws tries. `run` starts a process."""
@@ -449,7 +483,7 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
         return {"asset_id": aid, "ok": True, "why": "already in the library"}
     out, why = {}, ""
     if record(aid, library):
-        _clear(plan["draw_id"], aid, library)
+        _clear(plan["draw_id"], aid, library, draw_refs(plan))
         why = big or "it has a tier above its mattress"
         log(f"{aid}: in the library, but {why}; made again")
     # (a shell made too big is drawn again from the next seed: the same seed draws the same panorama)
@@ -462,7 +496,7 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
         if out["ok"]:
             return out
         log(f"{aid}: {out['why']}; the try is cleared" + ("" if n + 1 >= first + plan.get("max_redraws", 3) else ", next seed"))
-        _clear(plan["draw_id"], aid, library)
+        _clear(plan["draw_id"], aid, library, draw_refs(plan))
     return out
 
 
