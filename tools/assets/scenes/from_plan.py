@@ -553,6 +553,9 @@ INSERT_DIST = {"close": 1.6, "medium": 2.6, "full": 4.0, "wide": 5.0}
 VARY = [(0.0, 0.0), (40.0, 0.0), (-40.0, -8.0), (70.0, 5.0), (-70.0, 0.0)]   # (az, el) deg for action shots in a row
 
 
+INSERT_CLEAR_M = 1.0      # an empty shot's camera stands this far clear of the standing things it is not on
+
+
 def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str, sid: str) -> dict:
     """A camera for a shot with nobody of the cast in it: on the set's thing the shot's words name (its own name,
     or a place phrase of the set that shares the most words with them), else the room's middle; from the room's
@@ -582,13 +585,23 @@ def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str
     p = None
     # the standpoint: on the room's side of the thing, turned a little at a time and stepped back, the first one
     # inside the room and clear of every standing thing (one set inside a hearth photographed its inside, 11-17)
-    for dd in (d, d * 1.3, d * 0.75, d * 1.7):
-        for da in (0, 20, -20, 40, -40, 60, -60, 90, -90):
-            ca, sa = math.cos(math.radians(da)), math.sin(math.radians(da))
-            u = [v[0] * ca - v[1] * sa, v[0] * sa + v[1] * ca]
-            q = [c[0] + u[0] * dd, c[1] + u[1] * dd]
-            if abs(q[0]) <= W and abs(q[1]) <= D and clear_of_fixtures(q, [t for t in things if t is not (best or [0, None])[1]], 0.05):
+    # ... first a standpoint well clear of them with an open line to what it is on (a pace from a tower's wall,
+    # the wall was half the picture, 11-19), then any clear one
+    rest = [t for t in things if t is not (best or [0, None])[1]]
+    for gap in (INSERT_CLEAR_M, 0.05):
+        for dd in (d, d * 1.3, d * 0.75, d * 1.7):
+            for da in (0, 20, -20, 40, -40, 60, -60, 90, -90):
+                ca, sa = math.cos(math.radians(da)), math.sin(math.radians(da))
+                u = [v[0] * ca - v[1] * sa, v[0] * sa + v[1] * ca]
+                q = [c[0] + u[0] * dd, c[1] + u[1] * dd]
+                if abs(q[0]) > W or abs(q[1]) > D or not clear_of_fixtures(q, rest, gap):
+                    continue
+                if gap > 0.05 and not all(clear_of_fixtures([q[0] + (c[0] - q[0]) * k / 8, q[1] + (c[1] - q[1]) * k / 8],
+                                                            rest, 0.05) for k in range(1, 8)):
+                    continue
                 p = [q[0], q[1], 1.5]
+                break
+            if p:
                 break
         if p:
             break
