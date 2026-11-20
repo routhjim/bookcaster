@@ -517,3 +517,19 @@ def test_words_that_name_no_place_move_nobody_and_another_thing_does(lib, tmp_pa
             at[c["plan_id"]] = sp["characters"]["a"]["position"][:2]
     assert at["quiet-2"] == pytest.approx(at["quiet-1"], abs=0.02) and at["quiet-3"] == pytest.approx(at["quiet-1"], abs=0.02)
     assert math.dist(at["quiet-4"], [-8.0, -8.0]) < 2.5 and math.dist(at["quiet-4"], at["quiet-1"]) > 3.0
+
+
+def test_in_the_open_a_fighter_stands_across_the_view_from_the_creature():
+    # before it along the view (+y): moved beside it, on the side he was nearer, at striking distance
+    q = FP.strike_place([0.0, 0.0], 4.0, [1.0, -5.6], [], [], [30.0, 30.0], walls=False, across=True)
+    d = math.dist(q, [0.0, 0.0])
+    assert q[0] > 0 and abs(q[1]) <= d * math.sin(math.radians(FP.STRIKE_ACROSS_DEG)) + 1e-6
+    assert 4.0 + FP.PERSON_GAP_M - 1e-6 <= d <= 4.0 + FP.STRIKE_FAR_M + 1e-6
+    # once there he stays, and a thing in the way on that side sends him to the other, still across
+    assert FP.strike_place([0.0, 0.0], 4.0, q, [], [], [30.0, 30.0], walls=False, across=True) is None
+    fx = [{"name": "rock", "kind": "fixture", "center": [6.0, 0.0, 2.0], "half": [3.0, 5.0, 2.0]}]
+    o = FP.strike_place([0.0, 0.0], 4.0, [1.0, -5.6], [], fx, [30.0, 30.0], walls=False, across=True)
+    assert o[0] < 0 and abs(o[1]) <= math.dist(o, [0, 0]) * math.sin(math.radians(FP.STRIKE_ACROSS_DEG)) + 1e-6
+    # the side-on camera on the two then looks the way the picture does
+    c = FP.fight_camera(q, [0.0, 0.0], {"radius_m": 4.0, "size_m": [8, 4, 4]}, False)
+    assert c["position"][1] < min(q[1], 0.0) and c["target"][1] > c["position"][1]

@@ -370,20 +370,30 @@ def stays(prev: dict, pose: str | None, where: list | None, state: dict, crt: di
     return False
 
 
+STRIKE_ACROSS_DEG = 30    # in the open a fighter stands across the picture's view from the creature, within this
+
+
 def strike_place(cpos: list, reach: float, ppos: list, others: list, things: list, room: list,
-                 walls: bool = True) -> list | None:
+                 walls: bool = True, across: bool = False) -> list | None:
     """Where a person who fights a creature stands: at striking distance from its middle (its reach, from its record,
     and a gap past it: PERSON_GAP_M to STRIKE_FAR_M), on the side they are already on as near as the floor allows,
     clear of fixtures and of the others (FIGHT_CLEAR_M where the floor allows), inside the place. None when they
     already stand so (or nowhere is free). A man was jammed 1.6 m from a beast with a 5 m reach, and another stood
-    10 m off (11-16)."""
+    10 m off (11-16). across (a place in the open, its picture looking along +y): beside the creature across that
+    view, so a camera side-on to the two looks the way the picture does and has the picture's land behind them. (A
+    man stood before a beast along the view; the side-on camera looked along a cliff made from the picture, edge
+    on, and the cliff's flank was drawn as a stone arch in nine keys, 11-19.)"""
     lo, hi = reach + PERSON_GAP_M, reach + STRIKE_FAR_M
     d0 = math.dist(cpos, ppos)
-    if lo - 1e-6 <= d0 <= hi + 1e-6 and all(math.dist(ppos, o[:2]) >= FIGHT_CLEAR_M for o in others) and \
+    lies = not across or d0 < 1e-6 or \
+        abs(ppos[1] - cpos[1]) <= d0 * math.sin(math.radians(STRIKE_ACROSS_DEG)) + 1e-6
+    if lies and lo - 1e-6 <= d0 <= hi + 1e-6 and all(math.dist(ppos, o[:2]) >= FIGHT_CLEAR_M for o in others) and \
             clear_of_fixtures(ppos, things, FIGHT_CLEAR_M):
         return None
     W, D = bounds(room, 0.0, walls)
     a0 = math.atan2(ppos[1] - cpos[1], ppos[0] - cpos[0]) if d0 > 1e-6 else -math.pi / 2
+    if across:                               # (from the side of the creature they are on, straight across)
+        a0 = 0.0 if math.cos(a0) >= 0 else math.pi
     best = None
     for r in (lo + 0.1, (lo + hi) / 2, hi - 0.1):
         for da in range(0, 181, 10):
@@ -397,7 +407,8 @@ def strike_place(cpos: list, reach: float, ppos: list, others: list, things: lis
                 # clear of the others first, then the side they are on, then near the reach
                 crowd = sum(1 for o in others if math.dist(q, o[:2]) < FIGHT_CLEAR_M) + \
                     (0 if clear_of_fixtures(q, things, FIGHT_CLEAR_M) else 1)    # (room behind him for a camera)
-                score = 1000 * crowd + da + 2.0 * abs(r - (lo + 0.6))
+                turn = 3 * min(da, 180 - da) + 0.1 * da if across else da
+                score = 1000 * crowd + turn + 2.0 * abs(r - (lo + 0.6))
                 if best is None or score < best[0]:
                     best = (score, [round(q[0], 3), round(q[1], 3)])
     return best[1] if best else None
@@ -1065,7 +1076,7 @@ def main():
                 v["foe"], state[kc]["foe"] = kc, kp
                 q = strike_place(state[kc]["position"], crt[kc]["radius_m"], v["position"],
                                  [list(o["position"][:2]) for kk, o in state.items() if kk not in (kp, kc)],
-                                 things, room, walled)
+                                 things, room, walled, across=not walled)
                 if q:
                     used.append(f"{kp} at striking distance from {kc} ({math.dist(q, state[kc]['position']):.1f} m)")
                     v["position"] = q
