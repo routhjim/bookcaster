@@ -284,6 +284,7 @@ class Drawers:
         import threading
         root = HERE.parents[1]
         self.cards, self.q, self.dead, self.rc, self.ths = list(DRAW_CARDS), {}, {}, {}, []
+        self.fed, self.closing = {c: [] for c in DRAW_CARDS}, False
         # (stands while every drawer is at work or waiting for its card: the check beside them gives no picture up
         # as not drawn while it does)
         self.alive = logd / f"{tag}.alive"
@@ -303,6 +304,17 @@ class Drawers:
                                      ["bash", "-c", f"cd {root} && bash {CARD_SH} {card} {IMAGE_PY} -I "
                                                     f"tools/qwen_image.py --serve < {ff}"])
                 self.dead[card].set()
+                # a drawer that ended before it was told to (a card that stopped answering): what it was fed and
+                # did not draw goes to a card still drawing
+                left = [] if self.closing else undrawn(self.fed[card], logd / f"{tag}_{card}.log")
+                live = [c for c in self.cards if not self.dead[c].is_set()]
+                if left and live:
+                    log(f"drawing: the drawer on card {card} ended early; {len(left)} picture(s) go to card {live[0]}")
+                    self.fed[card] = []
+                    self._give(live[0], left)
+                    return
+                if left:
+                    log(f"drawing: the drawer on card {card} ended early; {len(left)} picture(s) NOT drawn")
                 self.alive.unlink(missing_ok=True)
 
             def write(card=card, fd=fd, ff=ff):
@@ -322,17 +334,38 @@ class Drawers:
         for t in self.ths:
             t.start()
 
+    def _give(self, card: str, rows: list) -> None:
+        self.fed[card] += rows
+        for row in rows:
+            self.q[card].put(row)
+
     def feed(self, rows: list) -> None:
-        for card, part in zip(self.cards, split_even(rows, len(self.cards))):
-            for row in part:
-                self.q[card].put(row)
+        live = [c for c in self.cards if not self.dead[c].is_set()]
+        for card, part in zip(live, split_even(rows, len(live))):
+            self._give(card, part)
 
     def close(self) -> bool:
+        self.closing = True
         for card in self.cards:
             self.q[card].put(None)
         for t in self.ths:
             t.join()
         return all(self.rc.get(c) == 0 for c in self.cards)
+
+
+def undrawn(rows: list, card_log: Path) -> list:
+    """The job rows a drawer was fed that its log does not report as drawn (a row it reports an error for counts as
+    not drawn)."""
+    done = set()
+    for x in (card_log.read_text(errors="replace").splitlines() if card_log.exists() else []):
+        if x.startswith('{"id"'):
+            try:
+                j = json.loads(x)
+            except ValueError:
+                continue
+            if "error" not in j:
+                done.add(j.get("id"))
+    return [r for r in rows if json.loads(r).get("id") not in done]
 
 
 def rows_of(files: list) -> list:

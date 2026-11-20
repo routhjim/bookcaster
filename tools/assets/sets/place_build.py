@@ -437,6 +437,8 @@ OPEN_LIKE = 0.4                  # two boxes are one thing seen twice only when 
 OPEN_SEEN_MOST = 8               # the things of the picture built besides the plan's own, at most
 OPEN_SCALE = (0.6, 3.0)          # how far the picture's measured metres may be corrected by its things' real sizes
 OPEN_SCALE_BY_M = 1.5            # ... those of them that are really this tall or taller
+OPEN_BARE_M = 6.0                # a place with nothing standing on it: its middle this far before the picture's eye
+LAND_ID = "land"                 # the piece that is the picture's own land (scenery beside the world)
 
 
 def open_scale(pcs: list, concept: dict) -> float:
@@ -476,12 +478,15 @@ def open_places(pcs: list, concept: dict) -> tuple:
     at, out = {}, []
     sc = open_scale(pcs, concept)
     rl = dp.get("relief") or {}
+    ld = dp.get("land") if isinstance(dp.get("land"), dict) and (dp.get("land") or {}).get("glb") else {}
     for p in pcs:
         key = f"spec:{p['id']}" if f"spec:{p['id']}" in things else seen_key.get(p["id"], "")
         t = things.get(key)
         if not t:
             out.append(p)
             continue
+        if key in (ld.get("has") or []) and not p.get("phrases"):
+            continue                         # (the picture's land has it, img3d/concept_depth.py land: not built twice)
         t = dict(t, size_m=[float(v) * sc for v in t["size_m"]])
         x, y = (t["xy"][0] - eye[0]) * sc, (t["xy"][1] - eye[1]) * sc
         if rl.get("of") == key and rl.get("glb"):
@@ -498,10 +503,23 @@ def open_places(pcs: list, concept: dict) -> tuple:
         size = [min(float(v), OPEN_BIG_M) for v in t["size_m"]]
         at[p["id"]] = (x * k, y * k, size)
         out.append(p)
+    if not at and not ld:
+        return out, None
+    if at:
+        ox = sum(v[0] for v in at.values()) / len(at)
+        oy = min(v[1] - v[2][1] / 2 for v in at.values()) - OPEN_FRONT_M
+    else:                                    # (nothing stands there: the set's middle on the ground before the eye)
+        ox, oy = 0.0, OPEN_BARE_M * sc
+    if ld:
+        # all the land the picture shows (img3d/concept_depth.py land), where the picture has it: the place's
+        # scenery, beside its world; nothing is laid out against it and nobody is kept off it
+        g = [float(v) * sc for v in ld["size_m"]]
+        out.append({"id": LAND_ID, "kind": "terrain", "against": "free", "phrases": [], "scenery": True,
+                    "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
+                    "at_xy": [round((ld["xy"][0] - eye[0]) * sc - ox, 3), round((ld["xy"][1] - eye[1]) * sc - oy, 3)],
+                    "under_m": round(float(ld.get("under_m") or 0.0) * sc, 4), "_seen_size_m": [round(v, 3) for v in g]})
     if not at:
         return out, None
-    ox = sum(v[0] for v in at.values()) / len(at)
-    oy = min(v[1] - v[2][1] / 2 for v in at.values()) - OPEN_FRONT_M
     half = 0.0
     for p in out:
         if p["id"] in at:
@@ -578,6 +596,8 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     pcs, stage = open_places(pcs, concept)
     if stage:
         sp["_room_m"] = stage
+    scenery = [p for p in pcs if p.get("scenery")]
+    pcs = [p for p in pcs if not p.get("scenery")]
     ids = {p["id"] for p in pcs}
     # the part of the land the plan sends people to (the director's land_places, the first the shots name): the
     # panorama is drawn with it close in front of the eye, and the stage is set there (world_stage)
@@ -608,7 +628,7 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
                 **({"map_words": ground, "land_places": {ph: str(lp[ph]).strip().rstrip(".") for ph in order},
                     "map_style": technique(str(spec.get("_style") or ""))} if ground else {}),
                 **({"map_source": concept["concept"]} if ground and concept.get("concept") else {})})
-    sp["pieces"] = pcs
+    sp["pieces"] = pcs + scenery             # (after the world: the first terrain piece is the world)
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     sp["named_places"] = {ph: (gone.get(v, v) if gone.get(v, v) in ids else "floor")
                           for ph, v in (spec.get("named_places") or {}).items()}
@@ -859,6 +879,15 @@ def world_stage(out: dict, spec: dict, library) -> dict:
     out["fixtures"].insert(0, {"asset": aid, "name": "world", "position": [round(-st[0], 3), round(-st[1], 3),
                                                                            round(-st[2], 3)], "facing": [0.0, -1.0],
                                "outside": True, "surface": True, "world": True})
+    land_said = []
+    for ln in [p for p in spec.get("pieces") or [] if p.get("scenery") and p.get("at_xy")]:
+        # the picture's own land, where the picture has it, its ground just under the real ground
+        la = P.generation_request(ln)["asset_id"]
+        land_said.append(la if (lib / "prop" / la / "asset.json").exists() else f"{la} is not made")
+        if (lib / "prop" / la / "asset.json").exists():
+            out["fixtures"].insert(1, {"asset": la, "name": ln["id"], "facing": [0.0, -1.0], "outside": True,
+                                       "position": [ln["at_xy"][0], ln["at_xy"][1], -float(ln.get("under_m") or 0.0)],
+                                       "world": True})
     sun = w.get("sun")
     lights = [{"type": "sky", "intensity": round(WORLD_SKY * (NIGHT_SKY * 2 if spec.get("_time") in DARK_TIMES else 1.0), 4),
                "atmosphere": False}]
@@ -889,7 +918,7 @@ def world_stage(out: dict, spec: dict, library) -> dict:
         # in it unless the plan's place is in the water (scenes/from_plan.py)
         out["water"] = w["water"]
     out["validation"] = {"figures": [{"position": [0.0, 0.0], "facing": [0, -1]}]}
-    return {"world": aid, "why": "placed"}
+    return {"world": aid, "why": "placed", "land": land_said}
 
 
 def land_marks(spec: dict, world: dict, half: float = 0.0) -> tuple:

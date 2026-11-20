@@ -254,3 +254,12 @@ def test_a_check_gives_no_picture_up_while_the_drawers_are_at_work(tmp_path):
     alive.unlink()
     b = {"id": "b", "redraw": str(tmp_path / "b.png")}
     assert [x["id"] for x in ns["as_they_land"]([b], 0.4)] == []                      # the drawers gone: given up
+
+
+def test_what_a_drawer_was_fed_and_did_not_draw(tmp_path):
+    rows = [json.dumps({"id": f"k{i}", "prompt": "x"}) for i in range(4)]
+    lg = tmp_path / "card.log"
+    lg.write_text('loading\n{"id": "k0", "seconds": 9}\nk1: 15 s\n{"id": "k1", "seconds": 15}\n'
+                  '{"id": "k2", "error": "stuck: no picture in 300 s"}\n')
+    assert [json.loads(r)["id"] for r in SK.undrawn(rows, lg)] == ["k2", "k3"]
+    assert SK.undrawn(rows, tmp_path / "none.log") == rows

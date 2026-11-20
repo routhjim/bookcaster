@@ -303,3 +303,66 @@ def test_relief_piece_is_placed_whole_and_made_without_a_drawing(tmp_path):
     # another shape of the same piece is another asset
     glb.write_bytes(b"glb2")
     assert P.generation_request(dict(p1, source="crop.png"))["asset_id"] != req["asset_id"]
+
+
+def _open_picture():
+    """A camera 2 m up looking level: open ground, a hill 30 m off that the left edge of the frame cuts, and an
+    upright thing 8 m off on the right."""
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    ground = np.where(ray[..., 1] > 1e-6, 2.0 / np.maximum(ray[..., 1], 1e-6), 1e9)
+    hill = np.where(u < w * 0.4, 30.0 / 0.6 + 3 * np.sin(u / 23.0), 1e9)
+    post = np.where((abs(u - 0.7 * w) < 12) & (v > 0.35 * h), 8.0 / 0.6, 1e9)
+    t = np.minimum(np.minimum(ground, hill), post)
+    return ray * t[..., None], t < 80
+
+
+def test_the_pictures_land_is_one_closed_solid_without_the_built_things():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    pts, mask = _open_picture()
+    n, d, _ = CD.fit_floor(pts, mask)
+    img = (np.random.RandomState(0).rand(240, 400, 3) * 255).astype(np.uint8)
+    things = {"spec:p1": {"xy": [1.6, 8.3], "size_m": [0.6, 0.6, 3.0]}, "seen:0": {"xy": [-6.0, 30.0], "size_m": [20, 5, 9]}}
+    boxes = {"spec:p1": [0.66, 0.3, 0.74, 0.75], "seen:0": [0.0, 0.2, 0.4, 0.55]}
+    vtx, faces, uv, painted, has = CD.land(pts, mask, CD.frame(n, d), d, lambda q: q, things, boxes, img)
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    k = e[:, 0] * len(vtx) + e[:, 1]
+    assert len(np.unique(k)) == len(k) and set(k) == set(e[:, 1] * len(vtx) + e[:, 0])        # closed
+    a, b, c = (vtx[faces[:, i]] for i in range(3))
+    assert float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) > 0                         # its faces look outward
+    assert int((np.linalg.norm(np.cross(b - a, c - a), axis=1) < 2e-10).sum()) == 0          # no face without area
+    front = vtx[uv[:, 0] <= 0.5]
+    # the far hill is the land's, and stands; the thing that is built as a piece is not in the land, the ground
+    # closed over where it stood and the picture painted over there
+    assert has == ["seen:0"] and front[front[:, 1] > 25][:, 2].max() > 5.0
+    at = front[(abs(front[:, 0] - 1.6) < 0.6) & (abs(front[:, 1] - 8.3) < 1.0)]
+    assert len(at) and at[:, 2].max() < 0.05
+    assert (painted != img).any() and painted.shape == img.shape
+    # carried on past the frame's left edge, its ground just under the set's
+    assert front[:, 0].min() < float(pts[:, 0, 0].min()) - 0.5 * CD.RELIEF_ON_M[1]
+    assert abs(float(np.percentile(front[:, 2], 20)) + CD.LAND_UNDER_M) < 1e-6
+
+
+def test_the_pictures_land_is_set_beside_the_world_and_what_it_has_is_not_built(tmp_path):
+    glb = tmp_path / "concept_land.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.0],
+                     "land": {"glb": str(glb), "xy": [3.0, 20.0], "size_m": [80.0, 40.0, 20.0], "has": ["seen:1"], "under_m": 0.3},
+                     "things": {"seen:0": {"xy": [1.0, 4.0], "size_m": [2.0, 1.0, 2.0]},
+                                "seen:1": {"xy": [-9.0, 15.0], "size_m": [6.0, 4.0, 5.0]}}},
+           "seen": [{"kind": "cart"}, {"kind": "tree", "natural": True}]}
+    pcs = [{"id": "c1", "kind": "cart"}, {"id": "c2", "kind": "tree"}]
+    out, stage = PB.open_places(pcs, con)
+    assert [p["id"] for p in out] == ["c1", PB.LAND_ID] and stage
+    c1, ld = out
+    # the land stands where the picture has it, in the frame the pieces are placed in
+    assert ld["scenery"] and ld["kind"] == "terrain" and ld["under_m"] == 0.3
+    assert ld["at_xy"][0] - c1["at_xy"][0] == pytest.approx(3.0 - 1.0) and ld["at_xy"][1] - c1["at_xy"][1] == pytest.approx(20.0 - 4.0)
+    req = P.generation_request(ld)
+    assert [s["step"] for s in req["plan"]["steps"]] == ["spec", "shape"]
+    assert req["plan"]["steps"][0]["spec"]["made_as"] == "relief" and req["plan"]["steps"][0]["spec"]["size_m"] == [80.0, 40.0, 20.0]
+    # a place with nothing standing on it has its land too
+    out, stage = PB.open_places([], dict(con, depth=dict(con["depth"], things={})))
+    assert [p["id"] for p in out] == [PB.LAND_ID] and stage is None and out[0]["at_xy"] == [3.0, 20.0 + 5.0 - PB.OPEN_BARE_M]
