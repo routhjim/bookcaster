@@ -28,6 +28,7 @@ import copy
 import json
 import math
 import random
+import re
 import sys
 from collections import deque
 from pathlib import Path
@@ -55,12 +56,12 @@ def load_data(path=None) -> dict:
 # a kind the layout has no rule for stands where its piece record says (places/piece_kinds.json "placement"):
 # a small thing that belongs on a surface is placed on one, not on the floor against a wall
 try:
-    SURFACE_KINDS = {k for k, v in json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json")
-                                               .read_text())["kinds"].items() if v.get("placement") == "surface"}
+    PK = json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json").read_text())["kinds"]
+    SURFACE_KINDS = {k for k, v in PK.items() if v.get("placement") == "surface"}
     # a thing a person sits or lies on (the kind's "needs") is not a surface to stand small things on
-    PERSON_KINDS = {k for k, v in json.loads((Path(__file__).resolve().parents[1] / "places" / "piece_kinds.json")
-                                              .read_text())["kinds"].items() if v.get("needs")}
+    PERSON_KINDS = {k for k, v in PK.items() if v.get("needs")}
 except (OSError, KeyError, ValueError):
+    PK = {}
     SURFACE_KINDS = PERSON_KINDS = set()
 
 
@@ -220,6 +221,204 @@ def place_openings(spec: dict, records: dict, data: dict, W: float, D: float, ru
     return done, unmet
 
 
+# ------------------------------------------------------------------ the picture's pieces, fire pieces
+PICTURE_ID = re.compile(r"^c\d+$")       # a piece place_build.with_concept took from the place's concept picture
+PICTURE_RULES = {"seat_keep_m": 2.5, "named_keep_m": 1.0, "keep_side_m": 0.5, "repeat_default": 4, "repeat_most": 8,
+                 "row_gap_m": 1.0, "double_m": 1.0, "double_k": 0.6, "raised_most_m": 0.5, "wall_depth_k": 2.0}
+FIRE_RULES = {"front_clear_m": 1.0, "companion_rels": ["beside", "by"], "work_top_m": [0.35, 1.3],
+              "work_front_m": [1.8, 2.5], "work_side_m": 0.6, "work_clear_m": 1.5, "work_clear_sides": 3,
+              "relaxed": {"work_front_m": [1.2, 3.0], "work_side_m": 1.2, "work_clear_m": 0.9, "work_clear_sides": 3}}
+NUMBER_WORDS = {"two": 2, "pair": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+                "ten": 10, "twelve": 12}
+MANY_WORDS = {"rows", "row", "several", "many", "lines", "ranks"}
+_NAME_STOP = set("a an the of in on at by to with and or for from its their one some very old new small large long "
+                 "short tall low high big little wide narrow heavy light dark pale rough smooth worn plain simple "
+                 "wood wooden wood iron metal stone glass fabric cloth leather brown grey gray black white red dark "
+                 "green blue gold golden silver yellow".split())
+
+
+def picture_rules(R: dict) -> dict:
+    return dict(PICTURE_RULES, **(R.get("picture") or {}))
+
+
+def fire_rules(R: dict) -> dict:
+    return dict(FIRE_RULES, **(R.get("fire") or {}))
+
+
+def _root(kind: str) -> str:
+    seen = set()
+    while (PK.get(kind) or {}).get("parent") and kind not in seen:
+        seen.add(kind)
+        kind = PK[kind]["parent"]
+    return kind
+
+
+def _words(s) -> list:
+    return [t for t in re.sub(r"[^a-z0-9 ]+", " ", str(s or "").lower().replace("-", " ")).split() if t]
+
+
+def _name_of(p: dict) -> list:
+    """The words a piece is called by: what the story or the picture's judge calls it, else the first clause of its
+    look (with_concept writes a picture piece's look as "<its name>; <material, colour>")."""
+    head = p.get("called") or re.split(r"[;,]", str(p.get("look") or ""), maxsplit=1)[0]
+    return [t for t in _words(head) if t not in _NAME_STOP]
+
+
+def _stem(t: str) -> str:
+    return t[:-2] if t.endswith("es") and len(t) > 4 else t[:-1] if t.endswith("s") and len(t) > 3 else t
+
+
+def _kind_words(kind: str) -> set:
+    d = PK.get(kind) or {}
+    return {kind.replace("_", " ")} | set(d.get("synonyms") or [])
+
+
+def plural_count(p: dict, R: dict) -> int:
+    """How many of a picture piece the picture shows, from its name: a number word ("three tables"), a word of many
+    ("rows of benches"), or its kind's own word in the plural ("tables", "benches") -> that many (the default when
+    no number is said), else 1. Only a thing of the floor repeats."""
+    d = PK.get(p.get("kind")) or {}
+    if d.get("placement") != "floor" or d.get("made_as") or d.get("sized_by") or p.get("kind") == "rug":
+        return 1
+    toks = _words(re.split(r";", str(p.get("look") or ""), maxsplit=1)[0])
+    pr = picture_rules(R)
+    for t in toks:
+        if t in NUMBER_WORDS:
+            return min(int(pr["repeat_most"]), NUMBER_WORDS[t])
+        if t.isdigit() and 1 < int(t) <= 99:
+            return min(int(pr["repeat_most"]), int(t))
+    names = [_words(w) for w in _kind_words(p.get("kind"))]
+    for i, t in enumerate(toks):
+        for nw in names:
+            n = len(nw)
+            if n and i + n <= len(toks) and toks[i:i + n - 1] == nw[:-1] and toks[i + n - 1] in (nw[-1] + "s", nw[-1] + "es"):
+                return int(pr["repeat_default"])
+    if MANY_WORDS & set(toks):
+        return int(pr["repeat_default"])
+    return 1
+
+
+def stated_ids(spec: dict) -> set:
+    tied = set()
+    for r in spec.get("relations") or []:
+        if not (r.get("inferred") or r.get("stated") is False):
+            tied.update(x for x in (r.get("a"), r.get("b"), r.get("c")) if x)
+    return tied
+
+
+def is_picture_piece(p: dict, spec: dict) -> bool:
+    """A piece the place's picture adds that the text never names: no phrase, no named place, no stated relation."""
+    return bool(p.get("_picture") or (PICTURE_ID.match(str(p.get("id") or "")) and not p.get("phrases")
+                                       and p["id"] not in set((spec.get("named_places") or {}).values())
+                                       and p["id"] not in stated_ids(spec)))
+
+
+def same_thing(c: dict, p: dict, size_c=None, size_p=None, R: dict | None = None) -> bool:
+    """A picture piece that is the spec's piece seen again: the same kind (or the spec kind's own word ends the
+    picture's name for it, a "workbench" for a bench), or, for a kind that holds any thing (a work piece, a
+    landmark), a name they share; and where the spec piece stands, or the spec piece is not placed by the picture."""
+    kc, kp = c.get("kind"), p.get("kind")
+    any_thing = (PK.get(kp) or {}).get("sized_by") == "longest" or (PK.get(kc) or {}).get("sized_by") == "longest"
+    nc, np_ = _name_of(c), _name_of(p)
+    if kc == kp or (_root(kc) == _root(kp) and not any_thing):
+        if any_thing and not ({_stem(t) for t in nc} & {_stem(t) for t in np_}):
+            return False
+    else:
+        head = _stem(nc[-1]) if nc else ""
+        if not head or not any(head.endswith(_stem(w.split()[-1])) for w in _kind_words(kp)):
+            return False
+    if not p.get("at_xy"):
+        return bool(c.get("at_xy"))
+    if not c.get("at_xy"):
+        return False
+    pr = picture_rules(R or {})
+    big = max([max((size_c or [0, 0])[:2]), max((size_p or [0, 0])[:2])])
+    return math.dist(c["at_xy"], p["at_xy"]) <= max(float(pr["double_m"]), float(pr["double_k"]) * big)
+
+
+def prepare(spec: dict, records: dict, R: dict) -> tuple:
+    """The spec's pieces with the picture's own ones settled before the layout: a picture piece that is a spec piece
+    seen again becomes that piece (the spec piece takes the picture's place and keeps its own look and mesh); one the
+    picture's depth did not stand on the floor, or stood well off it, is refused; one the picture shows several of
+    stands several times, the copies in a row along the room's long side sharing its one record (one mesh).
+    -> (spec, records, notes). A spec with no picture pieces comes back as it was."""
+    pcs = [dict(p) for p in spec.get("pieces") or []]
+    if not any(is_picture_piece(p, spec) for p in pcs):
+        return spec, records, []
+    pr = picture_rules(R)
+    recs, notes, out = dict(records or {}), [], []
+    size = lambda p: (recs.get(p["id"]) or {}).get("size_m") or p.get("_seen_size_m") or \
+        (PK.get(p.get("kind")) or {}).get("size_m") or DEFAULT_SIZE      # noqa: E731
+    pic = [p for p in pcs if is_picture_piece(p, spec)]
+    own = [p for p in pcs if not is_picture_piece(p, spec)]
+    measured = bool(spec.get("_room_m"))
+    taken = set()
+    for c in pic:
+        twin = next((p for p in own if p["id"] not in taken and same_thing(c, p, size(c), size(p), R)), None)
+        if twin is not None and plural_count(c, R) == 1:
+            taken.add(twin["id"])
+            if not twin.get("at_xy") and c.get("at_xy"):
+                twin.update(at_xy=list(c["at_xy"]), facing_xy=list(c.get("facing_xy") or [0.0, -1.0]))
+                if c.get("_seen_size_m") and not twin.get("_seen_size_m"):
+                    twin["_seen_size_m"] = c["_seen_size_m"]
+            notes.append({"id": c["id"], "kind": c["kind"], "what": "merged",
+                          "why": f"the same thing as {twin['id']}: built once, as it"})
+            continue
+        place = (PK.get(c.get("kind")) or {}).get("placement")
+        if measured and not c.get("at_xy") and not isinstance(c.get("hangs_m"), (int, float)) and place != "surface":
+            notes.append({"id": c["id"], "kind": c["kind"], "what": "refused",
+                          "why": "the picture's depth does not stand it on the floor (overhead, on a wall, or no floor under it)"})
+            continue
+        if isinstance(c.get("_raised_m"), (int, float)) and place == "floor" and \
+                float(c["_raised_m"]) > float(pr["raised_most_m"]):
+            notes.append({"id": c["id"], "kind": c["kind"], "what": "refused", "why": f"the picture has it {c['_raised_m']} m off the floor"})
+            continue
+        c["_picture"] = True
+        out.append(c)
+        n = plural_count(c, R) if c.get("at_xy") else 1
+        if n > 1:
+            W, D = [float(x) for x in (spec.get("_room_m") or [0.0, 0.0])[:2]]
+            f = tuple(c.get("facing_xy") or (0.0, -1.0))
+            h = half_extents(size(c), f)
+            ax = (0.0, 1.0) if D >= W else (1.0, 0.0)
+            step = 2 * (h[0] * ax[0] + h[1] * ax[1]) + float(pr["row_gap_m"])
+            # its row along the room's long side, then rows beside it (first on its own side of the room's middle),
+            # each spot tried in turn: what does not fit or stands on the plan's floor is passed over
+            lat = (ax[1], ax[0])
+            lstep = 2 * (h[0] * lat[0] + h[1] * lat[1]) + float(pr["row_gap_m"])
+            own_side = 1 if (c["at_xy"][0] * lat[0] + c["at_xy"][1] * lat[1]) >= 0 else -1
+            spots = []
+            for m in (0, own_side, 2 * own_side, -own_side, -2 * own_side):
+                for k in range(0, 2 * int(pr["repeat_most"]) + 1):
+                    for sgn in ((1,) if k == 0 else (1, -1)):
+                        xy = [round(c["at_xy"][0] + sgn * k * step * ax[0] + m * lstep * lat[0], 3),
+                              round(c["at_xy"][1] + sgn * k * step * ax[1] + m * lstep * lat[1], 3)]
+                        if xy not in spots:
+                            spots.append(xy)
+            c["_row"] = spots                        # (its own spot first)
+            for k in range(2, n + 1):
+                cid = f"{c['id']}x{k}"
+                out.append(dict(c, id=cid, at_xy=None, _row=spots, _copy_of=c["id"], _picture=True))
+                if c["id"] in recs:
+                    recs[cid] = recs[c["id"]]
+            notes.append({"id": c["id"], "kind": c["kind"], "what": "repeated",
+                          "why": f"the picture shows several: {n} asked, in rows along the room"})
+    keep_ids = {p["id"] for p in own + out}
+    sp = dict(spec, pieces=own + out,
+              relations=[r for r in spec.get("relations") or [] if {r.get("a"), r.get("b")} <= keep_ids | set(
+                  o.get("id") for o in spec.get("openings") or [])])
+    return sp, recs, notes
+
+
+def fire_of(ctx, pid: str) -> bool:
+    """A fire piece: a piece of a floor kind that burns (the director's gives_light), not a lamp."""
+    p = ctx.pieces[pid]
+    k = p.get("kind")
+    d = PK.get(k) or {}
+    return p.get("gives_light") is True and d.get("placement", "floor") == "floor" and _root(k) != "lamp" \
+        and k not in SURFACE_KINDS and not d.get("needs")
+
+
 # ------------------------------------------------------------------ pieces
 class Ctx:
     def __init__(self, spec, records, data, seed, rules=None):
@@ -251,6 +450,34 @@ class Ctx:
         self.names = self._names()
         focal = [o for o in self.openings if o["kind"] == self.rk.get("focal")]
         self.focal = focal[0] if focal else None
+        # the picture's own pieces (prepare): dressing that stands only where it keeps off the plan's floor
+        self.optional = {pid for pid, p in self.pieces.items() if p.get("_picture")}
+        self.refused = []
+        # fire pieces, what serves them beside them on their wall, and the piece worked at before each
+        fr = fire_rules(self.R)
+        self.fire = [pid for pid in self.pieces if fire_of(self, pid)]
+        self.companion, self.work = {}, {}
+        for r in self.relations + self.inferred:
+            for x, y in ((r.get("a"), r.get("b")), (r.get("b"), r.get("a"))):
+                if y in self.fire and x in self.pieces and x not in self.fire:
+                    if r["rel"] in fr["companion_rels"]:
+                        self.companion.setdefault(x, y)
+                    elif self.works_at(x):
+                        self.work.setdefault(x, y)
+        if len(self.fire) == 1:
+            # (the plan's own work piece in a room with one fire is worked at before it, related or not)
+            for pid, p in self.pieces.items():
+                if pid not in self.fire and pid not in self.companion and pid not in self.work \
+                        and p.get("kind") == "work_piece" and p.get("phrases") and self.works_at(pid):
+                    self.work[pid] = self.fire[0]
+
+    def works_at(self, pid) -> bool:
+        """A piece a standing person works at with their hands: a floor thing, no seat or bed, its top in the band."""
+        k = self.pieces[pid].get("kind")
+        d = PK.get(k) or {}
+        lo, hi = fire_rules(self.R)["work_top_m"]
+        return d.get("placement", "floor") == "floor" and not d.get("needs") and not self.rule(pid).get("seat") \
+            and k not in SURFACE_KINDS and lo <= self.size(pid)[2] <= hi
 
     def rule(self, pid) -> dict:
         return self.data["piece_kinds"].get(self.pieces[pid]["kind"], {})
@@ -260,7 +487,15 @@ class Ctx:
 
     def size(self, pid) -> list:
         rec = self.records.get(pid) or {}
-        return [float(x) for x in (rec.get("size_m") or self.rule(pid).get("size_m") or DEFAULT_SIZE)]
+        s = [float(x) for x in (rec.get("size_m") or self.rule(pid).get("size_m") or DEFAULT_SIZE)]
+        k = self.pieces[pid].get("kind")
+        d = PK.get(k) or {}
+        if d.get("placement") == "wall" and k != "fireplace" and d.get("size_m") and len(s) == 3:
+            # a thing hung flat on a wall takes no more floor than its kind does (by wall_depth_k): a made curtain
+            # measured 1.46 m deep, was clamped off its wall onto the seat before it, and the seated person was
+            # "inside" it, so no camera could see them and the curtain was dropped (11-20)
+            s[1] = min(s[1], max(float(d["size_m"][1]), 0.1) * float(picture_rules(self.R)["wall_depth_k"]))
+        return s
 
     def _names(self) -> dict:
         names, seen = {o["id"]: o["name"] for o in self.openings}, {}
@@ -275,6 +510,12 @@ class Ctx:
     def mode(self, pid) -> tuple:
         """(how the piece stands: wall / free / floor / on, the opening it stands at or None)."""
         ag = self.pieces[pid].get("against")
+        if pid in getattr(self, "fire", ()) or pid in getattr(self, "companion", {}):
+            # a fire piece and what serves it stand back to a wall (a hearth out on the floor was a block no camera
+            # could see past, 11-20)
+            if isinstance(ag, str) and ag.startswith("opening:") and ag.split(":", 1)[1] in self.by_id:
+                return "wall", self.by_id[ag.split(":", 1)[1]]
+            return "wall", None
         place = self.rule(pid).get("place") or ("on" if self.pieces[pid]["kind"] in SURFACE_KINDS else "free")
         if place == "wall" and self.pieces[pid]["kind"] in self.R.get("desk_kinds", ()) and \
                 pid in set((self.spec.get("named_places") or {}).values()):
@@ -343,12 +584,16 @@ def zones_of(ctx: Ctx, pid: str, c, facing, size) -> list:
     h = half_extents(size, facing)
     f = unit(facing)
     fc = rule.get("front_clear_m", 0.0)
+    ar = rule.get("all_round_clear_m", 0.0)
+    if pid in ctx.fire:                             # (back to its wall: the floor before it only)
+        fc, ar = float(fire_rules(ctx.R)["front_clear_m"]), 0.0
+    elif pid in ctx.companion:
+        fc, ar = min(fc or 0.5, 0.5), 0.0
     if fc > 0:
         ext = abs(f[0]) * h[0] + abs(f[1]) * h[1]
         zc = (c[0] + f[0] * (ext + fc / 2), c[1] + f[1] * (ext + fc / 2))
         zh = (fc / 2, h[1]) if abs(f[0]) > abs(f[1]) else (h[0], fc / 2)
         out.append(rect_at(zc, zh))
-    ar = rule.get("all_round_clear_m", 0.0)
     if ar > 0:
         out.append(rect_at(c, (h[0] + ar, h[1] + ar)))
     return out
@@ -370,6 +615,8 @@ def exempt(ctx: Ctx, owner: str, other: str) -> bool:
     own rule (a desk chair at a desk)."""
     if other in ctx.close.get(owner, ()):
         return True
+    if owner in ctx.optional and other in ctx.optional:
+        return True                                 # (the picture's own things stand as close as it shows them)
     for a, b in ((owner, other), (other, owner)):
         want = ctx.rule(a).get("prefer_beside") if a in ctx.pieces else None
         if want and b in ctx.pieces and (want == ctx.base(b) or want == ctx.pieces[b]["kind"]
@@ -581,8 +828,108 @@ def rug_place(ctx: Ctx, placed: dict) -> tuple:
     return (0.0, 0.0), None
 
 
-def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool = True) -> list:
+def keeps_off(ctx: Ctx, cand: dict, placed: dict) -> bool:
+    """A picture piece keeps off the floor the plan's people need: the floor before a seat (seat_keep_m) or before
+    another piece the plan names (named_keep_m), and the floor between two pieces the spec relates or two named
+    seats (keep_side_m either side of the line between them). The roof's beams read as a table stood on the floor
+    straight in front of the chair the plan seats someone on, between them and the one they spoke to (11-20)."""
+    pr = picture_rules(ctx.R)
+    r, side = cand["rect"], float(pr["keep_side_m"])
+    named = set((ctx.spec.get("named_places") or {}).values())
+    own = [q for q in placed.values() if q["id"] not in ctx.optional and not q.get("flat") and not q.get("on")]
+    for q in own:
+        if not (q.get("seat") or q["id"] in named):
+            continue
+        depth = float(pr["seat_keep_m"] if q.get("seat") else pr["named_keep_m"])
+        f = unit(q["facing"])
+        hx, hy = (q["rect"][2] - q["rect"][0]) / 2, (q["rect"][3] - q["rect"][1]) / 2
+        ext = abs(f[0]) * hx + abs(f[1]) * hy
+        zc = (q["c"][0] + f[0] * (ext + depth / 2), q["c"][1] + f[1] * (ext + depth / 2))
+        zh = (depth / 2, hy + side) if abs(f[0]) > abs(f[1]) else (hx + side, depth / 2)
+        if overlap(r, rect_at(zc, zh)):
+            return False
+    def line(a, b):
+        # (from the near side of each end, not its middle: what stands behind a seat is not between it and anyone)
+        L_ = math.dist(a["c"], b["c"])
+        if L_ < 1e-6:
+            return None
+        u = ((b["c"][0] - a["c"][0]) / L_, (b["c"][1] - a["c"][1]) / L_)
+        ka = min(L_ / 2, max(a["rect"][2] - a["rect"][0], a["rect"][3] - a["rect"][1]) / 2)
+        kb = min(L_ / 2, max(b["rect"][2] - b["rect"][0], b["rect"][3] - b["rect"][1]) / 2)
+        return ((a["c"][0] + u[0] * ka, a["c"][1] + u[1] * ka), (b["c"][0] - u[0] * kb, b["c"][1] - u[1] * kb))
+    lines = []
+    for rel in ctx.relations:
+        ends = [ctx.thing(x, placed) for x in (rel.get("a"), rel.get("b"), rel.get("c")) if x]
+        ends = [t for t in ends if t is not None and t.get("id") not in ctx.optional]
+        lines += [line(ends[0], t) for t in ends[1:]]
+    seats = [q for q in own if q.get("seat") and q["id"] in named]
+    lines += [line(a, b) for i, a in enumerate(seats) for b in seats[i + 1:]]
+    lines = [x for x in lines if x]
+    big = (r[0] - side, r[1] - side, r[2] + side, r[3] + side)
+    return not any(pc.seg_hits_rect(a, b, big) for a, b in lines)
+
+
+def work_spots(ctx: Ctx, pid: str, placed: dict, relaxed: bool = False) -> list:
+    """Where a piece worked at before a fire stands: out on the floor in front of the fire, work_front_m from the
+    fire's front to its own, its front to the fire, at most work_side_m off the fire's middle; kept only with clear
+    floor work_clear_m wide on work_clear_sides of its sides (inside the room, nothing standing there), so a person
+    stands at it and a camera sees them both from the room."""
+    fr = fire_rules(ctx.R)
+    if relaxed:
+        fr = dict(fr, **(fr.get("relaxed") or {}))
+    F = placed.get(ctx.work[pid])
+    if F is None:
+        return []
+    f = unit(F["facing"])
+    lat = (f[1], -f[0])
+    hx, hy = (F["rect"][2] - F["rect"][0]) / 2, (F["rect"][3] - F["rect"][1]) / 2
+    ef = abs(f[0]) * hx + abs(f[1]) * hy
+    face = (-f[0], -f[1])
+    size = ctx.size(pid)
+    h = half_extents(size, face)
+    eo = abs(f[0]) * h[0] + abs(f[1]) * h[1]
+    lo, hi = [float(x) for x in fr["work_front_m"]]
+    sw, cm, need = float(fr["work_side_m"]), float(fr["work_clear_m"]), int(fr["work_clear_sides"])
+    solid_ = [q["rect"] for q in placed.values() if not q.get("flat") and not q.get("on")]
+    solid_ += [o["breast"] for o in ctx.openings if o["kind"] == "fireplace"]
+    W, D, out = ctx.W, ctx.D, []
+    n_d = int(round((hi - lo) / 0.1))
+    lats = [0.0] + [s_ * k * 0.3 for k in range(1, int(sw / 0.3) + 1) for s_ in (1, -1)]
+    for i in range(n_d + 1):
+        d = lo + i * 0.1
+        for s_ in lats:
+            c = (F["c"][0] + f[0] * (ef + d + eo) + lat[0] * s_, F["c"][1] + f[1] * (ef + d + eo) + lat[1] * s_)
+            rr = rect_at(c, h)
+            strips = [(rr[0] - cm, rr[1], rr[0], rr[3]), (rr[2], rr[1], rr[2] + cm, rr[3]),
+                      (rr[0], rr[1] - cm, rr[2], rr[1]), (rr[0], rr[3], rr[2], rr[3] + cm)]
+            free = sum(1 for z in strips if z[0] >= -W / 2 - 1e-6 and z[2] <= W / 2 + 1e-6 and z[1] >= -D / 2 - 1e-6
+                       and z[3] <= D / 2 + 1e-6 and not any(overlap(z, q) for q in solid_))
+            if free >= need:
+                out.append(make(ctx, pid, (round(c[0], 3), round(c[1], 3)), face,
+                                {"work_d": round(d, 2), "work_side": round(s_, 2), "work_of": ctx.work[pid]}))
+    return out
+
+
+def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool = True, relaxed: bool = False) -> list:
     pin = ctx.pieces[pid].get("at_xy")
+    if pid in ctx.fire or pid in ctx.companion or pid in ctx.work:
+        pin = None                                  # (the fire's rules place these, not the picture's estimate)
+    row = ctx.pieces[pid].get("_row")
+    if pid in ctx.fire or pid in ctx.companion or pid in ctx.work:
+        row = None
+    if row:
+        # a copy of a picture piece shown several times: the next spot of its row that it fits
+        f = tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0))
+        h = half_extents(ctx.size(pid), f)
+        got = []
+        for k_, xy in enumerate(row):
+            if abs(xy[0]) > ctx.W / 2 - h[0] + 1e-6 or abs(xy[1]) > ctx.D / 2 - h[1] + 1e-6:
+                continue
+            cand = make(ctx, pid, tuple(xy), f)
+            cand["pinned"], cand["near"] = True, round(0.5 * k_, 4)      # (the nearer spots of its row first)
+            if fits(ctx, dict(cand, zones=[]), placed, fixed_zones) and keeps_off(ctx, cand, placed):
+                got.append(cand)
+        return got
     if pin:
         # where the place's concept picture has it (concept_depth.py): that spot and facing only, kept inside the
         # room; the picture is the place's look, so it stands there even where a rule would want it elsewhere
@@ -590,6 +937,10 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
         c = (max(-ctx.W / 2 + h[0], min(ctx.W / 2 - h[0], pin[0])), max(-ctx.D / 2 + h[1], min(ctx.D / 2 - h[1], pin[1])))
         cand = make(ctx, pid, c, tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0)))
         cand["pinned"] = True
+        # (its own clear floor is not asked where the picture stands it: only that it is clear of the others')
+        if pid in ctx.optional and not (fits(ctx, dict(cand, zones=[]), placed, fixed_zones)
+                                        and keeps_off(ctx, cand, placed)):
+            return []                               # (a picture piece stands where the picture has it, or not at all)
         return [cand]
     mode, at = ctx.mode(pid)
     size, rule = ctx.size(pid), ctx.rule(pid)
@@ -645,7 +996,9 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             return [make(ctx, pid, c_, hst["facing"], {"on": hst["name"], "on_z_m": min(hst["size_m"][2], kz)})]
         return []
     step = ctx.data["grid_m"] if mode == "wall" else ctx.data["free_grid_m"]
-    if mode == "wall":
+    if pid in ctx.work:
+        out = work_spots(ctx, pid, placed, relaxed)
+    elif mode == "wall":
         walls = [at["wall"]] if at else list(WALLS)
         for side in walls:
             n, L = NORMAL[side], wall_len(side, W, D)
@@ -712,14 +1065,24 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
             cand["zones"] = cand["zones"] + [free[0]]
         if not fits(ctx, cand, placed, fixed_zones):
             continue
+        if pid in ctx.optional and not keeps_off(ctx, cand, placed):
+            continue
         trial = dict(placed)
         trial[pid] = cand
         if hard and any(rel_ok(ctx, r, trial) is False for r in ctx.relations
                         if pid in (r.get("a"), r.get("b"), r.get("c"))):
             continue
         sc = near_score(ctx, pid, cand, placed)
-        if mode == "wall":
+        if pid in ctx.work:                         # (square before the fire, at the middle of its band)
+            lo, hi = fire_rules(ctx.R)["work_front_m"]
+            sc += abs(cand["work_d"] - (lo + hi) / 2) + 0.5 * abs(cand["work_side"])
+        elif mode == "wall":
             sc += 0.02 * abs(cand["u"]) + 0.01 * WALLS.index(cand["wall"])
+            at_ = ctx.pieces[pid].get("at_xy")
+            if at_ and (pid in ctx.fire or pid in ctx.companion):
+                # as near where the picture has it as its wall allows, on the wall its front turns from
+                fx = ctx.pieces[pid].get("facing_xy") or cand["facing"]
+                sc += 0.5 * math.dist(cand["c"], at_) + 2.0 * (1.0 - (fx[0] * cand["facing"][0] + fx[1] * cand["facing"][1]))
         else:
             sc += 0.03 * min(W / 2 - abs(cand["c"][0]), D / 2 - abs(cand["c"][1]))
         if cand.get("slot"):                        # a template slot is tried before the grid cells round it
@@ -735,6 +1098,8 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
         if len(group) > 1:
             ctx.rng.shuffle(group)
         ordered += group
+    if pid in ctx.work and not ordered and not relaxed:
+        return candidates(ctx, pid, placed, fixed_zones, hard, relaxed=True)
     return ordered
 
 
@@ -857,8 +1222,11 @@ def order_of(ctx: Ctx) -> list:
             r = 2
         # (a piece the concept picture places stands first: the others find their room round it. Placed after its
         # companion, the forge's anvil came down inside the bellows, 11-17)
-        return (0 if ctx.pieces[pid].get("at_xy") else 1, r, 0 if at else 1, -round(size[0] * size[1], 3),
-                -len(ctx.partners.get(pid, ())), pid)
+        # (a fire piece first, what serves it next, then what the picture places; the picture's own pieces last,
+        # each where it keeps off the floor the others need)
+        grp = 0 if pid in ctx.fire else 1 if pid in ctx.companion else 4 if pid in ctx.optional else \
+            2 if ctx.pieces[pid].get("at_xy") and pid not in ctx.work else 3
+        return (grp, r, 0 if at else 1, -round(size[0] * size[1], 3), -len(ctx.partners.get(pid, ())), pid)
 
     return sorted(ctx.pieces, key=key)
 
@@ -901,6 +1269,8 @@ def beam_search(ctx: Ctx, order: list, start: dict, fixed: list) -> dict | None:
                 cost = objective(ctx, st, with_pockets=False)[0]
                 nxt.append((round(cost, 6), seq, st))
                 seq += 1
+        if not nxt and pid in ctx.optional:
+            continue                                # (a picture piece with no room is left out, not a failure)
         nxt.sort(key=lambda t: (t[0], t[1]))
         keep = []
         for _c, _s, st in nxt:
@@ -909,6 +1279,8 @@ def beam_search(ctx: Ctx, order: list, start: dict, fixed: list) -> dict | None:
                 keep.append(st)
                 if len(keep) == sr["beam"]:
                     break
+        if not keep and pid in ctx.optional:
+            continue
         if not keep:
             return None
         states = keep
@@ -926,8 +1298,11 @@ def polish(ctx: Ctx, placed: dict, order: list, fixed: list) -> dict:
     for _ in range(int(sr["polish_passes"])):
         moved = False
         for pid in order:
-            q = placed[pid]
-            if q["flat"] or q.get("on") or q.get("wall") or ctx.rule(pid).get("side_clear_m"):
+            q = placed.get(pid)
+            if q is None:
+                continue
+            if q["flat"] or q.get("on") or q.get("wall") or ctx.rule(pid).get("side_clear_m") \
+                    or pid in ctx.work or pid in ctx.optional:
                 continue
             base = q.get("base_facing") or q["facing"]
             a0 = math.atan2(q["facing"][1], q["facing"][0])
@@ -957,8 +1332,8 @@ def polish(ctx: Ctx, placed: dict, order: list, fixed: list) -> dict:
         if not moved:
             break
     for pid in order:                               # a rug follows the group it lies under
-        q = placed[pid]
-        if q["flat"] and ctx.mode(pid)[0] == "floor":
+        q = placed.get(pid)
+        if q is not None and q["flat"] and ctx.mode(pid)[0] == "floor":
             cs = candidates(ctx, pid, {k: v for k, v in placed.items() if k != pid}, fixed)
             if cs:
                 placed[pid] = cs[0]
@@ -994,6 +1369,8 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
             if (cand["flat"] or cand.get("on") or not path_problems(ctx, placed)) and dfs(k + 1):
                 return True
             del placed[pid]
+        if pid in ctx.optional:                     # (a picture piece with no room is left out)
+            return dfs(k + 1)
         return False
 
     unmet = list(ctx.unmet)
@@ -1026,7 +1403,7 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
                         break
                 else:
                     placed[pid] = cs[0]
-            else:
+            elif pid not in ctx.optional:
                 unmet.append(f"piece {ctx.names[pid]} ({ctx.pieces[pid]['kind']}): no free position "
                              f"{'on a wall' if ctx.mode(pid)[0] == 'wall' else 'on the floor'}")
         for r in ctx.relations:
@@ -1042,6 +1419,10 @@ def solve(spec: dict, records: dict | None = None, data: dict | None = None, see
     pks = pc.pockets(ctx, placed, ctx.R, stand_point)
     if solved:
         unmet += pc.pocket_problems(pks)
+    for pid in sorted(ctx.optional - set(placed)):
+        ctx.refused.append({"id": pid, "kind": ctx.pieces[pid]["kind"], "what": "refused",
+                            "why": "no further room in its row" if ctx.pieces[pid].get("_row") else
+                            "no place that keeps off the floor the plan's people need"})
     return export(ctx, placed, unmet, how, pks)
 
 
@@ -1065,6 +1446,8 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
     data0 = data or load_data()
     R0 = rules or pc.load_rules()
     lad = R0["ladder"]
+    # the picture's own pieces settled first (doubles, not-on-the-floor, several of a thing): see prepare
+    spec, records, notes = prepare(spec, records or {}, R0)
     spec_k, data_k, R_k = copy.deepcopy(spec), copy.deepcopy(data0), copy.deepcopy(R0)
     log, first = [], None
 
@@ -1151,6 +1534,7 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
     lay = dict(lay)
     lay["ladder"] = log
     lay["dropped"] = dropped
+    lay["refused"] = notes + list(lay.get("refused") or [])
     if lay["ok"]:
         lay["status"] = "ok" if len(log) == 1 else "ok after recovery"
         lay["size_class"] = spec_k.get("size")
@@ -1174,6 +1558,10 @@ def export(ctx: Ctx, placed: dict, unmet: list, how: str = "", pks: list | None 
              "look": (ctx.pieces.get(pid) or {}).get("look"), "generate": not (q.get("asset") or rec.get("asset"))}
         if (ctx.pieces.get(pid) or {}).get("called"):
             d["called"] = ctx.pieces[pid]["called"]
+        if (ctx.pieces.get(pid) or {}).get("_copy_of"):
+            d["copy_of"] = ctx.pieces[pid]["_copy_of"]         # (another of a picture piece: its one mesh)
+        if pid in ctx.work:
+            d["works_before"] = ctx.work[pid]
         for k in ("wall", "on", "on_z_m", "note"):
             if q.get(k) is not None:
                 d[k] = q[k]
@@ -1202,7 +1590,7 @@ def export(ctx: Ctx, placed: dict, unmet: list, how: str = "", pks: list | None 
     return {"schema": "place_layout/1", "place": ctx.spec.get("place"), "kind": ctx.spec["kind"],
             "ok": not unmet, "unmet": unmet, "size_m": [ctx.W, ctx.D, ctx.H], "openings": ops, "pieces": pieces,
             "names": dict(ctx.names), "search": how, "cost": {"total": round(cost, 4), "terms": terms},
-            "camera_pockets": pockets}
+            "camera_pockets": pockets, "refused": list(ctx.refused)}
 
 
 # ------------------------------------------------------------------ check, named places, set spec

@@ -1,7 +1,9 @@
 """The picture on a room's own faces (img3d/concept_depth.py room_faces): every texel of a wall of the measured room
 takes the picture's colour where the picture sees that wall, and is unknown where something stands before it; the set
-builder hangs each wall's picture over its part of the wall and the tiles cover only the rest (sets/place_build.py
-wall_pictures, wall_faces), the unknown filled from the tile (places/generate.py face_fill)."""
+builder makes every wall, the floor and a flat ceiling whole from what the picture sees (concept_depth.whole_faces: a
+seen wall carried along its unseen run by its own rhythm, else mirrored; the unseen wall continued from a neighbour
+round its corner) and hangs them, the tiles only on a wall it cannot face (sets/place_build.py wall_pictures,
+wall_faces); what is still unknown is filled from the tile (places/generate.py face_fill, face_picture_of)."""
 import json
 import sys
 from pathlib import Path
@@ -20,9 +22,12 @@ EYE_H, BACK, SIDE, CEIL = 1.5, 6.0, 2.5, 3.2
 PATCH = (-1.6, -0.6, 1.4, 2.4)           # a red patch on the back wall: x from, to; height from, to
 BOX = (0.2, 1.4, 3.0, 3.6, 1.8)          # a blue box standing on the floor: x from, to; distance from, to; height
 GREY, RED, BLUE = (120, 120, 120), (220, 30, 30), (30, 30, 220)
+WHITE = (240, 240, 240)
+STRIPE = 1.0                             # side walls with stripes: a white one this often along the room (metres) ...
+STRIPE_ON = 0.35                         # ... this wide
 
 
-def picture():
+def picture(stripes: bool = False):
     """A box room seen from inside (camera: x right, y down, z forward; the floor EYE_H under the eye): its points,
     the picture (grey, the patch red on the back wall, the box blue), the intrinsics."""
     jj, ii = np.mgrid[0:H_PX, 0:W_PX]
@@ -49,12 +54,15 @@ def picture():
     hgt = EYE_H - pts[..., 1]
     img[back & (pts[..., 0] > PATCH[0]) & (pts[..., 0] < PATCH[1]) & (hgt > PATCH[2]) & (hgt < PATCH[3])] = RED
     img[on_box] = BLUE
+    if stripes:                          # (the side walls' own rhythm: a white band every STRIPE along the room)
+        side = (np.abs(np.abs(pts[..., 0]) - SIDE) < 1e-6) & ~on_box
+        img[side & (np.mod(pts[..., 2], STRIPE) < STRIPE_ON)] = WHITE
     intr = np.array([[F, 0, 0.5], [0, fy, 0.5], [0, 0, 1]])
     return pts, np.ones((H_PX, W_PX), bool), img, intr
 
 
-def faces():
-    pts, mask, img, intr = picture()
+def faces(stripes: bool = False):
+    pts, mask, img, intr = picture(stripes)
     fr = {}
     r = CD.room_from(pts, mask, intr, {}, {}, fr)
     return {f["face"]: (f, t) for f, t in CD.room_faces(pts, mask, intr, img, fr)}, fr, r
@@ -141,40 +149,6 @@ def test_a_room_with_no_pictured_walls_is_built_as_before(tmp_path):
     assert build(dict(spec, _concept=dict(spec["_concept"], faces=[])))["fixtures"] == a["fixtures"]
 
 
-def test_a_wall_s_picture_hangs_over_its_part_and_the_tiles_fill_the_rest(tmp_path):
-    import place_build as PB
-    from PIL import Image
-    tex = np.zeros((300, 600, 4), np.uint8)
-    tex[..., :3], tex[..., 3] = 90, 255
-    tex[:50, :50, 3] = 0
-    f = tmp_path / "concept_face_north.png"
-    Image.fromarray(tex).save(f)
-    rec = {"face": "north", "u": ["x", -3.0, 3.0], "v": ["z", 3.0, 0.0], "x_m": [-3.0, 3.0], "z_m": [0.0, 3.0],
-           "at_m": 4.5, "px_per_m": 100.0, "share": 0.9, "share_of_rect": 0.99, "file": str(f), "room_m": [6.0, 9.0, 3.0]}
-    spec = {"_concept": {"bare": {"walls": {"words": "rough grey stone."}}, "faces": [rec]}}
-    pics = PB.face_pictures(spec)
-    assert len(pics) == 1 and pics[0][0]["id"].startswith("wall_face_") and pics[0][0]["size_m"] == [6.0, 0.02, 3.0]
-    for i in (PB.face_spec("rough grey stone.")["id"], pics[0][0]["id"]):
-        (tmp_path / "prop" / i).mkdir(parents=True)
-        (tmp_path / "prop" / i / "asset.json").write_text("{}")
-    out = {"size_m": [6.0, 9.0, 3.0], "structure": [{"kind": "wall"}], "fixtures": []}
-    PB.wall_faces(out, {"openings": []}, spec, tmp_path)
-    pic = [x for x in out["fixtures"] if x["asset"] == pics[0][0]["id"]]
-    assert len(pic) == 1 and pic[0]["position"] == [0.0, round(4.5 - PB.FACE_PIC_OFF_M, 3), 0.0]
-    assert pic[0]["facing"] == [0.0, -1.0]
-    names = {x["name"] for x in out["fixtures"]}
-    assert not any(n.startswith("wall_face_north_") and n != "wall_face_north_picture" for n in names)
-    assert any(n.startswith("wall_face_east_") for n in names)      # (the walls it does not show keep their tiles)
-    # a room built to another size takes none
-    out2 = {"size_m": [8.0, 9.0, 3.0], "structure": [{"kind": "wall"}], "fixtures": []}
-    PB.wall_faces(out2, {"openings": []}, spec, tmp_path)
-    assert not any(x["asset"] == pics[0][0]["id"] for x in out2["fixtures"])
-    # the room's concept depth carries its faces into the spec
-    con = {"space": "room", "depth": {"room_m": [6.0, 9.0, 3.0], "things": {}, "faces": [rec]}}
-    sp = PB.with_concept({"pieces": []}, con)
-    assert sp["_concept"]["faces"][0]["room_m"] == [6.0, 9.0, 3.0]
-
-
 def test_the_unknown_part_of_a_wall_s_picture_is_filled_from_the_tile():
     import generate as G
     tex = np.zeros((40, 60, 4), np.uint8)
@@ -188,3 +162,154 @@ def test_the_unknown_part_of_a_wall_s_picture_is_filled_from_the_tile():
     flat = G.face_fill(tex, 10.0, None, "#204060")
     assert tuple(flat[0, 0]) == (0x20, 0x40, 0x60)
     assert json.dumps(flat.tolist())                           # (plain numbers: a picture)
+
+
+# ---------------------------------------------------------------- the whole room from what the picture sees
+
+def whole(tmp_path, stripes=True):
+    """The striped room's faces written beside a result, and made whole."""
+    got, fr, r = faces(stripes)
+    recs = CD.write_faces(tmp_path / "concept_depth.json", [(f, t) for f, t in got.values()])
+    return CD.whole_faces(recs, r["room_m"]), recs, fr, r
+
+
+def test_a_side_wall_s_rhythm_runs_on_over_what_the_picture_does_not_see(tmp_path):
+    w, recs, fr, r = whole(tmp_path)
+    W, D, H = r["room_m"]
+    tex, ppm, how = w["west"]
+    assert "rhythm" in how and tex.shape[1] == round(D * ppm) and tex.shape[0] == round(H * ppm)
+    assert ppm <= min(f["px_per_m"] for f in recs) + 1e-6           # (no texel made up: the coarsest seen scale)
+    seen0 = next(f for f in recs if f["face"] == "west")["u"][1]   # where the picture begins to see it (set y)
+    y = -D / 2 + (np.arange(tex.shape[1]) + 0.5) / ppm             # (west: its columns run along +y)
+    rows = slice(int((H - 2.0) * ppm), int((H - 1.0) * ppm))      # (a band of it at 1 to 2 m up)
+    white = (tex[rows, :, :3].astype(int).min(-1) > 200).mean(0) > 0.5
+    want = np.mod(y / fr["scale"] + fr["cy"], STRIPE) < STRIPE_ON  # (the stripes where the room has them)
+    unseen = y < seen0 - 0.1
+    assert unseen.sum() > ppm                                      # (a metre and more it never saw ...)
+    assert (white[unseen] == want[unseen]).mean() > 0.85           # (... carries the stripes at their own spacing)
+    assert (tex[..., 3] == 255).mean() > 0.97
+
+
+def test_the_wall_behind_the_eye_is_a_side_wall_continued_not_the_far_wall(tmp_path):
+    w, recs, fr, r = whole(tmp_path)
+    assert "south" not in {f["face"] for f in recs}                # (never seen)
+    tex, ppm, how = w["south"]
+    assert how.startswith("the west wall") or how.startswith("the east wall")
+    red = (np.abs(tex[..., :3].astype(int) - RED).max(-1) < 40)
+    assert not red.any()                                           # (the far wall's own patch is not copied there)
+    assert (tex[..., :3].astype(int).min(-1) > 200).mean() > 0.1   # (the side walls' stripes are)
+
+
+def test_a_wall_with_no_rhythm_is_mirrored_at_the_join_without_a_cut(tmp_path):
+    w, recs, fr, r = whole(tmp_path, stripes=False)
+    tex, ppm, how = w["west"]
+    assert "mirrored" in how
+    rec = next(f for f in recs if f["face"] == "west")
+    D = r["room_m"][1]
+    j = int(round((rec["u"][1] + D / 2) * ppm))                    # where its seen run begins
+    lum = tex[..., :3].astype(float).mean(-1)
+    step = np.abs(np.diff(lum[:, max(0, j - 40):j + 40], axis=1)).mean()
+    assert step < 12                                               # (no hard cut where the picture stops)
+
+
+def test_the_floor_is_made_whole_and_its_light_evened(tmp_path):
+    w, recs, fr, r = whole(tmp_path)
+    tex, ppm, how = w["floor"]
+    W, D, H = r["room_m"]
+    assert tex.shape[:2] == (round(D * ppm), round(W * ppm))
+    assert (tex[..., 3] == 255).mean() > 0.97                      # (behind the eye and under the box too)
+    assert not (np.abs(tex[..., :3].astype(int) - BLUE).max(-1) < 40).any()
+
+
+def rec_files(tmp_path, faces_=("north", "west", "floor", "ceiling")):
+    """Neutral face records of a 6 x 9 x 3 room: each a grey picture, a quarter of it unknown, beside each other."""
+    from PIL import Image
+    room = [6.0, 9.0, 3.0]
+    recs = []
+    for name in faces_:
+        lu, lv = {"north": (6.0, 3.0), "west": (9.0, 3.0), "floor": (6.0, 9.0), "ceiling": (6.0, 9.0)}[name]
+        t = np.zeros((int(lv * 50), int(lu * 50), 4), np.uint8)
+        t[..., :3] = 90 + (np.arange(t.shape[1]) % 25)[None, :, None]
+        t[..., 3] = 255
+        t[: t.shape[0] // 2, : t.shape[1] // 2, 3] = 0
+        f = tmp_path / f"concept_face_{name}.png"
+        Image.fromarray(t).save(f)
+        u = {"north": ["x", -3.0, 3.0], "west": ["y", -4.5, 4.5], "floor": ["x", -3.0, 3.0], "ceiling": ["x", -3.0, 3.0]}[name]
+        v = ["z", 3.0, 0.0] if name in ("north", "west") else ["y", 4.5, -4.5]
+        recs.append({"face": name, "u": u, "v": v, "at_m": 0.0, "px_per_m": 50.0, "share": 0.75, "share_of_rect": 0.75,
+                     "file": str(f), "room_m": room})
+    return recs
+
+
+def made(tmp_path, ids):
+    for i in ids:
+        (tmp_path / "prop" / i).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "prop" / i / "asset.json").write_text("{}")
+
+
+def test_every_wall_the_floor_and_a_flat_ceiling_wear_the_room_s_picture(tmp_path):
+    import place_build as PB
+    recs = rec_files(tmp_path)
+    spec = {"_concept": {"bare": {"walls": {"words": "rough grey stone."}}, "faces": recs}}
+    pics = PB.face_pictures(spec)
+    by = {f["face"]: fs for fs, f in pics}
+    assert set(by) == {"north", "east", "south", "west", "floor", "ceiling"}
+    assert by["north"]["size_m"] == [round(6.0 - 2 * PB.FACE_PIC_END_M, 3), 0.02, 3.0]
+    assert by["east"]["size_m"] == [round(9.0 - 2 * PB.FACE_PIC_END_M, 3), 0.02, 3.0]
+    assert by["floor"]["face_flat"] and by["floor"]["size_m"][2] == 0.02 and not by["north"]["face_flat"]
+    assert len({fs["id"] for fs, _ in pics}) == 6
+    made(tmp_path, [PB.face_spec("rough grey stone.")["id"]] + [fs["id"] for fs, _ in pics])
+    out = {"size_m": [6.0, 9.0, 3.0], "structure": [{"kind": "wall"}, {"kind": "ceiling", "height_m": 3.0}],
+           "fixtures": [{"asset": "x", "name": "drapes", "position": [0.0, 4.375, 0.0]}]}
+    lay = {"openings": [{"id": "kind_window", "kind": "window", "wall": "north", "point": [0.0, 4.5, 0.0],
+                         "width_m": 1.2, "stated": False, "name": "window"}]}
+    PB.wall_faces(out, lay, spec, tmp_path)
+    names = {x["name"]: x for x in out["fixtures"]}
+    for side in ("north", "east", "south", "west"):
+        assert f"wall_face_{side}_picture" in names
+        assert not any(n.startswith(f"wall_face_{side}_") and n != f"wall_face_{side}_picture" for n in names)
+    assert names["wall_face_north_picture"]["position"] == [0.0, round(4.5 - PB.FACE_PIC_OFF_M, 3), 0.0]
+    assert names["floor_face_picture"]["position"] == [0.0, 0.0, PB.FACE_PIC_FLOOR_Z]
+    assert names["ceiling_face_picture"]["position"][2] < 3.0
+    assert "drapes" not in names                                   # (a guessed window under the picture: no drapes)
+    assert set(out["room_faces"]) == {"north", "east", "south", "west", "floor", "ceiling"}
+
+
+def test_an_open_roof_keeps_its_timbers_and_an_asked_for_door_keeps_its_wall(tmp_path):
+    import place_build as PB
+    recs = rec_files(tmp_path)
+    spec = {"_concept": {"bare": {"walls": {"words": "rough grey stone."}}, "faces": recs}, "_roof": "rafters",
+            "named_places": {"by the door": "o1"}}
+    pics = PB.face_pictures(spec)
+    assert "ceiling" not in {f["face"] for _, f in pics}            # (not even made)
+    made(tmp_path, [PB.face_spec("rough grey stone.")["id"]] + [fs["id"] for fs, _ in pics])
+    out = {"size_m": [6.0, 9.0, 3.0], "structure": [{"kind": "wall"}, {"kind": "trusses"}], "fixtures": []}
+    lay = {"openings": [{"id": "o1", "kind": "door", "wall": "south", "point": [-2.4, -4.5, 0.0], "width_m": 1.0,
+                         "stated": False, "name": "door"}]}
+    PB.wall_faces(out, lay, spec, tmp_path)
+    names = {x["name"] for x in out["fixtures"]}
+    assert "wall_face_south_picture" not in names                  # (the door must be seen) ...
+    assert any(n.startswith("wall_face_south_") for n in names)    # (... its wall takes the tiles, as before)
+    assert "wall_face_north_picture" in names and "floor_face_picture" in names
+    assert "ceiling_face_picture" not in names and "open roof" in out["room_faces"]["ceiling"]
+    # a room built to another size takes none
+    out2 = {"size_m": [8.0, 9.0, 3.0], "structure": [{"kind": "wall"}], "fixtures": []}
+    PB.wall_faces(out2, {"openings": []}, spec, tmp_path)
+    assert not any(x["name"].endswith("_picture") for x in out2["fixtures"])
+    # the room's concept depth carries its faces into the spec
+    con = {"space": "room", "depth": {"room_m": [6.0, 9.0, 3.0], "things": {}, "faces": [dict(recs[0], room_m=None)]}}
+    sp = PB.with_concept({"pieces": []}, con)
+    assert sp["_concept"]["faces"][0]["room_m"] == [6.0, 9.0, 3.0]
+
+
+def test_each_panel_s_picture_is_its_face_less_its_ends_and_flat_ones_get_a_flat_model(tmp_path):
+    import place_build as PB
+    import generate as G
+    recs = rec_files(tmp_path)
+    spec = {"_concept": {"bare": {"walls": {"words": "rough grey stone."}, "floor": {"colour": "#403020"}}, "faces": recs}}
+    for fs, f in PB.face_pictures(spec):
+        rgb, how = G.face_picture_of(fs, None, "#808080")
+        assert rgb is not None and rgb.dtype == np.uint8 and rgb.shape[2] == 3
+        w, h = (fs["size_m"][0], fs["size_m"][1]) if fs["face_flat"] else (fs["size_m"][0], fs["size_m"][2])
+        assert abs(rgb.shape[1] / 50.0 - w) < 0.05 and abs(rgb.shape[0] / 50.0 - h) < 0.05, (f["face"], rgb.shape)
+    compile(G.FLAT_PANEL_SCRIPT % "/nowhere", "flat_panel.py", "exec")

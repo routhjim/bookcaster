@@ -272,5 +272,29 @@
  },
  "front": {
   "seat_front_cos": 0.9
+ },
+ "picture": {
+  "about": "Pieces a room takes from its concept picture that the text does not name (ids c<n>, place_build.with_concept). They are the room's dressing: each stands only where it fits and keeps off the floor the plan's people need; one that cannot is refused, never the reason a room fails. One the picture shows several of stands several times (one mesh, one record), in a row along the room's long side. One the picture's depth did not stand on the floor is not floor furniture. One that is the same thing as a piece of the spec is that piece.",
+  "seat_keep_m": 2.5,
+  "named_keep_m": 1.0,
+  "keep_side_m": 0.5,
+  "repeat_default": 4,
+  "repeat_most": 8,
+  "row_gap_m": 1.0,
+  "double_m": 1.0,
+  "double_k": 0.6,
+  "raised_most_m": 0.5,
+  "wall_depth_k": 2.0
+ },
+ "fire": {
+  "about": "A fire piece (a piece of a floor kind that burns: gives_light) stands back to a wall, front into the room, as near where its picture has it as the walls allow; what the spec puts beside or by it (companion_rels) stands on the wall beside it. A piece a standing person works at (top within work_top_m) that the spec relates to the fire, or the plan's own work piece in a room with one fire, stands out on the floor before it: work_front_m from the fire's front to its own, at most work_side_m off the fire's middle, with clear floor work_clear_m wide on at least work_clear_sides of its sides. The relaxed numbers are tried only when no strict spot fits.",
+  "front_clear_m": 1.0,
+  "companion_rels": ["beside", "by"],
+  "work_top_m": [0.35, 1.3],
+  "work_front_m": [1.8, 2.5],
+  "work_side_m": 0.6,
+  "work_clear_m": 1.5,
+  "work_clear_sides": 3,
+  "relaxed": {"work_front_m": [1.2, 3.0], "work_side_m": 1.2, "work_clear_m": 0.9, "work_clear_sides": 3}
  }
 }

@@ -234,6 +234,20 @@ def _size_class(size_m, default):
 
 
 SHELL_SPAN_K = 1.5                      # a cabin shell may be at most this much longer than its kind's box
+SEAT_FIT_W_M = 0.48                     # a seat with arms narrower than this between them takes no sitter
+
+
+def seat_too_narrow(rec: dict) -> bool:
+    """A record of a seat with arms (its measured "seat" block has arm_z_m) whose room between the arms (width_m, or
+    the inner_x_m span) is under SEAT_FIT_W_M: nobody fits in it. A chair 0.295 m between its arms was reused for a
+    grand chair and its sitter was seated on a bench at the other end of the room (11-20)."""
+    b = rec.get("seat") if isinstance(rec.get("seat"), dict) else None
+    if not b or b.get("arm_z_m") is None:
+        return False
+    w = b.get("width_m")
+    if not isinstance(w, (int, float)) and isinstance(b.get("inner_x_m"), (list, tuple)) and len(b["inner_x_m"]) == 2:
+        w = float(b["inner_x_m"][1]) - float(b["inner_x_m"][0])
+    return isinstance(w, (int, float)) and float(w) < SEAT_FIT_W_M
 
 
 def shell_too_big(size_m, want_m) -> bool:
@@ -260,6 +274,8 @@ def score_record(piece, rec, K=None, table=None, allow_scripted=False):
         return None
     if K[kind].get("made_as") == "shell" and shell_too_big(rec.get("size_m"), K[kind].get("size_m")):
         return None
+    if K[kind].get("needs") == "seat" and K[kind].get("made_as") != "shell" and seat_too_narrow(rec):
+        return None                       # (an armed seat nobody fits in is never a seat piece: made anew)
     look_toks = [t for t in _tokens(piece.get("look", "")) if t not in _STOP]
     rec_toks = set(_tokens(" ".join([rec.get("description", ""), rec.get("look", ""), rec.get("variant") or ""]
                                     + [str(t) for t in rec.get("tags", [])])))
@@ -614,7 +630,8 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                     [{"asset_id": want, "score": 1.0, "why": "made from this piece's own picture", "others": []}
                      for r in records if r["asset_id"] == want
                      and not (K[p["kind"]].get("made_as") == "shell"
-                              and shell_too_big(r.get("size_m"), K[p["kind"]].get("size_m")))][:1]
+                              and shell_too_big(r.get("size_m"), K[p["kind"]].get("size_m")))
+                     and not (K[p["kind"]].get("needs") == "seat" and seat_too_narrow(r))][:1]
             if hits:
                 row.update(status="library", asset_id=hits[0]["asset_id"], score=hits[0]["score"],
                            why=hits[0]["why"], others=[{"asset_id": h["asset_id"], "score": h["score"]}

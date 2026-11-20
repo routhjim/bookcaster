@@ -670,6 +670,298 @@ def write_faces(out_p: Path, got: list) -> list:
     return recs
 
 
+FACE_RING = ("north", "east", "south", "west")   # facing each wall from inside the room, its right end meets the
+#                                                  next one's left end (and the last's the first's)
+FACE_BAND_SHARE = 0.5       # a face's seen run: the lines of it seen at least this share as well as its best seen line
+FACE_CLEAN_SHARE = 0.85     # ... what is mirrored from it, or carried whole over a floor: those seen this well (a run
+#                             mirrored from its half-seen lines carried their holes on; a floor's, the pieces' feet)
+FACE_EVEN_M = 1.2           # a floor's or a roof's picture evened out over this (the picture's own light pools and the
+#                             shadows of its pieces: the set lights it again, and carried across they were stripes)
+FACE_PERIOD_M = 0.8         # a face's rhythm (bays, windows, piers, flags) repeats no oftener than this ...
+FACE_PERIOD_R = 0.5         # ... and is taken where the seen run matches itself shifted by it this well (correlation)
+FACE_PERIOD_BINS = 8        # (the run is compared in this many bands across it, each band's own brightness)
+FACE_TRIM_M = 0.5           # a floor's or a roof's seen run, carried whole: this much off each of its ends first
+FACE_FEATHER_M = 0.3        # a wall's seen part fades into what is carried over the rest across this
+FACE_FILL_EDGE_M = 1.0      # what a wall's picture lacks above or below what it sees: mirrored from it this far
+FACE_WHOLE_PX_MOST = 4096   # a whole face's picture: no more texels than this along its longer side
+
+
+def face_frame(name: str, W: float, D: float, H: float) -> tuple:
+    """A face's whole rectangle as _faces lays its picture out: (u at the left edge, u's sign, its length along u,
+    v at the top, v's sign, its length along v), u and v the axes _faces gives it."""
+    return {"north": (-W / 2, 1, W, H, -1, H), "south": (W / 2, -1, W, H, -1, H),
+            "west": (-D / 2, 1, D, H, -1, H), "east": (D / 2, -1, D, H, -1, H),
+            "floor": (-W / 2, 1, W, D / 2, -1, D), "ceiling": (-W / 2, 1, W, D / 2, -1, D)}[name]
+
+
+def _resize(tex: np.ndarray, w: int, h: int) -> np.ndarray:
+    """An RGBA picture (float) at another size, its colour carried by what is known (alpha-weighted)."""
+    from PIL import Image
+    if tex.shape[1] == w and tex.shape[0] == h:
+        return tex
+    a = tex[..., 3] / 255.0
+    ch = [np.asarray(Image.fromarray(np.ascontiguousarray(x, np.float32), "F").resize((w, h), Image.BILINEAR))
+          for x in [tex[..., i] * a for i in range(3)] + [a]]
+    al = ch[3]
+    rgb = np.stack(ch[:3], -1) / np.maximum(al, 1e-6)[..., None]
+    return np.concatenate([np.clip(rgb, 0, 255), (np.where(al > 0.5, 255.0, 0.0))[..., None]], -1).astype(np.float32)
+
+
+def _paste(rec: dict, tex: np.ndarray, room_m, ppm: float) -> np.ndarray:
+    """A face's picture (its record's rectangle) laid into its whole face, ppm texels a metre: RGBA float, alpha 0
+    where nothing is known."""
+    u0, su, lu, v0, sv, lv = face_frame(rec["face"], *room_m)
+    nu, nv = max(1, int(round(lu * ppm))), max(1, int(round(lv * ppm)))
+    out = np.zeros((nv, nu, 4), np.float32)
+    c0, c1 = sorted([(rec["u"][1] - u0) * su * ppm, (rec["u"][2] - u0) * su * ppm])
+    r0, r1 = sorted([(rec["v"][1] - v0) * sv * ppm, (rec["v"][2] - v0) * sv * ppm])
+    i0, j0 = int(round(c0)), int(round(r0))
+    t = _resize(np.asarray(tex, np.float32), max(1, int(round(c1)) - i0), max(1, int(round(r1)) - j0))
+    a0, b0 = max(0, -i0), max(0, -j0)
+    a1, b1 = min(t.shape[1], nu - i0), min(t.shape[0], nv - j0)
+    if a1 > a0 and b1 > b0:
+        out[j0 + b0:j0 + b1, i0 + a0:i0 + a1] = t[b0:b1, a0:a1]
+    return out
+
+
+def _band(known: np.ndarray, axis: int, share: float = FACE_BAND_SHARE):
+    """The seen run of a face along axis (1: its columns, 0: its rows): the longest unbroken run of lines each seen at
+    least share as well as the best seen one -> (first, past the last) or None."""
+    cov = known.mean(axis=1 - axis)
+    if cov.max() <= 0:
+        return None
+    ok = cov >= share * cov.max()
+    best, start = None, None
+    for i, v in enumerate(list(ok) + [False]):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            if best is None or i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    return best
+
+
+def _period(tex: np.ndarray, known: np.ndarray, b0: int, b1: int, axis: int, ppm: float):
+    """The face's own rhythm along axis within its seen run (texels), or None: the shortest shift (at least
+    FACE_PERIOD_M, at most half the run, so that two of it are seen) at which the run matches itself at least
+    FACE_PERIOD_R and nearly as well as at any shift."""
+    lum = tex[..., :3].mean(-1)
+    if axis == 0:
+        lum, known = lum.T, known.T
+    lum, known = lum[:, b0:b1], known[:, b0:b1]
+    n = b1 - b0
+    lo, hi = max(2, int(FACE_PERIOD_M * ppm)), n // 2
+    if hi <= lo:
+        return None
+    e = np.linspace(0, lum.shape[0], FACE_PERIOD_BINS + 1).astype(int)
+    prof = []
+    x = np.arange(n)
+    for a, b in zip(e[:-1], e[1:]):
+        if b <= a:
+            continue
+        k = known[a:b]
+        cnt = k.sum(0)
+        m = np.where(cnt >= 0.3 * (b - a), (lum[a:b] * k).sum(0) / np.maximum(cnt, 1), np.nan)
+        ok = np.isfinite(m)
+        if ok.sum() > 3:                     # (the light falling off along the run is not its rhythm)
+            m = m - np.polyval(np.polyfit(x[ok], m[ok], 1), x)
+        prof.append(m)
+    prof = np.array(prof)
+    corr = np.full(hi + 1, np.nan)
+    for lag in range(lo, hi + 1):
+        A, B = prof[:, :-lag], prof[:, lag:]
+        ok = np.isfinite(A) & np.isfinite(B)
+        if ok.sum() < 0.3 * n:
+            continue
+        a_, b_ = A[ok], B[ok]
+        corr[lag] = float((a_ * b_).sum() / np.sqrt((a_ * a_).sum() * (b_ * b_).sum() + 1e-9))
+    if not np.isfinite(corr).any() or np.nanmax(corr) < FACE_PERIOD_R:
+        return None
+    top = np.nanmax(corr)
+    for lag in range(lo + 1, hi):            # (a true peak: a match falling away from the least shift is no rhythm)
+        c = corr[lag]
+        if np.isfinite(c) and c >= max(FACE_PERIOD_R, 0.85 * top) and \
+                np.isfinite(corr[lag - 1]) and corr[lag - 1] <= c and not (np.isfinite(corr[lag + 1]) and corr[lag + 1] > c):
+            return lag
+    return None
+
+
+def _source(idx: np.ndarray, b0: int, b1: int, period) -> np.ndarray:
+    """Where each line along a face (any index, before or past the face too) takes its picture from in the seen run
+    [b0, b1): the run's own lines in it; outside it the same place of its rhythm (shifted by whole periods: the
+    windows and the stonework keep their spacing and their scale), else the run mirrored at its ends (no hard cut)."""
+    idx = np.asarray(idx)
+    if period:
+        return np.where(idx < b0, b0 + np.mod(idx - b0, period),
+                        np.where(idx >= b1, b1 - period + np.mod(idx - b1, period), idx))
+    n = b1 - b0
+    t = np.mod(idx - b0, 2 * n)
+    return b0 + np.where(t < n, t, 2 * n - 1 - t)
+
+
+def _extend(tex: np.ndarray, axis: int, ppm: float, whole: bool = False) -> tuple:
+    """A face's picture carried along axis over what its picture does not see (_source); within the seen run, what
+    stood before the face filled from the same place a period or two along. whole: lines outside the run are taken
+    from it whole, not only where unknown (a floor's glimpses between the pieces carry their feet and shadows)
+    -> (picture, (b0, b1, period) or None)."""
+    known = tex[..., 3] > 127
+    b = _band(known, axis)
+    if not b:
+        return tex, None
+    b0, b1 = b
+    P = _period(tex, known, b0, b1, axis, ppm)
+    if not P or whole:                       # (mirrored, or carried whole: only from what is seen well)
+        b0, b1 = _band(known, axis, FACE_CLEAN_SHARE) or b
+        t = int(FACE_TRIM_M * ppm)
+        if whole and b1 - b0 > 4 * t:        # (a floor's seen run is edged by what stands on it)
+            b0, b1 = b0 + t, b1 - t
+        if P and P > b1 - b0:
+            P = None
+    L = tex.shape[axis]
+    moved = np.take(tex, _source(np.arange(L), b0, b1, P), axis=axis)
+    has = moved[..., 3] > 127
+    if whole:
+        line = np.zeros(L, bool)
+        line[:b0], line[b1:] = True, True
+        put = (line[None, :] if axis == 1 else line[:, None]) & has
+        put |= ~known & has
+        out = np.where(put[..., None], moved, tex)
+    else:
+        put = ~known & has
+        out = np.where(put[..., None], moved, tex)
+        # (the seen part fades into what is carried over it across FACE_FEATHER_M: no hard cut at the join)
+        n = max(1, int(FACE_FEATHER_M * ppm))
+        w = np.ones(known.shape, np.float32)
+        reached, front = put.copy(), put
+        for s in range(1, n + 1):
+            g = _grow(front, 1) & known & ~reached
+            if not g.any():
+                break
+            w[g] = s / (n + 1.0)
+            reached |= g
+            front = g
+        soft = known & has & (w < 1)
+        out = np.where(soft[..., None], tex * w[..., None] + moved * (1 - w[..., None]), out)
+        out[..., 3] = np.where(known | put, 255.0, out[..., 3])
+    if P:
+        for s in (P, -P, 2 * P, -2 * P):
+            if abs(s) >= L:
+                continue
+            k = out[..., 3] > 127
+            sh = np.roll(out, s, axis=axis)
+            valid = np.zeros(L, bool)
+            if s > 0:
+                valid[s:] = True
+            else:
+                valid[:L + s] = True
+            valid = valid[None, :] if axis == 1 else valid[:, None]
+            put = ~k & valid & (sh[..., 3] > 127)
+            out = np.where(put[..., None], sh, out)
+    return out, (b0, b1, P)
+
+
+def _box_mean(x: np.ndarray, w: np.ndarray, r: int) -> np.ndarray:
+    """The w-weighted mean of x over a (2r+1)-square round each texel (summed tables: no scipy at the test station)."""
+    def box(a):
+        c = np.pad(a, ((r + 1, r), (r + 1, r)), mode="constant").cumsum(0).cumsum(1)
+        return c[2 * r + 1:, 2 * r + 1:] - c[:-2 * r - 1, 2 * r + 1:] - c[2 * r + 1:, :-2 * r - 1] + c[:-2 * r - 1, :-2 * r - 1]
+    return box(x * w) / np.maximum(box(w), 1e-6)
+
+
+def _even(tex: np.ndarray, ppm: float) -> np.ndarray:
+    """A floor's or a roof's picture with its light evened out: each known texel scaled by its seen surroundings'
+    brightness (FACE_EVEN_M round it) to the whole seen face's middle brightness; the stones' own grain kept."""
+    k = (tex[..., 3] > 127).astype(np.float64)
+    if k.sum() < 16:
+        return tex
+    lum = tex[..., :3].astype(np.float64).mean(-1)
+    near = _box_mean(lum, k, max(1, int(FACE_EVEN_M * ppm / 2)))
+    f = np.clip(float(np.median(lum[k > 0])) / np.maximum(near, 1.0), 0.33, 3.0)
+    out = tex.copy()
+    out[..., :3] = np.where(k[..., None] > 0, np.clip(tex[..., :3] * f[..., None], 0, 255), tex[..., :3])
+    return out
+
+
+def _fill_edges(tex: np.ndarray, n: int) -> np.ndarray:
+    """What a wall's picture lacks above its topmost and below its lowest seen texel, column by column, mirrored from
+    what is seen there, up to n texels."""
+    known = tex[..., 3] > 127
+    h = known.shape[0]
+    has = known.any(0)
+    first = np.argmax(known, 0)
+    last = h - 1 - np.argmax(known[::-1], 0)
+    cols = np.arange(known.shape[1])
+    out = tex.copy()
+    for d in range(1, n + 1):
+        for r, s in ((first - d, first + d - 1), (last + d, last - d + 1)):
+            ok = has & (r >= 0) & (r < h) & (s >= 0) & (s < h)
+            rr, ss, cc = r[ok], s[ok], cols[ok]
+            put = (out[rr, cc, 3] <= 127) & (out[ss, cc, 3] > 127)
+            out[rr[put], cc[put]] = out[ss[put], cc[put]]
+    return out
+
+
+def whole_faces(recs: list, room_m) -> dict:
+    """The room's whole walls, floor and roof from what its picture sees of them (room_faces' records, each with its
+    "file"): {face: (RGBA uint8 picture of the whole face as _faces lays it out, texels a metre, how it was made)}.
+
+    A wall the picture sees: its seen run carried along the rest of it (_extend: by the wall's own rhythm, else
+    mirrored at the join), then up and down over what it lacks there (_fill_edges). A wall it never sees (the one
+    behind its eye): one neighbour's run continued round the corner over all of it (the one with a rhythm, else the
+    one seen more); failing both, the opposite wall mirrored. (Not the opposite wall first: the wall the picture
+    faces is the room's own one, what it is drawn for, a hearth, a raised end, an altar; the side walls are its running
+    fabric, and continued round a corner they meet the unseen wall without a cut.) The floor and the roof: their light evened out (_even), carried
+    across, then along, their lines outside the seen run taken whole. What is still unknown stays alpha 0 (places/generate.py face_fill).
+    Every face shares one scale: the coarsest any seen face has (texels are never made up)."""
+    from PIL import Image
+    seen = {r["face"]: r for r in recs if r.get("face") and r.get("file") and Path(r["file"]).exists()}
+    if not seen:
+        return {}
+    W, D, H = (float(v) for v in room_m)
+    ppm = min(float(r.get("px_per_m") or FACE_PX_PER_M) for r in seen.values())
+    ppm = min(ppm, FACE_WHOLE_PX_MOST / max(W, D, H))
+    out, rule, how, seen_share = {}, {}, {}, {}
+    for name, r in seen.items():
+        cv = _paste(r, np.asarray(Image.open(r["file"]).convert("RGBA"), np.float32), (W, D, H), ppm)
+        seen_share[name] = float((cv[..., 3] > 127).mean())
+        if name in FACE_RING:
+            cv, rule[name] = _extend(cv, 1, ppm)
+            cv = _fill_edges(cv, int(FACE_FILL_EDGE_M * ppm))
+            p = (rule[name] or (0, 0, None))[2]
+        else:
+            cv = _even(cv, ppm)
+            cv, ru = _extend(cv, 1, ppm, whole=True)
+            cv, rv = _extend(cv, 0, ppm, whole=True)
+            p = (ru or (0, 0, None))[2] or (rv or (0, 0, None))[2]
+        out[name] = cv
+        how[name] = "its picture, " + (f"its rhythm of {p / ppm:.2f} m repeated" if p else "mirrored") + \
+            " over what it does not see"
+    for i, name in enumerate(FACE_RING):
+        if name in out:
+            continue
+        left, right, opp = FACE_RING[i - 1], FACE_RING[(i + 1) % 4], FACE_RING[(i + 2) % 4]
+        nu = max(1, int(round(face_frame(name, W, D, H)[2] * ppm)))
+        # one neighbour carried round its corner over the whole wall: the one with a rhythm, else the one seen more
+        # (a cut at the other corner reads as the corner; two runs met in the middle of the wall read as a seam)
+        cand = [(bool(rule[nb][2]), float(seen_share.get(nb, 0.0)), k, nb) for k, nb in enumerate((left, right))
+                if out.get(nb) is not None and rule.get(nb)]
+        if cand:
+            _, _, k, nb = max(cand)
+            Ln = out[nb].shape[1]
+            idx = Ln + np.arange(nu) if k == 0 else np.arange(nu) - nu    # (past its right end / before its left)
+            cv = out[nb][:, _source(idx, *rule[nb])]
+            how[name] = f"the {nb} wall continued round the corner" + \
+                (f", its rhythm of {rule[nb][2] / ppm:.2f} m" if rule[nb][2] else ", mirrored")
+        elif out.get(opp) is not None:
+            cv = _resize(out[opp], nu, out[opp].shape[0])[:, ::-1]
+            how[name] = f"the {opp} wall mirrored"
+        else:
+            continue
+        out[name] = _fill_edges(cv, int(FACE_FILL_EDGE_M * ppm))
+    return {k: (np.clip(np.round(v), 0, 255).astype(np.uint8), round(ppm, 2), how[k]) for k, v in out.items()}
+
+
 def land_form_key(concept: dict) -> str | None:
     """The thing of the picture that is the land's own main form: the spec's piece the concept reader found it in,
     or the form it saw itself; else a landmark of the land itself (the largest)."""

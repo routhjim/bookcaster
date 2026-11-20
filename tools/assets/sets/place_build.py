@@ -738,77 +738,165 @@ def face_spec(words: str) -> dict:
                          "focal": 28}]}
 
 
-FACE_PIC_LEAST_M2 = 1.0         # a wall's own picture (img3d/concept_depth.py room_faces) smaller than this is not hung
-FACE_PIC_OFF_M = 0.04           # it hangs this far inside its wall: before the tiles (0.015 m), whatever they leave
+FACE_PIC_LEAST_M2 = 1.0         # a face's own picture (img3d/concept_depth.py room_faces) smaller than this is not used
+FACE_PIC_OFF_M = 0.04           # a wall's picture hangs this far inside its wall: before the tiles (0.015 m)
 FACE_PIC_ROOM_TOL = 0.02        # ... and only in a room of the size it was measured in (this share either way)
+FACE_PIC_END_M = 0.06           # a wall's picture stops this short of each corner (the next wall's picture stands there)
+FACE_PIC_FLOOR_Z = -0.015       # the floor's picture lies with its underside this low: its face 5 mm over the slab
+FACE_PIC_CEIL_IN_M = 0.045      # the ceiling's picture: this short of every wall (clear of the walls' pictures) and
+FACE_PIC_CEIL_UNDER_M = 0.005   # ... its face this far under the ceiling
+FACE_PIC_RULE = "whole-1"       # (how the pictures are made: concept_depth.whole_faces; a new rule is a new panel)
+FLATS = ("floor", "ceiling")
 
 
 def face_pictures(spec: dict) -> list:
-    """The walls of the room as its concept picture shows them (img3d/concept_depth.py room_faces, carried in the
-    spec's "_concept" "faces"): for each wall whose picture is there and covers at least FACE_PIC_LEAST_M2, a face
-    panel's source spec (as face_spec's, the size of the rectangle it covers; its picture is the wall's texture with
-    what the picture does not see filled from the bare wall's tile, places/generate.py make_face_picture) ->
-    [(panel spec, the face's record)]. Its id is its picture's and its tile's: a new picture is a new panel."""
+    """The room's walls, floor and ceiling as its concept picture shows them (img3d/concept_depth.py room_faces,
+    carried in the spec's "_concept" "faces"), each made whole (concept_depth.whole_faces: a seen wall carried along
+    its unseen run by its own rhythm, else mirrored; the wall the picture never sees continued from its neighbours
+    round the corners; the floor and the ceiling carried across and along) -> [(panel spec, {"face", "room_m"})].
+
+    Once the picture sees any wall at least FACE_PIC_LEAST_M2, all four walls get one; the floor and the ceiling
+    one each when the picture sees them that much, and the ceiling never under an open roof (the spec's "_roof":
+    its trusses and boards are built, and the picture's roof plane cut across them would hide them). A panel is
+    the whole face less FACE_PIC_END_M at each corner; the floor's and the ceiling's lie flat
+    (places/generate.py make_face_picture). Its id is its pictures', its tile's and the rule's: anything new is a
+    new panel."""
     import hashlib
     con = spec.get("_concept") or {}
     words = ((con.get("bare") or {}).get("walls") or {}).get("words")
     tile = face_spec(words)["id"] if words else ""
+    floor_col = ((con.get("bare") or {}).get("floor") or {}).get("colour")
+
+    def area(f):
+        return abs(f["u"][2] - f["u"][1]) * abs(f["v"][2] - f["v"][1])
+    recs = [f for f in con.get("faces") or [] if (f.get("face") in NORMAL or f.get("face") in FLATS)
+            and f.get("file") and Path(f["file"]).exists() and f.get("room_m") and area(f) >= FACE_PIC_LEAST_M2]
+    if not recs:
+        return []
+    rm = [float(v) for v in recs[0]["room_m"]]
+    W, D, H = rm
+    seen = {f["face"] for f in recs}
+    names = [n for n in ("north", "east", "south", "west")] if seen & set(NORMAL) else []
+    names += [n for n in FLATS if n in seen and not (n == "ceiling" and spec.get("_roof") == "rafters")]
+    h_ = hashlib.sha1((FACE_PIC_RULE + tile + json.dumps(rm)).encode())
+    for f in sorted(recs, key=lambda f: f["face"]):
+        h_.update(f["face"].encode() + Path(f["file"]).read_bytes())
+    dg = h_.hexdigest()
+    srcs = [{k: f[k] for k in ("face", "u", "v", "px_per_m", "file") if k in f} for f in recs]
     got = []
-    for f in con.get("faces") or []:
-        if f.get("face") not in NORMAL or not f.get("file") or not Path(f["file"]).exists():
-            continue
-        w, h = abs(f["u"][2] - f["u"][1]), abs(f["v"][2] - f["v"][1])
-        if w * h < FACE_PIC_LEAST_M2:
-            continue
-        dg = hashlib.sha1(Path(f["file"]).read_bytes() + tile.encode()).hexdigest()[:6]
-        got.append(({"id": f"wall_face_{dg}", "class": "prop", "tier": "background", "texture_px": 2048,
-                     "placement": "floor",
-                     "description": f"The face of a wall, one flat picture {w:.2f} x {h:.2f} m: the {f['face']} wall of "
-                                    "a room as its own picture shows it. Front -Y; origin at the middle of the bottom edge.",
-                     "tags": ["wall", "face", "generated-on-request"], "size_m": [round(w, 3), 0.02, round(h, 3)],
-                     "size_tolerance": 0.05, "source": "scripted", "backdrop": {"w": round(w, 3), "h": round(h, 3), "emit": 0.0},
-                     "face_picture": f["file"], "face_fill": tile, "face_px_per_m": f.get("px_per_m"),
-                     "licence": "CC0 (original script; picture from the place's own concept picture)",
-                     "cameras": [{"name": "front", "position": [0.0, -max(w, h) * 1.6, h / 2], "target": [0.0, 0.0, h / 2],
-                                  "focal": 28}]}, f))
+    for name in names:
+        flat = name in FLATS
+        if flat:
+            ins = 0.005 if name == "floor" else FACE_PIC_CEIL_IN_M
+            w, h, iu, iv = W - 2 * ins, D - 2 * ins, ins, ins
+        else:
+            w, h, iu, iv = (W if name in ("north", "south") else D) - 2 * FACE_PIC_END_M, H, FACE_PIC_END_M, 0.0
+        pid = f"{name if flat else 'wall'}_face_" + hashlib.sha1((dg + name).encode()).hexdigest()[:6]
+        what = f"the {name} wall" if not flat else f"the {name}"
+        sp = {"id": pid, "class": "prop", "tier": "background", "texture_px": 2048, "placement": "floor",
+              "description": f"The face of {'a floor' if name == 'floor' else 'a ceiling' if flat else 'a wall'}, one "
+                             f"flat picture {w:.2f} x {h:.2f} m: {what} of a room as its own picture shows it. " +
+                             ("Lying flat, the picture's top toward +Y; origin at the middle of its underside." if flat
+                              else "Front -Y; origin at the middle of the bottom edge."),
+              "tags": [name if flat else "wall", "face", "generated-on-request"],
+              "size_m": [round(w, 3), round(h, 3), 0.02] if flat else [round(w, 3), 0.02, round(h, 3)],
+              "size_tolerance": 0.05, "source": "scripted", "backdrop": {"w": round(w, 3), "h": round(h, 3), "emit": 0.0},
+              "face_whole": {"face": name, "room_m": rm, "faces": srcs, "inset_m": [round(iu, 3), round(iv, 3)]},
+              "face_fill": "" if flat else tile, "face_colour": floor_col if name == "floor" else None,
+              "face_flat": flat,
+              "licence": "CC0 (original script; picture from the place's own concept picture)",
+              "cameras": [{"name": "front", "position": [0.0, -max(w, h) * 0.4, max(w, h) * 1.3], "target": [0.0, 0.0, 0.0],
+                           "focal": 28}] if flat else
+                         [{"name": "front", "position": [0.0, -max(w, h) * 1.6, h / 2], "target": [0.0, 0.0, h / 2],
+                           "focal": 28}]}
+        got.append((sp, {"face": name, "room_m": rm}))
     return got
 
 
-def wall_pictures(out: dict, spec: dict, library) -> dict:
-    """The walls' own pictures (face_pictures) hung on their walls, FACE_PIC_OFF_M inside them, each where its
-    rectangle is -> {wall: [(from, to along the wall, z from, z to)]} that they cover, for the tiles to leave.
-    A room built to another size than the picture was measured at takes none (its pictures would not meet its
+def wanted_openings(lay: dict, spec: dict) -> list:
+    """The layout's openings the story itself asks for: on a wall it states, or named by the plan's places (by its id,
+    or a phrase naming its kind). The rest (the room kind's own door, a window the picture shows elsewhere, given a
+    wall by the layout) are the set's guesses."""
+    np_ = spec.get("named_places") or {}
+    said = " ".join(str(k).lower() for k in np_)
+    vals = {str(v) for v in np_.values()}
+    return [o for o in lay.get("openings") or []
+            if o.get("stated") or str(o.get("id")) in vals or str(o.get("name")) in vals
+            or re.search(rf"\b{re.escape(str(o.get('kind') or '-'))}s?\b", said)]
+
+
+def wall_pictures(out: dict, spec: dict, library, lay: dict | None = None) -> dict:
+    """The room's own pictures (face_pictures) hung: each wall's over the whole wall, FACE_PIC_OFF_M inside it; the
+    floor's on the floor, the ceiling's under a flat ceiling -> {wall: [(from, to along the wall, z from, z to)]}
+    that they cover, for the tiles to leave. out["room_faces"]: what each face got, and why.
+
+    A wall with an opening the story asks for (wanted_openings) takes no picture: a panel cannot be cut round it, and
+    the door must be seen; its tiles leave the opening as before. Over every other opening the picture hangs (the
+    picture's own walls show its windows and doors: a bright square of the period's window cut into its pattern, on
+    a wall the picture never sees, was the set's guess against its picture), its daylight kept, its drapes taken
+    down. A room built to another size than the picture was measured at takes none (its pictures would not meet its
     corners)."""
     import config as C
     W, D, H = out["size_m"]
-    hung = {}
+    hung, why = {}, {}
+    lay = lay or {}
+    wanted = {o.get("wall") for o in wanted_openings(lay, spec)}
+    roof = any(s.get("kind") == "trusses" for s in out.get("structure") or [])
+    ceil = next((s for s in out.get("structure") or [] if s.get("kind") == "ceiling"), None)
     for fs, f in face_pictures(spec):
+        side = f["face"]
         rm = f.get("room_m")
-        if rm and (abs(rm[0] - W) > FACE_PIC_ROOM_TOL * W or abs(rm[1] - D) > FACE_PIC_ROOM_TOL * D):
+        if rm and (abs(rm[0] - W) > FACE_PIC_ROOM_TOL * W or abs(rm[1] - D) > FACE_PIC_ROOM_TOL * D
+                   or abs(rm[2] - H) > FACE_PIC_ROOM_TOL * H):
+            why[side] = "the room is built to another size than its picture was measured at"
+            continue
+        if side == "ceiling" and (roof or not ceil or abs(float(ceil.get("height_m") or 0) - H) > 0.05):
+            why[side] = "an open roof: its own timbers and boards stand for it"
+            continue
+        if side in wanted:
+            why[side] = "an opening the story asks for is on it: the tiles, left off round it"
             continue
         out.setdefault("face_pictures", []).append(fs)
         if not (Path(library or C.LIBRARY) / "prop" / fs["id"] / "asset.json").exists():
+            why[side] = "its panel is not made yet"
             continue
-        side, n = f["face"], NORMAL[f["face"]]
-        a, b = sorted(f["u"][1:])
-        z0, z1 = sorted(f["v"][1:])
-        t = (a + b) / 2
-        pos = [t, -n[1] * (D / 2 - FACE_PIC_OFF_M)] if side in ("north", "south") else [-n[0] * (W / 2 - FACE_PIC_OFF_M), t]
+        why[side] = "its picture, over the whole wall" if side in NORMAL else "its picture, laid over it whole"
+        if side == "floor":
+            out["fixtures"].append({"asset": fs["id"], "name": "floor_face_picture", "surface": True,
+                                    "position": [0.0, 0.0, FACE_PIC_FLOOR_Z], "facing": [0.0, -1.0]})
+            continue
+        if side == "ceiling":
+            out["fixtures"].append({"asset": fs["id"], "name": "ceiling_face_picture", "hang": True, "surface": True,
+                                    "position": [0.0, 0.0, round(H - FACE_PIC_CEIL_UNDER_M - 0.02, 3)],
+                                    "facing": [0.0, -1.0]})
+            continue
+        n = NORMAL[side]
+        pos = [0.0, -n[1] * (D / 2 - FACE_PIC_OFF_M)] if side in ("north", "south") else [-n[0] * (W / 2 - FACE_PIC_OFF_M), 0.0]
         out["fixtures"].append({"asset": fs["id"], "name": f"wall_face_{side}_picture", "hang": True, "surface": True,
-                                "position": [round(pos[0], 3), round(pos[1], 3), round(z0, 3)], "facing": [n[0], n[1]]})
-        hung.setdefault(side, []).append((a, b, z0, z1))
+                                "position": [round(pos[0], 3), round(pos[1], 3), 0.0], "facing": [n[0], n[1]]})
+        L_ = W if side in ("north", "south") else D
+        hung.setdefault(side, []).append((-L_ / 2, L_ / 2, 0.0, H))
+        for o in lay.get("openings") or []:            # (a window under the picture: no drapes before a bare wall)
+            if o.get("wall") == side and o.get("kind") == "window" and o.get("point"):
+                out["fixtures"] = [x for x in out["fixtures"] if not (str(x.get("name") or "").startswith("drapes")
+                                   and math.dist(x["position"][:2], o["point"][:2]) < 0.4)]
+    if spec.get("_roof") == "rafters" and "ceiling" not in why and any(
+            f.get("face") == "ceiling" for f in (spec.get("_concept") or {}).get("faces") or []):
+        why["ceiling"] = "an open roof: its own timbers and boards stand for it"
+    if why:
+        out["room_faces"] = why
     return hung
 
 
 def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
     """The room's walls wear the concept's own wall: its face panels side by side along every wall, a hand's
     breadth inside it, left off where a door, window or fireplace stands (there the period's wall shows). Where
-    the concept picture shows a wall itself (wall_pictures), that wall's picture hangs over its part of it, and the
-    tiles cover only the rest."""
+    the room has its concept picture's walls (wall_pictures: every wall, made whole from what the picture sees), that
+    picture covers the wall and it takes no tiles; the floor and a flat ceiling take theirs too."""
     import config as C
     if not any(w.get("kind") == "wall" for w in out.get("structure") or []):
         return
-    pics = wall_pictures(out, spec, library)
+    pics = wall_pictures(out, spec, library, lay)
     words = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("words")
     if not words:
         return
@@ -833,7 +921,7 @@ def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
             if any(math.dist(pos, g[0][:2]) < FACE_M / 2 + g[1] / 2 for g in gaps.get(side, [])):
                 continue
             for r in range(max(1, math.ceil(H / FACE_M))):
-                if any(p[0] - 0.05 <= t - FACE_M / 2 and t + FACE_M / 2 <= p[1] + 0.05 and p[2] - 0.05 <= r * FACE_M
+                if any(p[0] - 0.05 <= t - L_ / cols / 2 and t + L_ / cols / 2 <= p[1] + 0.05 and p[2] - 0.05 <= r * FACE_M
                        and min(H, (r + 1) * FACE_M) <= p[3] + 0.05 for p in pics.get(side, [])):
                     continue                                         # (the wall's own picture covers it whole)
                 out["fixtures"].append({"asset": fs["id"], "name": f"wall_face_{side}_{i}_{r}", "hang": True,
