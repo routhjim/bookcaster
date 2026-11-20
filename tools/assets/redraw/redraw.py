@@ -384,7 +384,7 @@ def moment_words(sd: Path, cam: str) -> str:
             f"drawn: {m}. They are in the place described below.") if m else ""
 
 
-def setting_words(sd: Path, cam: str) -> str:
+def setting_words(sd: Path, cam: str, face_only: bool = False) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
@@ -398,7 +398,7 @@ def setting_words(sd: Path, cam: str) -> str:
         return (f" In this shot, outside the cabin, seen through its glass wherever a pane is in the picture: "
                 f"{vw['words'].strip().rstrip('.')}. The glass sits in the cabin's own frame, which closes it all "
                 "round; the cabin's walls stay as the picture shows them.") if vw.get("words") else ""
-    return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
+    return f" In this shot: {c['setting'].strip()}" if c.get("setting") and not face_only else ""
 
 
 def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> str:
@@ -1076,7 +1076,10 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False),
                                                 run.get("outdoors", False)) + edge_words(edge, cast)
-                         + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
+                         # (a close shot of a person has their face and nothing of the place: told of the thing
+                         # they look at, the drawing put it on their head, a shimmering stone as a glow in the hair)
+                         + setting_words(sd, cam, face_only=kind == "close" and bool(ppl))
+                         + crowd_words(run.get("crowd"), kind)
                          + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast) + laid_words(sd, cam, ppl)
                          + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),

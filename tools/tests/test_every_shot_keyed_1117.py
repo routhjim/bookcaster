@@ -157,3 +157,12 @@ def test_a_free_shots_moment_leads_its_prompt(tmp_path):
     sh = {"framing": "wide", "kind": "action", "moment": "Five carts roll out of the gate.", "action": "x"}
     cam = FP.insert_camera(sh, [], {}, [20.0, 20.0], "s1", "id1", walls=False)
     assert cam["free"] and cam["moment"] == sh["moment"]
+
+
+def test_a_close_shot_of_a_person_is_not_told_the_things_of_the_place(tmp_path):
+    import redraw as RD
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "s1", "setting": "A lamp glows on the shelf."},
+        {"name": "s2", "view": {"ahead": True, "words": "hills under cloud"}}]}))
+    assert "lamp" in RD.setting_words(tmp_path, "s1") and RD.setting_words(tmp_path, "s1", face_only=True) == ""
+    assert "hills" in RD.setting_words(tmp_path, "s2", face_only=True)      # what shows through glass still does
