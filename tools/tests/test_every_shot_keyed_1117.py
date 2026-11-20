@@ -129,3 +129,31 @@ def test_a_free_shot_starts_from_the_places_own_picture_when_it_is_the_stills_si
     assert RD.free_start({"extra_refs": [str(tmp_path / "place.png")]}, st) == str(tmp_path / "place.png")
     assert RD.free_start({"extra_refs": [str(tmp_path / "other.png")]}, st) == st
     assert RD.free_start({}, st) == st
+
+
+def test_a_key_is_told_what_each_person_looks_at(tmp_path):
+    import redraw as RD
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"characters": {
+        "a": {"work_at": "block_2", "facing_to": "b"}, "b": {"facing_to": "a"}, "c": {}}}))
+    cast = {"a": {"noun": "man", "pos": "his", "subj": "he"}, "b": {"noun": "woman"}, "c": {"noun": "man"}}
+    box = [0.1, 0.1, 0.3, 0.9]
+    ppl = [("a", box, 80.0, "standing", 80.0, None), ("b", [0.6, 0.1, 0.8, 0.9], 10.0, "standing", 10.0, None),
+           ("c", [0.85, 0.1, 0.95, 0.9], 40.0, "standing", 40.0, None)]
+    w = RD.facing_to_words(tmp_path, ppl, cast)
+    a, b = w.split("eyes on it.")[0], w.split("eyes on it.")[1]
+    assert "looking down at the block" in a and "head bowed to the work" in a      # the work, before whom they face
+    assert "not on the viewer" in b.split("woman")[0]                              # a head the scene turned away
+    assert "looks at" in b and "not on the viewer" not in b.split("looks at")[1]   # one who faces the camera may
+    assert w.count("look") == 2                                                    # nothing known: nothing said
+
+
+def test_a_free_shots_moment_leads_its_prompt(tmp_path):
+    import redraw as RD
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [
+        {"name": "s1", "free": True, "moment": "Five carts roll out of the gate."}, {"name": "s2", "free": True}]}))
+    w = RD.moment_words(tmp_path, "s1")
+    assert w.startswith("The subject of this picture") and "Five carts roll out of the gate." in w
+    assert RD.moment_words(tmp_path, "s2") == "" and RD.FREE_STRENGTH > 0.9
+    sh = {"framing": "wide", "kind": "action", "moment": "Five carts roll out of the gate.", "action": "x"}
+    cam = FP.insert_camera(sh, [], {}, [20.0, 20.0], "s1", "id1", walls=False)
+    assert cam["free"] and cam["moment"] == sh["moment"]

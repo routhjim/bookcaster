@@ -555,7 +555,8 @@ def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
     over, close, side = cams
     assert over["position"][1] < 0 and close["position"][1] < 0          # from beyond the piece, looking back at them
     assert math.dist(close["position"][:2], [0, 0]) < math.dist(over["position"][:2], [0, 0])
-    assert close["target"][:2] == [0.0, 0.0] and close["target"][2] > 0.8   # the close one: on the piece's top
+    assert 0 < close["target"][1] < 0.4 and close["focal_mm"] == over["focal_mm"]   # the close one leans to the work,
+    #                                                                       the worker still in it
     assert abs(side["position"][0]) > 2 * abs(side["position"][1])       # the side one: in profile
     # someone standing in the first choice's line sends the camera to the other side; a wall does too
     o = [cams[0]["position"][0] * 0.5, cams[0]["position"][1] * 0.5]
@@ -567,6 +568,22 @@ def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
               "half": [0.5, 0.5, 0.4]}
     clear = FP.work_camera(w, piece, "medium", [], [piece, hearth], [8.0, 8.0], take=0)
     assert clear and clear["position"] != cams[0]["position"]
+    # a tall piece right beside the work hides it as well: no camera looks across it at the work or the worker
+    tall = {"name": "t", "kind": "fixture", "center": [0.9, 0.3, 0.9], "half": [0.5, 0.6, 0.9]}
+    for i in range(6):
+        cam = FP.work_camera(w, piece, "medium", [], [piece, tall], [8.0, 8.0], take=i)
+        assert cam and cam["position"][0] < 0.3, (i, cam)
+    low = dict(tall, center=[0.9, 0.3, 0.2], half=[0.5, 0.6, 0.2])       # a low one beside it is looked over
+    assert FP.work_camera(w, piece, "medium", [], [piece, low], [8.0, 8.0], take=0)["position"] == cams[0]["position"]
     # a full framing stands further off, whatever the take
     assert math.dist(FP.work_camera(w, piece, "full", [], [piece], [12.0, 12.0], take=1)["position"][:2], [0, 0]) > \
         math.dist(over["position"][:2], [0, 0])
+
+
+def test_someone_looking_on_at_two_who_face_each_other_stands_apart():
+    ppl = [{"name": "A", "facing": "B"}, {"name": "B", "facing": "A"}, {"name": "C", "facing": "B"}]
+    assert FP.looks_on(ppl[2], ppl) and not FP.looks_on(ppl[0], ppl) and not FP.looks_on(ppl[1], ppl)
+    ring = [{"name": "A", "facing": "B"}, {"name": "B", "facing": "C"}, {"name": "C", "facing": "A"}]
+    assert not any(FP.looks_on(q, ring) for q in ring)                   # three in one talk: nobody stands apart
+    assert not FP.looks_on({"name": "C", "facing": "the window"}, ppl[:2] + [{"name": "C", "facing": "the window"}])
+    assert FP.ONLOOK_M[0] > 3 * FP.PERSON_GAP_M

@@ -319,6 +319,19 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
     return [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
 
 
+ONLOOK_M = (3.6, 7.0)     # someone looking on at two who are turned to each other stands this far from them
+
+
+def looks_on(p: dict, people: list) -> bool:
+    """Someone of a shot who watches two others that are turned to each other, nobody turned to them: not one of
+    the exchange, they stand apart from it, behind it in the picture. (A third man on the open floor was stood at
+    the elbow of one of two who spoke, a party of three, where the plan had him off at the side, 11-20.)"""
+    face = {q.get("name"): q.get("facing") for q in people if q.get("name")}
+    me, to = p.get("name"), p.get("facing")
+    return bool(me and to in face and to != me and me not in face.values()
+                and face.get(to) in face and face.get(face[to]) == to and face[to] != me)
+
+
 AT_THING = "the thing they are at"     # the pass's answer for someone facing what they work at (staging_pass)
 TALL_THING_M = 1.5        # a thing whose top is above a standing person's eyes: a wall of it, nothing to work on top of
 WALL_NEAR_M = 1.2         # standing this near its footprint, turned to it, a person's face is a hand from its face
@@ -608,6 +621,8 @@ WORK_CAM_M = {"close": 1.6, "medium": 2.3}      # the work camera's distance fro
 WORK_CAM_FAR_M = 3.2                            # ... for any wider framing
 WORK_CAM_DEG = (40, -40, 65, -65, 20, -20)      # ... its turns off the line worker -> piece, first choice by take
 WORK_CAM_Z_M = 1.55
+WORK_FORE, WORK_FORE_TOP_M = 0.5, 0.3            # the camera's part of its line to the work: nothing over this high
+WORK_HEAD_M = 1.55                              # a standing worker's head, for the camera's line to it
 
 
 def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, room: list, walls: bool = True,
@@ -631,26 +646,41 @@ def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, 
     view = take % 3 if kind in WORK_CAM_M else 0
     dist = WORK_CAM_M.get(kind, WORK_CAM_FAR_M) + max(thing["half"][:2])
     W, D = bounds(room, 0.0, walls)
+    head = [wpos[0], wpos[1], WORK_HEAD_M]
+    work = [c[0], c[1], top + 0.1]
+    # (every view has the worker and the piece in it: the close one leans to the work, it does not leave them out)
     tgt = [(c[0] + wpos[0]) / 2, (c[1] + wpos[1]) / 2, (top + 1.35) / 2]
     turns, z, focal = WORK_CAM_DEG, WORK_CAM_Z_M, 35
     if view == 1:
-        dist, tgt, z, focal = WORK_CAM_M["close"] - 0.3 + max(thing["half"][:2]), [c[0], c[1], top + 0.15], 1.35, 50
+        dist = WORK_CAM_M["close"] + max(thing["half"][:2])
+        tgt = [c[0] * 0.65 + wpos[0] * 0.35, c[1] * 0.65 + wpos[1] * 0.35, (top + 1.2) / 2]
     elif view == 2:
         turns = (95, -95, 115, -115, 75, -75)
     if (take // 3) % 2:
         turns = tuple(-x for x in turns)
-    rest = [t for t in things if t is not thing and
-            math.dist(t["center"][:2], c[:2]) > 0.5 * (max(t["half"][:2]) + max(thing["half"][:2]))]
-    # (in a small room the full distance is past the wall or behind another piece: then nearer; and no other
-    # piece between the camera and the work - one stood with a hearth filling its frame, the work behind it, 11-20)
+    rest = [t for t in things if t is not thing and t.get("kind") == "fixture"]
+
+    def sees(q3, p3):
+        """Nothing of the set stands in the straight line from q3 to p3. Near the work a piece under the line does
+        not; in the camera's half of the way any piece above WORK_FORE_TOP_M does (it fills the foreground)."""
+        for i in range(1, 12):
+            f_ = i / 12
+            x, y, h = (q3[j] + (p3[j] - q3[j]) * f_ for j in range(3))
+            for t in rest:
+                if abs(x - t["center"][0]) < t["half"][0] + 0.1 and abs(y - t["center"][1]) < t["half"][1] + 0.1 \
+                        and t["center"][2] + t["half"][2] > (h - 0.1 if f_ > WORK_FORE else WORK_FORE_TOP_M):
+                    return False
+        return True
+    # (in a small room the full distance is past the wall or behind another piece: then nearer; and no other piece
+    # between the camera and the worker's head or the work, the pieces right beside the work too - one stood with a
+    # hearth filling its frame, the work behind it, 11-20; again from behind a hearth a hand from the work, 11-20)
     for deg, k_ in [(g, k) for k in (1.0, 0.8, 0.65) for g in turns]:
         a = math.radians(deg)
         v = [u[0] * math.cos(a) - u[1] * math.sin(a), u[0] * math.sin(a) + u[1] * math.cos(a)]
         q = [c[0] + v[0] * dist * k_, c[1] + v[1] * dist * k_]
         if (walls and (abs(q[0]) > W or abs(q[1]) > D)) or not clear_of_fixtures(q, rest):
             continue
-        if not all(clear_of_fixtures([q[0] + (c[0] - q[0]) * i / 8, q[1] + (c[1] - q[1]) * i / 8], rest, -0.2)
-                   for i in range(1, 7)):
+        if not (sees(q + [z], head) and sees(q + [z], work)):
             continue
         L = math.dist(q, tgt[:2])
         hid = False
@@ -763,6 +793,8 @@ def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str
                 "listed": None, "shot_kind": sh.get("kind"), "insert": True, "free": True,
                 "position": [0.0, round(-(room[1] / 2 - 0.4), 3), 1.6], "target": [0.0, round(room[1] / 2, 3), 1.4],
                 "focal_mm": 24, "_on": "the place as its picture sees it", "_looks": {}, "_poses": {}, "_worn": {},
+                **({"moment": str(sh.get("moment") or sh.get("action")).strip()}
+                   if str(sh.get("moment") or sh.get("action") or "").strip() else {}),
                 **({"setting": sh["setting"]} if sh.get("setting") else {})}
     if best:
         t = best[1]
@@ -1048,7 +1080,9 @@ def main():
                        for t_ in things if t_["name"] == set_named.get(q_.get("at") or "")]
                 oth += [v_["position"][:2] for kk, v_ in state.items() if kk != k and v_.get("position")]
                 c_ = [sum(o[0] for o in oth) / len(oth), sum(o[1] for o in oth) / len(oth)] if oth else [0.0, 0.0]
-                thing = {"name": "floor", "kind": "floor", "center": c_, "half": [0.0, 0.0], "with": bool(oth)}
+                thing = {"name": "floor", "kind": "floor", "center": c_, "half": [0.0, 0.0], "with": bool(oth),
+                         "apart": bool(oth) and looks_on(p, sh.get("people") or []),
+                         "line": [o for i_, o in enumerate(oth) if all(math.dist(o, q_) > 0.3 for q_ in oth[:i_])][:2]}
                 f["defaults"].append(f"{k}: on the open floor ({'near the others' if oth else 'the middle of the room'})")
             elif stated:
                 thing = next((t for t in things if t["name"] == stated), thing)
@@ -1098,8 +1132,8 @@ def main():
                     near = (0.5, 0.9)
                 else:
                     tgt = (thing or {}).get("center") or [0, 0]
-                    near = ((2.0, 5.0) if thing.get("with") else (0.0, 1.6)) if (thing or {}).get("kind") == "floor" \
-                        else (0.6, 1.6)
+                    near = (ONLOOK_M if thing.get("apart") else (2.0, 5.0) if thing.get("with") else (0.0, 1.6)) \
+                        if (thing or {}).get("kind") == "floor" else (0.6, 1.6)
                 others = ring(k, placed_now)
                 own_r = (crt.get(k) or {}).get("radius_m", 0.0)
                 # (a creature keeps its reach from people; from fixtures its body's half breadth: a rock or a cave
@@ -1116,6 +1150,17 @@ def main():
                 # (a part of the land in the water itself, a ford, by the ground map's judge: the water is no bar)
                 th_ = [t_ for t_ in things if t_["kind"] != "water"] if (thing or {}).get("wet") else things
                 entry.update(seat=None, position=free_mark(tgt, others, th_, room, near, own_r, fix_r, walled, fro))
+                ln_ = (thing or {}).get("line") or []
+                if (thing or {}).get("apart") and len(ln_) == 2:
+                    # (off the line of the two they watch, to its side: behind one of them they are hidden from
+                    # the other, and from any camera that has both)
+                    ux, uy = ln_[1][0] - ln_[0][0], ln_[1][1] - ln_[0][1]
+                    L_ = math.hypot(ux, uy)
+                    off_ = [(abs((m[0] - ln_[0][0]) * uy - (m[1] - ln_[0][1]) * ux) / L_, m) for m in
+                            free_marks(tgt, others, th_, room, near, n=40, own_r=own_r, fix_r=fix_r, walls=walled,
+                                       front=fro)]
+                    if off_:
+                        entry["position"] = max(off_, key=lambda x: x[0])[1]
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
                 entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, th_, room, near,

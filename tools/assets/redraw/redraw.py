@@ -368,6 +368,22 @@ def free_start(run: dict, still: str) -> str:
     return still
 
 
+FREE_STRENGTH = 0.95         # a free shot with a moment of its own is drawn this far from the place's picture
+
+
+def moment_words(sd: Path, cam: str) -> str:
+    """What happens in a free shot, in the director's words (the plan's "moment", carried on the staged camera),
+    said first: who and what is in the picture that the place's own picture does not have. (Said last, after the
+    whole place, and started from the place's picture, riders leaving a tower were not drawn at all, 11-20.)"""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    m = str(c.get("moment") or "").strip().rstrip(".")
+    return (f"The subject of this picture, in the middle ground, clear and large enough to read, every one of them "
+            f"drawn: {m}. They are in the place described below.") if m else ""
+
+
 def setting_words(sd: Path, cam: str) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
@@ -466,9 +482,15 @@ def wears_words(sd: Path, cam: str, ppl: list, cast: dict | None) -> str:
     return (" " + " ".join(out)) if out else ""
 
 
+LOOK_AWAY_DEG = 25           # a head turned at least this far from the camera does not look at the viewer
+
+
 def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
-    """Whom each person in the frame is turned toward, from the staged spec ("facing_to"): the redraw kept the
-    engine's bodies, but a video model read two men at a window as looking out of it (11-12)."""
+    """What each person in the frame looks at, from the staged spec: whom they are turned toward ("facing_to"),
+    or the piece of the set they work at ("work_at"): eyes and head on it. The redraw kept the engine's bodies,
+    but a video model read two men at a window as looking out of it (11-12); and a man bent over his work was
+    drawn with his head turned to the viewer in key after key (11-20): a head the scene turned away from the
+    camera is said not to look at the viewer."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
     if not rounds or not cast:
         return ""
@@ -476,13 +498,24 @@ def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
     inf = {p[0] for p in ppl}
     nm = names(ppl, cast)
     out = []
-    for k in [p[0] for p in ppl]:
-        t = (ch.get(k) or {}).get("facing_to")
-        if t and t in ch and t != k:
-            who = nm.get(k, "the person")
+    for p in ppl:
+        k, ang = p[0], p[2]
+        if who_of(cast, k).get("creature"):
+            continue
+        t, wk = (ch.get(k) or {}).get("facing_to"), (ch.get(k) or {}).get("work_at")
+        who = nm.get(k, "the person")
+        who = who[0].upper() + who[1:]
+        pos = who_of(cast, k).get("pos") or "their"
+        away = (f" {pos.capitalize()} eyes are not on the viewer and {pos} head is not turned to the camera."
+                if ang >= LOOK_AWAY_DEG else "")
+        if wk:
+            thing = re.sub(r"[_\d]+", " ", str(wk)).strip()
+            out.append(f"{who} is looking down at the {thing} in front of {pos} hands, {pos} head bowed to the work "
+                       f"and {pos} eyes on it.{away}")
+        elif t and t in ch and t != k:
             tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
             if tgt:
-                out.append(f"{who[0].upper() + who[1:]} is turned toward {tgt}.")
+                out.append(f"{who} is turned toward {tgt} and looks at {tgt}.{away}")
     return (" " + " ".join(out)) if out else ""
 
 
@@ -1056,6 +1089,10 @@ def main():
                     free_ = not ppl and drawn_free(sd, cam)
                     if free_:
                         j["init"]["image"] = free_start(run, sh["still"])
+                        mw = moment_words(sd, cam)
+                        if mw:                   # what happens in it leads, and the picture holds it less
+                            j["prompt"] = mw + " " + j["prompt"]
+                            j["init"]["strength"] = max(st, FREE_STRENGTH)
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
