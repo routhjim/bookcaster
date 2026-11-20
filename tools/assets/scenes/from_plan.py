@@ -571,8 +571,7 @@ def standoff_view(cam: dict, kp: str, kc: str) -> bool | None:
     return bool(shown) and kp not in shown
 
 
-FIGHT_TIGHT_M = 3.0             # the tight side-on fight camera: at least this far off the fighter
-FIGHT_LOW_M = (3.4, 1.4, 0.7)   # the low fight camera: behind the fighter, to their side, off the ground
+FIGHT_SWING_DEG = 32.0          # the side-on fight cameras swing this far round the two, either way
 
 
 def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool, take: int = 0) -> dict | None:
@@ -581,8 +580,9 @@ def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool, take: i
     and the creature filling the rest; or side-on, the fighter on one side and the creature's head and forequarters
     on the other. (A camera that held the whole creature made the fighter a speck; one behind him showed his back
     and a small beast far off: of seven fight shots one could be drawn as a fight, 11-19.) The side-on shots of one
-    fight are not one camera: by take they go tight on the fighter with the creature's head beyond, wide on the
-    two, low from behind the fighter up at the creature, all from the same side of the line between them. (Nobody
+    fight are not one camera: by take they are square on the two, swung round toward the fighter's back (the
+    creature turned to the camera), swung round toward the creature's (the fighter's face seen), all from the
+    same side of the line between them. (Nobody
     moved between shots and every side-on shot had the same camera: nine keys were one frame, the fighter a
     quarter of its height, 11-20.)"""
     d = math.dist(ppos[:2], cpos[:2])
@@ -600,20 +600,16 @@ def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool, take: i
         p = [ppos[0] - u[0] * FIGHT_BACK_M[0] + n[0] * FIGHT_BACK_M[1],
              ppos[1] - u[1] * FIGHT_BACK_M[0] + n[1] * FIGHT_BACK_M[1], FIGHT_EYE_M]
         return {"position": rnd(p), "target": rnd(head), "focal_mm": 28, "fight_view": "shoulder"}
-    view = ("tight", "wide", "low")[take % 3]
-    if view == "tight":
-        off = max(FIGHT_TIGHT_M, 0.45 * d)
-        p = [ppos[0] + u[0] * 0.15 * d + n[0] * off, ppos[1] + u[1] * 0.15 * d + n[1] * off, 1.5]
-        t = [ppos[0] + (head[0] - ppos[0]) * 0.3, ppos[1] + (head[1] - ppos[1]) * 0.3, 1.4 + (hz - 1.4) * 0.3]
-        return {"position": rnd(p), "target": rnd(t), "focal_mm": 28, "fight_view": view}
-    if view == "low":
-        p = [ppos[0] - u[0] * FIGHT_LOW_M[0] + n[0] * FIGHT_LOW_M[1],
-             ppos[1] - u[1] * FIGHT_LOW_M[0] + n[1] * FIGHT_LOW_M[1], FIGHT_LOW_M[2]]
-        t = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.6 + hz) / 2]
-        return {"position": rnd(p), "target": rnd(t), "focal_mm": 24, "fight_view": view}
+    # (every one of them has the two whole and apart in it, the creature at its size: a camera in close on the
+    # fighter cut the creature at the chin, one low behind him looked along the ground at a wall, 11-20. The
+    # picture a fight clip starts from is the two squared up, seen whole; the clip plays the blow.)
+    view = ("wide", "fighter", "creature")[take % 3]
     off = max(FIGHT_SIDE_M, 0.9 * d)
     mid = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.4 + hz) / 2]
-    p = [ppos[0] + u[0] * 0.35 * d + n[0] * off, ppos[1] + u[1] * 0.35 * d + n[1] * off, 1.5]
+    a = math.radians({"wide": 0.0, "fighter": FIGHT_SWING_DEG, "creature": -FIGHT_SWING_DEG}[view])
+    v = [n[0] * math.cos(a) - u[0] * math.sin(a), n[1] * math.cos(a) - u[1] * math.sin(a)]
+    k = 1.0 if view == "wide" else 1.1
+    p = [mid[0] + v[0] * off * k, mid[1] + v[1] * off * k, 1.5 if view != "fighter" else 1.7]
     return {"position": rnd(p), "target": rnd(mid), "focal_mm": 35, "fight_view": view}
 
 

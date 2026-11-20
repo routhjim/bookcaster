@@ -437,7 +437,7 @@ def test_a_fights_camera_stands_at_the_fighters_scale():
     over = FP.fight_camera(p, c, rig, over_shoulder=True)
     assert over["position"][0] < 0 and abs(over["position"][1]) < 1.5       # behind the fighter, a little to a side
     assert math.dist(over["position"][:2], p) < 3.0 and over["target"][0] > 4.0 and over["target"][2] >= 2.0
-    side = FP.fight_camera(p, c, rig, over_shoulder=False, take=1)         # (the wide one of the side-on three)
+    side = FP.fight_camera(p, c, rig, over_shoulder=False, take=0)         # (the square one of the side-on three)
     assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
     assert 0 < side["target"][0] < 8.0
     assert FP.fight_camera(p, [0.2, 0.0], rig, True) is None                # (on one spot: no line between them)
@@ -472,7 +472,7 @@ def test_once_squared_up_they_hold_their_ground_and_every_shot_sees_them_face_ea
         assert c.get("fight") == {"person": "a", "creature": "b"}, sid
         u = [pos["b"][0] - pos["a"][0], pos["b"][1] - pos["a"][1]]
         w = [c["position"][0] - pos["a"][0], c["position"][1] - pos["a"][1]]
-        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= FP.FIGHT_TIGHT_M - 1e-6, sid
+        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= 0.6 * FP.FIGHT_SIDE_M, sid
     # the creature's own shot: over his shoulder at it
     c, pos, _ = seen["action-2"]
     assert c.get("fight") and math.dist(c["position"][:2], pos["a"]) < 3.0
@@ -541,8 +541,12 @@ def test_side_on_shots_of_one_fight_are_three_cameras_on_one_side_of_the_line():
     assert all("fight_view" in x for x in cams)
     assert len({tuple(x["position"]) for x in cams[:3]}) == 3 and cams[3]["position"] == cams[0]["position"]
     assert all(x["position"][1] < 0 for x in cams)                        # one side of the line, the place's near side
-    tight, wide = cams[0], cams[1]
-    assert math.dist(tight["position"][:2], p) < 0.6 * math.dist(wide["position"][:2], p)    # the fighter far nearer
+    wide, by_fighter, by_creature = cams[:3]
+    assert math.dist(by_fighter["position"][:2], p) < math.dist(by_creature["position"][:2], p)
+    assert math.dist(by_creature["position"][:2], c) < math.dist(by_fighter["position"][:2], c)
+    for x in cams[:3]:                                    # every one far enough off to hold the two whole
+        assert min(math.dist(x["position"][:2], p), math.dist(x["position"][:2], c)) >= 0.6 * FP.FIGHT_SIDE_M
+        assert x["target"] == wide["target"]
     assert FP.fight_camera(p, c, rig, True)["position"][1] < 0            # the shoulder camera on that side too
 
 
