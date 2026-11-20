@@ -437,7 +437,7 @@ def test_a_fights_camera_stands_at_the_fighters_scale():
     over = FP.fight_camera(p, c, rig, over_shoulder=True)
     assert over["position"][0] < 0 and abs(over["position"][1]) < 1.5       # behind the fighter, a little to a side
     assert math.dist(over["position"][:2], p) < 3.0 and over["target"][0] > 4.0 and over["target"][2] >= 2.0
-    side = FP.fight_camera(p, c, rig, over_shoulder=False)
+    side = FP.fight_camera(p, c, rig, over_shoulder=False, take=1)         # (the wide one of the side-on three)
     assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
     assert 0 < side["target"][0] < 8.0
     assert FP.fight_camera(p, [0.2, 0.0], rig, True) is None                # (on one spot: no line between them)
@@ -472,7 +472,7 @@ def test_once_squared_up_they_hold_their_ground_and_every_shot_sees_them_face_ea
         assert c.get("fight") == {"person": "a", "creature": "b"}, sid
         u = [pos["b"][0] - pos["a"][0], pos["b"][1] - pos["a"][1]]
         w = [c["position"][0] - pos["a"][0], c["position"][1] - pos["a"][1]]
-        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= FP.FIGHT_SIDE_M - 1e-6, sid
+        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= FP.FIGHT_TIGHT_M - 1e-6, sid
     # the creature's own shot: over his shoulder at it
     c, pos, _ = seen["action-2"]
     assert c.get("fight") and math.dist(c["position"][:2], pos["a"]) < 3.0
@@ -533,3 +533,35 @@ def test_in_the_open_a_fighter_stands_across_the_view_from_the_creature():
     # the side-on camera on the two then looks the way the picture does
     c = FP.fight_camera(q, [0.0, 0.0], {"radius_m": 4.0, "size_m": [8, 4, 4]}, False)
     assert c["position"][1] < min(q[1], 0.0) and c["target"][1] > c["position"][1]
+
+
+def test_side_on_shots_of_one_fight_are_three_cameras_on_one_side_of_the_line():
+    p, c, rig = [7.0, 0.0], [0.0, 0.0], {"radius_m": 4.0, "size_m": [8, 4, 4]}
+    cams = [FP.fight_camera(p, c, rig, False, take=i) for i in range(4)]
+    assert all("fight_view" in x for x in cams)
+    assert len({tuple(x["position"]) for x in cams[:3]}) == 3 and cams[3]["position"] == cams[0]["position"]
+    assert all(x["position"][1] < 0 for x in cams)                        # one side of the line, the place's near side
+    tight, wide = cams[0], cams[1]
+    assert math.dist(tight["position"][:2], p) < 0.6 * math.dist(wide["position"][:2], p)    # the fighter far nearer
+    assert FP.fight_camera(p, c, rig, True)["position"][1] < 0            # the shoulder camera on that side too
+
+
+# ------------------------------------------------------------------ a work shot's camera
+def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
+    piece = {"name": "block", "kind": "fixture", "center": [0.0, 0.0, 0.4], "half": [0.3, 0.2, 0.4]}
+    w = [0.0, 0.8]                                           # the worker, north of the piece, turned to it
+    cams = [FP.work_camera(w, piece, "medium", [], [piece], [8.0, 8.0], take=i) for i in range(3)]
+    assert all(cams) and len({tuple(c["position"]) for c in cams}) == 3
+    over, close, side = cams
+    assert over["position"][1] < 0 and close["position"][1] < 0          # from beyond the piece, looking back at them
+    assert math.dist(close["position"][:2], [0, 0]) < math.dist(over["position"][:2], [0, 0])
+    assert close["target"][:2] == [0.0, 0.0] and close["target"][2] > 0.8   # the close one: on the piece's top
+    assert abs(side["position"][0]) > 2 * abs(side["position"][1])       # the side one: in profile
+    # someone standing in the first choice's line sends the camera to the other side; a wall does too
+    o = [cams[0]["position"][0] * 0.5, cams[0]["position"][1] * 0.5]
+    other = FP.work_camera(w, piece, "medium", [o], [piece], [8.0, 8.0], take=0)
+    assert other and (other["position"][0] > 0) != (cams[0]["position"][0] > 0)
+    assert FP.work_camera(w, piece, "medium", [], [piece], [1.0, 1.0], take=0) is None     # no room: the shot's own
+    # a full framing stands further off, whatever the take
+    assert math.dist(FP.work_camera(w, piece, "full", [], [piece], [12.0, 12.0], take=1)["position"][:2], [0, 0]) > \
+        math.dist(over["position"][:2], [0, 0])

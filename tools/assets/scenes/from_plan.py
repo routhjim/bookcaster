@@ -520,6 +520,7 @@ VARIANT = {"usual": None}
 
 
 STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
+WORK_POSE = "tool_raised"        # someone with a tool in the hand and a thing lying before them, no pose named
 WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing work over what is in front (pose.py)
 ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + WORK_ACTIONS
 
@@ -535,9 +536,12 @@ FIGHT_EYE_M = 1.7
 
 def fights(k: str, v: dict, cam: dict, crt: dict) -> bool:
     """Whether person k fights a creature in this shot: an action shot, k standing with a thing in a hand and facing
-    a creature of the scene (the pass's answer for whom they face)."""
-    return (k not in crt and cam.get("shot_kind") == "action" and v.get("pose") == "standing"
-            and v.get("face_target") in crt
+    a creature of the scene (the pass's answer for whom they face); or any shot but a talk shot once the two have
+    squared up (a fighter's guard does not drop between the blows: in the quiet shots of a fight his sword hung
+    at his side, 11-20)."""
+    return (k not in crt and v.get("pose") == "standing"
+            and (cam.get("shot_kind") == "action" or (v.get("foe") in crt and cam.get("shot_kind") != "talk"))
+            and (v.get("face_target") in crt or v.get("foe") in crt)
             and any(r.get("at") == "hand" for r in (cam.get("carried") or {}).get(k) or []))
 
 
@@ -554,30 +558,104 @@ def standoff_view(cam: dict, kp: str, kc: str) -> bool | None:
     return bool(shown) and kp not in shown
 
 
-def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool) -> dict | None:
+FIGHT_TIGHT_M = 3.0             # the tight side-on fight camera: at least this far off the fighter
+FIGHT_LOW_M = (3.4, 1.4, 0.7)   # the low fight camera: behind the fighter, to their side, off the ground
+
+
+def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool, take: int = 0) -> dict | None:
     """A camera on a fight between a person (at ppos) and a far larger creature (at cpos; its rig's size), at the
     person's scale: over their shoulder toward the creature's head, the fighter's back and raised arm on one side
     and the creature filling the rest; or side-on, the fighter on one side and the creature's head and forequarters
     on the other. (A camera that held the whole creature made the fighter a speck; one behind him showed his back
-    and a small beast far off: of seven fight shots one could be drawn as a fight, 11-19.)"""
+    and a small beast far off: of seven fight shots one could be drawn as a fight, 11-19.) The side-on shots of one
+    fight are not one camera: by take they go tight on the fighter with the creature's head beyond, wide on the
+    two, low from behind the fighter up at the creature, all from the same side of the line between them. (Nobody
+    moved between shots and every side-on shot had the same camera: nine keys were one frame, the fighter a
+    quarter of its height, 11-20.)"""
     d = math.dist(ppos[:2], cpos[:2])
     if d < 1.0:
         return None
     u = [(cpos[0] - ppos[0]) / d, (cpos[1] - ppos[1]) / d]
     n = [-u[1], u[0]]
+    if n[1] > 0:                             # (from the nearer side of the place, y low: a place in the open's
+        n = [-n[0], -n[1]]                   # picture is seen from there, and what it shows lies beyond)
     r = float(rig.get("radius_m") or 2.0)
     hz = max(2.0, 0.7 * float((rig.get("size_m") or [0, 0, 3.0])[2]))
     head = [cpos[0] - u[0] * 0.5 * r, cpos[1] - u[1] * 0.5 * r, hz]       # (its head: toward whom it fights)
+    rnd = lambda q: [round(x, 3) for x in q]
     if over_shoulder:
         p = [ppos[0] - u[0] * FIGHT_BACK_M[0] + n[0] * FIGHT_BACK_M[1],
              ppos[1] - u[1] * FIGHT_BACK_M[0] + n[1] * FIGHT_BACK_M[1], FIGHT_EYE_M]
-        return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in head], "focal_mm": 28}
-    if n[1] > 0:                             # (side-on from the nearer side of the place, y low: a place in the
-        n = [-n[0], -n[1]]                   # open's picture is seen from there, and what it shows lies beyond)
+        return {"position": rnd(p), "target": rnd(head), "focal_mm": 28, "fight_view": "shoulder"}
+    view = ("tight", "wide", "low")[take % 3]
+    if view == "tight":
+        off = max(FIGHT_TIGHT_M, 0.45 * d)
+        p = [ppos[0] + u[0] * 0.15 * d + n[0] * off, ppos[1] + u[1] * 0.15 * d + n[1] * off, 1.5]
+        t = [ppos[0] + (head[0] - ppos[0]) * 0.3, ppos[1] + (head[1] - ppos[1]) * 0.3, 1.4 + (hz - 1.4) * 0.3]
+        return {"position": rnd(p), "target": rnd(t), "focal_mm": 28, "fight_view": view}
+    if view == "low":
+        p = [ppos[0] - u[0] * FIGHT_LOW_M[0] + n[0] * FIGHT_LOW_M[1],
+             ppos[1] - u[1] * FIGHT_LOW_M[0] + n[1] * FIGHT_LOW_M[1], FIGHT_LOW_M[2]]
+        t = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.6 + hz) / 2]
+        return {"position": rnd(p), "target": rnd(t), "focal_mm": 24, "fight_view": view}
     off = max(FIGHT_SIDE_M, 0.9 * d)
     mid = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.4 + hz) / 2]
     p = [ppos[0] + u[0] * 0.35 * d + n[0] * off, ppos[1] + u[1] * 0.35 * d + n[1] * off, 1.5]
-    return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in mid], "focal_mm": 35}
+    return {"position": rnd(p), "target": rnd(mid), "focal_mm": 35, "fight_view": view}
+
+
+WORK_CAM_M = {"close": 1.6, "medium": 2.3}      # the work camera's distance from the piece, by the shot's framing
+WORK_CAM_FAR_M = 3.2                            # ... for any wider framing
+WORK_CAM_DEG = (40, -40, 65, -65, 20, -20)      # ... its turns off the line worker -> piece, first choice by take
+WORK_CAM_Z_M = 1.55
+
+
+def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, room: list, walls: bool = True,
+                take: int = 0) -> dict | None:
+    """A camera on someone at work at a piece of the set (at wpos, turned to it): from beyond the piece, to one
+    side of the line from them to it, looking back over the piece's top at them - their face, their hands, the
+    tool and what lies on the piece in one frame. Inside the place, clear of the pieces, nobody else between it and
+    the work; the side changes with take. None when no such place is free (the shot keeps its own camera). (A
+    work shot was framed as a shot of the person: of a dozen shots of a smith forging, the piece he struck was in
+    frame in two, 11-20.)"""
+    if len(thing.get("center") or []) < 3 or len(thing.get("half") or []) < 3:
+        return None
+    c, top = thing["center"], thing["center"][2] + thing["half"][2]
+    d = math.dist(wpos[:2], c[:2])
+    if d < 0.2:
+        return None
+    u = [(c[0] - wpos[0]) / d, (c[1] - wpos[1]) / d]
+    # the work shots of one place are not one camera: by take, over the piece at the worker; close on the work
+    # itself (hands, tool, what lies on the piece); from the side, worker and piece in profile. A full or wide
+    # framing keeps the first, from further off.
+    view = take % 3 if kind in WORK_CAM_M else 0
+    dist = WORK_CAM_M.get(kind, WORK_CAM_FAR_M) + max(thing["half"][:2])
+    W, D = bounds(room, 0.0, walls)
+    tgt = [(c[0] + wpos[0]) / 2, (c[1] + wpos[1]) / 2, (top + 1.35) / 2]
+    turns, z, focal = WORK_CAM_DEG, WORK_CAM_Z_M, 35
+    if view == 1:
+        dist, tgt, z, focal = WORK_CAM_M["close"] - 0.3 + max(thing["half"][:2]), [c[0], c[1], top + 0.15], 1.35, 50
+    elif view == 2:
+        turns = (95, -95, 115, -115, 75, -75)
+    if (take // 3) % 2:
+        turns = tuple(-x for x in turns)
+    for deg in turns:
+        a = math.radians(deg)
+        v = [u[0] * math.cos(a) - u[1] * math.sin(a), u[0] * math.sin(a) + u[1] * math.cos(a)]
+        q = [c[0] + v[0] * dist, c[1] + v[1] * dist]
+        if (walls and (abs(q[0]) > W or abs(q[1]) > D)) or not clear_of_fixtures(q, [t for t in things if t is not thing]):
+            continue
+        L = math.dist(q, tgt[:2])
+        hid = False
+        for o in others:                         # (nobody else between the camera and the work)
+            t_ = max(0.0, min(1.0, ((o[0] - q[0]) * (tgt[0] - q[0]) + (o[1] - q[1]) * (tgt[1] - q[1])) / (L * L)))
+            if math.dist(o[:2], [q[0] + (tgt[0] - q[0]) * t_, q[1] + (tgt[1] - q[1]) * t_]) < 0.6:
+                hid = True
+        if hid:
+            continue
+        return {"position": [round(q[0], 3), round(q[1], 3), z], "target": [round(x, 3) for x in tgt],
+                "focal_mm": focal}
+    return None
 
 
 def not_on_head(cam: dict, key: str) -> None:
@@ -1344,6 +1422,8 @@ def main():
     if cur:
         groups.append(cur)
     specs = []
+    at_work = []                             # the place's work shots so far (work_camera's take)
+    side_on = []                             # the place's side-on fight shots so far (fight_camera's take)
     reached = {}                     # key -> (where the plan had them, where a reach put them, facing there)
     for gi, g in enumerate(groups, 1):
         st = g[0][1]
@@ -1419,6 +1499,15 @@ def main():
                 pz = FIGHT_POSE
                 for c_, _ in g:
                     facts[c_["plan_id"]].setdefault("pass", {}).setdefault("used", []).append(f"{k} {pz}: a fight")
+            if pz not in ACTION_NAMES and v.get("pose") == "standing" and cam0.get("shot_kind") == "action":
+                # at work: a tool in the hand and a thing lying before them (the pass's "on") - the tool is up over
+                # it (the pass names a pose only where the line names the act: a smith with a hammer and the iron on
+                # the anvil stood at ease in four shots of the forging, 11-20)
+                rows_ = (cam0.get("carried") or {}).get(k) or []
+                if any(r_.get("at") == "hand" for r_ in rows_) and any(r_.get("at") == "on" for r_ in rows_):
+                    pz = WORK_POSE
+                    for c_, _ in g:
+                        facts[c_["plan_id"]].setdefault("pass", {}).setdefault("used", []).append(f"{k} {pz}: at work")
             if pz in ACTION_NAMES:                           # what they begin to do as the shot starts
                 c["_pose_choice"] = pz
                 if pz in STAND_ACTIONS and v["pose"] != "sitting":
@@ -1486,9 +1575,24 @@ def main():
                 kc = s_[kp]["face_target"] if s_[kp].get("face_target") in crt else s_[kp]["foe"]
                 over = standoff_view(c_, kp, kc)
                 fc = None if over is None else fight_camera(chars[kp]["position"], chars[kc]["position"], crt[kc],
-                                                            over_shoulder=over)
+                                                            over_shoulder=over, take=len(side_on))
                 if fc:
+                    if fc.pop("fight_view") != "shoulder":
+                        side_on.append(c_.get("name"))
                     c_.update(fc, fight={"person": kp, "creature": kc})
+        for c_, _ in g:                                  # a work shot's camera: on the work (work_camera)
+            kw = next((k for k in chars if chars[k].get("work_at")), None)
+            shown_ = c_.get("show") or c_.get("listed") or []
+            if not kw or c_.get("insert") or c_.get("fight") or c_.get("shot_kind") != "action" or \
+                    (shown_ and kw not in shown_):
+                continue
+            wt_ = next((t for t in things if t["name"] == chars[kw]["work_at"]), None)
+            wc = wt_ and work_camera(chars[kw]["position"], wt_, c_.get("kind"),
+                                     [chars[k]["position"] for k in chars if k != kw and chars[k].get("position")],
+                                     things, room, walled, take=len(at_work))
+            if wc:
+                at_work.append(c_.get("name"))
+                c_.update(wc, work={"person": kw, "thing": wt_["name"]})
         for c_, _ in g:
             for kk in ("_looks", "_poses", "_worn"):
                 c_.pop(kk, None)
