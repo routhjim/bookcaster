@@ -349,6 +349,27 @@ FIGHT_CLEAR_M = 3.0       # and, where the floor allows, this far from anyone el
                           # a cave mouth at his back every camera on the beast's face was framed past the rock, 11-17)
 
 
+WITH_M = 2.5                   # someone this near another is with them already
+
+
+def stays(prev: dict, pose: str | None, where: list | None, state: dict, crt: dict, beds: bool) -> bool:
+    """Whether someone already placed (prev) stays where they are in a shot whose words give them this pose and
+    send them `where` (["thing", name] | ["with", person] | None). They move for another thing of the set, for
+    someone they are not with, to sit down or get up from a seat or a bed; not for words that name no place (who
+    lies down by such words lies where they stand: knocked flat "on the ground" in a place with a bench, a man was
+    laid 12 m off, and stood up 13 m from there, 11-19)."""
+    if not prev.get("position"):
+        return False
+    if pose != prev.get("pose") and (pose == "sitting" or prev.get("pose") == "sitting" or prev.get("bed")):
+        return False
+    if where is None or where == prev.get("where"):
+        return True
+    if where[0] == "with" and where[1] in state and state[where[1]].get("position"):
+        near = WITH_M + (crt.get(where[1]) or {}).get("radius_m", 0.0) + (STRIKE_FAR_M if where[1] in crt else 0.0)
+        return prev.get("foe") == where[1] or math.dist(prev["position"][:2], state[where[1]]["position"][:2]) <= near
+    return False
+
+
 def strike_place(cpos: list, reach: float, ppos: list, others: list, things: list, room: list,
                  walls: bool = True) -> list | None:
     """Where a person who fights a creature stands: at striking distance from its middle (its reach, from its record,
@@ -509,6 +530,19 @@ def fights(k: str, v: dict, cam: dict, crt: dict) -> bool:
             and any(r.get("at") == "hand" for r in (cam.get("carried") or {}).get(k) or []))
 
 
+def standoff_view(cam: dict, kp: str, kc: str) -> bool | None:
+    """How a shot of a standoff between person kp and creature kc is seen. False: side-on, the two facing each
+    other across the frame (a shot that shows both, or names neither). True: over the person's shoulder at the
+    creature (a shot of the creature alone: what it does, it does at them). None: the shot keeps its own camera (a
+    talk shot, a close shot of the person alone, a shot of someone else)."""
+    shown = cam.get("show") or cam.get("listed") or [x for x in (cam.get("subject"),) if x]
+    if cam.get("shot_kind") == "talk" or (shown and kp not in shown and (kc not in shown or len(shown) > 1)):
+        return None                          # (... or of the creature with someone else)
+    if shown and kc not in shown:
+        return None if cam.get("kind") == "close" else False
+    return bool(shown) and kp not in shown
+
+
 def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool) -> dict | None:
     """A camera on a fight between a person (at ppos) and a far larger creature (at cpos; its rig's size), at the
     person's scale: over their shoulder toward the creature's head, the fighter's back and raised arm on one side
@@ -527,6 +561,8 @@ def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool) -> dict
         p = [ppos[0] - u[0] * FIGHT_BACK_M[0] + n[0] * FIGHT_BACK_M[1],
              ppos[1] - u[1] * FIGHT_BACK_M[0] + n[1] * FIGHT_BACK_M[1], FIGHT_EYE_M]
         return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in head], "focal_mm": 28}
+    if n[1] > 0:                             # (side-on from the nearer side of the place, y low: a place in the
+        n = [-n[0], -n[1]]                   # open's picture is seen from there, and what it shows lies beyond)
     off = max(FIGHT_SIDE_M, 0.9 * d)
     mid = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.4 + hz) / 2]
     p = [ppos[0] + u[0] * 0.35 * d + n[0] * off, ppos[1] + u[1] * 0.35 * d + n[1] * off, 1.5]
@@ -875,6 +911,25 @@ def main():
             ans = answers.get(qid)
             thing, rel = thing_for(p.get("at", ""), things, {nm: kk for nm, kk in names.items() if kk != k})
             stated = set_named.get(p.get("at") or "")
+            # where the words send them: a thing of the set, or beside someone; None when they name neither (screen
+            # words, "lower-left foreground"; a state, "reared up", "on the ground")
+            t_name = ans.get("thing") if ans and ans.get("thing") not in NOTS else \
+                stated if stated and stated != "floor" else (thing or {}).get("name")
+            # (a part of the open ground the set marked for a phrase, sets/place_build.py land_marks, is where
+            # someone coming into the place is stood; it sends nobody already there anywhere: the director gave
+            # "lower-left foreground", a posture and "on the ground" each as a part of the land, the set a spot on
+            # the ground for each, and a man was walked between them shot by shot, 11-19)
+            if t_name and next((t_.get("kind") for t_ in things if t_["name"] == t_name), None) == "mark":
+                t_name = None
+            where = ["thing", t_name] if t_name else ["with", rel] if rel in state else None
+            if prev and stays(prev, p.get("pose"), where, state, crt, bool(beds)):
+                # people stay where they are from shot to shot: someone already placed moves only when the words
+                # send them to another thing of the set or to someone they are not with (through one fight a man's
+                # words were "lower-left foreground", "in the fading fire", "on the ground": placed anew for each,
+                # he stood in five places up to 23 m apart, and the beast he fought in three, 11-19)
+                prev.update(at=p.get("at"), pose=p.get("pose"), facing_words=p.get("facing"))
+                f["defaults"].append(f"{k}: stays where they are")
+                continue
             if ans:
                 thing = next((t for t in things if t["name"] == ans.get("thing")), thing)
             elif stated == "floor":
@@ -894,7 +949,7 @@ def main():
                 f["defaults"].append(f"{k}: place by name match ({(thing or {}).get('name') or rel})")
             entry = {"at": p.get("at"), "pose": p.get("pose"), "facing_words": p.get("facing"),
                      # placed at a named thing of the set (not the open floor, not beside someone): an exact place
-                     "named_at": bool(ans or (stated and stated != "floor"))}
+                     "named_at": bool(ans or (stated and stated != "floor")), "where": where}
             if p.get("pose") == "sitting":
                 anchor = (thing or {}).get("center") or (state.get(rel) or {}).get("position") or [0, 0]
                 # (a seat with several places, a sofa or a bed's edge, is free until every place is sat on)
@@ -944,7 +999,10 @@ def main():
                 fix_r = 0.5 * min(crt[k]["size_m"][:2]) if k in crt else None
                 if own_r:
                     entry["_r"] = own_r
-                fro = None if (rel and rel in state) or k in crt else front_of(thing)
+                # (a creature too stands before a thing larger than itself, a rock face with its cave: placed by
+                # its middle, a beast "at the cave mouth" stood behind the rock, 11-19)
+                big_ = k in crt and thing and min((thing.get("half") or [0, 0])[:2]) > own_r
+                fro = None if (rel and rel in state) or (k in crt and not big_) else front_of(thing)
                 if fro and fix_r is None:
                     fix_r = stand_clear(thing)
                 # (a part of the land in the water itself, a ford, by the ground map's judge: the water is no bar)
@@ -956,6 +1014,15 @@ def main():
                                                                               own_r=own_r, fix_r=fix_r, walls=walled,
                                                                               front=fro)
                                                         if math.dist(m, entry["position"]) > 0.2]
+            old_ = state.get(k) or {}
+            if old_.get("foe") in state and old_.get("position") and entry.get("pose") == old_.get("pose") == "standing":
+                # squared up to a creature (or, the creature, to whoever fights it): they hold that ground, shot
+                # after shot, wherever the plan's words for this shot would put them (between the shots of one
+                # fight a man stood beside the beast, then 25 m off, then beside it, and the beast in three
+                # places, 11-19)
+                entry.update(position=list(old_["position"]), foe=old_["foe"], named_at=False, seat=None)
+                entry.pop("marks", None)
+                f["defaults"].append(f"{k}: holds their ground against {old_['foe']}")
             state[k] = entry
             placed_now.append(entry)
         # facing from the words: a person's name, else a named thing; with no words, what the shot is about (its
@@ -975,6 +1042,9 @@ def main():
         # distance by its reach (the person moves; the creature holds its place). Only someone placed on the open
         # floor or by a relation moves: a person the plan puts at a named thing (a ledge) stays there
         here_ = {names[q["name"]] for q in sh.get("people") or [] if q.get("name") in names}
+        for kp, v in state.items():          # (those squared up already face each other still, listed or not)
+            if kp not in crt and v.get("foe") in crt and v["foe"] in state and state[v["foe"]].get("foe") == kp:
+                v["face_target"], state[v["foe"]]["face_target"] = v["foe"], kp
         for kc in [x for x in state if x in crt and x in here_]:
             for kp, v in state.items():
                 # (in an action shot the fight takes him off the mark the plan named: left at "the cave mouth" a man
@@ -992,6 +1062,7 @@ def main():
                     continue
                 if one_ and not each_:       # they square up: each faces the other from here on
                     v["face_target"], state[kc]["face_target"] = kc, kp
+                v["foe"], state[kc]["foe"] = kc, kp
                 q = strike_place(state[kc]["position"], crt[kc]["radius_m"], v["position"],
                                  [list(o["position"][:2]) for kk, o in state.items() if kk not in (kp, kc)],
                                  things, room, walled)
@@ -1397,11 +1468,14 @@ def main():
                 if chars[kk].get("marks"):
                     chars[kk]["marks"] = [list(m)] + [q for q in chars[kk]["marks"] if math.dist(q, m) >= 0.05]
         for n_, (c_, s_) in enumerate(g):                # a fight shot's camera: at the fighter's scale (fight_camera)
-            kp = next((k for k in chars if k in s_ and fights(k, s_[k], c_, crt)), None)
+            kp = next((k for k in chars if k in s_ and fights(k, s_[k], c_, crt)), None) or \
+                next((k for k in chars if k in s_ and k not in crt and s_[k].get("foe") in chars
+                      and s_[k].get("foe") in crt and s_[k].get("pose") == "standing"), None)
             if kp and not c_.get("insert"):
-                kc = s_[kp]["face_target"]
-                fc = fight_camera(chars[kp]["position"], chars[kc]["position"], crt[kc],
-                                  over_shoulder=(gi + n_) % 2 == 0)
+                kc = s_[kp]["face_target"] if s_[kp].get("face_target") in crt else s_[kp]["foe"]
+                over = standoff_view(c_, kp, kc)
+                fc = None if over is None else fight_camera(chars[kp]["position"], chars[kc]["position"], crt[kc],
+                                                            over_shoulder=over)
                 if fc:
                     c_.update(fc, fight={"person": kp, "creature": kc})
         for c_, _ in g:

@@ -441,3 +441,79 @@ def test_a_fights_camera_stands_at_the_fighters_scale():
     assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
     assert 0 < side["target"][0] < 8.0
     assert FP.fight_camera(p, [0.2, 0.0], rig, True) is None                # (on one spot: no line between them)
+
+
+def test_once_squared_up_they_hold_their_ground_and_every_shot_sees_them_face_each_other(lib, tmp_path, monkeypatch):
+    both = [{"name": "Beast", "pose": "standing", "at": "in the middle", "facing": "left"},
+            {"name": "Ash", "pose": "standing", "at": "near the desk", "facing": "right"}]
+    s1 = shot(both)
+    s2 = shot([dict(both[0])], kind="action")                       # what the creature does: only it is listed
+    s3 = shot([dict(both[0]), dict(both[1], at="near the desk")], kind="quiet")   # the plan's words put him far off again
+    s4 = shot([dict(both[1])], kind="quiet")
+    s4["framing"] = "close"
+    face = {"Ash": "Beast", "Beast": "Ash"}
+    specs = run(tmp_path, monkeypatch, {"action-1": s1, "action-2": s2, "quiet-3": s3, "quiet-4": s4},
+                {"face": {"action-1": face, "action-2": {"Beast": "Ash"}, "quiet-3": {}, "quiet-4": {}}})
+    seen = {}
+    for sp in specs:
+        ch = sp["characters"]
+        for c in sp["cameras"]:
+            seen[c["plan_id"]] = (c, {k: list(v["position"][:2]) for k, v in ch.items()}, {k: v["facing"] for k, v in ch.items()})
+    p0 = seen["action-1"][1]
+    r = 4.5
+    for sid, (c, pos, fac) in seen.items():
+        # the same ground in every shot, each facing the other
+        assert pos["a"] == pytest.approx(p0["a"], abs=0.05) and pos["b"] == pytest.approx(p0["b"], abs=0.05), sid
+        assert math.dist(pos["a"], pos["b"]) <= r + FP.STRIKE_FAR_M + 1e-6
+        assert ang(fac["a"], pos["a"], pos["b"]) < 3 and ang(fac["b"], pos["b"], pos["a"]) < 3, sid
+    # both in a shot, or a shot of neither alone: side-on, the camera off the line between them, aimed between them
+    for sid in ("action-1", "quiet-3"):
+        c, pos, _ = seen[sid]
+        assert c.get("fight") == {"person": "a", "creature": "b"}, sid
+        u = [pos["b"][0] - pos["a"][0], pos["b"][1] - pos["a"][1]]
+        w = [c["position"][0] - pos["a"][0], c["position"][1] - pos["a"][1]]
+        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= FP.FIGHT_SIDE_M - 1e-6, sid
+    # the creature's own shot: over his shoulder at it
+    c, pos, _ = seen["action-2"]
+    assert c.get("fight") and math.dist(c["position"][:2], pos["a"]) < 3.0
+    # a close shot of him alone keeps its own camera
+    assert not seen["quiet-4"][0].get("fight")
+
+
+def test_how_a_shot_of_a_standoff_is_seen():
+    assert FP.standoff_view({"show": ["a", "b"]}, "a", "b") is False
+    assert FP.standoff_view({"listed": ["b"]}, "a", "b") is True
+    assert FP.standoff_view({"listed": ["a"], "kind": "medium"}, "a", "b") is False
+    assert FP.standoff_view({"listed": ["a"], "kind": "close"}, "a", "b") is None
+    assert FP.standoff_view({"listed": ["c"]}, "a", "b") is None
+    assert FP.standoff_view({"listed": ["c", "b"]}, "a", "b") is None
+    assert FP.standoff_view({"show": ["a", "b"], "shot_kind": "talk"}, "a", "b") is None
+
+
+def test_who_stays_where_they_are():
+    prev = {"position": [1.0, 2.0], "pose": "standing", "where": ["thing", "desk"]}
+    st = {"b": {"position": [1.5, 2.5]}, "c": {"position": [9.0, 9.0]}}
+    assert FP.stays(prev, "standing", None, st, {}, False)                      # words that name no place
+    assert FP.stays(prev, "crouching", None, st, {}, False)                     # ... nor does a change of stance
+    assert FP.stays(prev, "standing", ["thing", "desk"], st, {}, False)         # the same thing by other words
+    assert not FP.stays(prev, "standing", ["thing", "door"], st, {}, False)     # another thing of the set
+    assert FP.stays(prev, "standing", ["with", "b"], st, {}, False)             # beside someone they are with
+    assert not FP.stays(prev, "standing", ["with", "c"], st, {}, False)         # ... and someone they are not
+    assert not FP.stays(prev, "sitting", None, st, {}, False)                   # sitting down takes a seat
+    assert FP.stays(prev, "lying", None, st, {}, True)                          # knocked flat: where they stood
+    assert not FP.stays(dict(prev, pose="lying", bed="bed_1"), "standing", None, st, {}, True)   # up from a bed
+    assert not FP.stays({"pose": "standing"}, "standing", None, st, {}, False)  # not placed yet
+
+
+def test_words_that_name_no_place_move_nobody_and_another_thing_does(lib, tmp_path, monkeypatch):
+    def one(at, pose="standing"):
+        return shot([{"name": "Ash", "pose": pose, "at": at, "facing": "right"},
+                     {"name": "Cora", "pose": "standing", "at": "in the middle", "facing": "left"}], kind="quiet")
+    specs = run(tmp_path, monkeypatch, {"quiet-1": one("in the middle"), "quiet-2": one("lower-left foreground"),
+                                        "quiet-3": one("in the fading light", "crouching"), "quiet-4": one("at the desk")}, {})
+    at = {}
+    for sp in specs:
+        for c in sp["cameras"]:
+            at[c["plan_id"]] = sp["characters"]["a"]["position"][:2]
+    assert at["quiet-2"] == pytest.approx(at["quiet-1"], abs=0.02) and at["quiet-3"] == pytest.approx(at["quiet-1"], abs=0.02)
+    assert math.dist(at["quiet-4"], [-8.0, -8.0]) < 2.5 and math.dist(at["quiet-4"], at["quiet-1"]) > 3.0
