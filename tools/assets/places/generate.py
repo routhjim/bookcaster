@@ -451,6 +451,64 @@ def make_face(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> 
     return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
 
 
+def face_fill(tex, px_per_m: float, tile=None, colour=None):
+    """A wall's own picture (RGBA, alpha 0 where its concept picture does not see the wall) made whole: what is
+    unknown is the bare wall's tile picture (tile: RGB, one FACE_M square, laid from the picture's top left at the
+    picture's own texels a metre, toned to the known part's mean colour), else one colour (colour: "#rrggbb"; else the mean of what is known) -> RGB."""
+    import numpy as np
+    from PIL import Image
+    sys.path.insert(0, str(HERE.parent / "sets"))
+    import place_build as PB
+    tex = np.asarray(tex)
+    h, w = tex.shape[:2]
+    known = tex[..., 3:4].astype(np.float32) / 255.0
+    if tile is not None:
+        n = max(1, int(round(PB.FACE_M * float(px_per_m))))
+        t = np.asarray(Image.fromarray(np.asarray(tile)[..., :3]).resize((n, n), Image.LANCZOS)).astype(np.float32)
+        back = np.tile(t, (h // n + 1, w // n + 1, 1))[:h, :w]
+        k = tex[..., 3] > 0
+        if k.any():                          # (as dark as the picture's own wall: the tile is drawn evenly lit)
+            back = back * np.clip(tex[..., :3][k].mean(0) / np.maximum(back.reshape(-1, 3).mean(0), 1.0), 0.2, 1.5)
+    else:
+        if colour:
+            c = [int(colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+        else:
+            k = tex[..., 3] > 0
+            c = tex[..., :3][k].mean(0) if k.any() else [128, 128, 128]
+        back = np.broadcast_to(np.asarray(c, np.float32), (h, w, 3))
+    out = tex[..., :3].astype(np.float32) * known + back * (1.0 - known)
+    return np.clip(np.round(out), 0, 255).astype(np.uint8)
+
+
+def make_face_picture(spec: dict, library: Path, run=subprocess.run, colour=None) -> dict:
+    """A wall's own picture as a face panel (sets/place_build.py face_pictures): its texture from the concept
+    picture, what that does not see filled from the bare wall's tile (face_fill), then the scripted panel's asset
+    chain as for the tile (make_face). Nothing is drawn."""
+    from PIL import Image
+    aid = spec["id"]
+    if record(aid, library):
+        return {"asset_id": aid, "ok": True, "why": "already in the library"}
+    src = Path(spec["face_picture"])
+    if not src.exists():
+        return {"asset_id": aid, "ok": False, "why": "no picture of the wall"}
+    tp = REFS / spec["face_fill"] / "picture.png" if spec.get("face_fill") else None
+    tile = Image.open(tp).convert("RGB") if tp and tp.exists() else None
+    pic = REFS / aid / "picture.png"
+    pic.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(face_fill(Image.open(src).convert("RGBA"), spec.get("face_px_per_m") or 128.0, tile,
+                              colour)).save(pic)
+    sp = library / "prop" / aid / "source" / "spec.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({k: v for k, v in spec.items() if not k.startswith("face_")}, indent=1))
+    r = run([sys.executable, str(HERE.parent / "run_asset.py"), str(sp),
+             str(HERE.parent / "models" / "backdrop_view" / "backdrop_view.py"), "--detach"])
+    log(f"{aid}: wall picture ({'tile' if tile is not None else 'colour'} under what it does not see), chain rc={r.returncode}")
+    t_end = time.time() + CHAIN_WAIT_S
+    while not record(aid, library) and time.time() < t_end:
+        time.sleep(10)
+    return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
+
+
 def make_view(spec: dict, library: Path, seed: int = 11, run=subprocess.run, style: str = "") -> dict:
     """The backdrop of a place's view outside (sets/place_build.py view_spec): its picture drawn through the line from
     the view's own words, then the scripted panel's asset chain (bake, engine import)."""
@@ -577,6 +635,12 @@ def main():
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         out.append(dict(make_face(PB.face_spec(ww), library, seed), kind="wall_face"))
+    if spec.get("kind") != "outdoors" and not only:      # the room's walls as its concept picture shows them
+        sys.path.insert(0, str(HERE.parent / "sets"))
+        import place_build as PB
+        col = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("colour")
+        for fs, _ in PB.face_pictures(spec):
+            out.append(dict(make_face_picture(fs, library, colour=col), kind="wall_face"))
     if spec.get("outside") and not only:                 # what lies outside the place: its view's backdrop
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB

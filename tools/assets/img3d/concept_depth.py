@@ -21,6 +21,8 @@ OUT.json: {"room_m": [W, D, H], "eye": [x, y, z], "things": {"spec:<id>" | "seen
 "facing", "raised_m" (it stands on a raised part of the floor, this high)}}, "off_floor": {key: {"kind"}} (things the
 picture shows hanging: not placed),
 "scale", "floor_fit"} (set frame: the room's middle at 0, y toward the back wall).
+A room's result has "faces" too: the picture on the room's own walls, floor and roof where it sees them (room_faces),
+each a PNG beside OUT.json.
 """
 from __future__ import annotations
 
@@ -535,10 +537,137 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None 
                      size_m=[round(h.pop("width_m") * scale, 3), 0.15, round(h.pop("height_m") * scale, 3)])
     stand_before(out)
     if keep is not None:
-        keep.update(axes=axes, d=d, cx=cx, cy=cy, scale=scale)
+        keep.update(axes=axes, d=d, cx=cx, cy=cy, scale=scale, W=W, D=D, H=H)
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
             "things": out, "off_floor": hung, "scale": round(scale, 3), "floor_fit": round(fit, 3)}
+
+
+FACE_PX_PER_M = 128         # a face's picture: this many texels a metre ...
+FACE_PX_MOST = 2048         # ... and no more than this along its longer side
+FACE_BEFORE_M = {"wall": (0.3, 0.03), "floor": (0.2, 0.0)}   # a picture point this far out from a face into the
+#                             room (metres, plus this share of the face's distance from the eye) stands before it: the
+#                             face is hidden there, not painted with that thing (a wall, or the floor and the roof).
+#                             Measured square to the face, not along the eye's line: a side wall seen end on lies a
+#                             little inside the measured box, and along the line that little was a metre and more
+FACE_EDGE_PX = 2            # ... and the face is left unknown this many texels round what hides it (its edge's halo)
+FACE_LEAST = 0.03           # a face the picture sees less of than this share of is left out
+
+
+def _faces(W: float, D: float, H: float) -> dict:
+    """The room box's faces in the set's frame: {name: (corner at texel (0, 0), along the columns, along the rows,
+    columns' length, rows' length, the axes the columns and rows run along, into the room)}. A wall's picture reads as one sees it
+    standing in the room facing it (its top row the top of the wall); the floor's and the roof's as seen from above
+    with the back wall at the top."""
+    return {
+        "north": (np.array([-W / 2, D / 2, H]), np.array([1.0, 0, 0]), np.array([0, 0, -1.0]), W, H, ("x", "z"), (0, -1, 0)),
+        "west": (np.array([-W / 2, -D / 2, H]), np.array([0, 1.0, 0]), np.array([0, 0, -1.0]), D, H, ("y", "z"), (1, 0, 0)),
+        "east": (np.array([W / 2, D / 2, H]), np.array([0, -1.0, 0]), np.array([0, 0, -1.0]), D, H, ("y", "z"), (-1, 0, 0)),
+        "south": (np.array([W / 2, -D / 2, H]), np.array([-1.0, 0, 0]), np.array([0, 0, -1.0]), W, H, ("x", "z"), (0, 1, 0)),
+        "floor": (np.array([-W / 2, D / 2, 0.0]), np.array([1.0, 0, 0]), np.array([0, -1.0, 0]), W, D, ("x", "y"), (0, 0, 1)),
+        "ceiling": (np.array([-W / 2, D / 2, H]), np.array([1.0, 0, 0]), np.array([0, -1.0, 0]), W, D, ("x", "y"), (0, 0, -1)),
+    }
+
+
+def _bilinear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """The picture's colour at pixel coordinates (x, y: pixel centres at whole numbers)."""
+    h, w = image.shape[:2]
+    x, y = np.clip(x, 0, w - 1), np.clip(y, 0, h - 1)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+    x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+    fx, fy = (x - x0)[..., None], (y - y0)[..., None]
+    im = image.astype(np.float32)
+    top = im[y0, x0] * (1 - fx) + im[y0, x1] * fx
+    bot = im[y1, x0] * (1 - fx) + im[y1, x1] * fx
+    return top * (1 - fy) + bot * fy
+
+
+def _grow(m: np.ndarray, n: int) -> np.ndarray:
+    """m grown by n texels every way (no scipy at the test station)."""
+    for _ in range(n):
+        g = m.copy()
+        g[1:] |= m[:-1]
+        g[:-1] |= m[1:]
+        g[:, 1:] |= m[:, :-1]
+        g[:, :-1] |= m[:, 1:]
+        m = g
+    return m
+
+
+def room_faces(pts, mask, intr, image: np.ndarray, fr: dict) -> list:
+    """The picture on the room's own faces: for each face of the measured room box (fr: the frame room_from measured
+    it in), every texel of the face's plane is taken through the picture's camera to its pixel and given the
+    picture's colour there, where the picture sees that face: the texel in front of the eye and inside the frame, and
+    nothing standing before it (the picture's own point at that pixel no farther out into the room from the face
+    than FACE_BEFORE_M). A point
+    beyond the face, or none (the model's mask: the sky), is seen through it (a window, an arch): painted. Hidden,
+    outside the frame or behind the eye, the texel is unknown (alpha 0). -> [(record, RGBA texture cropped to what
+    is known)], the record: {"face", "u": [axis, at the left edge, at the right edge], "v": [axis, at the top, at the
+    bottom] (set metres), the rectangle as "x_m" / "y_m" / "z_m" ranges, "at_m" (where its plane stands on the third
+    axis), "px_per_m", "share" (of the whole face seen), "share_of_rect"}; faces seen less than FACE_LEAST left out.
+
+    Why: a room's walls were one tile of bare wall repeated, and everything the picture showed on them that was not a
+    thing to stand on the floor (its windows, arches, hangings, a drape, the roof's beams) was lost (11-20)."""
+    axes, d, cx, cy, sc = fr["axes"], fr["d"], fr["cx"], fr["cy"], fr["scale"]
+    r_, f_, u_ = (np.asarray(a, float) for a in axes)
+    W, D, H = fr["W"], fr["D"], fr["H"]
+    hp, wp = pts.shape[:2]
+    hi, wi = image.shape[:2]
+    fx, fy, ci, cj = intr[0, 0], intr[1, 1], intr[0, 2], intr[1, 2]
+    out = []
+    for name, (o, eu, ev, lu, lv, (au, av), n_in) in _faces(W, D, H).items():
+        ppm = min(FACE_PX_PER_M, FACE_PX_MOST / max(lu, lv, 1e-6))
+        nu, nv = max(1, int(round(lu * ppm))), max(1, int(round(lv * ppm)))
+        du, dv = lu / nu, lv / nv
+        jj, ii = np.mgrid[0:nv, 0:nu]
+        S = o + ((ii + 0.5) * du)[..., None] * eu + ((jj + 0.5) * dv)[..., None] * ev
+        q = S / sc + np.array([cx, cy, 0.0])                   # the room's own metres, then the camera's
+        p = q[..., :1] * r_ + q[..., 1:2] * f_ + (q[..., 2:3] - d) * u_
+        z = p[..., 2]
+        ahead = z > 1e-3
+        zs = np.where(ahead, z, 1.0)
+        un, vn = fx * p[..., 0] / zs + ci, fy * p[..., 1] / zs + cj   # (0..1 of the picture)
+        inside = ahead & (un >= 0) & (un < 1) & (vn >= 0) & (vn < 1)
+        rp = np.clip((vn * hp).astype(int), 0, hp - 1)
+        cp = np.clip((un * wp).astype(int), 0, wp - 1)
+        P = pts[rp, cp]
+        has = mask[rp, cp] & np.isfinite(P).all(-1)
+        Ps = (to_room(np.where(has[..., None], P, 0.0), axes, d) - np.array([cx, cy, 0.0])) * sc
+        out_m = (Ps - o) @ np.asarray(n_in, float)          # (how far out into the room the picture's point is)
+        tol = FACE_BEFORE_M["wall" if name not in ("floor", "ceiling") else "floor"]
+        before = inside & has & (out_m > tol[0] + tol[1] * np.linalg.norm(p, axis=-1) * sc)
+        known = inside & ~_grow(before, FACE_EDGE_PX)
+        share = float(known.mean())
+        if share < FACE_LEAST:
+            continue
+        rows, cols = np.nonzero(known.any(1))[0], np.nonzero(known.any(0))[0]
+        j0, j1, i0, i1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+        rgb = _bilinear(image, un[j0:j1, i0:i1] * wi - 0.5, vn[j0:j1, i0:i1] * hi - 0.5)
+        k = known[j0:j1, i0:i1]
+        tex = np.concatenate([np.where(k[..., None], rgb, 0.0), (k * 255.0)[..., None]], -1)
+        tex = np.clip(np.round(tex), 0, 255).astype(np.uint8)
+        a, b = o + i0 * du * eu + j0 * dv * ev, o + i1 * du * eu + j1 * dv * ev
+        ax = {"x": 0, "y": 1, "z": 2}
+        rec = {"face": name, "u": [au, round(float(a[ax[au]]), 3), round(float(b[ax[au]]), 3)],
+               "v": [av, round(float(a[ax[av]]), 3), round(float(b[ax[av]]), 3)]}
+        for n_ in (au, av):
+            rec[f"{n_}_m"] = sorted([round(float(a[ax[n_]]), 3), round(float(b[ax[n_]]), 3)])
+        third = ({"x", "y", "z"} - {au, av}).pop()
+        rec.update(at_m=round(float(o[ax[third]]), 3), px_per_m=round(1.0 / du, 2), share=round(share, 3),
+                   share_of_rect=round(float(k.mean()), 3))
+        out.append((rec, tex))
+    return out
+
+
+def write_faces(out_p: Path, got: list) -> list:
+    """Each face's picture as a PNG beside OUT.json (<stem>_face_<face>.png) -> the records, each with its "file"."""
+    from PIL import Image
+    recs = []
+    for rec, tex in got:
+        f = out_p.with_name(out_p.stem.replace("_depth", "") + f"_face_{rec['face']}.png")
+        Image.fromarray(tex).save(f)
+        recs.append(dict(rec, file=str(f.resolve())))
+    return recs
 
 
 def land_form_key(concept: dict) -> str | None:
@@ -626,12 +755,16 @@ def main():
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
             res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
+    if concept.get("space") != "outdoors" and fr:
+        # the picture on the room's own walls, floor and roof, where it sees them (room_faces)
+        res["faces"] = write_faces(out_p, room_faces(pts, mask, intr, image, fr))
     # how wide the picture sees (degrees): a place in the open's panorama is made from the picture, and the land
     # built from the picture itself stands for that much of it
     res["hfov_deg"] = round(float(np.degrees(2 * np.arctan(0.5 / max(abs(fxi), 1e-6)))), 1)
     out_p.write_text(json.dumps(res, indent=1))
     print(json.dumps({"room_m": res["room_m"], "things": len(res["things"]), "scale": res["scale"],
-                      "land": (res.get("land") or {}).get("faces")}))
+                      "land": (res.get("land") or {}).get("faces"),
+                      "room_faces": [f["face"] for f in res.get("faces") or []]}))
 
 
 if __name__ == "__main__":

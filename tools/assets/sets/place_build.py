@@ -377,6 +377,10 @@ def with_concept(spec: dict, concept: dict) -> dict:
     if concept.get("space") == "outdoors" or spec.get("kind") == "outdoors":
         sp = outdoors(sp, spec, concept)
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
+    if dp.get("faces") and concept.get("space") == "room" and sp.get("kind") != "outdoors":
+        # the room's own walls as its picture shows them (img3d/concept_depth.py room_faces), with the room's
+        # size they were measured in
+        sp["_concept"]["faces"] = [dict(f, room_m=dp.get("room_m")) for f in dp["faces"]]
     return sp
 
 
@@ -734,12 +738,79 @@ def face_spec(words: str) -> dict:
                          "focal": 28}]}
 
 
+FACE_PIC_LEAST_M2 = 1.0         # a wall's own picture (img3d/concept_depth.py room_faces) smaller than this is not hung
+FACE_PIC_OFF_M = 0.04           # it hangs this far inside its wall: before the tiles (0.015 m), whatever they leave
+FACE_PIC_ROOM_TOL = 0.02        # ... and only in a room of the size it was measured in (this share either way)
+
+
+def face_pictures(spec: dict) -> list:
+    """The walls of the room as its concept picture shows them (img3d/concept_depth.py room_faces, carried in the
+    spec's "_concept" "faces"): for each wall whose picture is there and covers at least FACE_PIC_LEAST_M2, a face
+    panel's source spec (as face_spec's, the size of the rectangle it covers; its picture is the wall's texture with
+    what the picture does not see filled from the bare wall's tile, places/generate.py make_face_picture) ->
+    [(panel spec, the face's record)]. Its id is its picture's and its tile's: a new picture is a new panel."""
+    import hashlib
+    con = spec.get("_concept") or {}
+    words = ((con.get("bare") or {}).get("walls") or {}).get("words")
+    tile = face_spec(words)["id"] if words else ""
+    got = []
+    for f in con.get("faces") or []:
+        if f.get("face") not in NORMAL or not f.get("file") or not Path(f["file"]).exists():
+            continue
+        w, h = abs(f["u"][2] - f["u"][1]), abs(f["v"][2] - f["v"][1])
+        if w * h < FACE_PIC_LEAST_M2:
+            continue
+        dg = hashlib.sha1(Path(f["file"]).read_bytes() + tile.encode()).hexdigest()[:6]
+        got.append(({"id": f"wall_face_{dg}", "class": "prop", "tier": "background", "texture_px": 2048,
+                     "placement": "floor",
+                     "description": f"The face of a wall, one flat picture {w:.2f} x {h:.2f} m: the {f['face']} wall of "
+                                    "a room as its own picture shows it. Front -Y; origin at the middle of the bottom edge.",
+                     "tags": ["wall", "face", "generated-on-request"], "size_m": [round(w, 3), 0.02, round(h, 3)],
+                     "size_tolerance": 0.05, "source": "scripted", "backdrop": {"w": round(w, 3), "h": round(h, 3), "emit": 0.0},
+                     "face_picture": f["file"], "face_fill": tile, "face_px_per_m": f.get("px_per_m"),
+                     "licence": "CC0 (original script; picture from the place's own concept picture)",
+                     "cameras": [{"name": "front", "position": [0.0, -max(w, h) * 1.6, h / 2], "target": [0.0, 0.0, h / 2],
+                                  "focal": 28}]}, f))
+    return got
+
+
+def wall_pictures(out: dict, spec: dict, library) -> dict:
+    """The walls' own pictures (face_pictures) hung on their walls, FACE_PIC_OFF_M inside them, each where its
+    rectangle is -> {wall: [(from, to along the wall, z from, z to)]} that they cover, for the tiles to leave.
+    A room built to another size than the picture was measured at takes none (its pictures would not meet its
+    corners)."""
+    import config as C
+    W, D, H = out["size_m"]
+    hung = {}
+    for fs, f in face_pictures(spec):
+        rm = f.get("room_m")
+        if rm and (abs(rm[0] - W) > FACE_PIC_ROOM_TOL * W or abs(rm[1] - D) > FACE_PIC_ROOM_TOL * D):
+            continue
+        out.setdefault("face_pictures", []).append(fs)
+        if not (Path(library or C.LIBRARY) / "prop" / fs["id"] / "asset.json").exists():
+            continue
+        side, n = f["face"], NORMAL[f["face"]]
+        a, b = sorted(f["u"][1:])
+        z0, z1 = sorted(f["v"][1:])
+        t = (a + b) / 2
+        pos = [t, -n[1] * (D / 2 - FACE_PIC_OFF_M)] if side in ("north", "south") else [-n[0] * (W / 2 - FACE_PIC_OFF_M), t]
+        out["fixtures"].append({"asset": fs["id"], "name": f"wall_face_{side}_picture", "hang": True, "surface": True,
+                                "position": [round(pos[0], 3), round(pos[1], 3), round(z0, 3)], "facing": [n[0], n[1]]})
+        hung.setdefault(side, []).append((a, b, z0, z1))
+    return hung
+
+
 def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
     """The room's walls wear the concept's own wall: its face panels side by side along every wall, a hand's
-    breadth inside it, left off where a door, window or fireplace stands (there the period's wall shows)."""
+    breadth inside it, left off where a door, window or fireplace stands (there the period's wall shows). Where
+    the concept picture shows a wall itself (wall_pictures), that wall's picture hangs over its part of it, and the
+    tiles cover only the rest."""
     import config as C
+    if not any(w.get("kind") == "wall" for w in out.get("structure") or []):
+        return
+    pics = wall_pictures(out, spec, library)
     words = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("words")
-    if not words or not any(w.get("kind") == "wall" for w in out.get("structure") or []):
+    if not words:
         return
     fs = face_spec(words)
     out["face"] = fs
@@ -762,6 +833,9 @@ def wall_faces(out: dict, lay: dict, spec: dict, library) -> None:
             if any(math.dist(pos, g[0][:2]) < FACE_M / 2 + g[1] / 2 for g in gaps.get(side, [])):
                 continue
             for r in range(max(1, math.ceil(H / FACE_M))):
+                if any(p[0] - 0.05 <= t - FACE_M / 2 and t + FACE_M / 2 <= p[1] + 0.05 and p[2] - 0.05 <= r * FACE_M
+                       and min(H, (r + 1) * FACE_M) <= p[3] + 0.05 for p in pics.get(side, [])):
+                    continue                                         # (the wall's own picture covers it whole)
                 out["fixtures"].append({"asset": fs["id"], "name": f"wall_face_{side}_{i}_{r}", "hang": True,
                                         "surface": True, "position": [round(pos[0], 3), round(pos[1], 3), r * FACE_M],
                                         "facing": [n[0], n[1]]})
