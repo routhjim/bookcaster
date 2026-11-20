@@ -103,3 +103,17 @@ def test_a_last_resort_wide_is_counted_by_what_it_misses_itself():
     assert SK.staging_miss({"ok": False, "history": [{"why": old}], "least_bad": {"misses": ["y"]}}) == ["y"]
     wide = {"ok": False, "history": [{"why": old}], "least_bad": {"fallback": True, "misses": [], "before": old}}
     assert SK.staging_miss(wide) == []
+
+
+def test_a_whole_place_shot_of_nobody_in_the_open_is_seen_as_the_picture_sees_it_and_drawn_free(tmp_path):
+    import redraw as RD
+    sh = {"kind": "action", "framing": "wide", "action": "Many of them cross the open ground."}
+    c = FP.insert_camera(sh, [], {}, [20.0, 20.0], "s01_action", "action-1", walls=False)
+    assert c["free"] and c["insert"] and c["position"][1] < -9 and c["target"][1] > c["position"][1] + 15
+    # indoors, or framed close, or on a thing the words name: the shot's own camera, held to the staging
+    assert not FP.insert_camera(sh, [], {}, [20.0, 20.0], "s01_action", "action-1").get("free")
+    assert not FP.insert_camera(dict(sh, framing="close"), [], {}, [20.0, 20.0], "s", "a", walls=False).get("free")
+    sd = tmp_path / "pl_g01"
+    sd.mkdir()
+    (sd / "spec_round0.json").write_text(json.dumps({"cameras": [dict(c, name="s01_action"), {"name": "s02_quiet"}]}))
+    assert RD.drawn_free(sd, "s01_action") and not RD.drawn_free(sd, "s02_quiet")

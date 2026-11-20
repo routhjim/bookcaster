@@ -730,10 +730,16 @@ VARY = [(0.0, 0.0), (40.0, 0.0), (-40.0, -8.0), (70.0, 5.0), (-70.0, 0.0)]   # (
 INSERT_CLEAR_M = 1.0      # an empty shot's camera stands this far clear of the standing things it is not on
 
 
-def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str, sid: str) -> dict:
+def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str, sid: str,
+                  walls: bool = True) -> dict:
     """A camera for a shot with nobody of the cast in it: on the set's thing the shot's words name (its own name,
     or a place phrase of the set that shares the most words with them), else the room's middle; from the room's
-    side of it, at standing eye height, kept inside the room. -> camera (with "_on": what it is on)."""
+    side of it, at standing eye height, kept inside the room. -> camera (with "_on": what it is on). A place in
+    the open whose things the words do not name, framed wide: the place as its picture sees it, from the stage's
+    near edge (y low) looking the picture's way, and "free" - drawn from that view without the staging's shapes
+    holding it, since what such a shot is of (riders, a crowd) is nobody the set or the cast has (redraw.drawn_free).
+    (Seven riders leaving a tower: the camera stood five metres from the tower's wall, and the key was the wall,
+    11-20.)"""
     w = words(" ".join(str(sh.get(k) or "") for k in ("action", "picture", "keyshot", "setting")))
     best, on = None, "the room's middle"
     for ph, item in (set_named or {}).items():
@@ -745,6 +751,12 @@ def insert_camera(sh: dict, things: list, set_named: dict, room: list, name: str
         t_, _ = thing_for(" ".join(sorted(w)), things, {})
         best = (1, t_) if t_ else None
     kind = FRAMING.get(sh.get("framing") or "medium", "medium")
+    if best is None and not walls and kind in ("wide", "full"):
+        return {"name": name, "plan_id": sid, "kind": "wide", "subject": None, "speaker": None, "show": None,
+                "listed": None, "shot_kind": sh.get("kind"), "insert": True, "free": True,
+                "position": [0.0, round(-(room[1] / 2 - 0.4), 3), 1.6], "target": [0.0, round(room[1] / 2, 3), 1.4],
+                "focal_mm": 24, "_on": "the place as its picture sees it", "_looks": {}, "_poses": {}, "_worn": {},
+                **({"setting": sh["setting"]} if sh.get("setting") else {})}
     if best:
         t = best[1]
         c, top = list(t["center"][:2]), float(t["center"][2] + t["half"][2]) if len(t["center"]) > 2 else 1.0
@@ -1212,7 +1224,7 @@ def main():
             # nobody of the cast is in this shot (a place or a thing seen alone, someone the book has no figure
             # for): an insert of the set, its camera on the set's thing the shot's words name, staged with nobody
             # (every shot ends with an engine key, 11-17; it used to get no camera and no key)
-            ins = insert_camera(sh, things, set_named, room, f"s{n:02d}_{sid.split('-')[0]}", sid)
+            ins = insert_camera(sh, things, set_named, room, f"s{n:02d}_{sid.split('-')[0]}", sid, walled)
             f["missing"].append(f"nobody of the cast in the shot: an insert of the set ({ins['_on']})")
             ins.pop("_on")
             facts[sid] = dict(f, camera=dict(ins))

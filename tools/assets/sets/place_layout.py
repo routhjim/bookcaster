@@ -1112,6 +1112,7 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
                         "ok": False, "unmet": list(lay["unmet"]), "skipped": True})
     dropped = []
     kept_k, kept_lay = copy.deepcopy(spec_k), lay
+    gone_all = []
     if not lay["ok"]:
         rank = {k: i for i, k in enumerate(lad["drop_order"])}
         for _ in range(int(lad["max_drops"])):
@@ -1120,12 +1121,27 @@ def solve_recover(spec: dict, records: dict | None = None, data: dict | None = N
                 break
             gone = cand[0]
             dropped.append({"id": gone["id"], "kind": gone["kind"]})
+            gone_all.append((gone, [r for r in spec_k.get("relations", [])
+                                    if gone["id"] in (r.get("a"), r.get("b"), r.get("c"))]))
             spec_k["pieces"] = [p for p in spec_k["pieces"] if p["id"] != gone["id"]]
             spec_k["relations"] = [r for r in spec_k.get("relations", [])
                                    if gone["id"] not in (r.get("a"), r.get("b"), r.get("c"))]
             lay = attempt("an unnamed piece dropped", f"{gone['kind']} {gone['id']} (the text does not name it)")
             if lay["ok"]:
                 break
+        if lay["ok"] and len(gone_all) > 1:
+            # the drop that made the room work was the last one: each piece dropped before it stands again if the
+            # room still works with it (a hall lost both its tables on the way to dropping the one drape that was
+            # in the way, and stood bare, 11-20)
+            for back, rels in gone_all[:-1]:
+                try_k = copy.deepcopy(spec_k)
+                spec_k["pieces"] = spec_k["pieces"] + [back]
+                spec_k["relations"] = list(spec_k.get("relations", [])) + rels
+                lay2 = attempt("a dropped piece put back", f"{back['kind']} {back['id']}")
+                if lay2["ok"]:
+                    lay, dropped = lay2, [d_ for d_ in dropped if d_["id"] != back["id"]]
+                else:
+                    spec_k = try_k
         if not lay["ok"]:
             # a drop that did not make the room work gives nothing: the pieces stand again (the forge lost its
             # bench for a relation the bench had no part in)

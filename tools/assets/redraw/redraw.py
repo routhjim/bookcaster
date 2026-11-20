@@ -341,6 +341,18 @@ def crowd_words(crowd: str | None, kind: str) -> str:
             " None of them is near the camera and none has the face of anyone named above.")
 
 
+def drawn_free(sd: Path, cam: str) -> bool:
+    """Whether this shot is drawn without the staging's shapes holding it (the staged camera's "free"): a view of
+    the whole place with nobody of the cast in it, where the shot's words may name what was never staged - riders,
+    a crowd, a herd. The staged still is still where the drawing starts. (Held to the depth of an empty field, a
+    shot of riders leaving a tower was drawn as the empty field, 11-20.)"""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return False
+    return bool(next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam),
+                     {}).get("free"))
+
+
 def setting_words(sd: Path, cam: str) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
@@ -1031,7 +1043,7 @@ def main():
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
                            "scale": c.get("scale", 0.8), "end": c.get("end", 1.0), "prepared": True}
                           for c in cl if (g / f"{cam}_{pics[c['type']]}.png").exists()]
-                    if cj:
+                    if cj and not (not ppl and drawn_free(sd, cam)):
                         j["control"] = cj[0] if len(cj) == 1 else cj
                     if run.get("mask_people") and ppl:      # people redrawn harder than the room
                         mk = run.get("mask_people") if isinstance(run.get("mask_people"), str) else "people"
