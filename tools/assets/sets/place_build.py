@@ -439,6 +439,9 @@ OPEN_SCALE = (0.6, 3.0)          # how far the picture's measured metres may be 
 OPEN_SCALE_BY_M = 1.5            # ... those of them that are really this tall or taller
 OPEN_BARE_M = 6.0                # a place with nothing standing on it: its middle this far before the picture's eye
 LAND_ID = "land"                 # the piece that is the picture's own land (scenery beside the world)
+VIEW_EYE_M = (1.2, 6.0)           # the picture's eye over the ground, within reason
+VIEW_SIDE_DEG = 12.0             # the picture's own land stands for its width and this much more on either side
+VIEW_FRONT_DEG = (30.0, 75.0)
 
 
 def open_scale(pcs: list, concept: dict) -> float:
@@ -517,7 +520,13 @@ def open_places(pcs: list, concept: dict) -> tuple:
         out.append({"id": LAND_ID, "kind": "terrain", "against": "free", "phrases": [], "scenery": True,
                     "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
                     "at_xy": [round((ld["xy"][0] - eye[0]) * sc - ox, 3), round((ld["xy"][1] - eye[1]) * sc - oy, 3)],
-                    "under_m": round(float(ld.get("under_m") or 0.0) * sc, 4), "_seen_size_m": [round(v, 3) for v in g]})
+                    "under_m": round(float(ld.get("under_m") or 0.0) * sc, 4), "_seen_size_m": [round(v, 3) for v in g],
+                    # (the picture's eye in the set's frame, how high and how wide it sees: the place's panorama is
+                    # made from the picture, from there, places/pieces.py "view")
+                    "view": {"eye_at": [round(-ox, 2), round(-oy, 2)],
+                             "eye_h": round(min(VIEW_EYE_M[1], max(VIEW_EYE_M[0], float((dp.get("eye") or [0, 0, 1.6])[2]) * sc)), 2),
+                             "front_deg": round(min(VIEW_FRONT_DEG[1], max(VIEW_FRONT_DEG[0], float(dp.get("hfov_deg") or 60.0) / 2
+                                                                         + VIEW_SIDE_DEG)), 0)}})
     if not at:
         return out, None
     half = 0.0
@@ -621,10 +630,15 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     # the place's own ground seen from straight above (places/ground_map.py), drawn from the whole land's words and
     # its ground's, the parts of the land the plan sends people to on it, the concept picture as the land's look
     ground = "; ".join(x for x in (land, f"the ground: {str(sf['floor']).strip().rstrip('.')}" if sf.get("floor") else "") if x)
+    # (with the picture's own land built: the panorama is that picture carried on all the way round, in the whole
+    # land's words, from the picture's eye)
+    view = next((p["view"] for p in scenery if p.get("view")), None) if concept.get("concept") else None
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
-                "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
-                **({"spot": spot} if spot else {}), "land_words": land, "surface_words": said,
-                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {}),
+                "look": ((not view and far_look) or "; ".join(x for x in (land, said, technique(str(spec.get("_style") or "")) if view
+                                                                      else str(spec.get("_style") or "")) if x)),
+                **({"spot": spot} if spot and not view else {}), "land_words": land, "surface_words": said,
+                **({"view": view} if view else {}),
+                **({"source": concept["concept"]} if concept.get("concept") and (view or not far_look) else {}),
                 **({"map_words": ground, "land_places": {ph: str(lp[ph]).strip().rstrip(".") for ph in order},
                     "map_style": technique(str(spec.get("_style") or ""))} if ground else {}),
                 **({"map_source": concept["concept"]} if ground and concept.get("concept") else {})})

@@ -573,6 +573,9 @@ def main():
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
             res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4))
+    # how wide the picture sees (degrees): a place in the open's panorama is made from the picture, and the land
+    # built from the picture itself stands for that much of it
+    res["hfov_deg"] = round(float(np.degrees(2 * np.arctan(0.5 / max(abs(fxi), 1e-6)))), 1)
     out_p.write_text(json.dumps(res, indent=1))
     print(json.dumps({"room_m": res["room_m"], "things": len(res["things"]), "scale": res["scale"],
                       "land": (res.get("land") or {}).get("faces")}))

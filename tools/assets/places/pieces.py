@@ -441,10 +441,21 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             spec["spot"] = piece["spot"]
         if piece.get("marks"):               # the land's own things the plan sends people to: found in the panorama
             spec["marks"] = dict(piece["marks"])
-        pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
-                         + (" " + piece["spot"] if piece.get("spot") else "")
-                         + (" " + str(piece["source"]) if piece.get("source") else ""))
-        aid = pano
+        # the panorama is the place's own picture carried on all the way round (img3d/pano_from_picture.py), when
+        # the place has one measured (its "view": the picture's eye and how wide it sees, sets/place_build.py);
+        # else drawn from words
+        view = piece.get("view") if isinstance(piece.get("view"), dict) and piece.get("source") \
+            and Path(str(piece["source"])).exists() else None
+        if view:
+            pano = _asset_id(kind, f"{look} from the picture {hashlib.sha1(Path(str(piece['source'])).read_bytes()).hexdigest()[:10]}")
+            spec["view"] = {k: view[k] for k in ("eye_h", "eye_at", "front_deg")}
+        else:
+            pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
+                             + (" " + piece["spot"] if piece.get("spot") else "")
+                             + (" " + str(piece["source"]) if piece.get("source") else ""))
+        aid = pano if not view else _asset_id(kind, f"{pano} view {json.dumps(spec['view'], sort_keys=True)}")
+        if view:
+            spec["panorama_id"] = pano
         mdesc = ""
         if piece.get("map_words"):
             # the place's own ground seen from straight above, laid over the set's real ground (places/ground_map.py):
@@ -452,10 +463,17 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             # the one already drawn (the panorama keeps its own id)
             import ground_map as GM
             mdesc = GM.map_desc(piece["map_words"], piece.get("land_places"), piece.get("map_style") or "")
-            aid = _asset_id(kind, f"{pano} map {hashlib.sha1((mdesc + str(piece.get('map_source') or '')).encode()).hexdigest()[:8]}")
+            aid = _asset_id(kind, f"{aid} map {hashlib.sha1((mdesc + str(piece.get('map_source') or '')).encode()).hexdigest()[:8]}")
             spec.update(panorama_id=pano, map_id=f"{aid}_map")
         spec["id"] = aid
         steps = [
+            {"step": "draw", "what": "the place's picture carried on all the way round, as its panorama",
+             "station": C.IMAGE_STATION, "kind": "edit", "picture": "picture.png", "ref_id": pano,
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "edit", "--id", f"gen_pano_{pano}", "--",
+                             python, str(tools / "img3d" / "pano_from_picture.py"), str(piece["source"]), pano,
+                             "--desc", look.rstrip(".") + ".", "--seed", "{seed}"],
+             "gate": "nobody in the panorama", "on_fail": f"made again with the next seed, at most {MAX_REDRAWS}"}
+            if view else
             {"step": "draw", "what": "one panorama of the place from a standing eye", "station": C.IMAGE_STATION,
              "kind": "refs", "picture": "picture.png", "ref_id": pano,
              "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{pano}", "--",

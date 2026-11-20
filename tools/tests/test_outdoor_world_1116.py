@@ -366,3 +366,66 @@ def test_the_pictures_land_is_set_beside_the_world_and_what_it_has_is_not_built(
     # a place with nothing standing on it has its land too
     out, stage = PB.open_places([], dict(con, depth=dict(con["depth"], things={})))
     assert [p["id"] for p in out] == [PB.LAND_ID] and stage is None and out[0]["at_xy"] == [3.0, 20.0 + 5.0 - PB.OPEN_BARE_M]
+
+
+def test_a_panorama_made_from_the_picture_keeps_its_land_on_every_side_but_ahead():
+    h, w = 64, 128
+    dirs = PS.pano_dirs(h, w)
+    dz = dirs[..., 2]
+    eye = 2.0
+    ground = np.where(dz < -1e-3, eye / np.maximum(-dz, 1e-3), 1e9)
+    hz = np.sqrt(np.maximum(1 - dz * dz, 1e-6))
+    d = np.minimum(ground, 12.0 / hz)                       # a wall of land 12 m off all the way round
+    sky = np.zeros((h, w), bool)
+    out = PS.surround(d, sky, eye, 40.0)
+    az = np.abs(np.degrees(np.arctan2(dirs[..., 0], dirs[..., 1])))
+    wall = d * hz > 11.9
+    # ahead (round +y, where the picture's own land is built) the panorama's is moved out to the far edge;
+    # everywhere else it stands where the panorama has it
+    assert (out[wall & (az < 39)] >= PS.LAND_MAX_K * PS.SKY_R_M - 1e-6).all()
+    assert np.allclose(out[wall & (az > 41)], d[wall & (az > 41)])
+    # the panorama's ground near the eye lies just under the real ground, on every side
+    g = ~wall & (dz < -0.2)
+    assert np.allclose(out[g] * -dz[g], eye + PS.GROUND_UNDER_M)
+
+
+def test_a_place_with_its_picture_measured_has_its_panorama_made_from_the_picture(tmp_path):
+    pic = tmp_path / "concept.png"
+    pic.write_bytes(b"png")
+    t = {"id": "t1", "kind": "terrain", "look": "open moor under a grey sky", "source": str(pic)}
+    old = P.generation_request(dict(t))
+    v = {"eye_at": [0.5, -8.0], "eye_h": 2.0, "front_deg": 48.0}
+    req = P.generation_request(dict(t, view=v))
+    draw = req["plan"]["steps"][0]
+    assert draw["step"] == "draw" and "pano_from_picture.py" in " ".join(draw["argv"]) and str(pic) in draw["argv"]
+    sp = next(s for s in req["plan"]["steps"] if s["step"] == "spec")["spec"]
+    assert sp["view"] == v and sp["panorama_id"] == draw["ref_id"] and req["asset_id"] != old["asset_id"]
+    # another eye is another world of the same panorama; another picture another panorama
+    r2 = P.generation_request(dict(t, view=dict(v, eye_at=[0.0, -5.0])))
+    assert r2["asset_id"] != req["asset_id"] and r2["plan"]["steps"][0]["ref_id"] == draw["ref_id"]
+    pic.write_bytes(b"png2")
+    assert P.generation_request(dict(t, view=v))["plan"]["steps"][0]["ref_id"] != draw["ref_id"]
+    import shell_one as SO
+    assert SO.view_args(sp) == ["--eye-h", "2.0", "--eye-at", "0.5", "-8.0", "--front-deg", "48.0"] and SO.view_args({}) == []
+    # the picture's eye, from where the pieces are placed
+    glb = tmp_path / "concept_land.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.2], "hfov_deg": 70.0,
+                     "land": {"glb": str(glb), "xy": [3.0, 20.0], "size_m": [80.0, 40.0, 20.0], "has": [], "under_m": 0.3},
+                     "things": {"seen:0": {"xy": [1.0, 4.0], "size_m": [2.0, 1.0, 2.0]}}}, "seen": [{"kind": "cart"}]}
+    out, _ = PB.open_places([{"id": "c1", "kind": "cart"}], con)
+    c1, ld = out
+    assert ld["view"]["eye_h"] == 2.2 and ld["view"]["front_deg"] == 47.0
+    # (the cart stands 9 m before the eye in the picture: so it does from the eye's place in the set)
+    assert c1["at_xy"][0] - ld["view"]["eye_at"][0] == pytest.approx(1.0) and c1["at_xy"][1] - ld["view"]["eye_at"][1] == pytest.approx(9.0)
+
+
+def test_the_panorama_is_turned_so_the_picture_looks_along_plus_y():
+    from PIL import Image
+    import pano_from_picture as PF
+    a = np.zeros((4, 8, 3), np.uint8)
+    a[:, 3:5] = 255                                           # the picture: the middle of what the model paints
+    b = np.asarray(PF.turned(Image.fromarray(a)))
+    assert (b[:, [0, 7]] == 255).all() and (b[:, 3:5] == 0).all()
+    # ... which is where pano_shell's frame has +y
+    assert PS.pano_dirs(64, 128)[32, 0][1] > 0.99
