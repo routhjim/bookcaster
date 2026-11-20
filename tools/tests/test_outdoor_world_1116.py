@@ -455,3 +455,22 @@ def test_people_and_cameras_keep_off_land_that_rises():
         assert SPK.in_tall_land([8.0, 10.0, 1.6]) and not SPK.in_tall_land([0.0, 0.0, 1.6])
     finally:
         SPK.TALL_LAND.clear()
+
+
+def test_a_hillside_in_the_picture_is_levelled_near_the_eye_and_what_stands_on_it_still_stands():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    # level ground on the left; on the right it rises a quarter of a metre a metre across; a rock face 20 m off
+    den = ray[..., 1] + np.where(ray[..., 0] > 0, 0.25 * ray[..., 0], 0.0)
+    ground = np.where(den > 1e-6, 2.0 / np.maximum(den, 1e-6), 1e9)
+    t = np.minimum(ground, np.where(u > w * 0.6, 20.0 / 0.6, 1e9))
+    pts, mask = ray * t[..., None], t < 80
+    n, d, _ = CD.fit_floor(pts, mask & (u < 0.4 * w))
+    vtx, faces, uv, _, _ = CD.land(pts, mask, CD.frame(n, d), d, lambda q: q, {}, {}, np.zeros((h, w, 3), np.uint8))
+    f = vtx[uv[:, 0] <= 0.5]
+    near = f[(f[:, 1] < 12) & (f[:, 0] > 2) & (f[:, 0] < 6)]          # (the slope stood 0.5 to 1.5 m high here)
+    assert len(near) > 100 and near[:, 2].max() < 0.1
+    assert f[(f[:, 1] > 15) & (f[:, 0] > 4)][:, 2].max() > 8.0

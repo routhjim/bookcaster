@@ -291,6 +291,31 @@ LAND_CUT_BIG_M = 30.0       # ... unless it is larger than this: those are cut o
 LAND_CUT_BEHIND_M = 0.5
 
 
+LAND_LEVEL_M = (25.0, 50.0)  # the picture's ground is levelled this near its eye; left as it lies beyond the second
+LAND_LIES = 0.8             # a surface whose upward share is at least this lies (ground); less, it stands
+LAND_LEVEL_CELLS = (5.0, 20.0)
+
+
+def _ground_rise(P, reg) -> np.ndarray:
+    """How high the picture's own ground lies over the fitted plane at each point of the grid: the height of the
+    surfaces that lie (not those that stand: a rock face, a trunk), smoothed, carried under what stands on it."""
+    import scipy.ndimage as ndi
+    du = np.gradient(P, axis=1)
+    dv = np.gradient(P, axis=0)
+    n = np.cross(du, dv)
+    up = np.abs(n[..., 2]) / np.maximum(np.linalg.norm(n, axis=-1), 1e-9)
+    lies = ndi.binary_erosion(reg, iterations=1) & (up >= LAND_LIES)
+    z = np.maximum(P[..., 2], 0.0)
+    g = np.zeros(z.shape)
+    done = np.zeros(z.shape, bool)
+    for sg in LAND_LEVEL_CELLS:
+        wt = ndi.gaussian_filter(lies.astype(np.float64), sg)
+        val = ndi.gaussian_filter(np.where(lies, z, 0.0), sg) / np.maximum(wt, 1e-9)
+        ok = ~done & (wt > 0.02)
+        g[ok], done[ok] = val[ok], True
+    return np.where(reg, np.minimum(g, z), 0.0)
+
+
 def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np.ndarray,
          keep_out: np.ndarray | None = None) -> tuple | None:
     """All the land a place in the open's picture shows, as one solid standing where the picture has it: its ground
@@ -353,6 +378,13 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
                     g = np.clip(g, 0.0, 1.0)
                     img[y0:y1, x0:x1] = (image[y0:y1, xa:xa + 1].astype(np.float32) * (1 - g)
                                          + image[y0:y1, xz:xz + 1].astype(np.float32) * g).astype(np.uint8)
+    # the picture's own ground, where it does not lie on the fitted plane (a hillside, a bank's slope), is taken off
+    # everything near the eye, fading out farther off: people stand on the set's level ground, and land that rose
+    # with the hill stood over their heads (a man fighting on a hillside was under the hill, his sword's point out
+    # of it, 11-19)
+    g = _ground_rise(P, reg)
+    rr = np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1])
+    P[..., 2] -= g * (1.0 - np.clip((rr - LAND_LEVEL_M[0]) / (LAND_LEVEL_M[1] - LAND_LEVEL_M[0]), 0.0, 1.0))
     P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
     # its ground under the real ground; what rises, risen from there
     # (eased down to the ground over the first RELIEF_RISE_M, not cut off there: the foot of an upright face would
