@@ -562,6 +562,11 @@ def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
     other = FP.work_camera(w, piece, "medium", [o], [piece], [8.0, 8.0], take=0)
     assert other and (other["position"][0] > 0) != (cams[0]["position"][0] > 0)
     assert FP.work_camera(w, piece, "medium", [], [piece], [1.0, 1.0], take=0) is None     # no room: the shot's own
+    # another piece between the camera and the work: from the other side, or nearer
+    hearth = {"name": "h", "kind": "fixture", "center": [cams[0]["position"][0] * 0.55, cams[0]["position"][1] * 0.55, 0.4],
+              "half": [0.5, 0.5, 0.4]}
+    clear = FP.work_camera(w, piece, "medium", [], [piece, hearth], [8.0, 8.0], take=0)
+    assert clear and clear["position"] != cams[0]["position"]
     # a full framing stands further off, whatever the take
     assert math.dist(FP.work_camera(w, piece, "full", [], [piece], [12.0, 12.0], take=1)["position"][:2], [0, 0]) > \
         math.dist(over["position"][:2], [0, 0])

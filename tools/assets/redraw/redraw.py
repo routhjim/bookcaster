@@ -353,6 +353,21 @@ def drawn_free(sd: Path, cam: str) -> bool:
                      {}).get("free"))
 
 
+def free_start(run: dict, still: str) -> str:
+    """The picture a free shot's drawing starts from: the place's own picture (the run's first extra reference)
+    when it is the size of the stills, else the engine still. Such a shot is the whole place as its picture sees
+    it; the engine's frame of it adds nothing the picture lacks. (From the picture's eye the engine stood at the
+    edge of the land made from the picture and half its frame was blank, 11-20.)"""
+    ref = next(iter(run.get("extra_refs") or []), None)
+    try:
+        from PIL import Image
+        if ref and Path(ref).exists() and Image.open(ref).size == Image.open(still).size:
+            return str(ref)
+    except OSError:
+        pass
+    return still
+
+
 def setting_words(sd: Path, cam: str) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
@@ -1038,12 +1053,15 @@ def main():
                          "loras": loras,
                          "init": {"image": blocked_still(run, out, sd.name, cam, sh["still"]), "strength": st},
                          "_meta": dict(base, strength=st, seed=seed)}
+                    free_ = not ppl and drawn_free(sd, cam)
+                    if free_:
+                        j["init"]["image"] = free_start(run, sh["still"])
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
                            "scale": c.get("scale", 0.8), "end": c.get("end", 1.0), "prepared": True}
                           for c in cl if (g / f"{cam}_{pics[c['type']]}.png").exists()]
-                    if cj and not (not ppl and drawn_free(sd, cam)):
+                    if cj and not free_:
                         j["control"] = cj[0] if len(cj) == 1 else cj
                     if run.get("mask_people") and ppl:      # people redrawn harder than the room
                         mk = run.get("mask_people") if isinstance(run.get("mask_people"), str) else "people"

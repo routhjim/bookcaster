@@ -117,3 +117,15 @@ def test_a_whole_place_shot_of_nobody_in_the_open_is_seen_as_the_picture_sees_it
     sd.mkdir()
     (sd / "spec_round0.json").write_text(json.dumps({"cameras": [dict(c, name="s01_action"), {"name": "s02_quiet"}]}))
     assert RD.drawn_free(sd, "s01_action") and not RD.drawn_free(sd, "s02_quiet")
+
+
+def test_a_free_shot_starts_from_the_places_own_picture_when_it_is_the_stills_size(tmp_path):
+    import redraw as RD
+    from PIL import Image
+    Image.new("RGB", (64, 36)).save(tmp_path / "still.png")
+    Image.new("RGB", (64, 36)).save(tmp_path / "place.png")
+    Image.new("RGB", (40, 40)).save(tmp_path / "other.png")
+    st = str(tmp_path / "still.png")
+    assert RD.free_start({"extra_refs": [str(tmp_path / "place.png")]}, st) == str(tmp_path / "place.png")
+    assert RD.free_start({"extra_refs": [str(tmp_path / "other.png")]}, st) == st
+    assert RD.free_start({}, st) == st

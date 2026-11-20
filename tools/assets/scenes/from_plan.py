@@ -639,11 +639,18 @@ def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, 
         turns = (95, -95, 115, -115, 75, -75)
     if (take // 3) % 2:
         turns = tuple(-x for x in turns)
-    for deg in turns:
+    rest = [t for t in things if t is not thing and
+            math.dist(t["center"][:2], c[:2]) > 0.5 * (max(t["half"][:2]) + max(thing["half"][:2]))]
+    # (in a small room the full distance is past the wall or behind another piece: then nearer; and no other
+    # piece between the camera and the work - one stood with a hearth filling its frame, the work behind it, 11-20)
+    for deg, k_ in [(g, k) for k in (1.0, 0.8, 0.65) for g in turns]:
         a = math.radians(deg)
         v = [u[0] * math.cos(a) - u[1] * math.sin(a), u[0] * math.sin(a) + u[1] * math.cos(a)]
-        q = [c[0] + v[0] * dist, c[1] + v[1] * dist]
-        if (walls and (abs(q[0]) > W or abs(q[1]) > D)) or not clear_of_fixtures(q, [t for t in things if t is not thing]):
+        q = [c[0] + v[0] * dist * k_, c[1] + v[1] * dist * k_]
+        if (walls and (abs(q[0]) > W or abs(q[1]) > D)) or not clear_of_fixtures(q, rest):
+            continue
+        if not all(clear_of_fixtures([q[0] + (c[0] - q[0]) * i / 8, q[1] + (c[1] - q[1]) * i / 8], rest, -0.2)
+                   for i in range(1, 7)):
             continue
         L = math.dist(q, tgt[:2])
         hid = False
