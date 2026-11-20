@@ -562,6 +562,10 @@ def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
     assert 0 < close["target"][1] < 0.4 and close["focal_mm"] == over["focal_mm"]   # the close one leans to the work,
     #                                                                       the worker still in it
     assert abs(side["position"][0]) > 2 * abs(side["position"][1])       # the side one: in profile
+    assert all(c_["position"][1] <= 0.05 for i in range(6)                # none from behind the worker's shoulder
+               for c_ in [FP.work_camera(w, piece, "medium", [], [piece], [8.0, 8.0], take=i)])
+    near = [cams[0]["position"][0] * 0.4 + 0.5, cams[0]["position"][1] * 0.4]     # someone in the frame's foreground
+    assert FP.work_camera(w, piece, "medium", [near], [piece], [8.0, 8.0], take=0)["position"] != cams[0]["position"]
     # someone standing in the first choice's line sends the camera to the other side; a wall does too
     o = [cams[0]["position"][0] * 0.5, cams[0]["position"][1] * 0.5]
     other = FP.work_camera(w, piece, "medium", [o], [piece], [8.0, 8.0], take=0)

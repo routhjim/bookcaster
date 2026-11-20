@@ -618,6 +618,7 @@ WORK_CAM_FAR_M = 3.2                            # ... for any wider framing
 WORK_CAM_DEG = (40, -40, 65, -65, 20, -20)      # ... its turns off the line worker -> piece, first choice by take
 WORK_CAM_Z_M = 1.55
 WORK_FORE, WORK_FORE_TOP_M = 0.5, 0.3            # the camera's part of its line to the work: nothing over this high
+WORK_FRAME_DEG = 38.0                           # half the work camera's frame, for who stands in its foreground
 WORK_HEAD_M = 1.55                              # a standing worker's head, for the camera's line to it
 
 
@@ -651,7 +652,7 @@ def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, 
         dist = WORK_CAM_M["close"] + max(thing["half"][:2])
         tgt = [c[0] * 0.65 + wpos[0] * 0.35, c[1] * 0.65 + wpos[1] * 0.35, (top + 1.2) / 2]
     elif view == 2:
-        turns = (95, -95, 115, -115, 75, -75)
+        turns = (80, -80, 65, -65, 90, -90)      # (never past square: from behind their shoulder it is their back)
     if (take // 3) % 2:
         turns = tuple(-x for x in turns)
     rest = [t for t in things if t is not thing and t.get("kind") == "fixture"]
@@ -683,6 +684,11 @@ def work_camera(wpos: list, thing: dict, kind: str, others: list, things: list, 
         for o in others:                         # (nobody else between the camera and the work)
             t_ = max(0.0, min(1.0, ((o[0] - q[0]) * (tgt[0] - q[0]) + (o[1] - q[1]) * (tgt[1] - q[1])) / (L * L)))
             if math.dist(o[:2], [q[0] + (tgt[0] - q[0]) * t_, q[1] + (tgt[1] - q[1]) * t_]) < 0.6:
+                hid = True
+            # (nor nearer the camera than the work and inside its frame: a head filled the frame's corner, 11-20)
+            do = math.dist(o[:2], q)
+            if 0.05 < do < L and ((o[0] - q[0]) * (tgt[0] - q[0]) + (o[1] - q[1]) * (tgt[1] - q[1])) / (do * L) > \
+                    math.cos(math.radians(WORK_FRAME_DEG)):
                 hid = True
         if hid:
             continue
