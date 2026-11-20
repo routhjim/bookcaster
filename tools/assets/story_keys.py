@@ -21,6 +21,10 @@ in WORK_DIR/<place>/ when it is done, so a second run takes up where the first s
   keys      the accepted keys and their people facts into KEYS_DIR          (scenes/shot_people.py)
   drawn     (off unless --until drawn; 11-17: engine keys for everything) shots left keyless, drawn from the plan
 
+--approve [PLACE ...] keeps a place as it stands and marks it approved: no step of it runs again until --unlock
+PLACE names it; --drift tells what the rules as they now are would move in each approved place (the planner alone, no
+card); --restore PLACE [--tag T] puts a kept state back; every place made again is kept first (place_keep.py).
+
 --jobs N works N places at once (their GPU work queues on the line by device; the steps that write the shared
 library run one place at a time). --redo takes a step for every place or PLACE_SLUG:STEP for one. After the pass
 step the place's scenes are checked before any GPU work (scenes/preflight.py; told in the log, nothing stopped); a
@@ -47,6 +51,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
+import place_keep as PK  # noqa: E402
 sys.path.insert(0, str(HERE / "scenes"))
 import creature as CRE  # noqa: E402
 import wardrobe as WD  # noqa: E402
@@ -1525,6 +1530,10 @@ class Story:
         import contextlib
         sl = self.places[place]["slug"]
         redo = {x for x in redo if ":" not in x} | {x.split(":", 1)[1] for x in redo if x.split(":", 1)[0] == sl}
+        if any(st in redo and self.done(place, st) for st in todo):
+            # (what is about to be made again is kept first: the way back, place_keep.restore)
+            snap = PK.snapshot(self.d(place), self.keys, self.shots_of(place), self.set_dir(place))
+            log(f"{place}: kept as it stood in {snap}")
         for st in todo:
             if self.done(place, st) and st not in redo:
                 continue
@@ -1600,7 +1609,31 @@ class Story:
                 else:
                     log(f"{p}: the restage's drawing FAILED")
 
-    def run(self, only=None, first="shots", last="keys", redo=(), jobs=1):
+    def kept(self, what: str, names: set, tag: str | None = None) -> None:
+        """--approve / --unapprove / --restore / --drift for the places named (all when none is)."""
+        for place in [p for p in self.places if not names or p in names or self.places[p]["slug"] in names]:
+            d = self.d(place)
+            if what == "approve":
+                log(f"{place}: approved, kept in {PK.approve(d, self.keys, self.shots_of(place), self.set_dir(place))}")
+            elif what == "unapprove":
+                PK.unapprove(d)
+                log(f"{place}: no longer approved")
+            elif what == "restore":
+                log(f"{place}: put back from {PK.restore(d, self.keys, self.set_dir(place), tag)}")
+            elif what == "drift" and PK.approved(d):
+                # the planner alone, on the approved state's own inputs, as the rules now stand: no engine, no card
+                snap = d / "history" / PK.approved(d)["snapshot"]
+                now = d / "drift_specs"
+                shutil.rmtree(now, ignore_errors=True)
+                sh([PY, HERE / "scenes" / "from_plan.py", self.plan_p, snap / "shots.txt", snap / "cast.json", now,
+                    "--pass", snap / "pass.json", "--looks", self.look_p, "--carried", snap / "carried.json"],
+                   d / "drift.log")
+                moved = PK.drift(snap / "specs", now)
+                (d / "drift.json").write_text(json.dumps(moved, indent=1))
+                log(f"{place}: " + (f"{len(moved)} thing(s) would change: " + "; ".join(moved[:12])
+                                    + (" ..." if len(moved) > 12 else "") if moved else "nothing would change"))
+
+    def run(self, only=None, first="shots", last="keys", redo=(), jobs=1, unlock=()):
         """jobs: how many places are worked at once. Each place's steps stay in order; their GPU work queues on the
         line by device, so with two places one draws on one card while the other stages or shapes on the other
         (one place at a time left the second card idle through a night's run, 11-19)."""
@@ -1609,6 +1642,11 @@ class Story:
         self._shared = {k: threading.Lock() for k in set(self.SHARED_STEPS.values())}
         todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
         places = [p for p in self.places if not only or p in only or self.places[p]["slug"] in only]
+        # an approved place is left as it is: no step of it runs until it is named to --unlock (place_keep)
+        for p in [p for p in places if PK.approved(self.d(p)) and p not in unlock and self.places[p]["slug"] not in unlock]:
+            log(f"{p}: approved ({PK.approved(self.d(p))['snapshot']}): left as it is; --unlock {self.places[p]['slug']} "
+                f"to make it again")
+            places.remove(p)
         # two phases for the whole batch: every place staged in 3D first (the engine's card and the shaping card),
         # then every place's keys drawn together on both cards (draw_all). A place's own steps up to its staging:
         after = [x for x in todo if x in DRAW_STEPS]
@@ -1654,8 +1692,11 @@ def main():
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
     s.whole = "--metahuman" not in a           # figures as whole generated meshes on the skeleton (cast_char.py --whole),
     #                                      the default since 11-15; --metahuman casts MetaHuman bodies wearing generated outfits
+    for what in ("approve", "unapprove", "restore", "drift"):
+        if f"--{what}" in a:
+            return s.kept(what, set(many(f"--{what}")), opt("--tag"))
     s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")),
-          jobs=int(opt("--jobs", "1")))
+          jobs=int(opt("--jobs", "1")), unlock=set(many("--unlock")))
 
 
 if __name__ == "__main__":
