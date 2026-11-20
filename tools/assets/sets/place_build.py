@@ -470,6 +470,43 @@ def open_scale(pcs: list, concept: dict) -> float:
     return round(min(OPEN_SCALE[1], max(OPEN_SCALE[0], rs[len(rs) // 2])), 3)
 
 
+HIGH_M = (0.45, 1.2)             # land that rises this much: nobody is stood on it; this much: no camera stands in it
+HIGH_CELL_M, HIGH_HALF_M = 0.5, 40.0
+HIGH_NEAR_M, HIGH_MOST = 10.0, 0.5
+
+
+def land_high(tops: dict, eye: list, sc: float, ox: float, oy: float) -> dict | None:
+    """Where the picture's land rises (img3d/concept_depth.py tops_of), as cells of the set's ground in the form
+    of its water (places/ground_map.py: {"cell_m", "half_m", "runs"}): "runs" where nobody is stood, "tall_runs"
+    where no camera stands. The staged people of a river bank stood inside the bank's own rise, and cameras looked
+    at them from within it (11-19)."""
+    import ground_map as GM
+    z = (tops or {}).get("z")
+    if not z:
+        return None
+    c, x0, y0 = float(tops["cell_m"]), float(tops["x0"]), float(tops["y0"])
+    n = GM.cells(HIGH_HALF_M, HIGH_CELL_M)
+    out = {"cell_m": HIGH_CELL_M, "half_m": HIGH_HALF_M}
+    for name, least in (("runs", HIGH_M[0]), ("tall_runs", HIGH_M[1])):
+        m = []
+        for i in range(n):
+            row = []
+            for j in range(n):
+                x, y = GM.cell_mid(i, j, HIGH_HALF_M, HIGH_CELL_M)
+                # (the set's frame -> the measured picture's)
+                a, b = int(((y + oy) / sc + eye[1] - y0) // c), int(((x + ox) / sc + eye[0] - x0) // c)
+                row.append(0 <= a < len(z) and 0 <= b < len(z[a]) and z[a][b] * sc >= least)
+            m.append(row)
+        # (land that rises over most of the ground round the set's middle is the ground itself, tilted in the
+        # picture's measure: it bars nobody)
+        k = int(HIGH_NEAR_M / HIGH_CELL_M)
+        mid = [row[n // 2 - k:n // 2 + k] for row in m[n // 2 - k:n // 2 + k]]
+        if sum(map(sum, mid)) > HIGH_MOST * max(1, sum(map(len, mid))):
+            m = [[False] * n for _ in range(n)]
+        out[name] = GM.runs_of(m)
+    return out if out["runs"] or out["tall_runs"] else None
+
+
 def open_places(pcs: list, concept: dict) -> tuple:
     """Where the pieces of a place in the open stand, from its concept picture measured (img3d/concept_depth.py):
     each one's place and size as the picture has them, about a middle on the open ground in front of them, its front
@@ -521,6 +558,7 @@ def open_places(pcs: list, concept: dict) -> tuple:
                     "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
                     "at_xy": [round((ld["xy"][0] - eye[0]) * sc - ox, 3), round((ld["xy"][1] - eye[1]) * sc - oy, 3)],
                     "under_m": round(float(ld.get("under_m") or 0.0) * sc, 4), "_seen_size_m": [round(v, 3) for v in g],
+                    "high": land_high(ld.get("tops"), eye, sc, ox, oy),
                     # (the picture's eye in the set's frame, how high and how wide it sees: the place's panorama is
                     # made from the picture, from there, places/pieces.py "view")
                     "view": {"eye_at": [round(-ox, 2), round(-oy, 2)],
@@ -902,6 +940,8 @@ def world_stage(out: dict, spec: dict, library) -> dict:
             out["fixtures"].insert(1, {"asset": la, "name": ln["id"], "facing": [0.0, -1.0], "outside": True,
                                        "position": [ln["at_xy"][0], ln["at_xy"][1], -float(ln.get("under_m") or 0.0)],
                                        "world": True})
+            if ln.get("high"):
+                out["high_land"] = ln["high"]
     sun = w.get("sun")
     lights = [{"type": "sky", "intensity": round(WORLD_SKY * (NIGHT_SKY * 2 if spec.get("_time") in DARK_TIMES else 1.0), 4),
                "atmosphere": False}]

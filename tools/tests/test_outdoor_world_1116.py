@@ -429,3 +429,29 @@ def test_the_panorama_is_turned_so_the_picture_looks_along_plus_y():
     assert (b[:, [0, 7]] == 255).all() and (b[:, 3:5] == 0).all()
     # ... which is where pano_shell's frame has +y
     assert PS.pano_dirs(64, 128)[32, 0][1] > 0.99
+
+
+def test_people_and_cameras_keep_off_land_that_rises():
+    import ground_map as GM
+    # the measured picture: a bank 2 m high from x 6 to 10, y 10 to 30 (1 m cells from x0 -20, y0 0); eye at 0, -5
+    z = [[2.0 if 26 <= j < 30 and 10 <= i < 30 else 0.0 for j in range(40)] for i in range(40)]
+    hi = PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": z}, [0.0, -5.0], 1.0, 0.0, 9.0)
+    # the set's middle is 9 m before the eye, at the picture's y 4: the bank lies 6 m and more beyond it
+    assert GM.in_water(hi, 8.0, 10.0) and not GM.in_water(hi, 2.0, 10.0) and not GM.in_water(hi, 8.0, 2.0)
+    tall = {"cell_m": hi["cell_m"], "half_m": hi["half_m"], "runs": hi["tall_runs"]}
+    assert GM.in_water(tall, 8.0, 10.0) and not GM.in_water(tall, 0.0, 0.0)
+    # a low rise bars people, not cameras
+    low = PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": [[0.6 * (v > 0) for v in r] for r in z]}, [0.0, -5.0], 1.0, 0.0, 9.0)
+    assert low["runs"] and not low["tall_runs"]
+    # ground that rises nearly everywhere round the set's middle is the ground: it bars nobody
+    assert PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": [[0.8] * 40 for _ in range(40)]}, [0.0, -5.0], 1.0, 0.0, 9.0) is None
+    import from_plan as FP
+    ts = FP.water_things({"high_land": hi})
+    assert [t["name"] for t in ts] == ["_high_land"] and not FP.dry([8.0, 10.0], ts) and FP.dry([2.0, 10.0], ts)
+    import speakers as SPK
+    SPK.TALL_LAND.clear()
+    SPK.TALL_LAND.update(tall)
+    try:
+        assert SPK.in_tall_land([8.0, 10.0, 1.6]) and not SPK.in_tall_land([0.0, 0.0, 1.6])
+    finally:
+        SPK.TALL_LAND.clear()

@@ -156,15 +156,21 @@ def _grid(pts, mask, axes, d: float) -> tuple:
     return P, ok, U, V
 
 
-def _carried(P, reg, U, V) -> tuple:
+def _carried(P, reg, U, V, steep_only: bool = False) -> tuple:
     """What the frame's edges cut is carried on past them: up from the top row, sideways from the end columns (the
-    picture mirrored there)."""
+    picture mirrored there). steep_only: carried up only where what the top edge cuts stands steeper than it lies
+    (a rock face, a trunk): a grass slope that ran out of the top of its picture was carried up as a wall of
+    grass 8 m tall (11-19)."""
     h, w = reg.shape
     ku, ks = int(RELIEF_ON_M[0] / RELIEF_ON_STEP_M), int(RELIEF_ON_M[1] / RELIEF_ON_STEP_M)
-    if reg[0].any():
+    top = reg[0].copy()
+    if steep_only and h > 3:
+        t = P[0] - P[3]
+        top &= reg[3] & (t[:, 2] > np.hypot(t[:, 0], t[:, 1]))
+    if top.any():
         k = np.arange(ku, 0, -1)[:, None]
         up = np.repeat(P[:1], ku, 0) + np.stack([0 * k, 0 * k, k * RELIEF_ON_STEP_M], -1) * np.ones((1, w, 1))
-        P, reg = np.concatenate([up, P]), np.concatenate([np.repeat(reg[:1], ku, 0), reg])
+        P, reg = np.concatenate([up, P]), np.concatenate([np.repeat(top[None], ku, 0), reg])
         U = np.concatenate([np.repeat(U[:1], ku, 0), U])
         V = np.concatenate([np.repeat(V[1:ku + 1][::-1], 1, 0) if ku < h else np.repeat(V[:1], ku, 0), V])
     for side in (0, -1):
@@ -347,7 +353,7 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
                     g = np.clip(g, 0.0, 1.0)
                     img[y0:y1, x0:x1] = (image[y0:y1, xa:xa + 1].astype(np.float32) * (1 - g)
                                          + image[y0:y1, xz:xz + 1].astype(np.float32) * g).astype(np.uint8)
-    P, reg, U, V = _carried(P, reg, U, V)
+    P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
     # its ground under the real ground; what rises, risen from there
     # (eased down to the ground over the first RELIEF_RISE_M, not cut off there: the foot of an upright face would
     # be so many points at one spot)
@@ -370,6 +376,21 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
     F = to_set(Pf)
     B = to_set(eye + (Pf - eye) * LAND_BACK_K)
     return (*_closed(F, B, front_f, U, V), img, has)
+
+
+TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wide
+
+
+def tops_of(vtx, uv) -> dict:
+    """How high the land's front stands over each cell of the ground (the set's frame): {"cell_m", "x0", "y0",
+    "z": rows from y0 up, each from x0 right}; the staging keeps people off what rises and cameras out of it."""
+    f = vtx[uv[:, 0] <= 0.5]
+    x0, y0 = float(np.floor(f[:, 0].min())), float(np.floor(f[:, 1].min()))
+    j = ((f[:, 0] - x0) / TOPS_CELL_M).astype(int)
+    i = ((f[:, 1] - y0) / TOPS_CELL_M).astype(int)
+    z = np.zeros((i.max() + 1, j.max() + 1))
+    np.maximum.at(z, (i, j), np.maximum(f[:, 2], 0.0))
+    return {"cell_m": TOPS_CELL_M, "x0": x0, "y0": y0, "z": np.round(z, 1).tolist()}
 
 
 def write_relief(out: Path, vtx, faces, uv, image: np.ndarray) -> dict:
@@ -572,7 +593,7 @@ def main():
         if got:
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
-            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4))
+            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
     # how wide the picture sees (degrees): a place in the open's panorama is made from the picture, and the land
     # built from the picture itself stands for that much of it
     res["hfov_deg"] = round(float(np.degrees(2 * np.arctan(0.5 / max(abs(fxi), 1e-6)))), 1)

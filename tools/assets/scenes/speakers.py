@@ -1654,12 +1654,25 @@ def fallback_people(c: dict, subjects: dict) -> list:
     return [k for k in dict.fromkeys(([lead] if lead else []) + list(ks)) if k in subjects]
 
 
+TALL_LAND: dict = {}          # a place in the open: where its land rises too high for a camera to stand (the set's
+#                               "high_land", sets/place_build.py land_high; run_scene() fills it)
+
+
+def in_tall_land(p) -> bool:
+    if not TALL_LAND.get("runs"):
+        return False
+    sys.path.insert(0, str(HERE.parent / "places")) if str(HERE.parent / "places") not in sys.path else None
+    import ground_map as GM
+    return GM.in_water(TALL_LAND, p[0], p[1])
+
+
 def in_room(p, room):
     W, D, H = room
     if OPEN_GROUND:
         # no walls: anywhere on the flat ground round the stage, clear of its standing things (a 13 m stage held a
         # 10 m beast and the man it fought, and no camera on it could step back far enough, 11-17)
-        return 0.3 < p[2] < OPEN_SKY_M and math.dist(p[:2], OPEN_GROUND[:2]) < OPEN_GROUND[2] and not inside_solid(p)
+        return 0.3 < p[2] < OPEN_SKY_M and math.dist(p[:2], OPEN_GROUND[:2]) < OPEN_GROUND[2] and not inside_solid(p) \
+            and not in_tall_land(p)
     if not 0.3 < p[2] < H - 0.2:
         return False
     if inside_solid(p):
@@ -1824,6 +1837,9 @@ def main():
     set_spec = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())
     room = set_spec["size_m"]
     OPEN_GROUND[:] = open_ground(set_spec, Path(C.LIBRARY))
+    hl = set_spec.get("high_land") or {}
+    TALL_LAND.clear()
+    TALL_LAND.update({"cell_m": hl.get("cell_m"), "half_m": hl.get("half_m"), "runs": hl.get("tall_runs")} if hl.get("tall_runs") else {})
     if OPEN_GROUND:                          # the camera search reaches over the whole flat ground
         r_ = OPEN_GROUND[2] + max(abs(OPEN_GROUND[0]), abs(OPEN_GROUND[1]))
         room = [max(room[0], 2 * r_), max(room[1], 2 * r_), max(room[2], OPEN_SKY_M)]

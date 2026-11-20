@@ -198,9 +198,11 @@ def dry(p: list, things: list) -> bool:
 
 def water_things(set_spec: dict) -> list:
     """The set's water as a thing of the place (no name a plan phrase can land on; its middle under the ground)."""
-    w = set_spec.get("water")
-    return [{"name": "_water", "asset": None, "kind": "water", "grid": w, "center": [0.0, 0.0, -0.05],
-             "half": [0.0, 0.0, 0.0], "on": None, "lit": False, "fire": False}] if w and w.get("runs") else []
+    # (and where its land rises, sets/place_build.py land_high: nobody is stood inside a bank or a slope either)
+    return [{"name": n_, "asset": None, "kind": "water", "grid": w, "center": [0.0, 0.0, -0.05],
+             "half": [0.0, 0.0, 0.0], "on": None, "lit": False, "fire": False}
+            for n_, w in (("_water", set_spec.get("water")), ("_high_land", set_spec.get("high_land")))
+            if w and w.get("runs")]
 
 
 def clear_of_fixtures(p: list, things: list, r: float = 0.0) -> bool:
