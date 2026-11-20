@@ -1314,7 +1314,36 @@ def hang(lay: dict, hung: list, rec: dict) -> None:
                               "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3)})
 
 
+def base_boxes(out: dict, lay: dict) -> list:
+    """The layout's bases (place_layout.lay_bases) built: each a plain box in the room's floor material on the
+    floor (structure "box", built by sets/layout.py), and the piece it carries told where its base's front edge
+    is (its set item's "base": scenes/from_plan.py stands people sent to it on the floor before that edge). A room
+    with no structure of its own (a place in the open) builds none: said in the result."""
+    done = []
+    floor = next((w for w in out.get("structure") or [] if w.get("kind") == "floor"), None)
+    items = {f.get("name"): f for f in out.get("fixtures") or []}
+    for b in lay.get("bases") or []:
+        if not b.get("of"):
+            done.append({"id": b["id"], "built": False, "why": b.get("why")})
+            continue
+        if floor is None:
+            done.append({"id": b["id"], "built": False, "of": b["of"], "why": "no structure to build a box in"})
+        else:
+            out["structure"].append({"kind": "box", "name": f"base_{b['id']}", "base": [b["center"][0], b["center"][1], 0.0],
+                                     "size_m": list(b["size_m"]), "yaw_deg": b["yaw_deg"], "material": floor["material"]})
+            done.append({"id": b["id"], "built": True, "of": b["of"], "box": f"base_{b['id']}", "size_m": b["size_m"],
+                         "center": b["center"], "said_kind": b.get("kind_said")})
+        for n in b["of"]:
+            if n in items:
+                items[n]["base"] = {"name": f"base_{b['id']}", "edge": b["edge"], "front": b["front"],
+                                    "rect": b["rect"], "height_m": b["size_m"][2]}
+    return done
+
+
 def build(spec: dict, set_id: str, library=None) -> tuple:
+    # a piece another floor piece stands on is that piece's base (place_layout.take_bases): no mesh of the kind
+    # the spec gave it, no place of its own; laid under what it carries once the room is solved
+    spec, bases = L.take_bases(spec)
     rec, res = records_for(spec, library)
     spec0, world = spec, spec.get("kind") == "outdoors"
     marks = world_marks(spec, library) if world else {}
@@ -1344,6 +1373,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         named_places={ph: v for ph, v in (spec.get("named_places") or {}).items() if v not in {p["id"] for p in hung}})
     lay = L.solve_recover(floor_spec, rec, data)    # solve, then the ladder (never drops a piece the plan names)
     hang(lay, hung, rec)
+    lay["bases"] = L.lay_bases(lay, bases)
     ss = L.to_set_spec(spec, lay, data)
     kit = kit_for(spec.get("period"))
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
@@ -1383,6 +1413,12 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     if not world:                             # (a place in the open has no walls to face: a ring of wall panels
         wall_faces(out, lay, spec, library)   # stood round the forge yard's stage, 11-18)
     cabin_stage(out, spec, library)
+    based = base_boxes(out, lay)
+    for b in lay["bases"]:                   # (what else stands where a base is: reported, it is laid out first)
+        on_ = [q["name"] for q in lay["pieces"] if b.get("rect") and q["name"] not in b["of"] and not q.get("hang")
+               and not q.get("flat") and L.overlap(q["rect"], b["rect"])]
+        if on_:
+            next(d for d in based if d["id"] == b["id"])["stands_on_it"] = on_
     staged = world_stage(out, spec0, library) if world else None
     lit = room_light(out, spec)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
@@ -1418,6 +1454,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
               "layout_ok": lay["ok"], "unmet": lay["unmet"], "status": lay.get("status"),
               "ladder": lay.get("ladder"), "dropped": lay.get("dropped"), "reask": lay.get("reask"), "checks": L.check_layout(lay, spec),
               "named_places": ss["named_places"], **({"world": staged} if staged else {}),
+              **({"bases": based} if based else {}),
+              **({"base_dropped_relations": spec["_base_dropped_relations"]} if spec.get("_base_dropped_relations") else {}),
               **({"room_light": "a grid of soft lights: the room had no light of its own"} if lit else {}),
               "unresolved_phrases": [ph for ph in spec.get("_phrases") or [] if ph not in ss["named_places"]]}
     return out, ss["named_places"], report
@@ -1435,6 +1473,7 @@ def main():
     if "--time" in a:                                  # the place's time of day (scenes/place_spec.py time_of_day)
         spec["_time"] = a[a.index("--time") + 1]
     spec = with_crowd(spec)
+    spec, _ = L.take_bases(spec)                       # (a base is no piece to make: places/generate.py reads this)
     if "--emit" in a:                                  # the spec as it is built (after the concept check)
         Path(a[a.index("--emit") + 1]).write_text(json.dumps(spec, indent=1))
     lib = Path(a[a.index("--library") + 1]) if "--library" in a else None

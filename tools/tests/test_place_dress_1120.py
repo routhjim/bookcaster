@@ -59,3 +59,21 @@ def test_the_flow_draws_a_dressed_picture_from_the_places_own(tmp_path, monkeypa
     assert "woven hangings, red; a brass lamp" in words and "a long room." in words and "no people" in words.lower()
     assert calls[0][calls[0].index("--sources") + 1] == str(hero)      # drawn from the place's own picture
     assert s.dressed("Room", hero) == pic and len(calls) == 1          # the same words: the same picture, not drawn again
+
+
+def test_a_carried_thing_is_made_from_what_it_is_not_what_it_is_likened_to(tmp_path, monkeypatch):
+    import story_keys as SK
+    s = SK.Story.__new__(SK.Story)
+    s.work, s.look = tmp_path / "w", {"props": {}}
+    s.places = {"Room": {"slug": "room", "set": "x_room_01"}}
+    d = s.d("Room")
+    (d / "pass.json").write_text(json.dumps({"things": {"shot-1": {"A": [
+        {"what": "ore", "on": "worked", "size_cm": 60, "look": "A grey rock the size of a sleeping cat, veined with white."}]}}}))
+    monkeypatch.setattr(SK, "sh", lambda *a, **k: 0)
+    monkeypatch.setattr(SK.C, "LIBRARY", tmp_path / "lib")
+    try:
+        s.carried("Room")
+    except Exception:
+        pass                                     # (the library lookup after the request: not what is tested)
+    look = json.loads((d / "carried_spec.json").read_text())["pieces"][0]["look"]
+    assert look.startswith("A grey rock") and "cat" not in look and "veined with white" in look

@@ -236,12 +236,14 @@ def stand_clear(thing: dict | None) -> float:
     return round(min(STAND_CLEAR[1], STAND_CLEAR[0] * (c[2] + hf[2])), 2) if len(c) >= 3 and len(hf) >= 3 else 0.0
 
 
-def before(p: list, target: list, front) -> bool:
-    return front is None or (p[0] - target[0]) * front[0] + (p[1] - target[1]) * front[1] > 0.0
+def before(p: list, target: list, front, off: float = 0.0) -> bool:
+    """In front of the target (more than off metres out along front), or anywhere with no front."""
+    return front is None or (p[0] - target[0]) * front[0] + (p[1] - target[1]) * front[1] > off
 
 
 def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 1.6), n: int = 12,
-               own_r: float = 0.0, fix_r: float | None = None, walls: bool = True, front=None) -> list:
+               own_r: float = 0.0, fix_r: float | None = None, walls: bool = True, front=None,
+               front_off: float = 0.0) -> list:
     """Every allowed mark for a place given only as a relation or a region ("beside him", "near the desk"): free
     floor points within the place's reach, best first (free_mark's order); the camera rules choose among them."""
     W, D = bounds(room, own_r, walls)
@@ -251,7 +253,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
         r = r10 / 10
         for a in range(0, 360, 20):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r) or not before(p, target, front):
+            if abs(p[0]) > W or abs(p[1]) > D or too_near(p, others, own_r) or not before(p, target, front, front_off):
                 continue
             if not clear_of_fixtures(p, things, fr) or not dry(p, things):
                 continue
@@ -267,7 +269,7 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
 
 
 def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6), own_r: float = 0.0,
-              fix_r: float | None = None, walls: bool = True, front=None) -> list:
+              fix_r: float | None = None, walls: bool = True, front=None, front_off: float = 0.0) -> list:
     """The nearest free floor point to the target thing's middle, between near[0] and near[1] m from it, clear of
     fixtures (their footprint + 0.25 m) and other people (too_near), inside the room, toward the room's middle; a
     creature (own_r: its reach round its middle) keeps that much more clear of walls and people, and fix_r (by
@@ -281,7 +283,7 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
         r = r10 / 10
         for a in range(0, 360, 10):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
-            if abs(p[0]) > W or abs(p[1]) > D or not before(p, target, front):
+            if abs(p[0]) > W or abs(p[1]) > D or not before(p, target, front, front_off):
                 continue
             if too_near(p, others, own_r):
                 continue
@@ -319,6 +321,8 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
     return [round(target[0] * 0.6, 3), round(target[1] * 0.6, 3)]
 
 
+BASE_STAND_M = (0.4, 1.2)  # someone sent to a thing on a low base stands this far from the middle of its front edge,
+BASE_CLEAR_M = 0.35        # ... and at least this far out in front of that edge (the body clear of the base)
 ONLOOK_M = (3.6, 7.0)     # someone looking on at two who are turned to each other stands this far from them
 
 
@@ -446,6 +450,10 @@ def place_from(ans: dict, things: list, seats: dict, room: list, others: list, t
             min(cands, key=lambda s_: math.dist(s_["pos"], t["center"][:2])) if cands else None)
         if seat:
             return {"pose": "sitting", "seat": seat["name"], "position": list(seat["pos"])}
+    if t.get("base") and (ans.get("side") or "front") == "front":     # on a low base: before its front edge
+        return {"pose": "standing", "seat": None,
+                "position": free_mark(list(t["base"]["edge"]), others, things, room, BASE_STAND_M,
+                                      front=list(t["base"]["front"]), front_off=BASE_CLEAR_M)}
     c = t["center"][:2]
     mid = [-c[0], -c[1]]                       # toward the room's middle = the thing's front, as seen from there
     n = math.hypot(*mid) or 1.0
@@ -1147,11 +1155,18 @@ def main():
                 # its middle, a beast "at the cave mouth" stood behind the rock, 11-19)
                 big_ = k in crt and thing and min((thing.get("half") or [0, 0])[:2]) > own_r
                 fro = None if (rel and rel in state) or (k in crt and not big_) else front_of(thing)
+                fro_off = 0.0
                 if fro and fix_r is None:
                     fix_r = stand_clear(thing)
+                if (thing or {}).get("base") and not (rel and rel in state) and k not in crt:
+                    # a thing on a low base (a seat on a raised floor): stood on the floor before the base's front
+                    # edge, not on the base (the figure would stand in it) nor beside the thing
+                    tgt, near, fro = list(thing["base"]["edge"]), BASE_STAND_M, list(thing["base"]["front"])
+                    fro_off = BASE_CLEAR_M
                 # (a part of the land in the water itself, a ford, by the ground map's judge: the water is no bar)
                 th_ = [t_ for t_ in things if t_["kind"] != "water"] if (thing or {}).get("wet") else things
-                entry.update(seat=None, position=free_mark(tgt, others, th_, room, near, own_r, fix_r, walled, fro))
+                entry.update(seat=None, position=free_mark(tgt, others, th_, room, near, own_r, fix_r, walled, fro,
+                                                           fro_off))
                 ln_ = (thing or {}).get("line") or []
                 if (thing or {}).get("apart") and len(ln_) == 2:
                     # (off the line of the two they watch, to its side: behind one of them they are hidden from
@@ -1160,14 +1175,14 @@ def main():
                     L_ = math.hypot(ux, uy)
                     off_ = [(abs((m[0] - ln_[0][0]) * uy - (m[1] - ln_[0][1]) * ux) / L_, m) for m in
                             free_marks(tgt, others, th_, room, near, n=40, own_r=own_r, fix_r=fix_r, walls=walled,
-                                       front=fro)]
+                                       front=fro, front_off=fro_off)]
                     if off_:
                         entry["position"] = max(off_, key=lambda x: x[0])[1]
                 # a vague place (a relation or a region): every allowed mark, the chosen one first; the staging's
                 # camera rules may move the person among them (an exact place, a seat, never moves for the camera)
                 entry["marks"] = [entry["position"]] + [m for m in free_marks(tgt, others, th_, room, near,
                                                                               own_r=own_r, fix_r=fix_r, walls=walled,
-                                                                              front=fro)
+                                                                              front=fro, front_off=fro_off)
                                                         if math.dist(m, entry["position"]) > 0.2]
             old_ = state.get(k) or {}
             if old_.get("foe") in state and old_.get("position") and entry.get("pose") == old_.get("pose") == "standing":

@@ -296,5 +296,13 @@
   "work_clear_m": 1.5,
   "work_clear_sides": 3,
   "relaxed": {"work_front_m": [1.2, 3.0], "work_side_m": 1.2, "work_clear_m": 0.9, "work_clear_sides": 3}
+ },
+ "base": {
+  "about": "A piece another floor piece stands on (the spec's relation 'on' between two floor pieces, the second not flat) is the first one's base: no mesh of its nominal kind and no place of its own in the layout. It is laid out under the piece it carries, after the room is solved: that piece's footprint widened by side_m on each side and back_m behind, and carried front_m out in front of it, at most most_height_m high (height_m). It takes no floor in the search and is never a blocker for camera pockets or standing marks; it is built as a plain box in the room's floor material. People sent to it stand on the floor before its front edge, facing the piece it carries.",
+  "front_m": 1.2,
+  "side_m": 0.5,
+  "back_m": 0.0,
+  "height_m": 0.1,
+  "most_height_m": 0.4
  }
 }

@@ -1092,6 +1092,8 @@ class Story:
                         if t.get("look"):
                             said.setdefault(t["what"], str(t["look"]).strip().rstrip("."))
         props = self.look.get("props") or {}
+        sys.path.insert(0, str(HERE / "sets"))
+        from place_build import no_likeness
         def look_of(what):
             w = set(re.findall(r"[a-z]+", what.lower()))
             # the book's look of this very thing: every word of the thing's name is in the prop's (a "bellows handle"
@@ -1102,7 +1104,10 @@ class Story:
         pcs = [{"id": f"h{n + 1}", "kind": "hand_thing", "longest_m": round(cm / 100.0, 3),
                 # (where the book says how it looks, that is what is drawn: a story's own name for a thing draws its
                 # words, a "star-iron" bar came out a star)
-                "look": (said.get(what) or look_of(what) or what) + ALONE + (HEAD_OPEN if on in ("head", "face") else "")}
+                # (and never what it is likened to: its size is its own number - sets/place_build.no_likeness, which
+                # the set's pieces had and these did not: the stone on the anvil was made a sleeping animal, 11-20)
+                "look": (no_likeness(said.get(what) or look_of(what) or "") or what) + ALONE
+                + (HEAD_OPEN if on in ("head", "face") else "")}
                for n, (what, (cm, on)) in enumerate(things.items())]
         out = d / "carried.json"
         out.write_text("{}")

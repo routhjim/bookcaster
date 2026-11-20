@@ -131,6 +131,20 @@ def prompt(place: str, phr: list, actions: list, psg: str) -> str:
         "as it would be seen in a picture>}. Write the JSON only, nothing else.")
 
 
+# relations an answer may hold beyond the prompt's RELATIONS (kept out of the prompt's list: a change to it would
+# ask every place of every story again): "on" between two floor pieces, the first standing on the second, its base
+BASE_RELATIONS = ("on",)
+
+
+def _is_base(spec: dict, r: dict) -> bool:
+    sys.path.insert(0, str(HERE.parent / "sets"))
+    try:
+        import place_layout as L
+        return L.is_base_relation(spec, r)
+    except (KeyError, ImportError, OSError, ValueError):
+        return False
+
+
 def validate(spec, phr: list) -> list:
     """The faults of an answer, in plain words (empty: valid)."""
     if not isinstance(spec, dict):
@@ -171,6 +185,8 @@ def validate(spec, phr: list) -> list:
             f.append(f"id {p.get('id')} is used twice")
         ids[p.get("id")] = "piece"
     for r in spec.get("relations") or []:
+        if isinstance(r, dict) and r.get("rel") in BASE_RELATIONS and _is_base(spec, r):
+            continue                     # a floor piece standing on another: its base (place_layout.take_bases)
         if not isinstance(r, dict) or r.get("rel") not in KINDS["RELATIONS"]:
             f.append(f"relation {r!r}: rel must be one of RELATIONS")
             continue

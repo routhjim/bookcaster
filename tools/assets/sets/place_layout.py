@@ -1593,6 +1593,110 @@ def export(ctx: Ctx, placed: dict, unmet: list, how: str = "", pks: list | None 
             "camera_pockets": pockets, "refused": list(ctx.refused)}
 
 
+# ------------------------------------------------------------------ a piece's base
+# The spec's relation "on" between two floor pieces ("a" stands on "b"): "b" is "a"'s base (a raised floor under a
+# seat or a table). The language model has no kind for such a thing and names it by the nearest piece kind; built as
+# that kind it was a second piece of furniture laid out on its own, far from what it carried, and the person the
+# plan stood before it was stood there, metres from the one they spoke with. A base is laid out under what it
+# carries instead (layout_rules.json "base"), after the room is solved, and built as a plain box.
+BASE_RELATIONS = ("on",)
+
+
+def is_base_relation(spec: dict, r: dict, data: dict | None = None) -> bool:
+    """Whether the relation is a floor piece standing on another floor piece that is not flat (its base)."""
+    if not isinstance(r, dict) or r.get("rel") not in BASE_RELATIONS or not r.get("a") or r.get("a") == r.get("b"):
+        return False
+    by = {p.get("id"): p for p in spec.get("pieces") or [] if isinstance(p, dict)}
+    a, b = by.get(r.get("a")), by.get(r.get("b"))
+    if not a or not b:
+        return False
+    rules = (data or load_data())["piece_kinds"]
+    for p in (a, b):
+        if (PK.get(p.get("kind")) or {}).get("placement") != "floor" or isinstance(p.get("hangs_m"), (int, float)):
+            return False
+    return not (rules.get(b.get("kind")) or {}).get("flat")
+
+
+def take_bases(spec: dict, data: dict | None = None) -> tuple:
+    """(the spec without its bases, {base id: {"id", "of": [ids of the pieces on it], "kind", "look", "phrases"}}).
+    Each base piece leaves the pieces, its "on" relations leave the relations (as does any other relation naming
+    it: it has no place of its own to relate to), and a plan phrase that names it names the piece it carries.
+    The bases go under "_bases" (taken again from there: the call may be repeated on its own result)."""
+    found = [r for r in spec.get("relations") or [] if is_base_relation(spec, r, data)]
+    bases = {b["id"]: dict(b, of=list(b["of"])) for b in spec.get("_bases") or []}
+    for r in found:
+        b = next(p for p in spec["pieces"] if p.get("id") == r["b"])
+        e = bases.setdefault(b["id"], {"id": b["id"], "of": [], "kind": b.get("kind"), "look": b.get("look"),
+                                       "phrases": list(b.get("phrases") or [])})
+        if r["a"] not in e["of"]:
+            e["of"].append(r["a"])
+    for b in list(bases.values()):         # (a piece that is itself a base carries nothing laid out: not a host)
+        b["of"] = [a for a in b["of"] if a not in bases]
+        if not b["of"]:
+            bases.pop(b["id"])
+    if not bases:
+        return spec, {}
+    ids = set(bases)
+    out = dict(spec, pieces=[p for p in spec.get("pieces") or [] if p.get("id") not in ids],
+               relations=[r for r in spec.get("relations") or [] if not {r.get("a"), r.get("b"), r.get("c")} & ids],
+               named_places={ph: (bases[v]["of"][0] if v in ids else v)
+                             for ph, v in (spec.get("named_places") or {}).items()},
+               _bases=list(bases.values()))
+    dropped = [r for r in spec.get("relations") or [] if {r.get("a"), r.get("b"), r.get("c")} & ids and r not in found]
+    if dropped:
+        out["_base_dropped_relations"] = list(spec.get("_base_dropped_relations") or []) + dropped
+    return out, bases
+
+
+def lay_bases(lay: dict, bases: dict, rules: dict | None = None) -> list:
+    """Each base under the pieces it carries, in the laid-out room: {"id", "of": [set item names], "center",
+    "size_m": [across, along, height], "yaw_deg", "front", "edge": the middle of its front edge, "rect": its plan
+    bounds}. A base whose pieces were not laid out on the floor is left out ("why")."""
+    R = (rules or pc.load_rules())["base"]
+    W, D, _ = lay["size_m"]
+    h = round(min(float(R["height_m"]), float(R["most_height_m"])), 3)
+    by = {p["id"]: p for p in lay.get("pieces") or []}
+    out = []
+    for b in bases.values():
+        hosts = [by[a] for a in b["of"] if a in by and not by[a].get("hang") and not by[a].get("on")]
+        if not hosts:
+            out.append({"id": b["id"], "of": [], "why": "the pieces on it are not on the floor of the room"})
+            continue
+        f = unit(hosts[0]["facing"])
+        r = (-f[1], f[0])                    # across, left to right as seen from its front
+        c0 = hosts[0]["position"]
+        lo_a = hi_a = lo_f = hi_f = None
+        for q in hosts:                      # every carried piece's footprint, in the first one's frame
+            w, d = float(q["size_m"][0]), float(q["size_m"][1])
+            qf = unit(q["facing"])
+            if abs(qf[0] * f[0] + qf[1] * f[1]) < 0.7:      # (turned across it: its width runs along)
+                w, d = d, w
+            dx, dy = q["position"][0] - c0[0], q["position"][1] - c0[1]
+            ua, uf = dx * r[0] + dy * r[1], dx * f[0] + dy * f[1]
+            lo_a = min(x for x in (lo_a, ua - w / 2) if x is not None)
+            hi_a = max(x for x in (hi_a, ua + w / 2) if x is not None)
+            lo_f = min(x for x in (lo_f, uf - d / 2) if x is not None)
+            hi_f = max(x for x in (hi_f, uf + d / 2) if x is not None)
+        side, front, back = float(R["side_m"]), float(R["front_m"]), float(R["back_m"])
+        for _ in range(12):                  # kept inside the walls: the margins shrink until it fits
+            a0, a1, f0, f1 = lo_a - side, hi_a + side, lo_f - back, hi_f + front
+            pts = [(c0[0] + u * r[0] + v * f[0], c0[1] + u * r[1] + v * f[1]) for u in (a0, a1) for v in (f0, f1)]
+            if all(abs(x) <= W / 2 + 1e-3 and abs(y) <= D / 2 + 1e-3 for x, y in pts):
+                break
+            side, front, back = side * 0.8, front * 0.8, back * 0.5
+        pts = [(max(-W / 2, min(W / 2, x)), max(-D / 2, min(D / 2, y))) for x, y in pts]   # (its plan bounds)
+        ua, uf = (a0 + a1) / 2, (f0 + f1) / 2
+        cx, cy = c0[0] + ua * r[0] + uf * f[0], c0[1] + ua * r[1] + uf * f[1]
+        ex, ey = c0[0] + ua * r[0] + f1 * f[0], c0[1] + ua * r[1] + f1 * f[1]
+        xs, ys = [x for x, _ in pts], [y for _, y in pts]
+        out.append({"id": b["id"], "of": [q["name"] for q in hosts], "of_ids": [q["id"] for q in hosts],
+                    "kind_said": b.get("kind"), "look": b.get("look"),
+                    "center": r3([cx, cy]), "size_m": r3([a1 - a0, f1 - f0, h]),
+                    "yaw_deg": round(math.degrees(math.atan2(r[1], r[0])), 2), "front": r3(f),
+                    "edge": r3([ex, ey]), "rect": r3([min(xs), min(ys), max(xs), max(ys)])})
+    return out
+
+
 # ------------------------------------------------------------------ check, named places, set spec
 def check_layout(layout: dict, spec: dict | None = None, data: dict | None = None) -> list:
     """Problems of a layout (solved here or written elsewhere): pieces outside the room or through each other, a
