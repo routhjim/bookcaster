@@ -453,6 +453,12 @@ CONCEPT_TRIES = 3
 SEATS_WORDS = ("{room} {inside} Seen from just behind and above the seats, looking forward over the instrument panel "
                "and out through the canopy. It has {seats}, and no other seat anywhere. Empty: no people. {style}")
 
+# a place of wealth or rule: its picture drawn anew from its own picture, furnished to its station (place_dress.py)
+DRESS_WORDS = ("The same room as the reference picture, seen from the same place: its walls, its windows, its doors "
+               "and its furniture where they are. Now furnished and adorned as the {station} {use} it is, richly and "
+               "in fine detail: {dressing}. {room} Interior view, wide shot of the whole room, eye level. {period} "
+               "Empty: no people. {style}")
+
 # a place in the open whose picture is a close view of one part of it: drawn anew as the whole place
 OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: open ground in "
               "front, everything that stands there seen whole from the ground up and small in the picture, the land "
@@ -625,6 +631,42 @@ class Story:
         (d / "place_spec.json").write_text(json.dumps(sp, indent=1))
         return True
 
+    def dressed(self, place, hero: Path) -> Path | None:
+        """The place's picture drawn anew from its own picture, furnished to its owner's station (scenes/
+        place_dress.py): only a rich or royal place; any other keeps the picture it has. The director's words
+        furnish nothing: the hall of a ruler was drawn, and so built, as bare stone and trestle tables (11-20)."""
+        d = self.d(place)
+        slug = self.places[place]["slug"]
+        if not (d / "place_spec.json").exists():
+            return None
+        llm(f"dress_{slug}", d / "dress.log", [[PY, HERE / "scenes" / "place_dress.py", d / "place_spec.json",
+                                                d / "dress.json", "--cache", d / "cache"]])
+        rec = json.loads((d / "dress.json").read_text()) if (d / "dress.json").exists() else {}
+        if not rec.get("dressing"):
+            return None
+        from PIL import Image
+        spec = json.loads((d / "place_spec.json").read_text())
+        style = self.book / "art_style.txt"
+        per = str(spec.get("period") or "").replace("_", " ").strip()
+        words = DRESS_WORDS.format(
+            station=rec["station"], use=rec.get("use") or "place", dressing="; ".join(rec["dressing"]),
+            room=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
+                        flags=re.I).strip(),
+            period=f"Set in the {per} period: every object as it was then, nothing from a later time."
+            if per and per != "not stated" else "",
+            style=key_style(style.read_text()) if style.exists() else "")
+        pid = f"concept_{self.prefix}_{slug}_d_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
+        pic = C.LIBRARY / "_refs" / pid / "picture.png"
+        if not pic.exists():
+            size = Image.open(hero).size
+            line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
+                 [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
+                  "--size", size[0], size[1], "--seed", 11, "--sources", hero])
+        if pic.exists():
+            log(f"{place}: its picture drawn dressed as a {rec['station']} place ({len(rec['dressing'])} things)")
+            return pic
+        return None
+
     def step_concept(self, place):
         d = self.d(place)
         hero = self.video / "heroes" / f"{slug_of(place)}.png"
@@ -633,6 +675,9 @@ class Story:
             return True
         shutil.copy2(hero, d / "concept.png")
         slug = self.places[place]["slug"]
+        dressed = self.dressed(place, hero)       # (a place of wealth or rule: its picture drawn anew, dressed)
+        if dressed:
+            shutil.copy2(dressed, d / "concept.png")
         read = lambda n: line("igpu", "choose", f"concept_{slug}{n}", d / "concept.log",          # noqa: E731
                               [VENV_PY, HERE / "scenes" / "concept.py", d / "concept.png", d / "place_spec.json",
                                d / "concept.json"])
