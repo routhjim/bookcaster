@@ -1616,10 +1616,11 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
 
 BEHIND_M = 0.3               # someone this near the line from a camera to another's eyes, and nearer it, hides them
 FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
+FALLBACK_FORE_DEG = 40.0      # someone nearer a wide's camera than its subject, this near its aim, is in its foreground
 FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
 
 
-def fallback_camera(ms: list, room, tried=()) -> dict | None:
+def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
     of its things and of the cameras already tried, with a clear line to every one of their eyes, else to the
@@ -1644,7 +1645,15 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
     sweep = [a0 + sg * d for d in range(0, 181, 15) for sg in ((1,) if d in (0, 180) else (1, -1))]
     # (and first from where the one the shot is about is no further off than the others: the wide on a man at the
     # far wall stood by the woman near it, her head four times his, 11-20)
-    for need, lead_near in ((eyes, True), (eyes, False), (eyes[:1], True), (eyes[:1], False)):
+    for need, lead_near in ((eyes, True), (eyes, None), (eyes, False), (eyes[:1], True), (eyes[:1], False)):
+        if lead_near is None:
+            # (no standpoint holds them all with the first the nearer: then the first alone, from before their face,
+            # the others not in its foreground - a wide on a man at work in a corner and a woman across the room had
+            # no such standpoint, and stood by her, 11-20)
+            alone = fallback_camera(ms[:1], room, tried, _fore=eyes[1:]) if len(ms) > 1 and not _fore else None
+            if alone:
+                return alone
+            continue
         for r in [r0 + d for d in (0.0, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 12.0)]:
             for z in zs:
                 for a in sweep:
@@ -1654,6 +1663,9 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
                         continue
                     if lead_near and any(math.dist(p, e) < FALLBACK_LEAD_K * math.dist(p, eyes[0]) and not m.get("creature")
                                          for e, m in zip(eyes[1:], ms[1:])):
+                        continue
+                    if lead_near and any(math.dist(p, e) < math.dist(p, eyes[0]) and plan_angle(
+                            [mid[0] - p[0], mid[1] - p[1]], p, e) < FALLBACK_FORE_DEG for e in _fore):
                         continue
                     if any(seg_point_dist(e, p, eyes[0]) < FALLBACK_CLEAR_M for e in eyes[1:]):
                         continue

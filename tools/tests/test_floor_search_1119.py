@@ -74,4 +74,18 @@ def test_last_resort_keeps_the_first_one_the_nearer():
     q = S.fallback_camera([lead, other], [5.0, 6.5, 3.0])
     assert q is not None
     p = q["position"][:2]
-    assert math.dist(p, [0.4, -0.4]) >= S.FALLBACK_LEAD_K * math.dist(p, [-1.6, 2.7]), p
+    aim = [q["target"][0] - p[0], q["target"][1] - p[1]]
+    assert math.dist(p, [0.4, -0.4]) >= S.FALLBACK_LEAD_K * math.dist(p, [-1.6, 2.7]) or \
+        S.plan_angle(aim, p, [0.4, -0.4]) >= S.FALLBACK_FORE_DEG, p      # (or the first alone, the other out of it)
+
+
+def test_last_resort_on_one_in_a_corner_leaves_the_other_out_of_its_foreground():
+    S.OPEN_GROUND[:] = []
+    S.SOLIDS[:] = []
+    lead, other = _m(-2.2, 2.9, (1.0, 0.0)), _m(0.4, -0.4, (0.3, -0.9))       # the lead against the corner's walls
+    q = S.fallback_camera([lead, other], [5.0, 6.5, 3.0])
+    assert q is not None
+    p = q["position"][:2]
+    aim = [q["target"][0] - p[0], q["target"][1] - p[1]]
+    near = math.dist(p, [0.4, -0.4]) < S.FALLBACK_LEAD_K * math.dist(p, [-2.2, 2.9])
+    assert not (near and S.plan_angle(aim, p, [0.4, -0.4]) < S.FALLBACK_FORE_DEG), (p, q["target"])
