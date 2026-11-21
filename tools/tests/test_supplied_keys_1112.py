@@ -352,3 +352,20 @@ check("a chapter without a final mix: a clear error", ok, msg)
 
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
+
+# --- 11-21: with a supplied key each person is named plainly in the words a clip is made of ---------------------------
+check("a garment's own name only", S.plain_name("the man in the old grey wool coat") == "the man in the coat")
+check("... without its trailing words", S.plain_name("the woman in the long green dress stained with mud") == "the woman in the dress")
+check("... a stuff or a plural without an article", S.plain_name("the man in the dull plate armour") == "the man in armour" and
+      S.plain_name("the man in the red robes") == "the man in robes")
+check("... a description without clothes as it is", S.plain_name("the dog") == "the dog")
+S.KEY_NAMES.clear()
+S.KEY_NAMES["a"] = {"the man in the old grey wool coat": "the man in the coat"}
+check("an action shot's words name him plainly, the sentence's capital kept",
+      S.with_facts("The man in the old grey wool coat turns. He sees the man in the old grey wool coat's hat.",
+                   {"id": "a", "kind": "action"}) == "The man in the coat turns. He sees the man in the coat's hat.")
+check("a chain line too", S._chain_words({"id": "a"}, "the man in the old grey wool coat sits.") == "the man in the coat sits.")
+check("talk words keep their own description", "old grey wool coat" in
+      S.with_facts("the man in the old grey wool coat speaks.", {"id": "a", "kind": "talk"}))
+check("a shot without key names is unchanged", "old grey" in S.with_facts("the man in the old grey wool coat sits.", {"id": "b", "kind": "action"}))
+S.KEY_NAMES.clear()
