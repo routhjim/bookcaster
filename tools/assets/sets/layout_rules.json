@@ -274,7 +274,7 @@
   "seat_front_cos": 0.9
  },
  "picture": {
-  "about": "Pieces a room takes from its concept picture that the text does not name (ids c<n>, place_build.with_concept). They are the room's dressing: each stands only where it fits and keeps off the floor the plan's people need; one that cannot is refused, never the reason a room fails. One the picture shows several of stands several times (one mesh, one record), in a row along the room's long side. One the picture's depth did not stand on the floor is not floor furniture. One that is the same thing as a piece of the spec is that piece.",
+  "about": "Pieces a room takes from its concept picture that the text does not name (ids c<n>, place_build.with_concept). They are the room's dressing: each stands only where it fits and keeps off the floor the plan's people need; one that cannot is refused, never the reason a room fails. One the picture shows several of stands several times (one mesh, one record), in a row along the room's long side. As many as the picture's reader counted (else the name's plural asks repeat_default); in two rows mirrored across the room when it shows them on both sides, an aisle (aisle_m, and the seats' depth when seats stand at them) between the rows of a free thing, a wall thing spread along its wall. Several seats in a room whose picture has tables stand along the tables' long sides, seat_tuck_m from the edge. A thing the depth puts more than raised_most_m and more than raised_k of its own height off the floor is refused. One the picture's depth did not stand on the floor is not floor furniture. One that is the same thing as a piece of the spec is that piece.",
   "seat_keep_m": 2.5,
   "named_keep_m": 1.0,
   "keep_side_m": 0.5,
@@ -284,7 +284,16 @@
   "double_m": 1.0,
   "double_k": 0.6,
   "raised_most_m": 0.5,
-  "wall_depth_k": 2.0
+  "raised_k": 0.5,
+  "wall_depth_k": 2.0,
+  "seat_tuck_m": 0.07,
+  "aisle_m": 1.2
+ },
+ "dressing": {
+  "about": "The place's dressing (scenes/place_dress.py: the things its picture is drawn furnished with) checked against what the set holds (place_build.with_dressing). An item a piece of the set already is (its name's nouns among the piece's) is that piece; one said to stand on a found piece is drawn on it (its picture); one said to hang, or to be on or across the walls, floor or roof, or a part of the room itself (room_own), or a thing that hangs (hangs, or a kind placed on a wall) stays in the pictures the room's faces carry; any other is made from its words as a piece of its kind (a floor or table kind its last noun names, else a work piece called by it) and placed by the layout's rules, as many as its plural asks (picture.repeat_default).",
+  "hangs": ["tapestry", "banner", "flag", "pennant", "chandelier", "hanging", "shield", "garland", "wreath"],
+  "room_own": ["pillar", "column", "panel", "panelling", "paneling", "beam", "rafter", "arch", "step", "stair", "wall", "floor", "ceiling", "roof", "window", "door", "doorway", "alcove", "niche"],
+  "stands_tall_m": 1.2
  },
  "fire": {
   "about": "A fire piece (a piece of a floor kind that burns: gives_light) stands back to a wall, front into the room, as near where its picture has it as the walls allow; what the spec puts beside or by it (companion_rels) stands on the wall beside it. A piece a standing person works at (top within work_top_m) that the spec relates to the fire, or the plan's own work piece in a room with one fire, stands out on the floor before it: work_front_m from the fire's front to its own, at most work_side_m off the fire's middle, with clear floor work_clear_m wide on at least work_clear_sides of its sides. The relaxed numbers are tried only when no strict spot fits.",

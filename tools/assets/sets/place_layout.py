@@ -224,7 +224,9 @@ def place_openings(spec: dict, records: dict, data: dict, W: float, D: float, ru
 # ------------------------------------------------------------------ the picture's pieces, fire pieces
 PICTURE_ID = re.compile(r"^c\d+$")       # a piece place_build.with_concept took from the place's concept picture
 PICTURE_RULES = {"seat_keep_m": 2.5, "named_keep_m": 1.0, "keep_side_m": 0.5, "repeat_default": 4, "repeat_most": 8,
-                 "row_gap_m": 1.0, "double_m": 1.0, "double_k": 0.6, "raised_most_m": 0.5, "wall_depth_k": 2.0}
+                 "row_gap_m": 1.0, "double_m": 1.0, "double_k": 0.6, "raised_most_m": 0.5, "wall_depth_k": 2.0,
+                 "raised_k": 0.5, "seat_tuck_m": 0.07, "aisle_m": 1.2}
+TABLE_LEAST_M = 1.0                      # a table this long or longer is one people sit at (not a side table)
 FIRE_RULES = {"front_clear_m": 1.0, "companion_rels": ["beside", "by"], "work_top_m": [0.35, 1.3],
               "work_front_m": [1.8, 2.5], "work_side_m": 0.6, "work_clear_m": 1.5, "work_clear_sides": 3,
               "relaxed": {"work_front_m": [1.2, 3.0], "work_side_m": 1.2, "work_clear_m": 0.9, "work_clear_sides": 3}}
@@ -273,15 +275,40 @@ def _kind_words(kind: str) -> set:
     return {kind.replace("_", " ")} | set(d.get("synonyms") or [])
 
 
+NOT_PLURAL = ("ss", "us", "is")          # word ends that are no plural ("glass", "abacus", "basis")
+
+
+def noun_stem(t: str) -> str:
+    """A noun's one-of form, for matching names ("tapestries" and "tapestry", "benches" and "bench")."""
+    if t.endswith("ies") and len(t) > 4:
+        return t[:-3] + "y"
+    if t.endswith(NOT_PLURAL) or len(t) <= 3 or not t.endswith("s"):
+        return t
+    if t.endswith(("ches", "shes", "xes", "zes", "sses")):
+        return t[:-2]
+    return t[:-1]
+
+
+def plural_noun(t: str) -> bool:
+    """Whether a name's last word is a noun in the plural ("tables", "lamps"; not "glass", "basis")."""
+    return len(t) > 3 and t.endswith("s") and not t.endswith(NOT_PLURAL)
+
+
 def plural_count(p: dict, R: dict) -> int:
-    """How many of a picture piece the picture shows, from its name: a number word ("three tables"), a word of many
-    ("rows of benches"), or its kind's own word in the plural ("tables", "benches") -> that many (the default when
-    no number is said), else 1. Only a thing of the floor repeats."""
+    """How many of a picture piece the picture shows: the number the picture's reader counted ("_count",
+    scenes/concept.py), else from its name: a number word ("three tables"), a word of many ("rows of benches"), its
+    kind's own word in the plural ("tables", "benches") or a name that ends in a plural ("long dining tables") ->
+    that many (the default when no number is said), else 1. Only a thing of the floor repeats (a rug, a thing
+    made from the land, never)."""
     d = PK.get(p.get("kind")) or {}
-    if d.get("placement") != "floor" or d.get("made_as") or d.get("sized_by") or p.get("kind") == "rug":
+    pr = picture_rules(R)
+    if d.get("placement") != "floor" or d.get("made_as") or p.get("kind") == "rug":
+        return 1
+    if isinstance(p.get("_count"), int) and p["_count"] >= 1:
+        return min(int(pr["repeat_most"]), int(p["_count"]))
+    if d.get("sized_by"):
         return 1
     toks = _words(re.split(r";", str(p.get("look") or ""), maxsplit=1)[0])
-    pr = picture_rules(R)
     for t in toks:
         if t in NUMBER_WORDS:
             return min(int(pr["repeat_most"]), NUMBER_WORDS[t])
@@ -294,6 +321,10 @@ def plural_count(p: dict, R: dict) -> int:
             if n and i + n <= len(toks) and toks[i:i + n - 1] == nw[:-1] and toks[i + n - 1] in (nw[-1] + "s", nw[-1] + "es"):
                 return int(pr["repeat_default"])
     if MANY_WORDS & set(toks):
+        return int(pr["repeat_default"])
+    # (the name's own last word in the plural: the picture's reader names what it sees, not the kind, and its
+    # "long dining tables" filed as a bench stood once, 11-20)
+    if toks and plural_noun(toks[-1]):
         return int(pr["repeat_default"])
     return 1
 
@@ -336,11 +367,75 @@ def same_thing(c: dict, p: dict, size_c=None, size_p=None, R: dict | None = None
     return math.dist(c["at_xy"], p["at_xy"]) <= max(float(pr["double_m"]), float(pr["double_k"]) * big)
 
 
+def row_spots(c: dict, n: int, sz, W: float, D: float, pr: dict, aisle: float = 0.0) -> list:
+    """The spots, [x, y, facing x, facing y], where a picture piece shown n times stands, its own spot first. Its
+    row runs along the room's long side. One the picture shows on both sides of the room ("_sides": "both") stands in
+    two rows, its own and its mirror across the room's middle (turned to face the other way), the copies taken from
+    each in turn; one free on the floor keeps aisle metres between its two rows, and one against a wall is spread
+    along it. Else the rows beside its own (first on its own side of the room's middle) are tried in turn."""
+    f = unit(tuple(c.get("facing_xy") or (0.0, -1.0)))
+    ax = (0.0, 1.0) if D >= W else (1.0, 0.0)
+    lat = (ax[1], ax[0])
+    u = c["at_xy"][0] * lat[0] + c["at_xy"][1] * lat[1]
+    v = c["at_xy"][0] * ax[0] + c["at_xy"][1] * ax[1]
+    own_side = 1 if u >= 0 else -1
+    wall = c.get("against") == "wall"
+    if not wall and sz[0] > sz[1] and table_like(c, sz):
+        # (tables in rows along the room stand with their long side along the row: the picture's depth gives a free
+        # thing's front toward the picture's eye, and a row of long tables stood across the room, end to end, with no
+        # room for their seats, 11-20. Seats in rows keep the picture's front, as pews face the front)
+        f = (-own_side * lat[0], -own_side * lat[1])
+    h = half_extents(sz, f)
+    ha, hl = h[0] * ax[0] + h[1] * ax[1], h[0] * lat[0] + h[1] * lat[1]
+    step = 2 * ha + float(pr["row_gap_m"])
+    lstep = 2 * hl + float(pr["row_gap_m"])
+    lines = 2 if c.get("_sides") == "both" else 1
+    if wall:                                 # (along its wall: as far apart as the wall's length shares them)
+        step = max(step, ((D if ax[1] else W) - 2 * ha) / max(1, math.ceil(n / lines)))
+    at = lambda uu, vv: [round(uu * lat[0] + vv * ax[0], 3), round(uu * lat[1] + vv * ax[1], 3)]   # noqa: E731
+    spots = []
+    if lines == 2 or wall:
+        if lines == 2 and not wall:          # (free on the floor: an aisle between its two rows)
+            u = own_side * max(abs(u), hl + aisle / 2)
+        fm = (f[0] - 2 * (f[0] * lat[0] + f[1] * lat[1]) * lat[0], f[1] - 2 * (f[0] * lat[0] + f[1] * lat[1]) * lat[1])
+        # (two rows: taken from each in turn; a thing of one wall: its own wall first, then the one across)
+        for side in ((0, 1) if lines == 2 else (0,)) + (() if lines == 2 else (1,)):
+            for k in range(0, 2 * int(pr["repeat_most"]) + 1):
+                for sgn in ((1,) if k == 0 else (1, -1)):
+                    for uu, ff in (((u, f), (-u, fm)) if lines == 2 else (((u, f),) if side == 0 else ((-u, fm),))):
+                        xy = at(uu, v + sgn * k * step) + [round(ff[0], 3), round(ff[1], 3)]
+                        if xy not in spots:
+                            spots.append(xy)
+            if lines == 2:
+                break
+        return spots
+    for m in (0, own_side, 2 * own_side, -own_side, -2 * own_side):
+        for k in range(0, 2 * int(pr["repeat_most"]) + 1):
+            for sgn in ((1,) if k == 0 else (1, -1)):
+                xy = at(u + m * lstep, v + sgn * k * step) + [round(f[0], 3), round(f[1], 3)]
+                if xy not in spots:
+                    spots.append(xy)
+    return spots
+
+
+def table_like(p: dict, sz) -> bool:
+    """A table people sit at: a floor table at least table_least_m long (not a small side table)."""
+    d = PK.get(p.get("kind")) or {}
+    return d.get("placement") == "floor" and _root(p.get("kind")) == "table" and max(sz[:2]) >= TABLE_LEAST_M
+
+
+def seat_like(p: dict) -> bool:
+    return (PK.get(p.get("kind")) or {}).get("needs") == "seat"
+
+
 def prepare(spec: dict, records: dict, R: dict) -> tuple:
     """The spec's pieces with the picture's own ones settled before the layout: a picture piece that is a spec piece
     seen again becomes that piece (the spec piece takes the picture's place and keeps its own look and mesh); one the
     picture's depth did not stand on the floor, or stood well off it, is refused; one the picture shows several of
-    stands several times, the copies in a row along the room's long side sharing its one record (one mesh).
+    stands several times, sharing its one record (one mesh): in a row along the room's long side, or in two rows
+    mirrored across the room when the picture shows it on both sides; seats the picture shows several of, in a room
+    whose picture has tables, are the tables' seats and stand along their long sides. A piece the place's dressing
+    adds ("_dressing", place_build.with_dressing) is placed by the layout's own rules.
     -> (spec, records, notes). A spec with no picture pieces comes back as it was."""
     pcs = [dict(p) for p in spec.get("pieces") or []]
     if not any(is_picture_piece(p, spec) for p in pcs):
@@ -352,7 +447,8 @@ def prepare(spec: dict, records: dict, R: dict) -> tuple:
     pic = [p for p in pcs if is_picture_piece(p, spec)]
     own = [p for p in pcs if not is_picture_piece(p, spec)]
     measured = bool(spec.get("_room_m"))
-    taken = set()
+    W, D = [float(x) for x in (spec.get("_room_m") or [0.0, 0.0])[:2]]
+    taken, many = set(), []
     for c in pic:
         twin = next((p for p in own if p["id"] not in taken and same_thing(c, p, size(c), size(p), R)), None)
         if twin is not None and plural_count(c, R) == 1:
@@ -365,49 +461,83 @@ def prepare(spec: dict, records: dict, R: dict) -> tuple:
                           "why": f"the same thing as {twin['id']}: built once, as it"})
             continue
         place = (PK.get(c.get("kind")) or {}).get("placement")
-        if measured and not c.get("at_xy") and not isinstance(c.get("hangs_m"), (int, float)) and place != "surface":
+        if measured and not c.get("at_xy") and not isinstance(c.get("hangs_m"), (int, float)) and place != "surface" \
+                and not c.get("_dressing"):
             notes.append({"id": c["id"], "kind": c["kind"], "what": "refused",
                           "why": "the picture's depth does not stand it on the floor (overhead, on a wall, or no floor under it)"})
             continue
+        # (well off the floor: higher than raised_most_m, and higher than raised_k of its own height. A tall thing
+        # whose foot the depth put half a metre up still stands on the floor; a thing on a shelf does not)
         if isinstance(c.get("_raised_m"), (int, float)) and place == "floor" and \
-                float(c["_raised_m"]) > float(pr["raised_most_m"]):
+                float(c["_raised_m"]) > float(pr["raised_most_m"]) and \
+                float(c["_raised_m"]) > float(pr["raised_k"]) * float((c.get("_seen_size_m") or size(c))[2]):
             notes.append({"id": c["id"], "kind": c["kind"], "what": "refused", "why": f"the picture has it {c['_raised_m']} m off the floor"})
             continue
         c["_picture"] = True
         out.append(c)
-        n = plural_count(c, R) if c.get("at_xy") else 1
+        n = plural_count(c, R) if (c.get("at_xy") or c.get("_dressing")) else 1
         if n > 1:
-            W, D = [float(x) for x in (spec.get("_room_m") or [0.0, 0.0])[:2]]
-            f = tuple(c.get("facing_xy") or (0.0, -1.0))
-            h = half_extents(size(c), f)
-            ax = (0.0, 1.0) if D >= W else (1.0, 0.0)
-            step = 2 * (h[0] * ax[0] + h[1] * ax[1]) + float(pr["row_gap_m"])
-            # its row along the room's long side, then rows beside it (first on its own side of the room's middle),
-            # each spot tried in turn: what does not fit or stands on the plan's floor is passed over
-            lat = (ax[1], ax[0])
-            lstep = 2 * (h[0] * lat[0] + h[1] * lat[1]) + float(pr["row_gap_m"])
-            own_side = 1 if (c["at_xy"][0] * lat[0] + c["at_xy"][1] * lat[1]) >= 0 else -1
-            spots = []
-            for m in (0, own_side, 2 * own_side, -own_side, -2 * own_side):
-                for k in range(0, 2 * int(pr["repeat_most"]) + 1):
-                    for sgn in ((1,) if k == 0 else (1, -1)):
-                        xy = [round(c["at_xy"][0] + sgn * k * step * ax[0] + m * lstep * lat[0], 3),
-                              round(c["at_xy"][1] + sgn * k * step * ax[1] + m * lstep * lat[1], 3)]
-                        if xy not in spots:
-                            spots.append(xy)
-            c["_row"] = spots                        # (its own spot first)
-            for k in range(2, n + 1):
-                cid = f"{c['id']}x{k}"
-                out.append(dict(c, id=cid, at_xy=None, _row=spots, _copy_of=c["id"], _picture=True))
-                if c["id"] in recs:
-                    recs[cid] = recs[c["id"]]
-            notes.append({"id": c["id"], "kind": c["kind"], "what": "repeated",
-                          "why": f"the picture shows several: {n} asked, in rows along the room"})
+            many.append((c, n))
+    # several seats in a room whose picture has tables: the tables' seats (a seat tucked at a table is no clash)
+    tables = [c for c in out if table_like(c, size(c))]
+    seats = [(c, n) for c, n in many if seat_like(c) and tables]
+    tuck = float(pr["seat_tuck_m"])
+    aisle = float(pr["aisle_m"]) + (2 * max([min(size(c)[:2]) + tuck for c, _ in seats] + [0.0]))
+    for c, n in many:
+        if (c, n) in seats:
+            continue
+        if c.get("at_xy"):
+            c["_row"] = row_spots(c, n, size(c), W, D, pr, aisle if c in tables else float(pr["aisle_m"]))
+        for k in range(2, n + 1):
+            cid = f"{c['id']}x{k}"
+            out.append(dict(c, id=cid, at_xy=None, _copy_of=c["id"], _picture=True,
+                            **({"_row": c["_row"]} if c.get("_row") else {})))
+            if c["id"] in recs:
+                recs[cid] = recs[c["id"]]
+        how = "in two rows, one on each side of the room" if c.get("_sides") == "both" else "in rows along the room"
+        notes.append({"id": c["id"], "kind": c["kind"], "what": "repeated",
+                      "why": f"the picture shows several: {n} asked, " + (how if c.get("_row") else "where the layout finds room")})
+    at = [q["id"] for q in out if table_like(q, size(q))]
+    for c, n in seats:
+        c.update(at_xy=None, _at_tables=at)
+        c.pop("_row", None)
+        for k in range(2, n + 1):
+            cid = f"{c['id']}x{k}"
+            out.append(dict(c, id=cid, _copy_of=c["id"], _picture=True))
+            if c["id"] in recs:
+                recs[cid] = recs[c["id"]]
+        notes.append({"id": c["id"], "kind": c["kind"], "what": "repeated",
+                      "why": f"the picture shows several seats and tables: {n} asked, along the tables' long sides"})
     keep_ids = {p["id"] for p in own + out}
     sp = dict(spec, pieces=own + out,
               relations=[r for r in spec.get("relations") or [] if {r.get("a"), r.get("b")} <= keep_ids | set(
                   o.get("id") for o in spec.get("openings") or [])])
     return sp, recs, notes
+
+
+def table_seats(ctx, pid: str, placed: dict) -> list:
+    """Where a seat at the room's tables may stand: along each placed table's two long sides, its front to the
+    table, tucked seat_tuck_m from its edge; as many abreast on a side as its length holds. -> [(c, facing)]."""
+    sz = ctx.size(pid)
+    tuck = float(picture_rules(ctx.R)["seat_tuck_m"])
+    out = []
+    for tid in ctx.pieces[pid].get("_at_tables") or []:
+        T = placed.get(tid)
+        if T is None:
+            continue
+        hx, hy = (T["rect"][2] - T["rect"][0]) / 2, (T["rect"][3] - T["rect"][1]) / 2
+        along = (1.0, 0.0) if hx >= hy else (0.0, 1.0)          # (its long side)
+        nrm = (along[1], along[0])
+        tl, td = max(hx, hy), min(hx, hy)
+        sw, sd = max(sz[0], 0.1), max(sz[1], 0.1)
+        k = max(1, int((2 * tl + 0.1) // (sw + 0.1)))
+        offs = [(-(k - 1) / 2 + i) * (sw + 0.1) for i in range(k)]
+        for s_ in (1, -1):
+            d = td + tuck + sd / 2
+            for o in offs:
+                c = (round(T["c"][0] + s_ * d * nrm[0] + o * along[0], 3), round(T["c"][1] + s_ * d * nrm[1] + o * along[1], 3))
+                out.append((c, (-s_ * nrm[0], -s_ * nrm[1])))
+    return out
 
 
 def fire_of(ctx, pid: str) -> bool:
@@ -918,15 +1048,29 @@ def candidates(ctx: Ctx, pid: str, placed: dict, fixed_zones: list, hard: bool =
     if pid in ctx.fire or pid in ctx.companion or pid in ctx.work:
         row = None
     if row:
-        # a copy of a picture piece shown several times: the next spot of its row that it fits
-        f = tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0))
-        h = half_extents(ctx.size(pid), f)
+        # a copy of a picture piece shown several times: the next spot of its row that it fits (a spot may carry
+        # its own facing: the mirrored row faces the other way)
+        f0 = tuple(ctx.pieces[pid].get("facing_xy") or (0.0, -1.0))
         got = []
         for k_, xy in enumerate(row):
+            f = tuple(xy[2:4]) if len(xy) >= 4 else f0
+            h = half_extents(ctx.size(pid), f)
             if abs(xy[0]) > ctx.W / 2 - h[0] + 1e-6 or abs(xy[1]) > ctx.D / 2 - h[1] + 1e-6:
                 continue
-            cand = make(ctx, pid, tuple(xy), f)
+            cand = make(ctx, pid, tuple(xy[:2]), f)
             cand["pinned"], cand["near"] = True, round(0.5 * k_, 4)      # (the nearer spots of its row first)
+            if fits(ctx, dict(cand, zones=[]), placed, fixed_zones) and keeps_off(ctx, cand, placed):
+                got.append(cand)
+        return got
+    if ctx.pieces[pid].get("_at_tables") is not None:
+        # a seat at the picture's tables: the next free place along a table's long side (prepare)
+        got = []
+        for k_, (c, f) in enumerate(table_seats(ctx, pid, placed)):
+            h = half_extents(ctx.size(pid), f)
+            if abs(c[0]) > ctx.W / 2 - h[0] + 1e-6 or abs(c[1]) > ctx.D / 2 - h[1] + 1e-6:
+                continue
+            cand = make(ctx, pid, c, f)
+            cand["pinned"], cand["near"] = True, round(0.1 * k_, 4)
             if fits(ctx, dict(cand, zones=[]), placed, fixed_zones) and keeps_off(ctx, cand, placed):
                 got.append(cand)
         return got
@@ -1224,7 +1368,9 @@ def order_of(ctx: Ctx) -> list:
         # companion, the forge's anvil came down inside the bellows, 11-17)
         # (a fire piece first, what serves it next, then what the picture places; the picture's own pieces last,
         # each where it keeps off the floor the others need)
-        grp = 0 if pid in ctx.fire else 1 if pid in ctx.companion else 4 if pid in ctx.optional else \
+        # (a seat at the picture's tables after the tables: its places are along theirs)
+        grp = 0 if pid in ctx.fire else 1 if pid in ctx.companion else \
+            5 if ctx.pieces[pid].get("_at_tables") is not None else 4 if pid in ctx.optional else \
             2 if ctx.pieces[pid].get("at_xy") and pid not in ctx.work else 3
         return (grp, r, 0 if at else 1, -round(size[0] * size[1], 3), -len(ctx.partners.get(pid, ())), pid)
 

@@ -105,8 +105,17 @@ LAND_WORDS_ASK = ("Describe the largest single form of the land that rises from 
 GROUP_AREA = 0.04                # a group smaller than this share of the picture is no building to make
 OPEN_PIECE_AREA = 0.003          # in the open the picture is a wide one: a thing standing by a building is small in it
 OPEN_SEEN_MOST = 12
-SEEN_ASK = ("List every separate piece of furniture, fitting, machine or large object in this picture, one per line, "
-            "as: name; what it is made of and its colour. No people. At most ten lines.")
+# (each kind once, named in the plural when there are several, how many and where asked of each apart: listed
+# one per line and capped at ten, a rich room's walls, floor and windows took four lines and its two rows of tables, their
+# benches, candle stands and sideboards came back one line each, built once each, 11-20)
+SEEN_ASK = ("List every kind of furniture, fitting, machine or large object in this picture, one kind per line, as: "
+            "name; what it is made of and its colour. Name a kind in the plural when there are several of it. Not the "
+            "walls, floor or ceiling themselves. No people. At most fourteen lines.")
+ROOM_SEEN_MOST = 14
+COUNT_ASK = ("How many {n} are there in this picture, each one counted, those far off and half hidden too? Answer "
+             "with one number.")
+SIDES_ASK = ("Where do the {n} in this picture stand: on one side of the room only, or on both sides of it, left and "
+             "right? Answer with exactly one word: one or both.")
 
 
 # (the whole of it: asked plainly, a thing with a part over it, built as one with it, came back as its lower part
@@ -192,6 +201,34 @@ def real_of(txt) -> list | None:
     return v if len(v) == 2 and all(0.1 <= x <= 200 for x in v) else None
 
 
+COUNT_MOST = 40
+
+
+def count_of(txt) -> int | None:
+    """The judge's count: one number (a word for a small one), within reason."""
+    t = str(txt or "").strip().lower()
+    m = re.search(r"\d+", t)
+    if m:
+        v = int(m.group(0))
+    else:
+        w = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+             "ten": 10, "twelve": 12}
+        v = next((n for k, n in w.items() if re.search(rf"\b{k}\b", t)), 0)
+    return v if 1 <= v <= COUNT_MOST else None
+
+
+def bases_of(spec: dict) -> set:
+    """The spec's pieces another floor piece stands on: built as a plain base under it (place_layout.take_bases),
+    never looked for in the picture (asked for by its kind, a platform filed as a bench was "found" as the picture's
+    benches, 11-20)."""
+    try:
+        sys.path.insert(0, str(HERE.parent / "sets"))
+        import place_layout as L
+        return {r.get("b") for r in spec.get("relations") or [] if L.is_base_relation(spec, r)}
+    except Exception:                                    # noqa: BLE001 - no layout rules: nothing is a base
+        return set()
+
+
 def box_of(txt) -> list | None:
     """[x0, y0, x1, y1] in 0..1 from the judge's answer, or None when it gave no box of some size."""
     v = [int(x) for x in re.findall(r"\d+", str(txt or ""))[:4]]
@@ -240,7 +277,9 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             "kind": KIND_ASK.format(n=sn["name"], kinds=", ".join(k.replace("_", " ") for k in kinds),
                                     open=OPEN_KIND if op else ""),
             **({"own": OWN_ASK.format(n=sn["name"]), "real": REAL_ASK.format(n=sn["name"]),
-                 "made": MADE_ASK.format(n=sn["name"])} if op else {})}})
+                 "made": MADE_ASK.format(n=sn["name"])} if op else
+               # (a room: how many of it, and on one side or both: the set stands that many, as the picture does)
+               {"count": COUNT_ASK.format(n=sn["name"]), "sides": SIDES_ASK.format(n=sn["name"])})}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
     items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
@@ -302,6 +341,13 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
         sn["kind"] = kd if kd in kinds and big and not room else None
         if b and sn["kind"]:
             sn.update(box=b, crop=cut(concept, b, out_dir / f"{tag}_seen{i}.png"))
+            if not op:
+                n_ = count_of(r.get("count"))
+                if n_:
+                    sn["count"] = n_
+                sd = re.sub(r"[^a-z]", "", str(r.get("sides") or "").lower())
+                if sd in ("one", "both"):
+                    sn["sides"] = sd
             if real_of(r.get("real")):
                 sn["real_m"] = real_of(r["real"])
     # everything built, as one group: asked only when something of the picture is made by people (on bare land the
@@ -360,7 +406,8 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
 def read(concept: Path, spec: dict, ask) -> dict:
     """`ask`: the vision judge's batch call ([{"id", "image", "ask": {k: question}, "max_new_tokens"}] -> {id:
     answers})."""
-    pieces = spec.get("pieces") or []
+    base = bases_of(spec)
+    pieces = [p for p in spec.get("pieces") or [] if p.get("id") not in base]
     items = [{"id": "space", "image": str(concept), "ask": {"space": SPACE_ASK}, "max_new_tokens": 6},
              {"id": "view", "image": str(concept), "ask": {"view": VIEW_ASK, "cut": CUT_ASK}, "max_new_tokens": 6},
              {"id": "surf", "image": str(concept), "ask": ASKS, "max_new_tokens": 30},
@@ -406,7 +453,7 @@ def read(concept: Path, spec: dict, ask) -> dict:
     cut_ = re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("cut") or "").lower()).startswith("y")
     return {"concept": str(concept), "space": space, "view": view, "cut": cut_, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
             "light": surf["light"], "far": surf["far"],
-            "seen": seen[:OPEN_SEEN_MOST if space == "outdoors" else 10], "spec": sc,
+            "seen": seen[:OPEN_SEEN_MOST if space == "outdoors" else ROOM_SEEN_MOST], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")
             + (f" The light: {surf['light'][0].lower() + surf['light'][1:]}." if surf["light"] else "")}
 

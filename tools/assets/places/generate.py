@@ -324,7 +324,9 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         rp1.write_text(json.dumps(rec1, indent=1))
         for need in req.get("needs") or []:
             if need in MEASURE:
-                run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+                # (a second making whose measure failed left a seat with no seat box: nobody could be sat on it)
+                if run(MEASURE[need] + [str(library / "prop" / aid), "--write"]).returncode:
+                    return {"asset_id": aid, "ok": False, "why": f"no {need} box could be measured on its second making"}
     # a bed is asked for with one open tier (people sit up on it, and a camera must see them): one that came out with
     # a tier above its mattress is not the piece asked for (seated on a concept's lower bunk a woman's head was up
     # inside the top one, and no camera saw a face)
@@ -486,7 +488,8 @@ def face_fill(tex, px_per_m: float, tile=None, colour=None):
 
 FLAT_PANEL_SCRIPT = """\"\"\"Model script (written by places/generate.py make_face_picture): a room's floor or ceiling as one
 flat picture, lying in XY (the picture's top toward +Y, so the set's back wall), the middle of its underside at the
-origin; seen from below (a ceiling) it shows the same picture. Spec: "backdrop": {"w", "h": metres along X, Y}.\"\"\"
+origin; seen from below (a ceiling) it shows the same picture. Spec: "backdrop": {"w", "h": metres along X, Y};
+"keep_uvs": the picture laid over the whole texture (period_kit.picture_uvs).\"\"\"
 import os
 import sys
 
@@ -496,8 +499,9 @@ import period_kit as K  # noqa: E402
 B = SPEC["backdrop"]  # noqa: F821
 LIB = os.environ.get("ASSETS_LIBRARY") or os.path.join(os.path.expanduser("~"), "ue", "library")
 w, h = float(B["w"]), float(B["h"])
-K.box(f"{SPEC['id']}_pic", (w, h, 0.02), (0, 0, 0.01), bev=0.0,  # noqa: F821
-      mat=K.image_material(os.path.join(LIB, "_refs", SPEC["id"], "picture.png"), f"{SPEC['id']}_print", emit=0.0))  # noqa: F821
+K.picture_uvs(K.box(f"{SPEC['id']}_pic", (w, h, 0.02), (0, 0, 0.01), bev=0.0,  # noqa: F821
+                    mat=K.image_material(os.path.join(LIB, "_refs", SPEC["id"], "picture.png"),  # noqa: F821
+                                         f"{SPEC['id']}_print", emit=0.0)))  # noqa: F821
 """
 _WHOLE = {}                              # (the room's whole faces, made once for all its panels)
 

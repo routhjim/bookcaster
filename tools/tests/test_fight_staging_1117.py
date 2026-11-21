@@ -595,3 +595,23 @@ def test_someone_looking_on_at_two_who_face_each_other_stands_apart():
     assert not any(FP.looks_on(q, ring) for q in ring)                   # three in one talk: nobody stands apart
     assert not FP.looks_on({"name": "C", "facing": "the window"}, ppl[:2] + [{"name": "C", "facing": "the window"}])
     assert FP.ONLOOK_M[0] > 3 * FP.PERSON_GAP_M
+
+
+def test_bystander_steps_to_the_side_of_the_work():
+    """Someone standing across a piece from the one who works at it stands where the work is seen from: they step
+    to the piece's side, and a camera then has its place on the work."""
+    import from_plan as FP
+    thing = {"name": "block", "kind": "fixture", "center": [0.0, 0.0, 0.35], "half": [0.3, 0.2, 0.35]}
+    room = [6.0, 6.0, 3.0]
+    spot = [0.0, -0.7]
+    by = {"b": {"position": [0.1, 0.6], "pose": "standing"}}
+    side = FP.stand_aside(spot, thing, by, [thing], room)
+    assert "b" in side
+    m = side["b"]
+    assert FP.WORK_ASIDE_M[0] - 0.01 <= math.dist(m, [0.0, 0.0]) <= FP.WORK_ASIDE_M[1] + 0.01
+    assert abs(m[0]) > 1.2 and m[1] < 0.5, m                  # at its side, not on past it
+    for take in range(3):
+        assert FP.work_camera(spot, thing, "medium", [m], [thing], room, take=take), take
+    # one already at the side, and one far off, stay
+    assert FP.stand_aside(spot, thing, {"b": {"position": [1.8, -0.2], "pose": "standing"}}, [thing], room) == {}
+    assert FP.stand_aside(spot, thing, {"b": {"position": [0.0, 2.9], "pose": "standing"}}, [thing], room) == {}

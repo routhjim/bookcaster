@@ -537,11 +537,48 @@ def give_way(spot: list, t: dict, others: dict) -> dict | None:
     return out
 
 
+WORK_VIEW_DEG = 70        # the side of a piece its work is seen from: this far either way of the line from the worker
+WORK_VIEW_M = 2.6         # ... on past the piece, out to here
+WORK_ASIDE_M = (1.6, 2.6)   # someone standing by steps to the piece's side, this far from its middle
+WORK_ASIDE_DEG = (80, 125)  # ... this far round from that line (level with the piece to a little behind the worker)
+
+
+def stand_aside(spot: list, t: dict, others: dict, things: list, room: list, walls: bool = True) -> dict:
+    """Where the people standing by go when a person works at piece t from spot: whoever stands across the piece
+    from the worker stands where the work is seen from (work_camera), and steps to its side, to the free mark
+    nearest where they stood. -> {key: mark} (those with no free mark at the side stay). (A woman sent to the same
+    piece stood half a metre beyond it, facing the worker over it: no camera had a place on the work, and of nine
+    shots of the work eight were framed on the worker's chest with the piece out of frame, 11-20.)"""
+    c = t["center"][:2]
+    d = math.dist(spot[:2], c)
+    if d < 0.2:
+        return {}
+    u = [(c[0] - spot[0]) / d, (c[1] - spot[1]) / d]
+
+    def off(p):                                  # degrees round from the worker-to-piece line, seen from the piece
+        w = [p[0] - c[0], p[1] - c[1]]
+        n = math.hypot(*w)
+        return 0.0 if n < 1e-6 else math.degrees(math.acos(max(-1.0, min(1.0, (w[0] * u[0] + w[1] * u[1]) / n))))
+    out, taken = {}, [list(spot[:2])] + [list(v["position"][:2]) for v in others.values()]
+    for k, v in others.items():
+        p = v["position"][:2]
+        if math.dist(p, c) > WORK_VIEW_M or off(p) > WORK_VIEW_DEG:
+            continue
+        marks = [m for m in free_marks(c, [q for q in taken if q != list(p)], things, room, WORK_ASIDE_M, n=60,
+                                       walls=walls) if WORK_ASIDE_DEG[0] <= off(m) <= WORK_ASIDE_DEG[1]]
+        if marks:
+            out[k] = min(marks, key=lambda m: math.dist(m, p))
+            taken[taken.index(list(p))] = list(out[k])
+    return out
+
+
 VARIANT = {"usual": None}
 
 
 STAND_ACTIONS = ("stand_hand_on_mantel", "gesture_point")     # standing poses of their own (scenes/ue/pose.py)
-WORK_POSE = "tool_raised"        # someone with a tool in the hand and a thing lying before them, no pose named
+WORK_POSE = "hands_at_work"      # someone with a tool in the hand and a thing lying before them, no pose named: the
+                                 # tool down at the work (raised by default, a pair of tongs was held up by the
+                                 # head, the work out of frame; the strike itself is the clip's, 11-20)
 WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing work over what is in front (pose.py)
 ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + WORK_ACTIONS
 
@@ -1508,7 +1545,7 @@ def main():
     reached = {}                     # key -> (where the plan had them, where a reach put them, facing there)
     for gi, g in enumerate(groups, 1):
         st = g[0][1]
-        chars, way = {}, {}
+        chars, way, turned = {}, {}, {}
         cam0 = g[0][0]
         for k in list(reached):      # still where the plan had them before the reach, standing: they did not move
             if k in st and st[k]["position"] == reached[k][0] and st[k]["pose"] != "sitting" and \
@@ -1620,6 +1657,13 @@ def main():
                                                         work_near_cm=wp["near_cm"])
                         c.pop("marks", None)
                         c["facing_to"] = None
+                        # (and whoever stands by across the piece steps to its side: the work is seen from there)
+                        side = stand_aside(wp["position"], wt, {
+                            kk: dict(st[kk], position=way.get(kk, st[kk]["position"])) for kk in st
+                            if kk != k and st[kk]["pose"] != "sitting" and pzs.get(kk) not in WORK_ACTIONS
+                            and kk not in crt}, things, room, walled)
+                        way.update(side)
+                        turned.update({kk: wt["center"][:2] for kk in side})     # (they watch the work from there)
                 if pz == "reach_to_forearm" and v["pose"] != "sitting":
                     # the reach places him: beside the person he reaches, at the forearm nearer him (the action's own
                     # place, not a camera move); the arm is solved on the measured bodies (speakers.py)
@@ -1646,6 +1690,9 @@ def main():
         for kk, m in way.items():                        # those who stepped aside for the work, at their other mark
             if kk in chars and "work_at" not in chars[kk]:
                 chars[kk]["position"] = list(m)
+                if kk in turned and math.dist(m, turned[kk]) > 0.1:
+                    n_ = math.dist(m, turned[kk])
+                    chars[kk]["facing"] = [round((turned[kk][0] - m[0]) / n_, 4), round((turned[kk][1] - m[1]) / n_, 4)]
                 if chars[kk].get("marks"):
                     chars[kk]["marks"] = [list(m)] + [q for q in chars[kk]["marks"] if math.dist(q, m) >= 0.05]
         for n_, (c_, s_) in enumerate(g):                # a fight shot's camera: at the fighter's scale (fight_camera)

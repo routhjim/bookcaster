@@ -231,7 +231,9 @@ WALL_MIN_M = 2.7                 # a measured room's walls are at least this hig
 # room and no camera placed, and six of its eight stills were black (11-19). On again when a hung thing is put
 # flat on its own wall and takes no floor.
 ROOM_HUNG = False
-ROOM_SEEN_MOST = 10              # the things of a room's picture built besides the plan's own, at most
+ROOM_SEEN_MOST = 14              # the things of a room's picture built besides the plan's own, at most
+ANY_KINDS = ("work_piece", "landmark")   # the kinds that hold any thing (its look says what it is)
+SURFACE_STANDS_M = 1.2           # a thing of a table-top kind the picture stands on the floor this tall is a floor thing
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
 NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
@@ -251,11 +253,15 @@ def with_concept(spec: dict, concept: dict) -> dict:
     of the plan landing on it."""
     sp = json.loads(json.dumps(spec))
     chk = concept.get("spec") or {}
+    # a piece another stands on is built as a plain base under it (place_layout.take_bases): what the picture shows
+    # where the reader "found" it is no part of it (asked for a bench, the reader found the picture's benches for the
+    # platform a seat stands on; folded into it, they were never built, 11-20)
+    bases = {r.get("b") for r in sp.get("relations") or [] if L.is_base_relation(sp, r)}
     kept = []
     for p in sp.get("pieces") or []:
         c = chk.get(p["id"]) or {}
-        if not p.get("phrases") and not c.get("in_picture"):
-            continue
+        if not p.get("phrases") and not c.get("in_picture") and p["id"] not in bases:
+            continue                         # (a base is not looked for in the picture: scenes/concept.py)
         if p.get("look"):
             p["look"] = no_likeness(p["look"])
         if p.get("kind") in ("work_piece", "landmark") and str(p.get("look") or "").strip():
@@ -264,12 +270,12 @@ def with_concept(spec: dict, concept: dict) -> dict:
             p["called"] = str(p["look"]).split(",")[0].strip().rstrip(".").lower()
         if c.get("words") and p.get("kind") == "landmark":
             p["look"] = c["words"]           # (a thing of the open: what it is, whole, as the picture shows it)
-        elif c.get("look"):
-            # (a kind that holds any thing, a work piece or a landmark, is what its own words say: the picture adds
-            # its material and colour. A hearth made from "stone, grey" was a block with a pyramid on it, 11-18)
+        elif c.get("look") and p["id"] not in bases:
+            # (what the director's words say it is, and the picture's material and colour: given the picture's
+            # words alone, a seat said to be ornate and upholstered was "wooden, brown", 11-20. A hearth made from
+            # "stone, grey" was a block with a pyramid on it, 11-18)
             own = str(p.get("look") or "").strip().rstrip(".")
-            p["look"] = f"{own}; {c['look']}" if p.get("kind") in ("work_piece", "landmark") and own \
-                and c["look"] not in own else c["look"]
+            p["look"] = f"{own}; {c['look']}" if own and c["look"].lower() not in own.lower() else (own or c["look"])
         if c.get("crop"):                    # its own part of the concept picture: the drawing it is shaped from
             p["source"] = c["crop"]
         kept.append(p)
@@ -281,7 +287,9 @@ def with_concept(spec: dict, concept: dict) -> dict:
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
     in_room_ = concept.get("space") == "room" and sp.get("kind") != "outdoors"
-    for i, sn in enumerate(concept.get("seen") or []):
+    # (a room's things by the reader's own name for them, where it names a kind: see seen_kind)
+    seen_all = [dict(o, kind=seen_kind(o)) if in_room_ else o for o in concept.get("seen") or []]
+    for i, sn in enumerate(seen_all):
         hung_ = ((concept.get("depth") or {}).get("off_floor") or {}).get(f"seen:{i}")
         if hung_ is not None and not (ROOM_HUNG and in_room_ and hung_.get("hangs_m") and sn.get("kind") == "work_piece"):
             continue                         # (it hangs on a wall or from the roof: no piece to stand on the floor)
@@ -290,16 +298,20 @@ def with_concept(spec: dict, concept: dict) -> dict:
         # (the same thing, not a small thing standing before a large one: of like size too)
         twin = sn.get("kind") == "landmark" and sn.get("box") and not any(
             _same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=OPEN_LIKE) for q in kept) and not any(
-            _same_part(sn["box"], o.get("box"), like=OPEN_LIKE) for o in (concept.get("seen") or [])[:i]
+            _same_part(sn["box"], o.get("box"), like=OPEN_LIKE) for o in seen_all[:i]
             if o.get("kind") == "landmark") and sum(1 for q in kept if q["id"].startswith("c")) < OPEN_SEEN_MOST
         # (a seen thing that is the same part of the picture as a piece of the spec is that piece, whatever kind
-        # the judge gave it: a block the spec's stone was found in was built a second time on the same spot, 11-19)
+        # the judge gave it: a block the spec's stone was found in was built a second time on the same spot, 11-19;
+        # not a base, which is built as a plain box under what stands on it)
         if sn.get("box") and any(_same_part(sn["box"], (chk.get(q["id"]) or {}).get("box"), like=0.5) for q in kept
-                                 if (chk.get(q["id"]) or {}).get("in_picture")):
+                                 if (chk.get(q["id"]) or {}).get("in_picture") and q["id"] not in bases):
             continue
-        # (a room takes every thing of its picture, as a place in the open does: each once, the first ROOM_SEEN_MOST)
+        # (a room takes every thing of its picture, as a place in the open does: each once, the first ROOM_SEEN_MOST;
+        # two things in the same part of the picture are one seen twice only when of like kind: benches drawn at
+        # their tables overlap them, and a seat tucked at a table is no second sight of it, 11-20)
         more_ = in_room_ and sn.get("box") and sum(1 for q in kept if q["id"].startswith("c")) < ROOM_SEEN_MOST and \
-            not any(_same_part(sn["box"], o.get("box"), like=0.5) for o in (concept.get("seen") or [])[:i] if o.get("kind"))
+            not any(_same_part(sn["box"], o.get("box"), like=0.5) for o in seen_all[:i]
+                    if o.get("kind") and like_kinds(o["kind"], sn.get("kind")))
         if sn.get("kind") and sn.get("crop") and (sn["kind"] not in have or twin or sn.get("group") or more_) and sn["kind"] not in OPENING_KINDS:
             have.add(sn["kind"])
             if hung_ is not None:            # on its wall, as high as the picture has it
@@ -312,7 +324,10 @@ def with_concept(spec: dict, concept: dict) -> dict:
                          "look": sn.get("words") or "; ".join(x for x in (sn["name"], sn.get("look")) if x),
                          "against": "not stated", "source": sn["crop"], **({"natural": True} if sn.get("natural") else {}),
                          # (a kind that holds any thing is called what the picture's judge named it)
-                         **({"called": seen_called(sn)} if sn["kind"] in ("work_piece", "landmark") and seen_called(sn) else {})})
+                         **({"called": seen_called(sn)} if sn["kind"] in ("work_piece", "landmark") and seen_called(sn) else {}),
+                         # (how many the reader counted, and whether on both sides of the room: place_layout.prepare)
+                         **({"_count": int(sn["count"])} if isinstance(sn.get("count"), int) and sn["count"] >= 1 else {}),
+                         **({"_sides": sn["sides"]} if sn.get("sides") in ("both", "one") else {})})
     sp["pieces"] = kept
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
@@ -329,6 +344,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
             t = (dp.get("things") or {}).get(f"spec:{p['id']}") or (dp.get("things") or {}).get(seen_key.get(p["id"], ""))
             if t:
                 p.update(at_xy=t["xy"], facing_xy=t["facing"], against="wall" if t.get("against") else "free")
+                if isinstance(t.get("raised_m"), (int, float)):
+                    p["_raised_m"] = t["raised_m"]   # (how far off the floor its foot is: place_layout.prepare)
                 if p.get("kind") == "work_piece" and not p.get("longest_m"):
                     p["longest_m"] = round(max(t["size_m"]), 2)      # (a thing of the picture: as big as it shows it)
                 if size_agrees(p.get("longest_m"), t["size_m"]):
@@ -338,6 +355,8 @@ def with_concept(spec: dict, concept: dict) -> dict:
                     # its own words at its own size, where the picture has it (a stone "the size of a sleeping dog",
                     # 0.8 m, was shaped from the picture's squared block 1.4 m long and a metre high, 11-19)
                     p.pop("source", None)
+        if sp.get("kind") != "outdoors":
+            sp["pieces"], sp["_picture_left"], sp["_picture_merged"] = picture_pieces_settled(sp["pieces"], bases)
     if concept.get("space") == "room" and sp.get("kind") != "outdoors":
         # an opening the picture shows and the spec states none of is the room's (a hall drawn with tall windows down
         # both walls was built a sealed box with its kind's one door, 11-19): one of each kind, on the wall the
@@ -407,6 +426,219 @@ def seen_called(sn: dict) -> str:
     w = re.sub(r"^(a|an|the)\s+", "", w.strip(), flags=re.I).strip().lower()
     # (a head of one word is as often its first adjective as its noun: "dark, gnarled ...")
     return w if 2 <= len(w.split()) <= 5 else str(sn.get("name") or "").strip().lower()
+
+
+def seen_kind(sn: dict) -> str | None:
+    """A thing of a room's picture by the reader's own name for it: when the name ends with a kind's word ("long
+    dining tables", "wooden sideboard") and holds no word of the kind the judge filed it under, it is that kind (the
+    judge filed tables as a bench and a sideboard as a table, 11-20). A thing the judge filed under no kind stays
+    so (a wall, a window: no box was taken for it)."""
+    judged = sn.get("kind")
+    if not judged or judged in ANY_KINDS and sn.get("group"):
+        return judged
+    toks = L._words(sn.get("name"))
+    if not toks:
+        return judged
+    stems = {L.noun_stem(t) for t in toks}
+    if any(L.noun_stem(w) in stems for syn in L._kind_words(judged) for w in L._words(syn)):
+        return judged
+    best = None
+    for k in L.PK:
+        if k in OPENING_KINDS or k in ANY_KINDS or (L.PK[k] or {}).get("placement") not in ("floor", "surface", "wall"):
+            continue
+        for syn in L._kind_words(k):
+            sw = L._words(syn)
+            n = len(sw)
+            if n and n <= len(toks) and toks[len(toks) - n:-1] == sw[:-1] and L.noun_stem(toks[-1]) == L.noun_stem(sw[-1]) \
+                    and (best is None or n > best[0]):
+                best = (n, k)
+    return best[1] if best else judged
+
+
+def like_kinds(a, b) -> bool:
+    """Two kinds one thing could be read as twice: the same, or of one family, or one that holds any thing; never a
+    seat and a thing that is no seat (a bench at its table)."""
+    if a == b or a in ANY_KINDS or b in ANY_KINDS:
+        return True
+    seat = lambda k: (L.PK.get(k) or {}).get("needs") == "seat"     # noqa: E731
+    return seat(a) == seat(b) and L._root(a) == L._root(b)
+
+
+def picture_pieces_settled(pcs: list, bases=()) -> tuple:
+    """A measured room's pieces from its picture settled before they are made (places/generate.py makes every piece
+    of the emitted spec): -> (pieces, left, merged).
+    - a thing of a table-top kind the picture stands on its floor SURFACE_STANDS_M tall or more is a thing of the
+      floor, made as what the reader called it at the size it shows (a candlestick kind is 0.3 m: a 2.2 m standing
+      candle-branch was made 0.54 m, 11-20);
+    - a thing the picture's depth did not stand on the floor (on a wall, overhead; not a table-top thing) is left in
+      the picture the room's walls carry: no piece to make (a wall hanging was made a work piece, then refused by the
+      layout, 11-20);
+    - a thing the picture shows once that is a piece of the spec seen again (place_layout.same_thing) is that piece:
+      it takes the picture's drawing, place, size and how high it stands, and adds the picture's words to its own;
+      its phrases stay (a seat the plan names and the picture's seat were made twice, 11-20)."""
+    R = L.pc.load_rules()
+    out, left, merged = [], [], []
+    for p in pcs:
+        d = L.PK.get(p.get("kind")) or {}
+        if L.PICTURE_ID.match(str(p.get("id"))) and d.get("placement") == "surface" and p.get("at_xy") and \
+                len(p.get("_seen_size_m") or []) == 3 and float(p["_seen_size_m"][2]) >= SURFACE_STANDS_M:
+            name = re.split(r"[;,]", str(p.get("look") or ""), maxsplit=1)[0].strip().lower()
+            many = L.plural_noun((L._words(name) or [""])[-1]) and not p.get("_count")
+            p = dict(p, kind="work_piece", called=p.get("called") or name, longest_m=round(max(p["_seen_size_m"]), 2),
+                     **({"_count": int(L.picture_rules(R)["repeat_default"])} if many else {}))
+            d = L.PK.get("work_piece") or {}
+        if L.PICTURE_ID.match(str(p.get("id"))) and not p.get("at_xy") and d.get("placement") != "surface" \
+                and not isinstance(p.get("hangs_m"), (int, float)):
+            left.append({"id": p["id"], "kind": p.get("kind"), "called": p.get("called") or str(p.get("look") or "")[:60],
+                         "why": "not on the floor in the picture: left in the picture the room's walls carry"})
+            continue
+        out.append(p)
+    size = lambda p: p.get("_seen_size_m") or (L.PK.get(p.get("kind")) or {}).get("size_m")   # noqa: E731
+    own = [p for p in out if not L.PICTURE_ID.match(str(p.get("id"))) and p["id"] not in set(bases)]
+    taken, keep = set(), []
+    for c in out:
+        if not L.PICTURE_ID.match(str(c.get("id"))) or L.plural_count(c, R) != 1:
+            keep.append(c)
+            continue
+        twin = next((p for p in own if p["id"] not in taken and L.same_thing(c, p, size(c), size(p), R)), None)
+        if twin is None:
+            keep.append(c)
+            continue
+        taken.add(twin["id"])
+        if c.get("source") and not twin.get("source"):
+            twin["source"] = c["source"]
+        for k in ("at_xy", "facing_xy", "_seen_size_m", "_raised_m"):
+            if c.get(k) is not None and twin.get(k) is None:
+                twin[k] = c[k]
+        if c.get("against") and twin.get("against") in (None, "", "not stated"):
+            twin["against"] = c["against"]
+        seen_words = str(c.get("look") or "").split(";", 1)[-1].strip()
+        if seen_words and seen_words.lower() not in str(twin.get("look") or "").lower():
+            twin["look"] = "; ".join(x for x in (str(twin.get("look") or "").strip().rstrip("."), seen_words) if x)
+        merged.append({"id": c["id"], "into": twin["id"]})
+    return keep, left, merged
+
+
+DRESS_HEAD = re.compile(r"\s+(?:of|with|made|covered|in|on|upon|atop|from|holding|hanging|hung|displayed|wrapped|"
+                        r"strewn|depicting|across|along|set|standing|for|at|mimicking|bearing|draped|lining|lined|"
+                        r"filled|showing|under|over|against|beside|by|near|around|that|which)\b", re.I)
+DRESS_ON_FACE = re.compile(r"\b(?:on|across|along|over|from|against|covering|lining|up)\b(?:\s+[\w-]+){0,3}?\s+"
+                           r"(?:walls?|floors?|ceilings?|roofs?|rafters|beams)\b|\b(?:strewn|scattered)\b", re.I)
+DRESS_HANGS = re.compile(r"\b(?:hanging|hung|hangs|suspended)\b", re.I)
+DRESS_ON = re.compile(r"\b(?:on|upon|atop)\s+(?:the\s+|a\s+|an\s+|its\s+)?([a-z][a-z\- ]*?)(?=$|[,;.]|\s+(?:with|of|and|"
+                      r"in|along|against|by|beside|near)\b)", re.I)
+
+
+def dress_nouns(item: str) -> tuple:
+    """(the item's head words, the nouns it names: the last word of each part of its head, "goblets and plates")."""
+    head = DRESS_HEAD.split(str(item or ""), maxsplit=1)[0]
+    parts = [L._words(x) for x in re.split(r"\s+(?:and|&)\s+|,", head)]
+    return head.strip(), [x[-1] for x in parts if x]
+
+
+def kind_of_noun(noun: str, head: str = "") -> str | None:
+    """The floor or table-top kind whose word ends the head ("tables" -> table, "sideboards" -> cabinet)."""
+    toks = L._words(head) or [noun]
+    best = None
+    for k, d in L.PK.items():
+        if k in OPENING_KINDS or k in ANY_KINDS or (d or {}).get("placement") not in ("floor", "surface", "wall"):
+            continue
+        for syn in L._kind_words(k):
+            sw = L._words(syn)
+            n = len(sw)
+            if n and n <= len(toks) and toks[len(toks) - n:-1] == sw[:-1] and \
+                    L.noun_stem(toks[-1]) == L.noun_stem(sw[-1]) and (best is None or n > best[0]):
+                best = (n, k)
+    return best[1] if best else None
+
+
+def with_dressing(spec: dict, dress: dict, rules: dict | None = None) -> dict:
+    """The place's dressing (scenes/place_dress.py: what its picture was drawn furnished with) checked against the
+    pieces the set will hold, each item put somewhere and said where ("_dressing": [{"item", "where", "piece"}]):
+    - a piece of the set already (a noun of the item's head among the piece's name words, layout_rules "dressing"):
+      that piece, its drawing the picture's own;
+    - said to hang, or to be on or across the walls, floor or roof, or a part of the room itself, or a thing that
+      hangs: in the pictures the room's walls, floor and roof carry (no piece);
+    - said to stand on a piece of the set: on it, in its drawing; on a thing the set lacks: that thing is made;
+    - else made from its words: of the floor or table-top kind its head names, else a work piece called by it, as
+      many as its plural asks, placed by the layout's own rules ("_dressing": kept off the plan's floor as the
+      picture's own things are). The picture drew a rich room's tables, benches and plate; its set had one of each
+      of four and nothing else, and nobody checked (11-20)."""
+    sp = json.loads(json.dumps(spec))
+    items = [str(x).strip() for x in (dress or {}).get("dressing") or [] if str(x).strip()]
+    if not items:
+        return sp
+    R = rules or L.pc.load_rules()
+    dr = R.get("dressing") or {}
+    hangs = {L.noun_stem(w) for w in dr.get("hangs") or []}
+    room_own = {L.noun_stem(w) for w in dr.get("room_own") or []}
+    many = int(L.picture_rules(R)["repeat_default"])
+    bases = {r.get("b"): r.get("a") for r in sp.get("relations") or [] if L.is_base_relation(sp, r)}
+    pcs = sp.get("pieces") or []
+
+    def words_of(p):
+        ws = set(L._name_of(p)) | set(L._words(p.get("called")))
+        ws |= set(L._words(re.split(r"[;,]", str(p.get("look") or ""), maxsplit=1)[0]))
+        return {L.noun_stem(t) for t in ws}
+
+    def found(nouns):
+        for p in pcs:
+            if {L.noun_stem(n) for n in nouns} & words_of(p):
+                return p
+        return None
+
+    left = {L.noun_stem(t) for x in sp.get("_picture_left") or [] for t in L._words(x.get("called"))}
+    report, n_new = [], 0
+    for it in items:
+        head, nouns = dress_nouns(it)
+        stems = {L.noun_stem(n) for n in nouns}
+        p = found(nouns)
+        if p is not None:
+            where = f"the piece {p['id']} ({p.get('kind')})" + (f", built as the base under {bases[p['id']]}"
+                                                                 if p["id"] in bases else "")
+            report.append({"item": it, "where": where, "piece": p["id"]})
+            continue
+        if stems & left:
+            report.append({"item": it, "where": "on a wall in the picture: in the picture the room's walls carry",
+                           "piece": None})
+            continue
+        kd = kind_of_noun(nouns[-1] if nouns else "", head) if nouns else None
+        if stems & hangs or (kd and (L.PK.get(kd) or {}).get("placement") == "wall") or DRESS_HANGS.search(it):
+            report.append({"item": it, "where": "hangs: in the pictures the room's walls and roof carry", "piece": None})
+            continue
+        if DRESS_ON_FACE.search(it) or stems & room_own:
+            report.append({"item": it, "where": "the room's own walls, floor or roof: in the pictures they carry",
+                           "piece": None})
+            continue
+        m = DRESS_ON.search(it[len(head):])
+        on = L._words(m.group(1)) if m else []
+        if on:
+            host = found([on[-1]])
+            if host is not None:
+                report.append({"item": it, "where": f"on the piece {host['id']} ({host.get('kind')}), in its drawing",
+                               "piece": host["id"]})
+                continue
+            # (on a thing the set lacks: that thing is made, with the item on it in its words)
+            head, nouns, kd = m.group(1).strip(), [on[-1]], kind_of_noun(on[-1], m.group(1))
+        if not nouns:
+            continue
+        n_new += 1
+        pid = f"d{n_new}"
+        while any(q["id"] == pid for q in pcs):
+            n_new += 1
+            pid = f"d{n_new}"
+        kd = kd if kd and (L.PK.get(kd) or {}).get("placement") in ("floor", "surface") else None
+        piece = {"id": pid, "kind": kd or "work_piece", "phrases": [], "look": it, "against": "not stated",
+                 "_dressing": True, "_picture": True,
+                 "_count": many if L.plural_noun(L._words(head)[-1] if L._words(head) else "") else 1}
+        if not kd:
+            piece["called"] = re.sub(r"^(a|an|the)\s+", "", head.strip().lower())
+        pcs.append(piece)
+        report.append({"item": it, "where": f"not in the picture: made from its words as {pid} ({piece['kind']}), "
+                                            f"{piece['_count']} placed by the layout", "piece": pid})
+    sp["pieces"] = pcs
+    sp["_dressing"] = report
+    return sp
 
 
 SIZE_OFF = 1.6                   # the picture's thing this many times longer or shorter than the story's is not it
@@ -745,8 +977,10 @@ FACE_PIC_END_M = 0.06           # a wall's picture stops this short of each corn
 FACE_PIC_FLOOR_Z = -0.015       # the floor's picture lies with its underside this low: its face 5 mm over the slab
 FACE_PIC_CEIL_IN_M = 0.045      # the ceiling's picture: this short of every wall (clear of the walls' pictures) and
 FACE_PIC_CEIL_UNDER_M = 0.005   # ... its face this far under the ceiling
-FACE_PIC_RULE = "whole-1"       # (how the pictures are made: concept_depth.whole_faces; a new rule is a new panel)
+FACE_PIC_RULE = "whole-2"       # (how the pictures are made: concept_depth.whole_faces; a new rule is a new panel.
+#                                  2: the panel's picture over its whole texture, "keep_uvs")
 FLATS = ("floor", "ceiling")
+SHELL_DRESSING = ("dado", "trim", "plates", "columns")   # what sets/layout.py build_wall puts on a wall's inner face
 
 
 def face_pictures(spec: dict) -> list:
@@ -804,6 +1038,9 @@ def face_pictures(spec: dict) -> list:
               "face_whole": {"face": name, "room_m": rm, "faces": srcs, "inset_m": [round(iu, 3), round(iv, 3)]},
               "face_fill": "" if flat else tile, "face_colour": floor_col if name == "floor" else None,
               "face_flat": flat,
+              # (the picture laid over the whole texture by the panel's own UVs, period_kit.picture_uvs: the
+              # harness's unwrap gave a 21.6 x 8 m wall 38 texels of height and it showed as a smear, 11-20)
+              "keep_uvs": True,
               "licence": "CC0 (original script; picture from the place's own concept picture)",
               "cameras": [{"name": "front", "position": [0.0, -max(w, h) * 0.4, max(w, h) * 1.3], "target": [0.0, 0.0, 0.0],
                            "focal": 28}] if flat else
@@ -835,7 +1072,8 @@ def wall_pictures(out: dict, spec: dict, library, lay: dict | None = None) -> di
     picture's own walls show its windows and doors: a bright square of the period's window cut into its pattern, on
     a wall the picture never sees, was the set's guess against its picture), its daylight kept, its drapes taken
     down. A room built to another size than the picture was measured at takes none (its pictures would not meet its
-    corners)."""
+    corners). A wall that carries its picture is built bare behind it (SHELL_DRESSING off, no openings of its own):
+    nothing the shell builds stands proud of the panel."""
     import config as C
     W, D, H = out["size_m"]
     hung, why = {}, {}
@@ -876,6 +1114,14 @@ def wall_pictures(out: dict, spec: dict, library, lay: dict | None = None) -> di
                                 "position": [round(pos[0], 3), round(pos[1], 3), 0.0], "facing": [n[0], n[1]]})
         L_ = W if side in ("north", "south") else D
         hung.setdefault(side, []).append((-L_ / 2, L_ / 2, 0.0, H))
+        # (the shell's dressing and what it builds in its openings stood up to 0.14 m out of the wall, the panel
+        # 0.04: a white rail ran through the picture round a whole room and an oak door showed through it, 11-20)
+        for w in out.get("structure") or []:
+            if w.get("kind") == "wall" and w.get("side") == side:
+                for k in SHELL_DRESSING:
+                    w.pop(k, None)
+                if w.get("openings"):
+                    w["openings"] = []
         for o in lay.get("openings") or []:            # (a window under the picture: no drapes before a bare wall)
             if o.get("wall") == side and o.get("kind") == "window" and o.get("point"):
                 out["fixtures"] = [x for x in out["fixtures"] if not (str(x.get("name") or "").startswith("drapes")
@@ -1216,6 +1462,9 @@ ROOM_LM_M2 = 450.0               # a room whose own lights give less than this (
 ROOM_LIGHT_LM = 600              # fire inside a forge's hood lit nothing) gets soft lights over its floor, each at
 ROOM_LIGHT_GAP_M = 3.0           # least this, this far apart. (At 150 the forge's stills averaged 12 to 20 of 255
 #                                  and its faces were lost in the redraw, 11-17)
+ROOM_LIGHT_UNDER_M = 0.4        # the soft lights hang this far under the ceiling; under a ceiling that carries its
+ROOM_LIGHT_SPREAD = 0.6          # picture this share of their spacing under it (0.4 m under it each lit a bright
+ROOM_LIGHT_HEAD_M = 2.6          # disc on the picture, 11-20), never lower than this over the floor
 FIRE_ROOM_SHARE = 0.25           # a fire's light counts this much toward the room's own: it burns low, in a grate or
 #                                  under a hood, and lights the hearth more than the faces round the room
 
@@ -1259,11 +1508,14 @@ def room_light(out: dict, spec: dict) -> bool:
     nx, ny = max(1, round(W / ROOM_LIGHT_GAP_M)), max(1, round(D / ROOM_LIGHT_GAP_M))
     each = max(ROOM_LIGHT_LM, (want - own) / (nx * ny))
     col = light_of((spec.get("_concept") or {}).get("concept") or "")
+    under = ROOM_LIGHT_UNDER_M
+    if any(f.get("name") == "ceiling_face_picture" for f in out.get("fixtures") or []):
+        under = max(under, min(ROOM_LIGHT_SPREAD * max(W / nx, D / ny), H - ROOM_LIGHT_HEAD_M))
     for i in range(nx):
         for j in range(ny):
             l = {"type": "point", "lumens": round(each), "radius_m": round(max(6.0, 2.5 * H), 1),
                  "source_radius_m": 0.3, "shadows": True,
-                 "position": [round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2), round(H - 0.4, 2)]}
+                 "position": [round((i + 0.5) * W / nx - W / 2, 2), round((j + 0.5) * D / ny - D / 2, 2), round(H - under, 2)]}
             l.update({"kelvin": kelvin_of(col)} if col else {"kelvin": 3200})
             out["lights"].append(l)
     return True
@@ -1338,6 +1590,14 @@ def base_boxes(out: dict, lay: dict) -> list:
                 items[n]["base"] = {"name": f"base_{b['id']}", "edge": b["edge"], "front": b["front"],
                                     "rect": b["rect"], "height_m": b["size_m"][2]}
     return done
+
+
+def dressing_placed(report: list, lay: dict) -> list:
+    """Each dressing item (with_dressing) with how many of its piece, and its copies, the layout placed."""
+    got = {}
+    for q in lay.get("pieces") or []:
+        got[q.get("copy_of") or q["id"]] = got.get(q.get("copy_of") or q["id"], 0) + 1
+    return [dict(r, placed=got.get(r["piece"], 0)) if r.get("piece") else dict(r) for r in report or []]
 
 
 def build(spec: dict, set_id: str, library=None) -> tuple:
@@ -1457,7 +1717,11 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
               **({"bases": based} if based else {}),
               **({"base_dropped_relations": spec["_base_dropped_relations"]} if spec.get("_base_dropped_relations") else {}),
               **({"room_light": "a grid of soft lights: the room had no light of its own"} if lit else {}),
-              "unresolved_phrases": [ph for ph in spec.get("_phrases") or [] if ph not in ss["named_places"]]}
+              "unresolved_phrases": [ph for ph in spec.get("_phrases") or [] if ph not in ss["named_places"]],
+              **({"dressing": dressing_placed(spec.get("_dressing"), lay)} if spec.get("_dressing") else {}),
+              **({"picture_left": spec["_picture_left"]} if spec.get("_picture_left") else {}),
+              **({"picture_refused": [n for n in lay.get("refused") or [] if n.get("what") != "repeated"]}
+                 if lay.get("refused") else {})}
     return out, ss["named_places"], report
 
 
@@ -1470,6 +1734,8 @@ def main():
         spec["_style"] = Path(a[a.index("--style") + 1]).read_text().strip().rstrip(".")
     if "--concept" in a:
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
+    if "--dress" in a:                                 # the place's dressing (scenes/place_dress.py), each item placed
+        spec = with_dressing(spec, json.loads(Path(a[a.index("--dress") + 1]).read_text()))
     if "--time" in a:                                  # the place's time of day (scenes/place_spec.py time_of_day)
         spec["_time"] = a[a.index("--time") + 1]
     spec = with_crowd(spec)

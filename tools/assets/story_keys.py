@@ -813,8 +813,10 @@ class Story:
         tod = self.place_time(place) if "--time" in extra else ""
         extra = tuple(x for x in extra if x != "--time") + (("--time", tod) if tod else ())
         sty = ["--style", self.book / "art_style.txt"] if (self.book / "art_style.txt").exists() else []
+        # (the things the place's picture was drawn dressed with: each one placed in the set or said where it is)
+        drs = ["--dress", d / "dress.json"] if con and (d / "dress.json").exists() else []
         return sh([PY, HERE / "sets" / "place_build.py", d / "place_spec.json", self.places[place]["set"]] + con
-                  + sty + list(extra), d / "place_build.log")
+                  + drs + sty + list(extra), d / "place_build.log")
 
     def step_pieces(self, place):
         d = self.d(place)
