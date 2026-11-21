@@ -581,10 +581,17 @@ def with_dressing(spec: dict, dress: dict, rules: dict | None = None) -> dict:
         ws |= set(L._words(re.split(r"[;,]", str(p.get("look") or ""), maxsplit=1)[0]))
         return {L.noun_stem(t) for t in ws}
 
-    def found(nouns):
+    def found(nouns, head=""):
         for p in pcs:
             if {L.noun_stem(n) for n in nouns} & words_of(p):
                 return p
+        # (a head of two nouns names the thing by the first as well: the word before its last, when that is a
+        # piece's own kind - seats named by what they are were made a second time as chairs, 11-20)
+        ws = L._words(head)
+        if len(ws) > 1:
+            for p in pcs:
+                if L.noun_stem(ws[-2]) in {L.noun_stem(t) for t in L._words(str(p.get("kind") or "").replace("_", " "))}:
+                    return p
         return None
 
     left = {L.noun_stem(t) for x in sp.get("_picture_left") or [] for t in L._words(x.get("called"))}
@@ -592,7 +599,7 @@ def with_dressing(spec: dict, dress: dict, rules: dict | None = None) -> dict:
     for it in items:
         head, nouns = dress_nouns(it)
         stems = {L.noun_stem(n) for n in nouns}
-        p = found(nouns)
+        p = found(nouns, head)
         if p is not None:
             where = f"the piece {p['id']} ({p.get('kind')})" + (f", built as the base under {bases[p['id']]}"
                                                                  if p["id"] in bases else "")
@@ -628,7 +635,10 @@ def with_dressing(spec: dict, dress: dict, rules: dict | None = None) -> dict:
             n_new += 1
             pid = f"d{n_new}"
         kd = kd if kd and (L.PK.get(kd) or {}).get("placement") in ("floor", "surface") else None
-        piece = {"id": pid, "kind": kd or "work_piece", "phrases": [], "look": it, "against": "not stated",
+        # (made from words alone, its age is said in them: no picture of the place tells its maker)
+        age = str(sp.get("period") or "").strip()
+        piece = {"id": pid, "kind": kd or "work_piece", "phrases": [],
+                 "look": f"{it}; {age}" if age and age.lower() not in it.lower() else it, "against": "not stated",
                  "_dressing": True, "_picture": True,
                  "_count": many if L.plural_noun(L._words(head)[-1] if L._words(head) else "") else 1}
         if not kd:

@@ -284,3 +284,18 @@ if __name__ == "__main__":
                 traceback.print_exc()
                 print("FAIL", name, repr(e))
     sys.exit(1 if fails else 0)
+
+
+def test_dressing_piece_is_never_a_near_match_of_the_library():
+    """A thing the place is dressed with is made from its own words (and its place's age is in them): the library's
+    nearest piece of the kind, made for another place, does not serve."""
+    import pieces as P
+    K = P.kinds()
+    kind = next(k for k, d in K.items() if d.get("placement") == "floor" and not d.get("needs")
+                and d.get("made_as") is None and d.get("sized_by") is None)
+    rec = {"asset_id": f"{kind}_gen_aaaaaa_01_tr", "piece_kind": kind, "look": "plain steel and glass",
+           "tags": [kind, "generated-on-request"], "size_m": K[kind]["size_m"], "checks_passed": True,
+           "description": f"{kind}: plain steel and glass", "class": "prop", "id": f"{kind}_gen_aaaaaa_01_tr"}
+    row = P.resolve([{"id": "d1", "kind": kind, "look": "carved dark wood; of an old age", "_dressing": True}], [rec], K,
+                    threshold=0.0)["pieces"][0]
+    assert row["status"] == "generate", row

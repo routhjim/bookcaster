@@ -621,7 +621,10 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                 hits = [h for h in hits if "panorama_shell" in (next((r for r in records
                         if r["asset_id"] == h["asset_id"]), {}).get("tags") or [])
                         and not next((r for r in records if r["asset_id"] == h["asset_id"]), {}).get("panorama_people")]
-            elif p.get("source") or K[p["kind"]].get("sized_by") == "longest" or K[p["kind"]].get("made_as") == "world":
+            elif p.get("source") or p.get("_dressing") or K[p["kind"]].get("sized_by") == "longest" or \
+                    K[p["kind"]].get("made_as") == "world":
+                # (and a thing the place is dressed with, made from its own words: a room of one age was given a
+                # screen made for another story's, a pane of glass on steel feet, four times, 11-20)
                 # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
                 # the asset already made from that same picture serves, never a near match by words. So is a thing
                 # worn or carried: a kind that holds any object, where a near match by words is another object
