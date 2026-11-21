@@ -1407,7 +1407,10 @@ class Story:
         for r in json.loads(kp.read_text()) if kp.exists() else []:
             miss = " ".join(map(str, r.get("staging_miss") or []))
             walled = any(int(x) >= 50 for x in re.findall(r"foreground covers (\d+)%", miss))
-            if not r["key"] or walled or any(w in miss for w in self.UNREADABLE):
+            # (and one where another's head is twice the head of whom the shot is about: it reads as theirs)
+            lost = any(float(o) >= 2.0 * float(m_) > 0 for o, m_ in
+                       re.findall(r"head \(([\d.]+)\) is bigger than the person the shot is about's \(([\d.]+)\)", miss))
+            if not r["key"] or walled or lost or any(w in miss for w in self.UNREADABLE):
                 out.append(r["shot"])
         return out
 

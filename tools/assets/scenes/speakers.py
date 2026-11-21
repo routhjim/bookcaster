@@ -1594,6 +1594,9 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
     return len(last) == n and bool(last[0]) and len(set(last)) == 1
 
 
+FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
+
+
 def fallback_camera(ms: list, room, tried=()) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
@@ -1617,13 +1620,18 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
     f0 = ms[0].get("head_fwd_xy")
     a0 = math.degrees(math.atan2(f0[1], f0[0])) if f0 and math.hypot(*f0) > 1e-6 else 0.0
     sweep = [a0 + sg * d for d in range(0, 181, 15) for sg in ((1,) if d in (0, 180) else (1, -1))]
-    for need in (eyes, eyes[:1]):
+    # (and first from where the one the shot is about is no further off than the others: the wide on a man at the
+    # far wall stood by the woman near it, her head four times his, 11-20)
+    for need, lead_near in ((eyes, True), (eyes, False), (eyes[:1], True), (eyes[:1], False)):
         for r in [r0 + d for d in (0.0, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 12.0)]:
             for z in zs:
                 for a in sweep:
                     p = [mid[0] + r * math.cos(math.radians(a)), mid[1] + r * math.sin(math.radians(a)), z]
                     if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or \
                             any(solid_between(p, e) for e in need):
+                        continue
+                    if lead_near and any(math.dist(p, e) < FALLBACK_LEAD_K * math.dist(p, eyes[0]) and not m.get("creature")
+                                         for e, m in zip(eyes[1:], ms[1:])):
                         continue
                     if any(seg_point_dist(e, p, eyes[0]) < FALLBACK_CLEAR_M for e in eyes[1:]):
                         continue

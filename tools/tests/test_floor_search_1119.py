@@ -1,4 +1,5 @@
 """The floor a camera is looked for on stays small however wide the ground is (scenes/speakers.py near_people)."""
+import math
 import sys
 from pathlib import Path
 
@@ -63,3 +64,14 @@ def test_a_shot_missing_the_same_way_try_after_try_is_not_tried_again():
     assert not S.same_miss(same[:-1])
     assert not S.same_miss(same[:-1] + [{"why": ["y is cut by the frame's edge"]}])
     assert not S.same_miss([{"why": []}] * S.SAME_MISS_ROUNDS)
+
+
+def test_last_resort_keeps_the_first_one_the_nearer():
+    """The wide on someone far off with another near stands where the first is no further than the other."""
+    S.OPEN_GROUND[:] = []
+    S.SOLIDS[:] = []
+    lead, other = _m(-1.6, 2.7, (1.0, 0.0)), _m(0.4, -0.4, (0.3, -0.9))
+    q = S.fallback_camera([lead, other], [5.0, 6.5, 3.0])
+    assert q is not None
+    p = q["position"][:2]
+    assert math.dist(p, [0.4, -0.4]) >= S.FALLBACK_LEAD_K * math.dist(p, [-1.6, 2.7]), p
