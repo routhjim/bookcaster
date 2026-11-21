@@ -462,7 +462,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                 break
     at_ = opts.get("at_thing")               # what the subject sits at: its top is in the frame, from any side
     if at_:
-        q = framing.project(cam, [at_["center"][0], at_["center"][1], at_["top"]], res)
+        sub_ = (subjects.get(opts.get("subject")) or {}).get("measured") or {}
+        q = framing.project(cam, at_point(at_, sub_.get("eye_xy")), res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
             why.append(f"the {at_['name']} (where the subject sits or works) is out of the frame")
     if lm:                                   # the end place's landmark seen from its front, not from behind it
@@ -1128,7 +1129,8 @@ def landmark(spec, c):
     x, y = t["center"][:2]
     walls = [(W / 2 - x, [-1.0, 0.0]), (W / 2 + x, [1.0, 0.0]), (D / 2 - y, [0.0, -1.0]), (D / 2 + y, [0.0, 1.0])]
     front = min(walls, key=lambda w: w[0])[1]
-    return {"name": t["name"], "center": list(t["center"]), "top": t["center"][2] + t["half"][2], "front": front}
+    return {"name": t["name"], "center": list(t["center"]), "half": list(t["half"]),
+            "top": t["center"][2] + t["half"][2], "front": front}
 
 
 def cam_opts(spec, c):
@@ -1621,6 +1623,60 @@ BEHIND_M = 0.3               # someone this near the line from a camera to anoth
 FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
 FALLBACK_FORE_DEG = 40.0      # someone nearer a wide's camera than its subject, this near its aim, is in its foreground
 FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
+SPECK_H = 0.2                # a person under this share of a wide's height is a speck in it
+DEPTH_BACK_M = (5.0, 7.0, 9.0, 3.5)   # the depth view's camera: this far behind its foreground person ...
+DEPTH_SIDE_M = 1.2           # ... and this far to their side (they stand at one side of the frame, not over its middle)
+AT_TALL_M = 2.5              # a thing taller than this that a shot is at (a building by its door) need not show its top
+
+
+def at_point(at_: dict, sub_xy) -> list:
+    """The point of the thing a subject sits or works at that their shot holds: its top's middle; of a thing far
+    taller than a person (they stand at a building's door), its nearest point to them at a standing head's height.
+    (Held by its top, a full shot of two people at a door stood 9 m off to take in the roof 9 m up: each was 0.4% of
+    the frame and the key had nobody the render could name, 11-21.)"""
+    c, h = at_["center"], at_.get("half")
+    if at_["top"] <= AT_TALL_M or not h or not sub_xy:
+        return [c[0], c[1], at_["top"]]
+    return [max(c[0] - h[0], min(c[0] + h[0], sub_xy[0])), max(c[1] - h[1], min(c[1] + h[1], sub_xy[1])), 1.9]
+
+
+def speck_wide(ms: list) -> bool:
+    """Whether one wide that holds all these measured people makes a person a speck: they stand so far apart (or
+    from a creature among them) that the lens that takes them all in shows a standing person under SPECK_H of its
+    height."""
+    if len(ms) < 2 or all(m.get("creature") for m in ms):
+        return False
+    xy = [m["eye_xy"] for m in ms]
+    mid = [sum(e[i] for e in xy) / len(xy) for i in range(2)]
+    r0 = 1.15 * max(math.dist(e, mid) for e in xy) / (framing.SENSOR_W / 2.0 / FALLBACK_MM)
+    return 1.7 / (2.0 * r0 * framing.SENSOR_W / 2.0 / FALLBACK_MM * 9.0 / 16.0) < SPECK_H if r0 > 0 else False
+
+
+def depth_camera(ms: list, room, tried=()) -> dict | None:
+    """The view in depth of a creature and people far from it (the first of them: whom the shot is about): from
+    behind a person and to their side, aimed at the creature's head: that person large at one side of the frame, the
+    creature and whoever stands between at their distance beyond. The person: the first one, or with the creature
+    first the one furthest from it. None with no creature, or no standpoint with a clear line to it. (One wide on a
+    beast and two people 25 m apart stood 20 m from their middle: the people were a thousandth of the frame each,
+    the beast out of its edge, 11-21.)"""
+    beast = next((m for m in ms if m.get("creature")), None)
+    people = [m for m in ms if not m.get("creature")]
+    if not beast or not people:
+        return None
+    le = [beast["eye_xy"][0], beast["eye_xy"][1], beast["eye_z"]]
+    fore = max(people, key=lambda m: math.dist(m["eye_xy"], le[:2])) if ms[0] is beast else ms[0]
+    d = math.dist(fore["eye_xy"], le[:2])
+    if d < 1e-3:
+        return None
+    u = [(fore["eye_xy"][0] - le[0]) / d, (fore["eye_xy"][1] - le[1]) / d]
+    for back in DEPTH_BACK_M:
+        for sg in (1, -1):
+            p = [fore["eye_xy"][0] + back * u[0] - sg * DEPTH_SIDE_M * u[1],
+                 fore["eye_xy"][1] + back * u[1] + sg * DEPTH_SIDE_M * u[0], 1.7]
+            if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or solid_between(p, le):
+                continue
+            return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in le], "focal_mm": FALLBACK_MM}
+    return None
 
 
 def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
@@ -1632,6 +1688,11 @@ def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
     shot that had rendered black was rendered black again, 11-18.)"""
     if not ms:
         return None
+    if not _fore and speck_wide(ms):         # too far apart for one wide: the creature in depth past a person, or
+        far = depth_camera(ms, room, tried) or fallback_camera(   # the first one alone, the others out of its foreground
+            ms[:1], room, tried, _fore=[[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms[1:]])
+        if far:
+            return far
     eyes = [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms]
     mid = [sum(e[i] for e in eyes) / len(eyes) for i in range(3)]
     spread = max([math.dist(e[:2], mid[:2]) for e in eyes] + [0.5])

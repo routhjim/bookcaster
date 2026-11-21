@@ -1399,6 +1399,17 @@ class Story:
     # (a kept least-bad staging with these misses shows nobody readable; the last two: speakers.still_why and
     # creature_view_why, a camera against or under a creature's head)
 
+    def shows_nobody(self, sid) -> bool:
+        """Whether a shot whose plan lists people has a key the engine measured nobody in (each of them under a
+        hundredth of the frame, or out of it): the shot flow refuses such a key, and its shot kept an old clip while
+        the rest of the story was rendered anew (11-21)."""
+        try:
+            ff = self.keys / f"{sid}.shot_facts.json"
+            return ff.exists() and not json.loads(ff.read_text()).get("visible") and \
+                bool((self.plan.get(sid) or [{}])[0].get("people"))
+        except (AttributeError, OSError, ValueError):       # (no keys folder or plan at hand: nothing is known)
+            return False
+
     def keyless(self, place) -> list:
         """The shots without a key, and those whose key is a least-bad staging that left its people unreadable (the
         subject or a named person out of the picture, the camera inside something): both are staged again."""
@@ -1410,7 +1421,7 @@ class Story:
             # (and one where another's head is twice the head of whom the shot is about: it reads as theirs)
             lost = any(float(o) >= 2.0 * float(m_) > 0 for o, m_ in
                        re.findall(r"head \(([\d.]+)\) is bigger than the person the shot is about's \(([\d.]+)\)", miss))
-            if not r["key"] or walled or lost or any(w in miss for w in self.UNREADABLE):
+            if not r["key"] or walled or lost or any(w in miss for w in self.UNREADABLE) or self.shows_nobody(r["shot"]):
                 out.append(r["shot"])
         return out
 
