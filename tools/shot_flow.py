@@ -339,7 +339,11 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
                                                     be="is" if n == 1 else "are")
     if not (SCENE_FACTS or HOLD_CAMERA):
         return prompt
-    hold = "" if CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
+    # (11-21 user: the sentence is for talk and quiet shots; on an action shot or a chain line, one short sentence of
+    # action, it was the longer half of the words and all of it "no move")
+    moving = s.get("kind") == "action" or bool(words)
+    hold = "" if moving or CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or \
+        re.search(r"(?i)\bstatic camera\b", prompt) \
         else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
     if hold and HOLD_FIRST and s.get("kind") == "quiet":     # (an experiment's arm: the talk clips' opening words)
         prompt, hold = f"Static camera, the framing does not change. {prompt[0].upper() + prompt[1:]}", ""

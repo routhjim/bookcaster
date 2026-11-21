@@ -85,18 +85,22 @@ ES = [{"id": "talk-000100", "kind": "talk", "speaker": "Person A", "t": 1.0, "du
       {"id": "quiet-000300", "kind": "quiet", "t": 9.0, "dur": 3.0}]
 vis = lambda *names, boxes=None: [dict({"name": n}, **({"box": boxes[i]} if boxes else {})) for i, n in enumerate(names)]
 
-# --- 8: the camera-hold sentence is dropped only for a camera move ----------------------------------------------------
+# --- 8: the camera-hold sentence: quiet and talk shots, dropped only for a camera move; never action words -------------
 S.HOLD_CAMERA, S.SCENE_FACTS, S.KEY_PEOPLE = True, "", {}
 HOLD = "The camera holds the opening picture's framing"
 for words in ("A close-up of her hands on the table.", "The camera holds on her face.",
               "She pushes in the drawer.", "He pulls back to look at her."):
-    check(f"hold kept: {words!r}", HOLD in S.with_facts("x.", {"id": "a", "kind": "action", "action": words}))
+    check(f"hold kept: {words!r}", HOLD in S.with_facts("x.", {"id": "a", "kind": "quiet", "action": words}))
 for words in ("The camera pans left across the room.", "The camera slowly pushes in on his face.",
               "A slow zoom in on the letter.", "A tracking shot along the wall.", "Dolly in toward the door."):
     check(f"hold dropped for a camera move: {words!r}",
-          HOLD not in S.with_facts("x.", {"id": "a", "kind": "action", "action": words}))
+          HOLD not in S.with_facts("x.", {"id": "a", "kind": "quiet", "action": words}))
 check("a talk prompt that already holds the camera gets no second sentence",
       HOLD not in S.with_facts("Static camera, the framing does not change. x.", {"id": "a", "kind": "talk"}))
+check("a talk prompt without its own camera words gets the sentence", HOLD in S.with_facts("x.", {"id": "a", "kind": "talk"}))
+check("an action shot's words carry no camera sentence",
+      HOLD not in S.with_facts("x.", {"id": "a", "kind": "action", "action": "She pushes in the drawer."}))
+check("a chain line carries no camera sentence", HOLD not in S._chain_words({"id": "c"}, "She walks to the chair."))
 
 # --- 7: the scene's facts go on quiet shots only -----------------------------------------------------------------------
 S.SCENE_FACTS, S.HOLD_CAMERA = "The fire is lit.", False
@@ -127,12 +131,12 @@ check("no option: the speaker's zone is the layout's", S._speaker_box({"id": "t"
 (L / "out" / "action-000900_s0_x1a.mp4").write_text("old take")
 S.HOLD_CAMERA = True
 st1 = S._chain_state(L, ch, key)
-check("the camera sentence on: the chain starts again", st1["sig"] != st0["sig"] and
-      not (L / "out" / "action-000900_s0_x1a.mp4").exists())
-check("... and stays while nothing changes", S._chain_state(L, ch, key)["sig"] == st1["sig"])
+check("the camera sentence on: a chain's words and takes are as they were", st1["sig"] == st0["sig"] and
+      (L / "out" / "action-000900_s0_x1a.mp4").exists())
 S.KEY_PEOPLE = {"action-000900_s0": 3}
 st2 = S._chain_state(L, ch, key)
-check("the key's people count is part of the chain", st2["sig"] != st1["sig"])
+check("the key's people count is part of the chain: it starts again", st2["sig"] != st1["sig"] and
+      not (L / "out" / "action-000900_s0_x1a.mp4").exists())
 S.KEY_PEOPLE = {"action-000900_s0": 2}
 check("... a changed count starts it again", S._chain_state(L, ch, key)["sig"] != st2["sig"])
 S.HOLD_CAMERA, S.KEY_PEOPLE = False, {}
