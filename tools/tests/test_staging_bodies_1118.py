@@ -275,3 +275,16 @@ def test_a_speaker_in_shadow_is_shot_again_with_the_key_from_the_other_side(tmp_
     assert any("d's face is in shadow" in w for w in h[0]["why"]) and not h[0][SP.KEY_FLIP]
     assert h[1]["camera"]["position"] == h[0]["camera"]["position"] and h[1][SP.KEY_FLIP]   # the same camera, lit
     assert not any("in shadow" in w for w in h[1]["why"])
+
+
+def test_a_full_shot_of_several_holds_them_at_like_sizes():
+    """A full shot of several people from close behind one of them (that head many times another's) is refused;
+    from the side, each at a like distance, it is not refused for their sizes."""
+    near, far = S.person([0.0, 0.0])["measured"], S.person([0.0, 6.0])["measured"]
+    subjects = {"a": {"measured": far}, "b": {"measured": near}}
+    behind = {"position": [0.3, -0.9, 1.6], "target": [0.0, 6.0, 1.4], "focal_mm": 35}
+    why = SP.framing_why(behind, "full", None, None, False, ["a", "b"], subjects, RES, opts={})[0]
+    assert any("times" in w and "full shot of 2 people" in w for w in why), why
+    side = {"position": [7.0, 3.0, 1.6], "target": [0.0, 3.0, 1.4], "focal_mm": 28}
+    why = SP.framing_why(side, "full", None, None, False, ["a", "b"], subjects, RES, opts={})[0]
+    assert not any("full shot of 2 people" in w for w in why), why

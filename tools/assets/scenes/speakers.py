@@ -556,6 +556,15 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         hs = head_share(cam, subjects[k]["measured"], res) if k in subjects else None
         if k in facts and (not in_picture(facts[k]) or (hs is not None and hs < SLIVER)):
             why.append(f"{k} (named for the shot) is not in the picture")
+    if kind in ("full", "wide") and len([k for k in show or [] if k in subjects]) > 1:
+        # a full shot of several people holds them at sizes of one picture: from behind one's shoulder that one's
+        # back was a third of the frame, the seated one at its edge and the third a speck (11-20)
+        hh = {k: head_h(cam, subjects[k]["measured"], res) for k in show if k in subjects and k in facts
+              and in_picture(facts[k]) and not subjects[k]["measured"].get("creature")}
+        if len(hh) > 1 and max(hh.values()) > FULL_HEADS_K * max(min(hh.values()), 1e-6):
+            big, small = max(hh, key=hh.get), min(hh, key=hh.get)
+            why.append(f"a {kind} shot of {len(hh)} people: {big}'s head ({hh[big]:.3f}) is over {FULL_HEADS_K:g} "
+                       f"times {small}'s ({hh[small]:.3f})")
     sk = opts.get("subject")                 # the plan's shot class: a close is a close
     if kind == "close" and sk in subjects and head_h(cam, subjects[sk]["measured"], res) < MIN_FACE_H["close"]:
         why.append(f"{sk}'s face {head_h(cam, subjects[sk]['measured'], res):.3f} of the frame: not a close")
@@ -1594,6 +1603,7 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
     return len(last) == n and bool(last[0]) and len(set(last)) == 1
 
 
+FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
 FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
 
 
