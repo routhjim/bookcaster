@@ -561,6 +561,17 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         # back was a third of the frame, the seated one at its edge and the third a speck (11-20)
         hh = {k: head_h(cam, subjects[k]["measured"], res) for k in show if k in subjects and k in facts
               and in_picture(facts[k]) and not subjects[k]["measured"].get("creature")}
+        # (nor one of them behind another: from behind the one standing before a seat the one seated was not seen at
+        # all, and the shot of three was a back and a far figure, 11-20)
+        for k in hh:
+            ek = subjects[k]["measured"]["eye_xy"]
+            for o in hh:
+                eo = subjects[o]["measured"]["eye_xy"]
+                if o != k and math.dist(cam["position"][:2], eo) < math.dist(cam["position"][:2], ek) - 0.3 and \
+                        seg_point_dist(list(eo) + [0.0], list(cam["position"][:2]) + [0.0], list(ek) + [0.0]) < BEHIND_M:
+                    why.append(f"{k} (named for the shot) is behind {o}")
+        if lead and not speaker and lead in hh and turned_away(cam, subjects[lead]["measured"]):
+            why.append(f"a {kind} shot of {len(hh)} people from behind {lead} (the shot is about {lead})")
         if len(hh) > 1 and max(hh.values()) > FULL_HEADS_K * max(min(hh.values()), 1e-6):
             big, small = max(hh, key=hh.get), min(hh, key=hh.get)
             why.append(f"a {kind} shot of {len(hh)} people: {big}'s head ({hh[big]:.3f}) is over {FULL_HEADS_K:g} "
@@ -1603,6 +1614,7 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
     return len(last) == n and bool(last[0]) and len(set(last)) == 1
 
 
+BEHIND_M = 0.3               # someone this near the line from a camera to another's eyes, and nearer it, hides them
 FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
 FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
 

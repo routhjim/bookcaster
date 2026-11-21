@@ -288,3 +288,17 @@ def test_a_full_shot_of_several_holds_them_at_like_sizes():
     side = {"position": [7.0, 3.0, 1.6], "target": [0.0, 3.0, 1.4], "focal_mm": 28}
     why = SP.framing_why(side, "full", None, None, False, ["a", "b"], subjects, RES, opts={})[0]
     assert not any("full shot of 2 people" in w for w in why), why
+
+
+def test_a_full_shot_does_not_hide_one_behind_another():
+    """From behind the one standing before another, the other is hidden: refused; and from behind the one the shot
+    is about. From the side neither."""
+    front, back = S.person([0.0, 0.0], facing=[0.0, 1.0])["measured"], S.person([0.0, 2.0], facing=[0.0, -1.0])["measured"]
+    subjects = {"a": {"measured": back}, "b": {"measured": front}}
+    behind = {"position": [-0.1, -3.0, 1.5], "target": [0.0, 1.0, 1.4], "focal_mm": 24}
+    why = SP.framing_why(behind, "full", None, None, False, ["a", "b"], subjects, RES, opts={"line_subject": "b"})[0]
+    assert any("a (named for the shot) is behind b" in w for w in why), why
+    assert any("from behind b" in w for w in why), why
+    side = {"position": [5.0, 1.0, 1.5], "target": [0.0, 1.0, 1.4], "focal_mm": 24}
+    why = SP.framing_why(side, "full", None, None, False, ["a", "b"], subjects, RES, opts={"line_subject": "b"})[0]
+    assert not any("is behind" in w or "from behind" in w for w in why), why
