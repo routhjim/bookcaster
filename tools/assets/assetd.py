@@ -791,8 +791,18 @@ class Sched:
     # ------------------------------------------------------------ asset mode / released (video runs)
     def outside_holders(self, c):
         """Pids other than ours holding a card's lock (our editor inherits our lock: /proc/locks shows our pid)."""
-        return [(p, cmd) for p, cmd in lock_holders(c.lock_path)
-                if p != os.getpid() and p not in self.child_sids and sid_of(p) not in self.child_sids]
+        # (a locker that has exited leaves the lock with its children: ours when every process that still has the
+        # lock open is one of our own jobs'. Counted as an outside job, our own drawer on one card had both cards
+        # released while a drawer waited for the other, and each then waited for the other to end, 11-20)
+        def ours(p):
+            if p == os.getpid() or p in self.child_sids or sid_of(p) in self.child_sids:
+                return True
+            if Path(f"/proc/{p}").exists():
+                return False
+            left = [int(h.split()[0]) for h in fd_holders(c.lock_path)]
+            return bool(left) and all(q == os.getpid() or q in self.child_sids or sid_of(q) in self.child_sids
+                                      for q in left)
+        return [(p, cmd) for p, cmd in lock_holders(c.lock_path) if not ours(p)]
 
     def card_stations(self):
         return (f"card{self.ue_bus}", f"card{self.bl_bus}")
