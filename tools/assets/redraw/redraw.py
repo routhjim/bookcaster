@@ -403,11 +403,15 @@ def setting_words(sd: Path, cam: str, face_only: bool = False) -> str:
 
 def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> str:
     """What each person in the frame holds in this shot, from the staged camera ("holds", the plan's own words):
-    the engine stages no hand props. Not in a close shot: the hands are out of it."""
+    the engine stages no hand props. Not in a close shot: the hands are out of it; but a fighter's guard (weapon_ready)
+    is said in any shot: the thing is held up in front, in the frame of a close shot too (behind his head in a close
+    shot a sword was redrawn as a club, 11-20)."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
-    if not rounds or kind == "close":
+    if not rounds:
         return ""
-    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    sp = json.loads(rounds[-1].read_text())
+    c = next((c for c in sp.get("cameras") or [] if c.get("name") == cam), {})
+    ch = sp.get("characters") or {}
     held = c.get("holds") or {}
     nm = names(ppl, cast or {})
     try:                                     # where each hand is, from the staged bodies (the engine's own facts)
@@ -416,15 +420,37 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
         subj = {}
     out = []
     for k in [p[0] for p in ppl]:
-        if held.get(k) and str(held[k]).split(" (")[0].strip().lower() not in ("nothing", "none"):
-            who = nm.get(k, "the person")
-            where = hand_place((subj.get(k) or {}).get("measured") or {})
-            # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
-            # smith's tongs as pointed ears, 11-17)
-            out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}"
-                       + (f", {where}" if where else "") + "; it is in the hand and nowhere else, its whole length "
-                       "joined to the hand, nothing of it floating or behind the head.")
+        ready = (((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}).get("action") in READY_WORDS
+        if (kind == "close" and not ready) or not held.get(k) or \
+                str(held[k]).split(" (")[0].strip().lower() in ("nothing", "none"):
+            continue
+        who = nm.get(k, "the person")
+        where = ready_place(ch, k, subj.get(k) or {}, nm, cast or {}, {p[0] for p in ppl}) if ready else \
+            hand_place((subj.get(k) or {}).get("measured") or {})
+        # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
+        # smith's tongs as pointed ears, 11-17)
+        out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}"
+                   + (f", {where}" if where else "") + "; it is in the hand and nowhere else, its whole length "
+                   "joined to the hand, nothing of it floating or behind the head.")
     return (" " + " ".join(out)) if out else ""
+
+
+READY_WORDS = ("weapon_ready",)      # the guard of a fighter (scenes/ue/pose.py READY_ACTIONS)
+
+
+def ready_place(ch: dict, k: str, sub: dict, nm: dict, cast: dict, inf: set) -> str:
+    """Where a fighter in the guard holds the thing, in plain words: at the ready in front of the body, in both hands
+    (a two-handed thing, as the engine gripped it) or in the hand it is in, pointed at whom they face."""
+    pr = ((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}
+    two = any(((h or {}).get("grip") or {}).get("two_hands") for h in (sub.get("held") or {}).values())
+    pos = who_of(cast, k).get("pos") or "their"
+    hand = "in both hands" if two else f"in the {'left' if pr.get('hand') == 'l' else 'right'} hand"
+    t = (ch.get(k) or {}).get("facing_to")
+    tgt = None
+    if t and t != k:
+        tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
+    return (f"held {hand} at the ready in front of {pos} body, between waist and chest, its length pointing "
+            f"forward and up at {tgt or 'what ' + pos + ' faces'}")
 
 
 def hand_place(m: dict) -> str:

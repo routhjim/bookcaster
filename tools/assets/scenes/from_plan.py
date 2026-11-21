@@ -580,14 +580,21 @@ WORK_POSE = "hands_at_work"      # someone with a tool in the hand and a thing l
                                  # tool down at the work (raised by default, a pair of tongs was held up by the
                                  # head, the work out of frame; the strike itself is the clip's, 11-20)
 WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing work over what is in front (pose.py)
-ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + WORK_ACTIONS
+READY_ACTIONS = ("weapon_ready",)     # a fighter's guard (pose.py): placed by the fight, not at a piece
+BLOW_POSES = ("tool_raised", "striking_down")    # a blow the pass may name for a fighter: the clip's, not its start
+ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + \
+    WORK_ACTIONS + READY_ACTIONS
 
 
 WORN_KEYS = ("wear_add", "face_covered", "wear_set", "wear_back_set", "worn_sheet")
 
 
-FIGHT_POSE = "tool_raised"     # the stance of someone who fights with a thing in the hand: it is held up
-FIGHT_BACK_M = (2.4, 0.9)      # the over-the-shoulder fight camera: this far behind the fighter and to their side
+FIGHT_POSE = "weapon_ready"    # the stance of someone who fights with a thing in the hand: a guard, the thing in
+#                                front pointed at the foe (held up beside the head it read as a stick held up like a
+#                                torch, and close in it lay behind the head and was redrawn as a club, 11-20)
+FIGHT_BACK_M = (1.0, 2.6)      # the fight camera on the creature alone: this far behind the fighter and to their side
+#                                (from beside them, the fighter out of its frame: 2.4 m behind and 0.9 m aside it was
+#                                a back in the foreground, and what the place has behind the creature, 11-20)
 FIGHT_SIDE_M = 5.0             # the side-on fight camera: at least this far off the line between the two
 FIGHT_EYE_M = 1.7
 
@@ -601,6 +608,21 @@ def fights(k: str, v: dict, cam: dict, crt: dict) -> bool:
             and (cam.get("shot_kind") == "action" or (v.get("foe") in crt and cam.get("shot_kind") != "talk"))
             and (v.get("face_target") in crt or v.get("foe") in crt)
             and any(r.get("at") == "hand" for r in (cam.get("carried") or {}).get(k) or []))
+
+
+def foe_aim(v: dict, st: dict, crt: dict) -> list | None:
+    """Where a fighter's guard points (plan metres): the near part of the creature they face, its head toward them,
+    at 0.6 of its height (its head to its middle); None with no creature in the staging."""
+    kc = v.get("face_target") if v.get("face_target") in crt else v.get("foe")
+    if kc not in crt or kc not in st or not v.get("position"):
+        return None
+    p, q = v["position"], st[kc]["position"]
+    d = math.dist(p[:2], q[:2])
+    r = float(crt[kc].get("radius_m") or 2.0)
+    u = [(q[0] - p[0]) / d, (q[1] - p[1]) / d] if d > 1e-6 else [0.0, 0.0]
+    k = min(0.5 * r, 0.5 * d)
+    hz = 0.6 * float((crt[kc].get("size_m") or [0, 0, 3.0])[2])
+    return [round(q[0] - u[0] * k, 3), round(q[1] - u[1] * k, 3), round(max(hz, 0.5), 3)]
 
 
 def standoff_view(cam: dict, kp: str, kc: str) -> bool | None:
@@ -648,12 +670,14 @@ def fight_camera(ppos: list, cpos: list, rig: dict, over_shoulder: bool, take: i
     # (every one of them has the two whole and apart in it, the creature at its size: a camera in close on the
     # fighter cut the creature at the chin, one low behind him looked along the ground at a wall, 11-20. The
     # picture a fight clip starts from is the two squared up, seen whole; the clip plays the blow.)
-    view = ("wide", "fighter", "creature")[take % 3]
+    # (not from round toward the creature's back: there its dark flank filled the near half of the frame and the
+    # fighter was small beyond it, twice, 11-20; the third is the square view from further off)
+    view = ("wide", "fighter", "far")[take % 3]
     off = max(FIGHT_SIDE_M, 0.9 * d)
     mid = [(ppos[0] + head[0]) / 2, (ppos[1] + head[1]) / 2, (1.4 + hz) / 2]
-    a = math.radians({"wide": 0.0, "fighter": FIGHT_SWING_DEG, "creature": -FIGHT_SWING_DEG}[view])
+    a = math.radians({"wide": 0.0, "fighter": FIGHT_SWING_DEG, "far": 0.4 * FIGHT_SWING_DEG}[view])
     v = [n[0] * math.cos(a) - u[0] * math.sin(a), n[1] * math.cos(a) - u[1] * math.sin(a)]
-    k = 1.0 if view == "wide" else 1.1
+    k = {"wide": 1.0, "fighter": 1.1, "far": 1.4}[view]
     p = [mid[0] + v[0] * off * k, mid[1] + v[1] * off * k, 1.5 if view != "fighter" else 1.7]
     return {"position": rnd(p), "target": rnd(mid), "focal_mm": 35, "fight_view": view}
 
@@ -762,13 +786,16 @@ def own_variant(library: Path, base: str, var: str | None) -> str | None:
         return None
 
 
-def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: list) -> str | None:
+def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: list,
+                  carried: list | None = None) -> str | None:
     """Why a start action contradicts the staged scene's facts (None: it fits): a standing action for a person
     sitting, a hand on the mantel away from the fireplace, a veil lifted that is not down, a reach with nobody
-    seated in the shot to reach."""
+    seated in the shot to reach, a guard with nothing in the hand (carried: the shot's carried rows for k)."""
     sitting = v.get("pose") == "sitting"
-    if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") + WORK_ACTIONS and sitting:
+    if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") + WORK_ACTIONS + READY_ACTIONS and sitting:
         return f"{k} is sitting"
+    if pz in READY_ACTIONS and not any(r.get("at") == "hand" for r in carried or []):
+        return f"{k} has nothing in the hand"
     if pz == "stand_hand_on_mantel":
         fire = [t for t in things if t.get("fire")]
         if not fire or min(math.dist(v["position"], t["center"][:2]) - max(t["half"][:2]) for t in fire) > 0.6:
@@ -1605,18 +1632,21 @@ def main():
             if lk in st:
                 c["look_at"] = lk
             pz = (cam0.get("_poses") or {}).get(k)
-            bad = action_misfit(pz, k, v, st, w, things) if pz in ACTION_NAMES else None
+            bad = action_misfit(pz, k, v, st, w, things, (cam0.get("carried") or {}).get(k)) \
+                if pz in ACTION_NAMES else None
             if bad:                                          # dropped by the scene's own facts, reported
                 for c_, _ in g:
                     facts[c_["plan_id"]].setdefault("pass", {}).setdefault("dropped", []).append(f"{k} {pz}: {bad}")
                 pz = None
-            if pz not in ACTION_NAMES and fights(k, v, cam0, crt):
+            if (pz not in ACTION_NAMES or pz in BLOW_POSES) and fights(k, v, cam0, crt):
                 # a fight: someone standing with a thing in the hand, squared up to a creature in an action shot,
                 # holds it up against it (the pass names a pose only where the shot's line names the act: in six of
-                # seven shots of a fight the man stood at ease, his sword hanging, 11-19)
+                # seven shots of a fight the man stood at ease, his sword hanging, 11-19). A blow the pass names
+                # starts from the guard too: the clip plays the blow
+                why_ = "a fight" if pz not in ACTION_NAMES else f"a fight (the pass's {pz} is the clip's blow)"
                 pz = FIGHT_POSE
                 for c_, _ in g:
-                    facts[c_["plan_id"]].setdefault("pass", {}).setdefault("used", []).append(f"{k} {pz}: a fight")
+                    facts[c_["plan_id"]].setdefault("pass", {}).setdefault("used", []).append(f"{k} {pz}: {why_}")
             if pz not in ACTION_NAMES and v.get("pose") == "standing" and cam0.get("shot_kind") == "action":
                 # at work: a tool in the hand and a thing lying before them (the pass's "on") - the tool is up over
                 # it (the pass names a pose only where the line names the act: a smith with a hammer and the iron on
@@ -1632,6 +1662,10 @@ def main():
                     c["body_pose"]["pose"] = pz
                 else:
                     c["body_pose"].setdefault("params", {})["action"] = pz
+                if pz in READY_ACTIONS:                      # the guard points at the foe (scene.py: UE cm)
+                    aim_ = foe_aim(v, st, crt)
+                    if aim_:
+                        c["body_pose"]["params"]["aim_at_m"] = aim_
                 if pz in WORK_ACTIONS:
                     # the work places them: at the piece they work at, a step off its face and turned to it, their
                     # hands on its top (11-17: the smith stood a metre off the anvil, upright, hands in the air)

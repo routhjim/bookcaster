@@ -353,7 +353,8 @@ def test_the_last_resort_camera_stands_clear_with_everyone_in_sight():
 
 def test_work_poses_are_offered_and_measured():
     assert set(PASS.WORK_POSES) <= set(PASS.POSE_WORDS) and set(PASS.WORK_POSES) == set(FP.WORK_ACTIONS)
-    assert set(FP.WORK_ACTIONS) <= set(FP.ACTION_NAMES) and set(SP.WORK_HANDS) == set(FP.WORK_ACTIONS)
+    assert set(FP.WORK_ACTIONS) <= set(FP.ACTION_NAMES) and \
+        set(SP.WORK_HANDS) == set(FP.WORK_ACTIONS) | set(FP.READY_ACTIONS)
     m = S.person([0.0, 0.0])["measured"]                 # hands hanging at the sides: neither raised nor at work
     assert SP.work_hands_why("tool_raised", m) and SP.work_hands_why("striking_down", m)
     m2 = json.loads(json.dumps(m))
@@ -435,7 +436,11 @@ def test_a_fights_camera_stands_at_the_fighters_scale():
     rig = {"radius_m": 5.0, "size_m": [4.0, 10.0, 4.0]}
     p, c = [0.0, 0.0], [8.0, 0.0]
     over = FP.fight_camera(p, c, rig, over_shoulder=True)
-    assert over["position"][0] < 0 and abs(over["position"][1]) < 1.5       # behind the fighter, a little to a side
+    assert over["position"][0] < 0 and 2.0 < abs(over["position"][1]) < 3.5   # beside the fighter, a step behind:
+    aim = [over["target"][0] - over["position"][0], over["target"][1] - over["position"][1]]     # they are out of it
+    to_p = [p[0] - over["position"][0], p[1] - over["position"][1]]
+    cosv = (aim[0] * to_p[0] + aim[1] * to_p[1]) / (math.hypot(*aim) * math.hypot(*to_p))
+    assert math.degrees(math.acos(cosv)) > 35
     assert math.dist(over["position"][:2], p) < 3.0 and over["target"][0] > 4.0 and over["target"][2] >= 2.0
     side = FP.fight_camera(p, c, rig, over_shoulder=False, take=0)         # (the square one of the side-on three)
     assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
@@ -541,9 +546,11 @@ def test_side_on_shots_of_one_fight_are_three_cameras_on_one_side_of_the_line():
     assert all("fight_view" in x for x in cams)
     assert len({tuple(x["position"]) for x in cams[:3]}) == 3 and cams[3]["position"] == cams[0]["position"]
     assert all(x["position"][1] < 0 for x in cams)                        # one side of the line, the place's near side
-    wide, by_fighter, by_creature = cams[:3]
-    assert math.dist(by_fighter["position"][:2], p) < math.dist(by_creature["position"][:2], p)
-    assert math.dist(by_creature["position"][:2], c) < math.dist(by_fighter["position"][:2], c)
+    wide, by_fighter, far = cams[:3]
+    assert math.dist(by_fighter["position"][:2], p) < math.dist(far["position"][:2], p)
+    for x in cams[:3]:                                    # none from round toward the creature's back: no nearer it
+        assert math.dist(x["position"][:2], c) >= math.dist(x["position"][:2], p) - 1e-6      # than the fighter
+    assert math.dist(far["position"][:2], wide["target"][:2]) > math.dist(wide["position"][:2], wide["target"][:2])
     for x in cams[:3]:                                    # every one far enough off to hold the two whole
         assert min(math.dist(x["position"][:2], p), math.dist(x["position"][:2], c)) >= 0.6 * FP.FIGHT_SIDE_M
         assert x["target"] == wide["target"]

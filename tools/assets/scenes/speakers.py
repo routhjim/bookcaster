@@ -751,12 +751,14 @@ ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # a
                                                                              # near the chin (both / either), measured
 
 
-WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work")     # the work start poses (ue/pose.py), measured
+WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work",     # the work start poses (ue/pose.py), measured
+              "weapon_ready")                                       # (and a fighter's guard: READY_ACTIONS)
 
 
 def work_hands_why(act: str, m: dict) -> list:
     """A work pose as measured: the tool raised has the working (right) hand over the head; striking down and
-    working have both hands in front of the body between the waist and the chin."""
+    working, and a fighter's guard (weapon_ready), have both hands in front of the body between the waist and the
+    chin."""
     j = m.get("joints") or {}
     if not all(h in j for h in ("hand_l", "hand_r")):
         return [f"action '{act}': hands not measured"]
@@ -767,7 +769,8 @@ def work_hands_why(act: str, m: dict) -> list:
     for h in ("hand_l", "hand_r"):
         fwd = (j[h][0] - m["pelvis_xy"][0]) * f[0] + (j[h][1] - m["pelvis_xy"][1]) * f[1]
         if fwd < 0.15 or not (m.get("waist_z", 0.9) - 0.25 <= j[h][2] <= m["chin_z"]):
-            out.append(f"action '{act}': {h} not at the work in front")
+            out.append(f"action '{act}': {h} not " + ("held in front at the ready" if act == "weapon_ready"
+                                                       else "at the work in front"))
     return out
 
 
