@@ -3437,6 +3437,26 @@ def _talk_prompt(R, cx, e: dict, here: str, s: dict | None = None) -> str:
             f"clearly in sync with {pron} voice.{says}{lst} No text anywhere in the picture.")
 
 
+WHO_NOUN = r"\b(man|woman|boy|girl|child|lady|gentleman|creature|dragon|horse|dog|wolf|beast)\b"
+
+
+def who_phrase(lk: str) -> str:
+    """The few words a judge is asked to find someone by: a look up to its first comma, "with", "wearing" or age.
+    11-24: a look that opens with a list of adjectives ("a tall, slim young man of 28 with ...") gave "a tall", so
+    every seed was asked "is there a tall in this picture?": such a look is read on to the part that names what
+    they are."""
+    lk = (lk or "").strip()
+    first = re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk, maxsplit=1)[0]).strip().rstrip(".")
+    if re.search(WHO_NOUN, first, re.I):
+        return first
+    head = re.sub(r"\s+of (?:about )?\d+.*$", "", re.split(r" with | wearing ", lk, maxsplit=1)[0])
+    parts = [x.strip() for x in head.split(",")]
+    for i, x in enumerate(parts):
+        if re.search(WHO_NOUN, x, re.I):
+            return ", ".join(parts[:i + 1]).strip().rstrip(".")
+    return first
+
+
 def _key_questions(cx, s: dict) -> tuple:
     """The vision questions for a shot's opening picture, and how many people it should hold."""
     # (10-24: no "does it show the words" question - it only chose between near-identical clean seeds)
@@ -3450,7 +3470,7 @@ def _key_questions(cx, s: dict) -> tuple:
         if w == s.get("ots"):           # the back of a head: counted, not asked for by face
             hum += 1
             continue
-        first = re.sub(r"\s+of about \d+.*$", "", re.split(r",| with | wearing ", lk.strip(), maxsplit=1)[0]).strip().rstrip(".")
+        first = who_phrase(lk)
         if first:
             q[f"who{i}"] = f"Answer yes or no: is there {first} in this picture?"
         m_ = re.search(r"-(\d{4,})", s.get("id") or "")     # the shot's time (ids carry it in tenths of a second)
@@ -3550,6 +3570,10 @@ def key_tasks(book: Path, stem: str, shots: list, log=print, heroes: dict | None
                 and (d / "key.q").exists() and (d / "key.q").read_text() == qk:
             continue                        # picked before against the same questions, no seed newer: kept
         (d / "key.q").write_text(qk)        # (10-27 audit: new questions never re-judged an old key)
+        if s.get("crowd_behind") and closeup(s):
+            need = 0    # 11-24: a close-up at a place with a crowd has the crowd blurred behind it: 3 close-ups at a
+            # ball failed all 5 seeds on "10 people", "5", "6". The head count is not held against it (the question
+            # stays as asked, so the pictures picked before are kept)
         t = {"s": s, "d": d, "q": q, "need": need, "seeds": list(ALL_SEEDS), "tried": [],
              "job": {"prompt": p, "refs": [str(hero)] if hero else [], "loras": loras, "size": [W, H]}}
         tasks.append(t)
@@ -4047,7 +4071,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                                       if (sd / mid / s["id"] / "talk_seed").exists() else 42) + shot_seed(s["id"]),
                              "audio_start": round(st / 24, 4), "line": mid, "speaker": e.get("speaker"),
                              "audio_src": e["wav"],
-                             "people": None if s.get("chorus") else len(s.get("who") or []) or None,
+                             "people": None if s.get("chorus") or s.get("crowd") else len(s.get("who") or []) or None,   # (11-24: a
+                             # talk clip before the set's crowd was faulted "5 people, not 2", as no other clip is)
                              **({"chorus": True} if s.get("chorus") else {}),
                              "speaker_box": _speaker_box(s, e.get("speaker")),
                              "speech_s": e.get("speech_s"), "chunk": [k, len(e["chunks"]), st, nn], "pre": TALK_PRE,
@@ -4567,7 +4592,8 @@ def _chain_state(L: Path, s: dict, key: Path) -> dict:
         if rv.exists():
             os.replace(rv, rv.with_name(f"{s['id']}.old-{time.strftime('%m%d-%H%M%S')}"))
         st = {"sig": sig, "id": s["id"], "director_lines": lines, "lines": list(lines), "ver": [0] * len(lines),
-              "picks": [None] * len(lines), "judge": {}, "done": False, "people": len(s.get("who") or []) or None,
+              "picks": [None] * len(lines), "judge": {}, "done": False,
+              "people": None if s.get("crowd") else len(s.get("who") or []) or None,
               "key": str(key)}
         f.write_text(json.dumps(st, indent=1))
     return st
@@ -6007,7 +6033,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         sh = sheets.get(s["id"].rsplit("_s", 1)[0]) or {}        # audit: keys used the set sheet, the hero the book's)
         s.update(room=R_.place_look(s.get("place")) or sh.get("room", ""), fixtures=sh.get("fixtures") or [],
                  scene=sh.get("scene", ""),
-                 crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "")   # the set sheet's crowd only
+                 crowd=(sh.get("crowd") or "") if s.get("framing") != "close" else "",   # the set sheet's crowd only
+                 crowd_behind=bool(sh.get("crowd")))
     describe_places(book, stem, es, shots, log)     # an undescribed place gets its set sheet's room in the book
     subprocess.run(["systemctl", "--user", "stop", animate.STRATA_UNIT], capture_output=True)   # (11-06: after it, not
     # before: a place to describe restarted the model place_sheets had just stopped)
