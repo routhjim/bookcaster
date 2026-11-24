@@ -999,8 +999,9 @@ def head_crop(im, answer: str, margin: float = 0.06):
     if not b or b[2] - b[0] < 0.1 or b[3] - b[1] < 0.1 or max(b) > 1:
         return im
     w, h = im.size
+    # no margin below the chin: a strip of collar left there was drawn as a stripe on the sheet's coat (11-23)
     return im.crop((int(max(0, b[0] - margin) * w), int(max(0, b[1] - margin) * h),
-                    int(min(1, b[2] + margin) * w), int(min(1, b[3] + margin) * h)))
+                    int(min(1, b[2] + margin) * w), int(b[3] * h)))
 
 
 def sheet_prompt(desc: str, style: str, photos: bool = False) -> str:
