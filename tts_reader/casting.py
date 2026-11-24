@@ -278,8 +278,16 @@ class CastSession:
             '\'Marley\' for Marley\'s ghost); \'narrator\' if this character '
             'is the book\'s first-person narrator; else null>"}}}'
         )
-        data = self._json_block(self._chat(prompt))
+        # The reply is one entry per character: a fixed 900-token cap cut it short for a cast of ten,
+        # the JSON did not parse and every voice silently stayed on its default (11-23).
+        room = 400 + 160 * len(self.members)
+        data = self._json_block(self._chat(prompt, max_tokens=room))
+        if not data.get("characters"):
+            log("  the cast reply could not be read; asking once more")
+            data = self._json_block(self._chat(prompt, max_tokens=2 * room))
         chars = data.get("characters", {})
+        if self.members and not chars:
+            log("warning: the LLM's cast could not be read — voices are defaults, not choices")
         for name, info in chars.items():
             member = self._match_member(name)
             if not member or not isinstance(info, dict):
@@ -850,10 +858,10 @@ class CastSession:
 
 
 _MALE_NOUNS = {"man", "men", "gentleman", "boy", "lad", "father", "son", "king",
-               "brother", "uncle", "husband", "lord", "sir", "mr", "prince",
+               "brother", "uncle", "husband", "lord", "sir", "mr", "mister", "prince",
                "grandfather", "nephew", "monk", "priest", "duke", "fellow"}
 _FEMALE_NOUNS = {"woman", "women", "lady", "girl", "lass", "mother", "daughter",
-                 "queen", "sister", "aunt", "wife", "mrs", "miss", "princess",
+                 "queen", "sister", "aunt", "wife", "mrs", "missus", "miss", "princess",
                  "grandmother", "niece", "nun", "duchess", "madam", "maid"}
 
 
@@ -873,6 +881,16 @@ def _age_fits(description: str, band: str) -> bool:
     age = (int(m.group(1)) + int(m.group(2) or m.group(1))) / 2
     lo, hi = _AGE_BANDS[band]
     return lo - 5 <= age <= hi + 5
+
+
+OWN_VOICE_LINES, CAST_MAX = 8, 20
+
+
+def cast_size(line_counts: list[int], top: int) -> int:
+    """How many speakers get their own voice: the top *top*, and beyond that everyone with
+    OWN_VOICE_LINES or more lines (a book with a large speaking cast left its eleventh-biggest
+    part to the one shared minor-character voice), up to CAST_MAX."""
+    return max(top, min(CAST_MAX, sum(n >= OWN_VOICE_LINES for n in line_counts)))
 
 
 def _noun_gender(name: str) -> str:
@@ -963,7 +981,7 @@ def build_session(text: str, engine: str, llm_url: str | None,
 
     # The first-person narrator's lines already use the narrator voice.
     counts = {k: v for k, v in character_counts(segments).items() if k != "Narrator"}
-    for name, n in list(counts.items())[:top]:
+    for name, n in list(counts.items())[:cast_size(list(counts.values()), top)]:
         samples = [
             s.text.strip().replace("\n", " ")[:90]
             for s in segments if s.kind == "quote" and s.speaker == name
