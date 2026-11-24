@@ -1,0 +1,14 @@
+{
+ "narrator": "sibella",
+ "meta": {
+  "gender": "Female",
+  "description": "Warm, composed British reader (Sibella Denton, LibriVox)"
+ },
+ "cells": {
+  "neutral": {
+   "item": "cranford_sd_librivox",
+   "file": "cranford_09_gaskell_64kb.mp3",
+   "hint": "Storytelling narration in the reader's natural voice, with lively phrasing."
+  }
+ }
+}
