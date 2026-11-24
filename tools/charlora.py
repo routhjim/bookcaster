@@ -154,6 +154,10 @@ class Char:
         self.subject = self.desc.split(",")[0].strip()       # "a woman of about 70": what to look for
         m = re.search(r"\b(?:of|aged)\s+(?:about\s+|around\s+)?(\d{1,3})\b", self.desc)
         self.age = int(m.group(1)) if m else None
+        # drawn from photographs of them (`bookcaster look --photo`): the photographs say how old the face looks, the
+        # look's number does not (11-24: every dataset picture of a face that matched its photographs was rejected
+        # for its age, so no LoRA was trained)
+        self.photo = bool(V.face_photos(R, self.name))
         # facial hair stated in the look: the judge must see the same (a clean-shaven knight was painted
         # bearded in the keys, 10-20)
         d = self.desc.lower()
@@ -236,7 +240,7 @@ class Char:
         return c[-1] if c else None
 
     def age_ok(self, est) -> bool | None:
-        if self.age is None or est is None:
+        if self.age is None or est is None or getattr(self, "photo", False):
             return None
         if self.age >= 55:
             return est >= self.age - 10

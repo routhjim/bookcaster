@@ -213,13 +213,17 @@ def _sheet_facts(plan, style, refs):
     "base" (the base sheet path, outfit sheets)}. Creatures and places are not checked here."""
     from tts_reader import video
     import remake_chapter as R
-    chars, _ = video.looks(plan, video.registry_at(refs))
+    reg = video.registry_at(refs)
+    chars, _ = video.looks(plan, reg)
     out = []
+
+    def age(n, desc):       # someone drawn from photographs looks the age the photographs show (11-24)
+        return None if video.face_photos(reg, n) else R.age_of(desc)
     by_id = {j["id"]: j for j in video.reference_jobs(plan, style, refs)}
     for n, desc in chars.items():
         j = by_id.get(f"ref_{video.slug(n)}")
         if j and not R.is_creature(desc):
-            out.append((j, {"name": n, "age": R.age_of(desc), "gender": R.gender_of(desc)}))
+            out.append((j, {"name": n, "age": age(n, desc), "gender": R.gender_of(desc)}))
     base = {f["name"]: j["path"] for j, f in out}
     oj = {j["id"]: j for j in video.outfit_jobs(plan, style, refs)}
     for n, rows in (plan.get("wardrobe") or {}).items():
@@ -228,7 +232,7 @@ def _sheet_facts(plan, style, refs):
         for row in rows:
             j = oj.get(f"ref_{video.slug(n)}_{video.slug(row['id'])}")
             if j:
-                out.append((j, {"name": n, "age": R.age_of(chars[n]), "gender": R.gender_of(chars[n]),
+                out.append((j, {"name": n, "age": age(n, chars[n]), "gender": R.gender_of(chars[n]),
                                 "dress": row.get("dress") or row["id"], "outfit": row["id"], "base": base.get(n),
                                 "look": chars[n]}))
     return out
