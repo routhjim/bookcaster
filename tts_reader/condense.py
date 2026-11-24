@@ -270,10 +270,16 @@ VOICE_PROMPT = (
     "scene to the next) may read like a modern summary: present tense, or words the book would not use. This is "
     "how the book itself narrates:\n«{sample}»\n\n"
     "Return the scene with ONLY such narration rewritten in the book's own tense and voice, at the same length. "
+    "Check every sentence outside quotation marks: one whose verbs are in a different tense from the book's "
+    "narration above (\"she arrives\", \"they try\" where the book says \"she arrived\", \"they tried\") MUST be "
+    "rewritten in the book's tense. "
     "Everything inside quotation marks stays exactly as it is, word for word, and so does narration that already "
     "sounds like the book. If nothing needs changing, return the scene unchanged.\n\n{text}\n\n"
     "Reply with ONLY the scene."
 )
+
+
+VOICE_V = 2          # the pass's wording version: scenes checked under an older one are checked again
 
 
 def spoken(text: str) -> list[str]:
@@ -285,14 +291,14 @@ def voice(scenes: list[dict], src, chat, save, log) -> None:
     """One pass per written scene: narration that reads like a summary (11-23: bridges came out in the present
     tense, in the scene notes' wording) is put into the book's own voice. A reply that touches any spoken line or
     changes the length by more than a fifth is thrown away."""
-    todo = [s for s in scenes if s["mode"] == "full" and s.get("voiced") != s.get("text")]
+    todo = [s for s in scenes if s["mode"] == "full" and (s.get("voiced") != s.get("text") or s.get("voiced_v") != VOICE_V)]
     for n, s in enumerate(todo, 1):
         sample = next((p for p in src(s).split("\n\n") if len(p) > 200 and not spoken(p)), src(s)[:600])[:700]
         out = _clean(chat(VOICE_PROMPT.format(sample=sample, text=s["text"]), int(words(len(s["text"])) * 1.8) + 300))
         ok = spoken(out) == spoken(s["text"]) and 0.8 * len(s["text"]) <= len(out) <= 1.2 * len(s["text"])
         if ok and out != s["text"]:
             s["text"] = out
-        s["voiced"] = s["text"]
+        s["voiced"], s["voiced_v"] = s["text"], VOICE_V
         if n % 10 == 0 or n == len(todo):
             log(f"  [{n}/{len(todo)}] narration checked against the book's voice")
         save()
