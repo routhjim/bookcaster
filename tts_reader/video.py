@@ -2301,10 +2301,12 @@ def _segments(p: dict, b0: int, b1: int, anims: list[dict]) -> list[tuple]:
 
 def build(pics: list[dict], img_dir: Path, audio: Path, timeline: list[dict], out: Path,
           work: Path, subtitles: bool = True, workers: int = 6, log=print,
-          anims: list[dict] | None = None, frames: list[dict] | None = None) -> Path:
+          anims: list[dict] | None = None, frames: list[dict] | None = None,
+          window: tuple | None = None) -> Path:
     """*frames*: [{t, pic, image}] - the newer pictures of moments (keyframes, talking portraits): a stretch
     of a picture with no animated shot shows the latest of these at or before it instead of the old scene
-    still (10-17: the gaps showed two-day-old pictures, a bearded Roylott)."""
+    still (10-17: the gaps showed two-day-old pictures, a bearded Roylott).
+    *window*: (t0, t1) s - only that stretch of the recording: its pictures, shots, captions and sound (11-24)."""
     clips = work / "clips"
     clips.mkdir(parents=True, exist_ok=True)
     total = audio_seconds(audio)
@@ -2319,6 +2321,9 @@ def build(pics: list[dict], img_dir: Path, audio: Path, timeline: list[dict], ou
         for n in range(1, len(pics)):
             if a0 < bounds[n] < a1 and a1 < bounds[n + 1]:
                 bounds[n] = a1
+    if window:                       # every picture clipped to the stretch (one outside it is 0 frames: skipped)
+        w0, w1 = max(round(window[0] * FPS), 0), min(round(window[1] * FPS), bounds[-1])
+        bounds = [min(max(b, w0), w1) for b in bounds]
     tasks, n_anim = [], 0
     for n, p in enumerate(pics):
         if bounds[n + 1] - bounds[n] <= 0:
@@ -2352,6 +2357,7 @@ def build(pics: list[dict], img_dir: Path, audio: Path, timeline: list[dict], ou
     lst.write_text("".join(f"file '{o}'\n" for o in outs))
     tmp = out.with_name(f".{out.name}")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                    *(["-ss", f"{w0 / FPS:.3f}", "-t", f"{(w1 - w0) / FPS:.3f}"] if window else []),
                     "-i", str(audio), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
                     "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
                     "-f", "mp4", str(tmp)], check=True)

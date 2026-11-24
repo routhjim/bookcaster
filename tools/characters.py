@@ -1246,6 +1246,8 @@ def main(argv=None) -> int:
     vd = Path(idx["book"])
     if a.cmd == "plan":
         for n, e in idx["characters"].items():
+            if a.only is not None and n not in a.only and not any(x.startswith(n + ":") for x in a.only):
+                continue
             print(f"{n}: {e['kind']} h={e['height']} outfits={[k or '(usual)' for k in e['outfits']]} "
                   f"models={[o.get('model') for o in e['outfits'].values()]}")
         return 0

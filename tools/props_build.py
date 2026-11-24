@@ -85,6 +85,35 @@ def literal_desc(desc: str) -> str:
     return re.sub(r"\s{2,}", " ", out).strip(" ,")
 
 
+def shot_props(s) -> set:
+    """The props a staged shot uses: its set props, held items and prop states."""
+    here_ = set()
+    for pr in (s.get("set") or {}).get("props", []):
+        if "contact proxy" in (pr.get("name") or "") or pr.get("prop") in ("box", "facade"):
+            continue
+        here_.add(pr.get("prop") or pr.get("name"))
+    for f in s.get("figures", []):
+        here_.update((f.get("holds") or {}).values())
+        for e in (s.get("end") or {}).get("figures", []):
+            here_.update((e.get("holds") or {}).values())
+    here_.update(((s.get("props_state") or {}).get("props") or {}).keys())
+    return here_
+
+
+def moment_bases(cd, moments) -> set:
+    """The prop families a set of moments uses (11-24: a time window of a chapter builds only these): their
+    keyframes' props and, once the scene layer has run, their staged shots'."""
+    cd = Path(cd)
+    kp = cd / "anim" / "keyframes.json"
+    names = {p for f in (json.loads(kp.read_text()).get("frames") or [] if kp.exists() else [])
+             if f.get("shot") in moments for p in f.get("props") or []}
+    for mid in moments:
+        sp = cd / "stage" / "shots" / f"{mid}.json"
+        if sp.exists():
+            names |= shot_props(json.loads(sp.read_text()))
+    return {classify(n)[1].get("base") or n for n in names if n}
+
+
 def plan(book, chapter):
     vd = CH.vdir_of(book)
     cd = vd / chapter
@@ -97,16 +126,7 @@ def plan(book, chapter):
     shot_files = sorted(sd.glob("*.json")) if sd.exists() else []
     for p in shot_files:
         s = json.loads(p.read_text())
-        here_ = set()
-        for pr in (s.get("set") or {}).get("props", []):
-            if "contact proxy" in (pr.get("name") or "") or pr.get("prop") in ("box", "facade"):
-                continue
-            here_.add(pr.get("prop") or pr.get("name"))
-        for f in s.get("figures", []):
-            here_.update((f.get("holds") or {}).values())
-            for e in (s.get("end") or {}).get("figures", []):
-                here_.update((e.get("holds") or {}).values())
-        here_.update(((s.get("props_state") or {}).get("props") or {}).keys())
+        here_ = shot_props(s)
         used |= here_
         for u in here_:
             if u:
@@ -788,6 +808,7 @@ def main(argv=None):
     ap.add_argument("chapter")
     ap.add_argument("--card", default="any", help="05 | 65 | any (whichever lock is free first)")
     ap.add_argument("--only", nargs="*")
+    ap.add_argument("--moments", nargs="*", default=None, help="only the families these moments use (a time window)")
     ap.add_argument("--force", nargs="*", default=[])
     ap.add_argument("--unfreeze", nargs="*", default=[], help="frozen props to rebuild anyway (explicit only)")
     ap.add_argument("--by", default="coordinator")
@@ -799,17 +820,26 @@ def main(argv=None):
         rep = regress(a.book)
         print(json.dumps({k: v["ok"] for k, v in rep.items()}))
         return 0 if all(v["ok"] for v in rep.values()) else 2
+    mine = moment_bases(CH.vdir_of(a.book) / a.chapter, set(a.moments)) if a.moments is not None else None
     if a.cmd == "plan":
         vd, pl = plan(a.book, a.chapter)
         for r in pl["classified"]:
+            if mine is not None and r["base"] not in mine:
+                continue
             print(f"{r['class']:10s} {r['name']:22s} base={r['base']} state={r['state']}")
-        print("families:", {k: (v["mobility"], list(v["states"])) for k, v in pl["families"].items()})
+        print("families:", {k: (v["mobility"], list(v["states"])) for k, v in pl["families"].items()
+                            if mine is None or k.split("__")[0] in mine})
         return 0
     if a.cmd == "qa":
         vd, pl = plan(a.book, a.chapter)
         out = vd / "stage" / "props"
         qa_sheet(out, json.loads((out / "props.json").read_text()), pl)
         return 0
+    if mine is not None:                               # (build's only = [] means every family)
+        a.only = sorted(mine & set(a.only) if a.only else mine)
+        if not a.only:
+            print(json.dumps({"props": [], "why": "the moments use no prop"}))
+            return 0
     reg = build(a.book, a.chapter, a.card, a.only, set(a.force), unfreeze=a.unfreeze)
     print(json.dumps({"props": list(reg), "qa": str(CH.vdir_of(a.book) / "stage" / "props" / "qa.jpg")}))
     return 0
