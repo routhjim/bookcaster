@@ -1430,7 +1430,8 @@ def describe(R_, w: str, dress: dict | None = None) -> str:
     for x in parts[1:]:                 # a lone adjective is not the garment (11-01: "Dull, unpolished star-iron armour"
         if len(cl.split()) > 2:         # gave every knight clip "the man in the dull")
             break
-        cl = f"{cl} {x}"
+        # (11-24: "white, a high-waisted gown" gave "the woman in the white a high-waisted gown")
+        cl = f"{cl} {re.sub(r'^(?:a|an|the|his|her|their|its)\s+', '', x, flags=re.I)}"
     cl = re.split(r"\s+(?:consisting of|including|worn over)\b", cl, 1)[0].strip()
     cl = re.sub(r"^(?:(?:a|an|the|his|her|their|its)\s+)?(?:usual\s+)?", "", cl, flags=re.I)   # (10-27: "in the her usual")
     return f"the {noun.lower()} in the {cl[0].lower() + cl[1:]}" if cl else f"the {noun.lower()}"
