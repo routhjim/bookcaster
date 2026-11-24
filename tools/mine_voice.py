@@ -85,7 +85,13 @@ def transcribe(wav: Path) -> list[dict]:
     if cache.exists():
         return json.loads(cache.read_text())
     print("    transcribing (cached afterwards)...")
-    segments, _ = _whisper.transcribe(str(wav), vad_filter=True)
+    # Hand whisper the samples, not the path: its own file decoder broke against the installed PyAV (11-23).
+    import soundfile as sf
+
+    a, sr = sf.read(str(wav), dtype="float32", always_2d=True)
+    a = a.mean(1)
+    a = np.interp(np.arange(int(len(a) * 16000 / sr)) * (sr / 16000), np.arange(len(a)), a).astype(np.float32)
+    segments, _ = _whisper.transcribe(a, vad_filter=True)
     out = [
         {"i": i, "start": s.start, "end": s.end, "text": s.text.strip()}
         for i, s in enumerate(segments)
@@ -122,6 +128,21 @@ def pick_spans(segs: list[dict], emotion: str, hint: str) -> list[dict]:
     except json.JSONDecodeError:
         return []
     return [p for p in picks if isinstance(p, dict)]
+
+
+def speech_segs(segs: list[dict]) -> set[int]:
+    """The segments in which a character speaks (the transcript has no quotation marks to go by)."""
+    numbered = "\n".join(f"[{s['i']}] {s['text']}" for s in segs)[:60000]
+    reply = chat(
+        "Below is a numbered transcript of one audiobook chapter; it has no quotation marks. List the "
+        "numbers of every segment in which a character speaks aloud (dialogue, an exclamation, a quoted "
+        "letter read in a character's voice), wholly or partly. Segments of pure narration in the "
+        "narrator's own voice are NOT listed. Reply with ONLY a JSON list of numbers.\n\n" + numbered,
+        max_tokens=400 + 6 * len(segs))
+    m = re.search(r"\[[\d,\s]*\]", reply)
+    if not m:                                         # unknown is not "no speech": fail the cell, loudly
+        raise RuntimeError("could not read which segments are speech")
+    return set(json.loads(m.group(0)))
 
 
 def gate(clip: np.ndarray) -> tuple[bool, str]:
@@ -366,7 +387,17 @@ def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
     segs = transcribe(wav)
     baseline = _wps(segs) if segs else 3.0
     limit = baseline * _MAX_PACE["calm" if emotion in _CALM else "energetic"]
-    picks = pick_spans(segs, emotion, cell.get("hint", ""))
+    # The neutral clip IS the voice (Fish clones only it), and three picked spans seldom survived the
+    # gates (11-23: four of five readers gave no candidate). For neutral, every sentence start in the
+    # chapter is tried; the gates and the liveliness ranking choose.
+    scan, spoken = emotion == "neutral", set()
+    if scan:
+        picks = [{"start_seg": s["i"]} for k, s in enumerate(segs) if k == 0 or ends_sentence(segs[k - 1]["text"])]
+        spoken = speech_segs(segs)
+        print(f"    trying all {len(picks)} sentence starts ({len(spoken)} of {len(segs)} segments are speech)")
+    else:
+        picks = pick_spans(segs, emotion, cell.get("hint", ""))
+    say = (lambda *a: None) if scan else print
     audio, _ = sf.read(wav, dtype="float32")
     survivors = []
     for n, pick in enumerate(picks, 1):
@@ -379,30 +410,41 @@ def mine_cell(narrator: str, emotion: str, cell: dict) -> list[str]:
             continue
         trimmed = trim_span(span)
         if trimmed is None:
-            print(f"    pick{n}: no sentence end within {CLIP_MIN_S}-{CLIP_MAX_S} s, skipped")
+            say(f"    pick{n}: no sentence end within {CLIP_MIN_S}-{CLIP_MAX_S} s, skipped")
             continue
+        if scan and any(s["i"] in spoken for s in trimmed):
+            continue                                  # a character's voice is not the reader's own
         start, end = trimmed[0]["start"], trimmed[-1]["end"]
         text_all = " ".join(s["text"] for s in trimmed).strip()
         if re.search(r"[\"“”‘’']\s|\b(said|asked|cried|replied|shouted|whispered|exclaimed)\b",
                      text_all):
-            print(f"    pick{n}: contains dialogue (character-voice risk), skipped")
+            say(f"    pick{n}: contains dialogue (character-voice risk), skipped")
             continue
         pace = _wps(trimmed)
         if pace > limit:
-            print(f"    pick{n}: too fast ({pace:.1f} w/s vs narrator "
+            say(f"    pick{n}: too fast ({pace:.1f} w/s vs narrator "
                   f"baseline {baseline:.1f}), skipped")
             continue
         clip = audio[int(start * SR):int(end * SR)]
         ok, verdict = gate(clip)
-        print(f"    pick{n}: {end-start:.1f}s {verdict} {pace:.1f}w/s | {text_all[:60]}")
+        say(f"    pick{n}: {end-start:.1f}s {verdict} {pace:.1f}w/s | {text_all[:60]}")
         if not ok:
             continue
         m = liveliness(clip, SR)
         fails, score = live_verdict(m, text_all)
-        print("      " + format_check("liveliness", m, fails, score))
+        say("      " + format_check("liveliness", m, fails, score))
         if fails:
             continue
-        survivors.append({"clip": clip, "text": text_all, "score": score})
+        survivors.append({"clip": clip, "text": text_all, "score": score, "start": start, "end": end})
+    if scan:                                          # the best few, no two overlapping
+        best = []
+        for c in rank_survivors(survivors):
+            if all(c["end"] <= o["start"] or c["start"] >= o["end"] for o in best):
+                best.append(c)
+            if len(best) == 3:
+                break
+        print(f"    {len(survivors)} passed the gates; keeping the {len(best)} liveliest")
+        survivors = best
     STAGING.mkdir(parents=True, exist_ok=True)
     kept = []
     for rank, c in enumerate(rank_survivors(survivors), 1):
