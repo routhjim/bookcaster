@@ -263,6 +263,41 @@ def write(scenes: list[dict], src, chat, save, log) -> None:
             save()
 
 
+# --- 4b. voice ----------------------------------------------------------------
+
+VOICE_PROMPT = (
+    "Below is a scene from an abridged book. Some of its narration (above all the sentences that bridge from one "
+    "scene to the next) may read like a modern summary: present tense, or words the book would not use. This is "
+    "how the book itself narrates:\n«{sample}»\n\n"
+    "Return the scene with ONLY such narration rewritten in the book's own tense and voice, at the same length. "
+    "Everything inside quotation marks stays exactly as it is, word for word, and so does narration that already "
+    "sounds like the book. If nothing needs changing, return the scene unchanged.\n\n{text}\n\n"
+    "Reply with ONLY the scene."
+)
+
+
+def spoken(text: str) -> list[str]:
+    """The quoted passages of a text, in order (curly or straight double quotes)."""
+    return re.findall(r"“[^”]*”", text) or re.findall(r'"[^"]*"', text)
+
+
+def voice(scenes: list[dict], src, chat, save, log) -> None:
+    """One pass per written scene: narration that reads like a summary (11-23: bridges came out in the present
+    tense, in the scene notes' wording) is put into the book's own voice. A reply that touches any spoken line or
+    changes the length by more than a fifth is thrown away."""
+    todo = [s for s in scenes if s["mode"] == "full" and s.get("voiced") != s.get("text")]
+    for n, s in enumerate(todo, 1):
+        sample = next((p for p in src(s).split("\n\n") if len(p) > 200 and not spoken(p)), src(s)[:600])[:700]
+        out = _clean(chat(VOICE_PROMPT.format(sample=sample, text=s["text"]), int(words(len(s["text"])) * 1.8) + 300))
+        ok = spoken(out) == spoken(s["text"]) and 0.8 * len(s["text"]) <= len(out) <= 1.2 * len(s["text"])
+        if ok and out != s["text"]:
+            s["text"] = out
+        s["voiced"] = s["text"]
+        if n % 10 == 0 or n == len(todo):
+            log(f"  [{n}/{len(todo)}] narration checked against the book's voice")
+        save()
+
+
 # --- 5. fit -------------------------------------------------------------------
 
 def fit(scenes: list[dict], target: float, chat, save, log, rounds: int = 3) -> None:
@@ -403,6 +438,7 @@ def condense(text: str, target_chars: float, chat, state_path: Path, log=print,
     write(scenes, src, chat, save, log)
     if trim:                                          # trim=False: keep the scenes as written, however long
         fit(scenes, target_chars, chat, save, log)
+    voice(scenes, src, chat, save, log)
     out = assemble(scenes, chapter_chars)
     report["chars"] = len(out)
     report["quotes"] = quote_check(out, text)

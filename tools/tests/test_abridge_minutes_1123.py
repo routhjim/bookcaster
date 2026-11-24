@@ -20,6 +20,7 @@ BOOK = "\n\n".join(chapter(i) for i in range(6))
 RATINGS = [5, 1, 4, 2, 3, 2, 5, 1, 4, 2, 3, 2]
 calls = {"map": 0, "rate": 0, "write": 0, "trim": 0, "tail": 0}
 LONG = False
+VOICE = lambda scene: scene          # what the voice pass answers with
 
 def chat(prompt, max_tokens):
     if prompt.startswith("Below is one chapter"):
@@ -35,6 +36,9 @@ def chat(prompt, max_tokens):
     if "closes this part of the story" in prompt:
         calls["tail"] += 1
         return "And so it ended."
+    if prompt.startswith("Below is a scene from an abridged book"):
+        calls["voice"] = calls.get("voice", 0) + 1
+        return VOICE(re.search(r"(?s)and voice, at the same length\..*?\n\n(.*)\n\nReply with ONLY", prompt).group(1))
     calls["write"] += 1
     n = int(re.search(r"in about (\d+) words", prompt).group(1))
     return " ".join(["words"] * (n * 2 if LONG else n))
@@ -82,6 +86,19 @@ with tempfile.TemporaryDirectory() as td:
     calls["trim"] = 0
     out, _ = C.condense(BOOK, target, chat, Path(td) / "t.json", log=lambda m: None, trim=False)
     check("trim=False keeps the scenes as written", calls["trim"] == 0 and len(out) > 1.5 * target, (calls["trim"], len(out)))
+
+S1 = [{"mode": "full", "text": "Tam arrives at the mill. “I will not go back,” said Tam."}]
+VOICE = lambda scene: scene.replace("Tam arrives at", "Tam came to")
+C.voice(S1, lambda s: "It was a cold morning. " * 20, chat, lambda: None, lambda m: None)
+check("summary narration is put into the book's voice", S1[0]["text"].startswith("Tam came to the mill."), S1)
+n = calls["voice"]
+C.voice(S1, lambda s: "x", chat, lambda: None, lambda m: None)
+check("a checked scene is not asked about again", calls["voice"] == n, calls)
+S2 = [{"mode": "full", "text": "Tam arrives. “I will not go back,” said Tam."}]
+VOICE = lambda scene: scene.replace("I will not go back", "I shall never return")
+C.voice(S2, lambda s: "x", chat, lambda: None, lambda m: None)
+check("a reply that changes a spoken line is thrown away", "I will not go back" in S2[0]["text"], S2)
+VOICE = lambda scene: scene
 
 src_txt = "He stood. “I will not go back to the mill, whatever you say to me,” said Tam. “Then stay and be hungry.”"
 q = C.quote_check("“I will not go back to the mill, whatever you say to me,” said Tam. "
