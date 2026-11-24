@@ -1230,6 +1230,9 @@ def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, 
         im = video.head_crop(im, video._look_at(LLM_URL, LLM_MODEL, d / "_whole.png", video.HEAD_ASK))
         (d / "_whole.png").unlink()
         im.save(d / f"photo{i}.png")
+    # a sheet is named by its words alone: one drawn from the old photographs would be kept as current
+    for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
+        old_sheet.unlink()
     seen = video._look_at(LLM_URL, LLM_MODEL, d / "photo1.png", PHOTO_ASK).strip().strip('"')
     r = post_chat(LLM_URL, {"model": LLM_MODEL, "temperature": 0.2, "max_tokens": 300,
                             "messages": [{"role": "user", "content": PHOTO_MERGE.format(look=R.look(key), seen=seen)}],
