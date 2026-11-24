@@ -812,18 +812,21 @@ def _plan_draw(book, f, r, refs, man, work, log, shot_flow: bool = False) -> dic
     from tts_reader import animate, video
     from tts_reader import bookcaster as BC
     miss = 0
+    # the sheets' style is the registry's REFERENCE style (the chapter's own; photographic when nobody chose one),
+    # the same words charlora and the keys look the sheets up by (11-24: it was the planner's picture style)
+    st = _reg(book).ref_style(Path(work).name)
     # base sheets FIRST: an outfit sheet is drawn from its character's base sheet (10-21: one batch = 3 outfit
     # sheets failed, their reference not drawn yet)
     for kind, jobs in (("reference", video.reference_jobs), ("outfit", video.outfit_jobs)):
-        todo = [j for j in jobs(r["plan"], r["style"], refs) if not Path(j["path"]).exists()]
+        todo = [j for j in jobs(r["plan"], st, refs) if not Path(j["path"]).exists()]
         if todo:
             _log(f"plan: drawing {len(todo)} {kind} sheet(s)", log)
             video.draw_jobs(todo, refs, log)
             miss += len(todo)
-        left = [j["id"] for j in jobs(r["plan"], r["style"], refs) if not Path(j["path"]).exists()]
+        left = [j["id"] for j in jobs(r["plan"], st, refs) if not Path(j["path"]).exists()]
         if left:
             raise SystemExit(f"plan: {kind} sheet(s) not drawn: {left}")
-    bad = check_sheets(r["plan"], r["style"], refs, log)
+    bad = check_sheets(r["plan"], st, refs, log)
     if bad:
         _log(f"!!! plan: {len(bad)} sheet(s) still fail after their redraws (refs/sheet_checks.json): {bad}", log)
     _log("plan: the chapter's still pictures (the stretches between moments)", log)

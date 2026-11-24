@@ -582,9 +582,14 @@ def style_guard(work: Path, style: str, log=print) -> None:
     f = work / "style.txt"
     old = f.read_text(encoding="utf-8").strip() if f.exists() else None
     if old is not None and old != style.strip():
-        for p in [work / "plan.json", *(work / "img").glob("*.png")]:
-            p.unlink(missing_ok=True)
-        log(f"  art style changed ({old} -> {style}): redrawing")
+        if _rg().unchosen(old) and _rg().unchosen(style):
+            # nobody chose either: the old default's words giving way to the photographic ones is no new style, the
+            # plan stays (ensure_plan redraws each still whose prompt changed; sheets are named by their prompt)
+            log(f"  no art style chosen: photographic ({style}); the plan is kept")
+        else:
+            for p in [work / "plan.json", *(work / "img").glob("*.png")]:
+                p.unlink(missing_ok=True)
+            log(f"  art style changed ({old} -> {style}): redrawing")
     f.write_text(style.strip(), encoding="utf-8")
 
 
@@ -1008,7 +1013,10 @@ def sheet_prompt(desc: str, style: str, photos: bool = False) -> str:
     """A person's reference sheet words (its file is named by their hash: ref_path). photos: the sheet is drawn
     from photographs of them (the drawing job carries the pictures as its refs)."""
     if photos:
-        return PHOTO_SHEET.format(desc=str(desc).rstrip("."), style=style)
+        pr = PHOTO_SHEET.format(desc=str(desc).rstrip("."), style=style)
+        if _rg().is_photo(style):       # a photographic book: no word that asks for a drawing (other styles keep
+            pr = pr.replace("they are drawn at", "they are shown at").replace("Drawn as:", "Shown as:")  # their words)
+        return pr
     # A full-length figure alone left the face ~20 px tall once shrunk
     # to a reference, so every close-up invented a new face.
     return (f"Character sheet of one person, two views side by side on a plain "
@@ -1025,7 +1033,7 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     only when its words do."""
     chars, places = looks(plan, R)
     if style is None:
-        style = R.ref_style() if R is not None else DEFAULT_STYLE   # sheets: the reference style
+        style = R.ref_style() if R is not None else _rg().PHOTO_STYLE   # sheets: the reference style
     # the 3D flow builds a model + LoRA for the whole cast, so it lists them all (10-22 knight_forged_v3: the King
     # was in no still picture -> no sheet -> his LoRA failed with no reference face)
     used = set(plan.get("sheet_cast") or [])

@@ -1256,8 +1256,9 @@ def cmd_build_book(a) -> None:
     locs = book_locations(vid)
     over_p = vid / "stage" / "sets.json"          # optional per-book overrides {where: {kind, image, text, skip}}
     over = json.loads(over_p.read_text()) if over_p.exists() else {}
-    if not a.style and (book / "art_style.txt").exists():
-        a.style = (book / "art_style.txt").read_text().strip()
+    if not a.style:              # the registry's picture style: `bookcaster art`, else none = photographic, as the
+        import registry as RG    # shots flow's keys (set_picture_prompt adds "Painted as a ..." only for a style)
+        a.style = RG.Book(book).picture_style()
     entries, report = [], []
 
     def related(w):              # (11-24: the rule itself is named_after, shared with flow3d's time window)

@@ -35,7 +35,7 @@ def main() -> int:
     animate.apply_wardrobe(kf, plan, starts)
     kdir = work / "anim" / "keyframes"
     refs_dir = work.parent / "refs"
-    known = video.ref_prompts(plan, b.art_style(work.parent.parent.parent) or video.DEFAULT_STYLE)
+    known = video.ref_prompts(plan, b.book_style(work.parent.parent.parent))
     url, model = b.LLM_URL, b.LLM_MODEL
     frames = [f for f in kf["frames"] if f.get("mode") == "key" and (kdir / f"{f['shot']}.png").exists()]
 

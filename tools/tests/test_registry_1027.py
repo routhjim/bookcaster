@@ -46,7 +46,8 @@ with tempfile.TemporaryDirectory() as d:
     check("place_id: the place and its side", (R.place_id("The Crown Inn Room (inside)"), R.place_id("crown inn room"))
           == ("The Crown Inn Room (inside)", "The Crown Inn Room"), (R.place_id("The Crown Inn Room (inside)"),
                                                                     R.place_id("crown inn room")))
-    check("the style: the default when nothing is set", "pen and ink" in R.style())
+    # (11-24: photographic, not the pen-and-ink default, when nobody chose a style)
+    check("the style: photographic when nothing is set", R.style() == RG.PHOTO_STYLE and R.ref_style() == RG.PHOTO_STYLE)
     (b / "work" / "video" / "09_x").mkdir()
     (b / "work" / "video" / "09_x" / "style.txt").write_text("oil painting")
     check("the style: the chapter's style.txt when no art_style.txt", RG.Book(b).style("09_x") == "oil painting")
