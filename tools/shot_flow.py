@@ -720,7 +720,9 @@ def _set_crop(hero, d: Path, s: dict):
     the set for the zoomed in key frames"): the whole place picture forced its wide view on every fight key, no place
     picture let the forge's hood, window and anvil change from shot to shot. Centred on where the people stand (their
     sides), a framing-sized cut at the key's aspect; wide shots and shots with no place picture take none.
-    -> the crop's path (written once, so its age never makes the keys look stale), or None."""
+    -> the crop's path, or None. Written once per place picture, so its age never makes the keys look stale; cut
+    again when the place picture is newer (11-24: a room redrawn at night kept its daylight cut behind every action
+    key), and then the keys drawn on the old cut are older than it and are drawn again."""
     if not hero or not Path(hero).exists():
         return None
     f = CROP_W.get(str(s.get("framing") or "medium"), 0.6)
@@ -730,7 +732,7 @@ def _set_crop(hero, d: Path, s: dict):
     lay = group_layout(n)
     cx = sum((b[0] + b[2]) / 2 for b, _ in lay) / len(lay) if n > 1 else 0.5
     out = d / f"set_crop_{int(f * 100)}_{int(cx * 100)}.png"
-    if out.exists():
+    if out.exists() and out.stat().st_mtime >= Path(hero).stat().st_mtime:
         return out
     from PIL import Image
     im = Image.open(hero).convert("RGB")
