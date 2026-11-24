@@ -975,15 +975,32 @@ def face_photos(R, name: str) -> list[str]:
     return sorted(str(f) for f in d.glob("*.png"))[:3] if d.is_dir() else []
 
 
+# 11-23, measured on one face, three seeds each: with the whole photographs as refs the portrait kept the
+# photograph's shirt in 2 of 4 sheets; with the photographs cut to the head (head_crop) 0 of 3. "Younger" and
+# "thinner" need saying as what to draw: the bare age in the description left the face as photographed.
 PHOTO_SHEET = (
-    "Character sheet of one person, two views side by side on a plain light background: on the left a large "
-    "head-and-shoulders portrait facing the viewer, the face filling the frame; on the right the same person full "
-    "length, standing. {desc}. They are recognisably the person in the reference photographs (the same facial "
-    "features, eyes and hair, a calm neutral expression), but drawn at the age and build just described, not "
-    "those in the photographs (11-23 user: drawn younger and thinner than photographed). In BOTH views they wear "
-    "only the clothes just described: nothing worn in the photographs (shirt, hat, glasses) and none of their "
-    "backgrounds appear (11-23: the portrait kept the photograph's shirt). Even light. {style}. No text, no "
-    "lettering, no signature.")
+    "Character sheet of the person in the reference photographs, two views side by side on a plain light "
+    "background: on the left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on "
+    "the right the same person full length, standing. The facial features and hair are those of the person in the "
+    "photographs, with a calm, neutral expression, but they are drawn at the age and build given below: where that "
+    "is younger than the photographs, smooth unlined skin and no grey hair; where it is thinner, a narrower face "
+    "and body. Nothing else is taken from the photographs: not their clothes, hat, glasses or background. Drawn "
+    "as: {desc}. Even light. {style}. No text, no lettering, no signature.")
+HEAD_ASK = ("Give the bounding box of this person's whole head, from the top of the hair (or hat) to the bottom of "
+            "the chin, ears included, as [x1, y1, x2, y2] with each number from 0 to 1000 (fractions of the "
+            "picture's width and height, times 1000). Reply with ONLY the box.")
+
+
+def head_crop(im, answer: str, margin: float = 0.06):
+    """The picture cut to the head box a vision answer gives ("[x1, y1, x2, y2]" in thousandths), with a small
+    margin; the whole picture when the answer has no usable box."""
+    m = re.search(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]", answer or "")
+    b = [int(x) / 1000 for x in m.groups()] if m else None
+    if not b or b[2] - b[0] < 0.1 or b[3] - b[1] < 0.1 or max(b) > 1:
+        return im
+    w, h = im.size
+    return im.crop((int(max(0, b[0] - margin) * w), int(max(0, b[1] - margin) * h),
+                    int(min(1, b[2] + margin) * w), int(min(1, b[3] + margin) * h)))
 
 
 def sheet_prompt(desc: str, style: str, photos: bool = False) -> str:

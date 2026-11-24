@@ -1226,6 +1226,9 @@ def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, 
     for i, f in enumerate(files[:3], 1):
         im = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
         im.thumbnail((1024, 1024))
+        im.save(d / "_whole.png")                # cut to the head: clothes left in a photograph get drawn
+        im = video.head_crop(im, video._look_at(LLM_URL, LLM_MODEL, d / "_whole.png", video.HEAD_ASK))
+        (d / "_whole.png").unlink()
         im.save(d / f"photo{i}.png")
     seen = video._look_at(LLM_URL, LLM_MODEL, d / "photo1.png", PHOTO_ASK).strip().strip('"')
     r = post_chat(LLM_URL, {"model": LLM_MODEL, "temperature": 0.2, "max_tokens": 300,
