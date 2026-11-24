@@ -361,6 +361,9 @@ def cast_kind(who):
     if idx:
         chars = json.load(open(idx)).get("characters", {})
         ent = next((v for k, v in chars.items() if k.lower() == who.lower()), None)
+        if ent is None:                # the same person under another spelling of their title (registry.person_key)
+            from registry import person_key
+            ent = next((v for k, v in chars.items() if person_key(k) == person_key(who)), None)
         if ent and ent.get("kind"):
             return "creature" if ent["kind"] == "creature" else "human"
         assets = os.path.join(os.path.dirname(os.path.dirname(idx)), "assets.json")
@@ -379,6 +382,9 @@ def rig_for(who, outfit=None):
     if idx:
         chars = json.load(open(idx))["characters"]
         ent = next((v for k, v in chars.items() if k.lower() == who.lower()), None)
+        if ent is None:                # the same person under another spelling of their title (registry.person_key)
+            from registry import person_key
+            ent = next((v for k, v in chars.items() if person_key(k) == person_key(who)), None)
         if ent:
             outs = ent.get("outfits", {})
             o = outs.get(outfit or "", None) or next((v for k, v in outs.items() if outfit and v.get("id") == outfit), None) \

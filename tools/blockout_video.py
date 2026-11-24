@@ -121,11 +121,20 @@ def interp_joints(J0, J1, t):
                 grew = True
         if not grew:
             break
+    # a figure whose joints carry no mid-spine gets the one the other tools give it (blockout_scene, blockout_contact):
+    # 11-24, every talk still of such a figure died on KeyError 'spine_mid' at the neck
+    J0, J1 = dict(J0), dict(J1)
+    for J in (J0, J1):
+        if "spine_mid" not in J and "pelvis" in J and "neck" in J:
+            J["spine_mid"] = (J["pelvis"] + J["neck"]) / 2
     out["pelvis"] = J0["pelvis"] + (J1["pelvis"] - J0["pelvis"]) * t
     for c in order[1:]:
         if c not in J0 or c not in J1:
             continue
         p = PARENT[c]
+        if p not in out:               # its parent is on neither pose: the joint itself moves in a straight line
+            out[c] = J0[c] + (J1[c] - J0[c]) * t
+            continue
         out[c] = out[p] + slerp(J0[c] - J0[p], J1[c] - J1[p], t)
     for k in J0:                                 # anything else (and the _vectors): slerp / lerp
         if k in out:
