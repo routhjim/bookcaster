@@ -966,8 +966,29 @@ def place_desc(plan: dict, name: str, desc: str) -> str:
                                 _W.prop_names({"props": {p: "" for p in props}}))
 
 
-def sheet_prompt(desc: str, style: str) -> str:
-    """A person's reference sheet words (its file is named by their hash: ref_path)."""
+def face_photos(R, name: str) -> list[str]:
+    """The photographs a person is drawn from (`bookcaster look --photo`): <book>/work/video/faces/<person>/*.png,
+    at most three. [] for everyone else."""
+    if R is None:
+        return []
+    d = R.vd / "faces" / slug(R.person(name) or name)
+    return sorted(str(f) for f in d.glob("*.png"))[:3] if d.is_dir() else []
+
+
+PHOTO_SHEET = (
+    "Character sheet of the person in the reference photographs, two views side by side on a plain light "
+    "background: on the left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on "
+    "the right the same person full length, standing. The face, hair, beard, age and build are exactly those of "
+    "the person in the photographs, with a calm, neutral expression; nothing else is taken from the photographs: "
+    "not their clothes, hat, glasses or background. Drawn as: {desc}. Even light. {style}. No text, no lettering, "
+    "no signature.")
+
+
+def sheet_prompt(desc: str, style: str, photos: bool = False) -> str:
+    """A person's reference sheet words (its file is named by their hash: ref_path). photos: the sheet is drawn
+    from photographs of them (the drawing job carries the pictures as its refs)."""
+    if photos:
+        return PHOTO_SHEET.format(desc=str(desc).rstrip("."), style=style)
     # A full-length figure alone left the face ~20 px tall once shrunk
     # to a reference, so every close-up invented a new face.
     return (f"Character sheet of one person, two views side by side on a plain "
@@ -999,7 +1020,7 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     out = {}
     for name, desc in chars.items():
         if name in used:
-            out[name] = (sheet_prompt(desc, style), [1280, 896])
+            out[name] = (sheet_prompt(desc, style, bool(face_photos(R, name))), [1280, 896])
     for name, desc in places.items():
         if name in used:
             out[name] = (f"Establishing view of {name}, no people. {place_side(plan, name, desc)}"
@@ -1278,9 +1299,16 @@ def reference_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
     and place (empty establishing view) that the scenes use: drawn first,
     then handed to every scene they appear in, so faces, clothes and rooms
     stay the same. Kept per BOOK (refs_dir), reused across chapters."""
-    return [{"id": f"ref_{slug(n)}", "size": size, "seed": 7, "prompt": prompt,
-             "path": str(ref_path(refs_dir, n, prompt))}
-            for n, (prompt, size) in ref_prompts(plan, style, registry_at(refs_dir)).items()]
+    R = registry_at(refs_dir)
+    jobs = []
+    for n, (prompt, size) in ref_prompts(plan, style, R).items():
+        job = {"id": f"ref_{slug(n)}", "size": size, "seed": 7, "prompt": prompt,
+               "path": str(ref_path(refs_dir, n, prompt))}
+        photos = face_photos(R, n) if size == [1280, 896] else []     # a person's sheet, drawn from their photographs
+        if photos:
+            job["refs"] = photos
+        jobs.append(job)
+    return jobs
 
 
 def scene_jobs(pics: list[dict], plan: dict, img_dir: Path, refs_dir: Path,
