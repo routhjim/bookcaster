@@ -1708,6 +1708,30 @@ def mux(book: Path, stem: str, vid: Path, t0: float, dur: float, mix: Path, out:
     return out
 
 
+NIGHT_WORDS = re.compile(r"\b(night|midnight|evening|dusk|nightfall|after dark|candle-?lit|moonlit|moonlight)\b", re.I)
+DAY_WORDS = re.compile(r"\b(morning|noon|midday|afternoon|daylight|sunlight|sunlit|sunny|dawn|daybreak|sunrise)\b", re.I)
+NIGHT_INSIDE = "It is night: the windows are black and the only light comes from the place's own candles, lamps or fire."
+NIGHT_OUTSIDE = "It is night: the sky is dark."
+
+
+def place_night(book: Path, where: str) -> bool:
+    """True when the first scene the director's breakdowns put at this place opens at night (a scene's "opens" gives
+    its time of day). 11-24: a place's picture is drawn from its description, which says no hour, so a room whose
+    one scene is an evening gathering was drawn in daylight and every key there copied the bright windows."""
+    import registry as RG
+    k = RG.place_key(where)
+    for bp in sorted((book / "work" / "video").glob("[0-9][0-9]_*/shots/scenes/breakdown.json")):
+        try:
+            scenes = json.loads(bp.read_text()).get("scenes") or []
+        except (OSError, ValueError):
+            continue
+        for sc in scenes:
+            if isinstance(sc, dict) and RG.place_key(sc.get("place")) == k and str(sc.get("opens") or "").strip():
+                o = str(sc["opens"])
+                return bool(NIGHT_WORDS.search(o)) and not DAY_WORDS.search(o)
+    return False
+
+
 def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     """A place's hero: its path when it is settled (judged empty, or every seed failed before), else what drawing and
     judging it needs."""
@@ -1741,11 +1765,19 @@ def _hero_state(book: Path, where: str, log=print, must: tuple = ()):
     # candles behind every shot of the dragon fight, and a "no doorway, no carving" sentence drew them anyway)
     pic = WO.set_picture_prompt(f"Wide shot of {side} {name}: {desc}", style, "interior" if side.startswith("the inside")
                                 else "exterior")
-    prompt = (f"{pic} {period_line(book, 'every building and object')} "
-              f"No people. A full-frame picture with no border, no page and no text.")
+    tail = (f"{period_line(book, 'every building and object')} "
+            f"No people. A full-frame picture with no border, no page and no text.")
+    # a NEW picture of a place whose scene opens at night is drawn at night; one already drawn stays while its words
+    # are these with or without the hour (a redrawn place re-plans and re-renders every shot there)
+    night = (NIGHT_INSIDE if side.startswith("the inside") else NIGHT_OUTSIDE) if place_night(book, where) else ""
+    plain = f"{pic} {tail}"
+    prompt = f"{pic} {night} {tail}" if night else plain
     jp = hd / f"job_{out.stem}.json"
     try:
-        same = json.loads(jp.read_text())[0]["prompt"] == prompt
+        was = json.loads(jp.read_text())[0]["prompt"]
+        same = was in (plain, f"{pic} {NIGHT_INSIDE} {tail}", f"{pic} {NIGHT_OUTSIDE} {tail}")
+        if same and out.exists():
+            prompt = was                    # (the job file keeps the words the picture was drawn from)
     except (OSError, ValueError, KeyError, IndexError):
         same = False
     # an EMPTY place (10-23: Outside Hulda's Forge was drawn with figures in the shed and dogs, and every key there
