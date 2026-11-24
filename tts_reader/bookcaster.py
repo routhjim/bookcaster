@@ -162,15 +162,28 @@ def search(query: str, limit: int = 12) -> list[dict]:
     return out[:limit]
 
 
-def fetch(book_id: int, name: str | None = None) -> Path:
+def _gutenberg_urls(book_id: int) -> list[str]:
+    """The main site's text, then Project Gutenberg's own mirror (the main site has outages)."""
+    stem = "/".join(str(book_id)[:-1]) or "0"
+    mirror = f"https://gutenberg.pglaf.org/{stem}/{book_id}/{book_id}"
+    return [f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt", mirror + "-0.txt", mirror + ".txt"]
+
+
+def fetch(book_id: int, name: str | None = None, title: str | None = None, author: str | None = None) -> Path:
     """Download a Gutenberg book's plain text into the library."""
-    url = f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt"
-    with urlopen(Request(url, headers=UA), timeout=120) as resp:
-        raw = resp.read().decode("utf-8", "replace")
-    title = re.search(r"^Title:\s*(.+)$", raw, re.M)
-    author = re.search(r"^Author:\s*(.+)$", raw, re.M)
-    title = title.group(1).strip() if title else f"Gutenberg {book_id}"
-    author = author.group(1).strip() if author else ""
+    raw, err = None, None
+    for url in _gutenberg_urls(book_id):
+        try:
+            with urlopen(Request(url, headers=UA), timeout=120) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+            break
+        except OSError as e:
+            err = e
+    if raw is None:
+        raise SystemExit(f"could not download book {book_id} from Project Gutenberg or its mirror: {err}")
+    m_t, m_a = re.search(r"^Title:\s*(.+)$", raw, re.M), re.search(r"^Author:\s*(.+)$", raw, re.M)
+    title = title or (m_t.group(1).strip() if m_t else f"Gutenberg {book_id}")   # the mirror's files carry no header
+    author = author or (m_a.group(1).strip() if m_a else "")
     d = HOME / (name or slugify(title))
     d.mkdir(parents=True, exist_ok=True)
     (d / "book.txt").write_text(raw, encoding="utf-8")
@@ -181,6 +194,53 @@ def fetch(book_id: int, name: str | None = None) -> Path:
     if not (d / "pace.txt").exists():
         set_pace(d, DEFAULT_PACE)          # pace.txt is the one owner of a book's pace (10-27)
     return d
+
+
+def abridge(book: Path, listen_min: float, name: str | None = None, outline_only: bool = False,
+            rate: list[str] | None = None, trim: bool = True) -> int:
+    """A shorter version of *book* as a new book: about listen_min minutes at the book's pace."""
+    from . import condense
+    from .speakers import NO_THINKING, post_chat
+
+    def chat(prompt: str, max_tokens: int) -> str:
+        r = post_chat(LLM_URL, {"model": LLM_MODEL, "messages": [{"role": "user", "content": prompt}],
+                                "temperature": 0.3, "max_tokens": max_tokens,
+                                "chat_template_kwargs": NO_THINKING}, timeout=900)
+        return r["choices"][0]["message"]["content"]
+
+    hand = {}
+    for x in rate or []:
+        m = re.fullmatch(r"[Ss]?(\d+)=([0-5])", x)
+        if not m:
+            raise SystemExit(f"--rate takes S<number>=<0-5>, not {x!r}")
+        hand[int(m.group(1))] = int(m.group(2))
+    pace = book_pace(book)
+    target = listen_min * 60 * pace * CHARS_PER_SEC
+    d = HOME / (name or f"{book.name}_{listen_min:g}min")
+    work = d / "work" / "abridge"
+    work.mkdir(parents=True, exist_ok=True)
+    out, rep = condense.condense(load_book_text(book), target, chat, work / "state.json",
+                                 ratings=hand, outline_only=outline_only, trim=trim)
+    st = json.loads((work / "state.json").read_text(encoding="utf-8"))
+    (work / "outline.txt").write_text(condense.outline(st["scenes"]), encoding="utf-8")
+    (work / "report.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False))
+    print(f"{rep['scenes']} scenes: {rep['full']} shown, {rep['brief']} told in a sentence, {rep['cut']} left out "
+          f"(the list: {work / 'outline.txt'})")
+    if out is None:
+        print(f"planned ~{minutes(rep['planned_chars']) / pace:.0f} min of listening; change a scene with "
+              f"--rate S<number>=<0-5>, then run again without --outline-only")
+        return 0
+    (d / "book.txt").write_text(out, encoding="utf-8")
+    meta = json.loads((book / "meta.json").read_text()) if (book / "meta.json").exists() else {}
+    meta.update(abridged_from=book.name, abridged_minutes=listen_min)
+    (d / "meta.json").write_text(json.dumps(meta, indent=1))
+    if not (d / "pace.txt").exists():
+        set_pace(d, pace)
+    q = rep["quotes"]
+    print(f"saved '{d.name}': ~{minutes(len(out)) / pace:.0f} min of listening at {pace:g}x "
+          f"({len(out) / max(1, rep['source_chars']):.0%} of the book); "
+          f"{q['not_in_source']} of {q['spoken_sentences']} spoken sentences are not word for word from the book")
+    return 0
 
 
 def load_book_text(book: Path) -> str:
@@ -2332,6 +2392,17 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("fetch", help="download a Gutenberg book by id")
     s.add_argument("id", type=int)
     s.add_argument("--name", help="library folder name (default: from the title)")
+    s.add_argument("--title", help="the book's title, when the downloaded file does not carry it")
+    s.add_argument("--author")
+    s = sub.add_parser("abridge", help="make a shorter version of a book, as a new book in the library")
+    s.add_argument("book")
+    s.add_argument("--minutes", type=float, required=True, help="listening time to aim for, at the book's pace")
+    s.add_argument("--name", help="the new book's folder (default: <book>_<minutes>min)")
+    s.add_argument("--outline-only", action="store_true", help="stop after the scene list and its word budgets")
+    s.add_argument("--no-trim", action="store_true",
+                   help="keep the scenes as first written when the whole comes out longer than --minutes")
+    s.add_argument("--rate", nargs="*", default=[], metavar="S12=5",
+                   help="set a scene's rating by hand (0 leave out, 2 one sentence, 3-5 shown: short to long)")
     s = sub.add_parser("chapters", help="list a book's chapters")
     s.add_argument("book")
     s = sub.add_parser("pick", help="choose chapters: numbers, ranges (3-5), title words, or all")
@@ -2523,12 +2594,14 @@ def main(argv: list[str] | None = None) -> int:
         for r in res:
             print(f"{r['id']:>6}  {r['title'][:70]}" + (f"  — {r['author']}" if r["author"] else ""))
     elif a.cmd == "fetch":
-        d = fetch(a.id, a.name)
+        d = fetch(a.id, a.name, a.title, a.author)
         meta = json.loads((d / "meta.json").read_text())
         chs = chapters_of(d)
         total = sum(len(c.text) for c in chs)
         print(f"saved {meta['title']} by {meta['author'] or 'unknown'} as '{d.name}' "
               f"({len(chs)} chapters, ~{minutes(total) / 60:.1f} h of narration)")
+    elif a.cmd == "abridge":
+        return abridge(book_dir(a.book), a.minutes, a.name, a.outline_only, a.rate, not a.no_trim)
     elif a.cmd == "chapters":
         d = book_dir(a.book)
         for i, c in enumerate(chapters_of(d), 1):
