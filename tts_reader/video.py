@@ -976,13 +976,14 @@ def face_photos(R, name: str) -> list[str]:
 
 
 PHOTO_SHEET = (
-    "Character sheet of the person in the reference photographs, two views side by side on a plain light "
-    "background: on the left a large head-and-shoulders portrait facing the viewer, the face filling the frame; on "
-    "the right the same person full length, standing. It is recognisably the person in the photographs: the same "
-    "facial features, eyes and hair, with a calm, neutral expression. Their age, build, beard and clothes are as "
-    "described here, even where the photographs differ (11-23 user: drawn younger and thinner than the "
-    "photographs): {desc}. Nothing else is taken from the photographs: not their clothes, hat, glasses or "
-    "background. Even light. {style}. No text, no lettering, no signature.")
+    "Character sheet of one person, two views side by side on a plain light background: on the left a large "
+    "head-and-shoulders portrait facing the viewer, the face filling the frame; on the right the same person full "
+    "length, standing. {desc}. They are recognisably the person in the reference photographs (the same facial "
+    "features, eyes and hair, a calm neutral expression), but drawn at the age and build just described, not "
+    "those in the photographs (11-23 user: drawn younger and thinner than photographed). In BOTH views they wear "
+    "only the clothes just described: nothing worn in the photographs (shirt, hat, glasses) and none of their "
+    "backgrounds appear (11-23: the portrait kept the photograph's shirt). Even light. {style}. No text, no "
+    "lettering, no signature.")
 
 
 def sheet_prompt(desc: str, style: str, photos: bool = False) -> str:
