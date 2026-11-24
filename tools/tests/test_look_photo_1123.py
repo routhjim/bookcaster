@@ -18,6 +18,8 @@ check("a sheet without photographs keeps its words", plain.startswith("Character
 ph = V.sheet_prompt("a tall man in a grey coat", "ink drawing", photos=True)
 check("a photo sheet names the photographs and still says what they wear",
       "reference photographs" in ph and "a tall man in a grey coat" in ph and "not their clothes, hat" in ph, ph)
+check("age, build and beard come from the description, not the photographs",
+      "age, build, beard and clothes are as described here" in ph, ph)
 
 with tempfile.TemporaryDirectory() as td:
     book = Path(td) / "book"
