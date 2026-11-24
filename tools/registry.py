@@ -22,14 +22,18 @@ from pathlib import Path
 DEFAULT_STYLE = ("detailed 19th-century book illustration, pen and ink linework with a soft watercolour wash, "
                  "muted period colours")
 SIDE_WORD = re.compile(r"\s*\((inside|outside)\)\s*$", re.I)
-TITLE = re.compile(r"^(?:the|mr|mrs|miss|ms|sir|lady|lord|dr|doctor|professor|captain|colonel|father|saint|st)\.?$",
-                   re.I)
+TITLE = re.compile(r"^(?:the|mr|mister|mrs|missus|miss|ms|sir|lady|lord|dr|doctor|professor|captain|colonel|father|"
+                   r"saint|st)\.?$", re.I)
 
 
 def person_key(name) -> str:
-    """One key per person, whatever the spelling: 'Dr. Watson' = 'Doctor Watson' = folder 'doctor_watson'."""
+    """One key per person, whatever the spelling: 'Dr. Watson' = 'Doctor Watson' = folder 'doctor_watson'. A title
+    written as it is spoken is the same title (11-24: the recorded text says "Mister", the cast list "Mr.": the two
+    were two people, so one got a second sheet without the look set for the other)."""
     s = str(name or "").lower().replace("_", " ")
     s = re.sub(r"\bdr\b\.?", "doctor", s)
+    s = re.sub(r"\bmister\b", "mr", s)
+    s = re.sub(r"\bmissus\b", "mrs", s)
     return re.sub(r"[^a-z]", "", s)
 
 
