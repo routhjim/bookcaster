@@ -21,7 +21,7 @@ check("a photo sheet names the photographs and still says what they wear",
 check("age, build and beard come from the description, not the photographs",
       "drawn at the age and build given below" in ph and "smooth unlined skin" in ph, ph)
 im = Image.new("RGB", (1000, 500))
-check("a photograph is cut to the head box, with a margin", V.head_crop(im, "box: [250, 100, 750, 900]").size == (620, 460),
+check("a photograph is cut to the head box: a margin at the top and sides, none below the chin", V.head_crop(im, "box: [250, 100, 750, 900]").size == (620, 430),
       V.head_crop(im, "[250, 100, 750, 900]").size)
 check("no usable box: the whole photograph", V.head_crop(im, "I see a person").size == (1000, 500)
       and V.head_crop(im, "[10, 10, 20, 20]").size == (1000, 500))
