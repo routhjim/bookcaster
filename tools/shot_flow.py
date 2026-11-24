@@ -3457,6 +3457,33 @@ def who_phrase(lk: str) -> str:
     return first
 
 
+FACE_CUT = (0.5, 0.65)     # of a photograph sheet's width and height: its large portrait, above the collar
+
+
+def face_ref(book: Path, stem: str, R_, w: str) -> Path | None:
+    """The face a key of someone drawn from photographs (`bookcaster look --photo`) is given as a reference picture:
+    the portrait of their sheet, cut above the collar. None for everyone else.
+    11-24: a LoRA trained on the sheet did not carry the face into a key - one close-up, one seed each: not the
+    person at LoRA weight 0.8 or 1.0 or with a later step; the person with the sheet as a reference. The WHOLE sheet
+    as the reference also gave the key the sheet's drawing style, and the model copies a reference's layout (11-01),
+    so only the face is given."""
+    from tts_reader import video
+    if not video.face_photos(R_, w):
+        return None
+    p_ = R_.person(w) or w
+    pr = video.sheet_prompt(R_.look(p_), R_.ref_style(), True)
+    sh = next((f for f in (video.ref_path(R_.vd / "refs", a_, pr) for a_ in [p_, *R_.aliases(p_)]) if f.exists()), None)
+    if sh is None:
+        return None
+    out = shot_dir(book, stem) / "faces" / sh.name       # (named by the sheet: a new look's sheet is a new face)
+    if not out.exists():
+        from PIL import Image
+        im = Image.open(sh)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        im.crop((0, 0, int(im.width * FACE_CUT[0]), int(im.height * FACE_CUT[1]))).save(out)
+    return out
+
+
 def _key_questions(cx, s: dict) -> tuple:
     """The vision questions for a shot's opening picture, and how many people it should hold."""
     # (10-24: no "does it show the words" question - it only chose between near-identical clean seeds)
@@ -3554,7 +3581,9 @@ def key_tasks(book: Path, stem: str, shots: list, log=print, heroes: dict | None
         if s.get("keyshot") and not CROP_OFF:   # ... but a CUT of the set at the shot's scale: the same room behind them
             hero = _set_crop(heroes.get(s.get("place") or None), d, s)
         # each LoRA's BUILD is in the sig (10-27 audit: a retrain keeps the file name, so its old keys were kept)
-        sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)]))
+        faces = [str(f) for f in (face_ref(book, stem, R_, w) for w in s["who"] if w != s.get("ots")) if f]
+        # (the faces are in the sig only where there are any: everyone else's keys are kept as they were)
+        sig = MF._h(json.dumps([p, loras, [R_.lora(w)[2] for w in s["who"]], str(hero)] + ([faces] if faces else [])))
         # a place picture drawn again (10-24: the people-free hero redraws left every key there cached, so the
         # rerun changed nothing): the keys drawn before it are drawn again
         older = hero is not None and hero.exists() and any(k.stat().st_mtime < hero.stat().st_mtime
@@ -3575,7 +3604,7 @@ def key_tasks(book: Path, stem: str, shots: list, log=print, heroes: dict | None
             # ball failed all 5 seeds on "10 people", "5", "6". The head count is not held against it (the question
             # stays as asked, so the pictures picked before are kept)
         t = {"s": s, "d": d, "q": q, "need": need, "seeds": list(ALL_SEEDS), "tried": [],
-             "job": {"prompt": p, "refs": [str(hero)] if hero else [], "loras": loras, "size": [W, H]}}
+             "job": {"prompt": p, "refs": ([str(hero)] if hero else []) + faces, "loras": loras, "size": [W, H]}}
         tasks.append(t)
     return tasks
 
