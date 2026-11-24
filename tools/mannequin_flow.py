@@ -52,8 +52,8 @@ def paths(book: Path, stem: str):
 
 
 def style_of(book: Path, stem: str | None = None) -> str:
-    """The book's one art style (registry.style: art_style.txt > the chapter's style.txt > the default; 10-27: the
-    keys read art_style.txt only, '' for the Speckled Band, while its sheets and LoRAs were pen-and-ink)."""
+    """The book's one art style (registry.style: art_style.txt > the chapter's chosen style.txt > photographic;
+    10-27: the keys read art_style.txt only, '' for a book without one, while its sheets and LoRAs were pen-and-ink)."""
     return _reg(book).style(stem)
 
 

@@ -344,6 +344,15 @@ def clean_refs(vd, fams, card, style):
                 log(f"{b}: REFERENCE FAILED the vision check (candidates {cand})")
 
 
+def prop_style(vd) -> str:
+    """The style words of a prop's picture: the book's REFERENCE style (registry.ref_style: photographic when nobody
+    chose one - 11-24: it was a chapter's style.txt, the pen-and-ink default included), the clause before ':'."""
+    import registry as RG
+    R = RG.at(vd)
+    s = (R.ref_style() if R is not None else RG.PHOTO_STYLE).strip().split(":")[0].strip()
+    return s + ". " if s else ""
+
+
 def draw_missing(vd, fams, card, style):
     jobs = []
     d = vd / "stage" / "props" / "_drawn"
@@ -526,8 +535,7 @@ def build(book, chapter, card="any", only=None, force=(), cards=("05", "65"), un
     for k, v in fams.items():
         rf = out0 / k / "retry.txt"
         v["retry"] = int(rf.read_text()) if rf.exists() else 0
-    sty = sorted(vd.glob("*/style.txt"))
-    style = (sty[0].read_text().strip().split(":")[0] + ". ") if sty else ""
+    style = prop_style(vd)
     from tts_reader import video as _V
     style += _V.period_line(str(vd)).strip() + " " if _V.period_of(str(vd)) else ""
     own = {k: v for k, v in fams.items() if not v.get("derive")}      # derived states need no picture

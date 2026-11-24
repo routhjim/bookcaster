@@ -21,6 +21,26 @@ from pathlib import Path
 
 DEFAULT_STYLE = ("detailed 19th-century book illustration, pen and ink linework with a soft watercolour wash, "
                  "muted period colours")
+# What a book's pictures are when nobody chose a style: photographs. The technique only, never content. The same
+# words draw everything those pictures are made from (sheets, outfit sheets, LoRA captions, the 3D figure's views,
+# prop pictures): 11-24, a book with no chosen style got photographic keys but pen-and-ink sheets - the hatching
+# baked onto the 3D figure as wrinkles (a face decades older than its look) and the LoRA learned drawings.
+PHOTO_STYLE = "realistic colour photograph, natural skin and cloth texture, soft even light"
+
+
+def _style_key(s) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().rstrip(".").strip().lower()
+
+
+def is_photo(style) -> bool:
+    """These style words are the photographic ones (a chosen style never is)."""
+    return _style_key(style).startswith(_style_key(PHOTO_STYLE))
+
+
+def unchosen(style) -> bool:
+    """Nobody chose these style words: none at all, the old default a chapter's style.txt holds when no style was
+    given, or the photographic words themselves."""
+    return _style_key(style) in ("", _style_key(DEFAULT_STYLE), _style_key(PHOTO_STYLE))
 SIDE_WORD = re.compile(r"\s*\((inside|outside)\)\s*$", re.I)
 TITLE = re.compile(r"^(?:the|mr|mister|mrs|missus|miss|ms|sir|lady|lord|dr|doctor|professor|captain|colonel|father|"
                    r"saint|st)\.?$", re.I)
@@ -352,31 +372,44 @@ class Book:
         return hits[0] if hits else None
 
     # --- style ----------------------------------------------------------------------------------------------
-    def style(self, stem: str | None = None) -> str:
-        """The book's one art style: `bookcaster art` (art_style.txt), else the chapter's style.txt, else the
-        default - the same words for keys, place pictures, sheets and LoRA captions (10-27: keys read only
-        art_style.txt, absent for the Speckled Band, and were drawn photographic while every sheet and LoRA was
-        pen-and-ink watercolour)."""
+    def _art(self) -> str:
         a = self.book / "art_style.txt"
-        if a.exists() and a.read_text().strip():
-            return a.read_text().strip()
+        return a.read_text().strip() if a.exists() else ""
+
+    def _chapter_style(self, stem: str | None = None) -> str:
+        """The chapter's own style.txt (video.style_guard writes it), else the first chapter's that has one."""
         cands = [self.vd / stem / "style.txt"] if stem else []
         cands += sorted(self.vd.glob("[0-9][0-9]_*/style.txt"))
         for f in cands:
             if f.exists() and f.read_text().strip():
                 return f.read_text().strip()
-        return DEFAULT_STYLE
+        return ""
+
+    def chosen_style(self, stem: str | None = None) -> str:
+        """The style somebody CHOSE for the book, or "": `bookcaster art` (art_style.txt), else a chapter's style.txt
+        unless it only holds the words written when nothing was chosen (unchosen)."""
+        c = self._art() or self._chapter_style(stem)
+        return "" if unchosen(c) else c
+
+    def photographic(self, stem: str | None = None) -> bool:
+        """Nobody chose a picture style: the book's pictures, and everything they are made from, are photographs."""
+        return not self.chosen_style(stem)
+
+    def style(self, stem: str | None = None) -> str:
+        """The book's one art style: `bookcaster art` (art_style.txt), else the chapter's chosen style.txt, else
+        photographic (PHOTO_STYLE) - the same words for keys, place pictures, sheets and LoRA captions (10-27: keys
+        read only art_style.txt and were drawn photographic while every sheet and LoRA was pen-and-ink watercolour)."""
+        return self.chosen_style(stem) or PHOTO_STYLE
 
     def ref_style(self, stem: str | None = None) -> str:
-        """The REFERENCE style: what the character sheets are drawn in and their LoRAs captioned with - the chapter's
-        own style.txt, else the default; never `bookcaster art` (10-27 user: back to last night's realistic keys
-        without retraining the LoRAs - a LoRA carries who someone is, the picture's style is the key's)."""
-        cands = [self.vd / stem / "style.txt"] if stem else []
-        cands += sorted(self.vd.glob("[0-9][0-9]_*/style.txt"))
-        for f in cands:
-            if f.exists() and f.read_text().strip():
-                return f.read_text().strip()
-        return DEFAULT_STYLE
+        """The REFERENCE style: what the character sheets are drawn in and their LoRAs captioned with. A book with
+        a chosen style: the chapter's own style.txt, else the old default; never `bookcaster art` itself (10-27
+        user: back to realistic keys without retraining the LoRAs - a LoRA carries who someone is, the picture's
+        style is the key's). A book nobody chose a style for: photographic, as its pictures are (11-24)."""
+        c = self._chapter_style(stem)
+        if self._art():
+            return c or DEFAULT_STYLE
+        return PHOTO_STYLE if unchosen(c) else c
 
     def direction(self) -> str:
         """The author's own direction for the film, verbatim, and the recording's style notes (a song made by
@@ -393,9 +426,8 @@ class Book:
 
     def picture_style(self) -> str:
         """The PICTURE style of the shots flow's keys and place pictures: `bookcaster art` (art_style.txt), else none -
-        the image model's own photographic look (the Speckled Band 10-26 keys the user chose 10-27)."""
-        a = self.book / "art_style.txt"
-        return a.read_text().strip() if a.exists() else ""
+        the image model's own photographic look (the user's choice of 10-27)."""
+        return self._art()
 
 
 SIDE_PREFIX = re.compile(r"^\s*(?:(?:inside|outside)\s*:\s*)+", re.I)

@@ -263,9 +263,9 @@ class Ctx:
         pc = list(((self.plan.get("look") or {}).get("characters") or {}))
         self.chars = self.R.looks(list(dict.fromkeys(list(raw) + pc)), (self.plan.get("look") or {}).get("characters"))
         self.refs = self.W / "video" / "refs"
-        self.style = (self.V / "style.txt").read_text().strip() if (self.V / "style.txt").exists() else video.DEFAULT_STYLE
         self.period = video.period_of(book)
-        self.style = self.style.rstrip(".") + "." + video.period_line(period=self.period)   # keys + LTX prompts (10-21)
+        self.style = key_style(self.R, stem, self.period)                    # keys + LTX prompts (10-21)
+        self.photo = self.R.photographic(stem)       # nobody chose a style: photographs, not paintings (11-24)
         self.timeline = json.loads((self.W / f"{stem}.timeline.json").read_text())
         txt = book / "chapters" / f"{stem}.txt"
         self.text = None
@@ -2067,6 +2067,20 @@ def shot_place(cx: "Ctx", e: dict) -> dict:
     return {"where": where, "kind": kind, "desc": places.get(where) or places.get(base, ""), "time": t}
 
 
+def key_style(R, stem: str, period: str = "") -> str:
+    """The style words of the 3D flow's keys and LTX prompts, the period line included. A book with a chosen style:
+    the chapter's reference style (registry.ref_style) and the period. A book nobody chose a style for: photographic,
+    phrased as the shots flow phrases it - no style words at all, the period line alone (11-24: this flow read the
+    chapter's style.txt, so the unchosen pen-and-ink default made drawn keys here and photographs there); with no
+    period either, the registry's photographic words (the prompts need something to say)."""
+    from tts_reader import video
+    import registry as RG
+    per = video.period_line(period=period)
+    if R.photographic(stem):
+        return per.strip() or RG.PHOTO_STYLE
+    return R.ref_style(stem).rstrip(".") + "." + per
+
+
 def style_for(cx: "Ctx", e: dict) -> str:
     """The book's art style minus content words that contradict an INTERIOR set: the knight style's "moody stormy
     skies" made the painter put Hulda on a seashore under a sky (10-20 keys_review)."""
@@ -3013,7 +3027,8 @@ def bg_hold(cx: "Ctx", P: dict, card: str = "05") -> None:
         Image.composite(key, bgp, m).save(d / "key.png")          # the people as drawn, the room repainted
         pl = shot_place(cx, e)
         vl.append({"id": e["id"], "image": str(d / "key.png"),
-                   "ask": {"clean": f"Does the background look like a clean painted {'interior of ' if pl['kind'] == 'interior' else ''}"
+                   "ask": {"clean": f"Does the background look like a clean {'' if getattr(cx, 'photo', False) else 'painted '}"
+                                    f"{'interior of ' if pl['kind'] == 'interior' else ''}"
                                     f"{pl['where'] or 'scene'}, with no smears, noise or melted texture? Answer yes or no."}})
     ans = vl_batch(vl)
     for e in todo:

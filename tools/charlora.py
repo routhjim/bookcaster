@@ -129,10 +129,13 @@ class Char:
         self.chapters = sorted(p for p in self.vdir.iterdir()
                                if re.match(r"\d{2}_", p.name) and (p / "plan.json").exists())
         self.plans = {c.name: json.loads((c / "plan.json").read_text()) for c in self.chapters}
-        # the book's one style (registry: art_style.txt > a chapter's style.txt > the default), as the sheets are drawn
-        # and the keys are prompted: their names hash it (10-27: the first chapter's style.txt only, '' without one)
+        # the sheets' style (registry.ref_style: a chapter's chosen style.txt, photographic when nobody chose one), as
+        # the sheets are drawn: their names hash it (10-27: the first chapter's style.txt only, '' without one)
         self.draw_style = R.ref_style()     # the sheets' own style, never the picture's (10-27)
         self.style = self.draw_style.strip().rstrip(".") + "."
+        # what a dataset picture is told to be, against the 3D render it is drawn over: a photograph in a
+        # photographic book (11-24: "a painted illustration" was asked of every book's)
+        self.medium = "A realistic photograph" if RG.is_photo(self.draw_style) else "A painted illustration"
         self.period_s = V.period_line(str(self.refs_dir)).strip() + " " if V.period_of(str(self.refs_dir)) else ""  # not in input_hash
         # outfits: None = the usual look; then each wardrobe row (by id) across the chapters
         self.outfits = {None: {"id": None, "dress": None}}
@@ -630,13 +633,13 @@ def gen_jobs_mesh(c: Char, model: str | None, motions: list[str], n: int, main_o
         if c.kind == "human":
             prompt = (f"{c.name}, {what}, {view}. {c.name} is {c.text(oid) if oid is None else c.face}{clothes}; "
                       f"exactly the face, age and hair of the person in image 1 and the clothes of the person "
-                      f"in image 2. A painted illustration, not a 3D render: natural skin, cloth and hair. Only "
+                      f"in image 2. {c.medium}, not a 3D render: natural skin, cloth and hair. Only "
                       f"this one person. {light}. {c.style} {c.period_s}No text, no lettering, no signature.")
         else:
             what = {"head": "a close-up of the head", "half": "the head and front of the body",
                     "full": "the whole body"}[v["frame"]]
             prompt = (f"{c.name}, {what}, {view}. {c.name} is {c.desc}; exactly the head of the creature in "
-                      f"image 1 and the body of the creature in image 2. A painted illustration, not a 3D render: "
+                      f"image 1 and the body of the creature in image 2. {c.medium}, not a 3D render: "
                       f"living scales, skin and eyes. Only this one creature. {light}. {c.style} {c.period_s}No text, no "
                       f"lettering, no signature.")
         job = {"id": f"gen_mesh_{v['id']}", "seed": rng.randrange(1, 10**6), "size": [W, H],

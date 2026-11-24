@@ -373,6 +373,18 @@ def apose_prompt(o, name, view, trigger, style):
             + APOSE.format(view=vtxt, look=look, style=style))
 
 
+def figure_style(vd) -> str:
+    """The style words of a figure's A-pose and head views: the book's REFERENCE style (registry.ref_style: the
+    sheets' own, photographic when nobody chose one), its technique only (the clause before ':' and before the first
+    full stop), ending ". ". 11-24: read from a chapter's style.txt, the unchosen pen-and-ink default hatched every
+    view and the hatching was painted onto the figure as wrinkles."""
+    import registry as RG
+    R = RG.at(vd)
+    s = (R.ref_style() if R is not None else RG.PHOTO_STYLE).strip()
+    s = s.split(":")[0].split(".")[0].strip()
+    return s + ". " if s else ""
+
+
 def apose_score(png) -> float:
     """How A-pose-like and complete a drawing is (DWPose body): all 17 points seen, wrists well out from the
     hips, ankles apart, one person. Higher is better; < 0 = unusable."""
@@ -1265,11 +1277,7 @@ def main(argv=None) -> int:
             os.replace(tmp, ip)
         print(json.dumps({"built" if not a.dry_run else "would_build": done}))
         return 0
-    sty = sorted(vd.glob("*/style.txt"))
-    style = ""
-    if sty:
-        s = sty[0].read_text().strip()
-        style = (s.split(":")[0].split(".")[0].strip() + ". ") if s else ""
+    style = figure_style(vd)
     entries = []
     for n, e in idx["characters"].items():
         for oid, o in e["outfits"].items():

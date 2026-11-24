@@ -872,7 +872,7 @@ def run_storyboard_job(book: Path) -> int:
     sb = book / "out" / "storyboard"
     sb.mkdir(parents=True, exist_ok=True)
     made, notes = [], []
-    style = art_style(book) or video.DEFAULT_STYLE
+    style = book_style(book)
     try:
         _set_status(book, step="storyboard: planning the pictures (characters, places, scenes)")
         plan = plan_pictures_for(book, files[0], log)
@@ -980,7 +980,7 @@ def keyframes_sample(book: Path, n: int = 8, chapter: int = 1, replan: bool = Fa
     kf, plan = prep["kf"], prep["plan"]
     keys = [x for x in kf["frames"] if x.get("mode") == "key"]
     pick = [keys[round(i * (len(keys) - 1) / max(1, n - 1))] for i in range(min(n, len(keys)))]
-    style = art_style(book) or video.DEFAULT_STYLE
+    style = book_style(book)
     if replan:
         # the sampled scenes planned afresh under the current rules (poses, end frames, ...): the chapter's
         # keyframes.json stays as it is
@@ -1376,6 +1376,13 @@ def art_style(book: Path) -> str:
     return f.read_text(encoding="utf-8").strip() if f.exists() else ""
 
 
+def book_style(book: Path) -> str:
+    """The style of the book's plan, stills and 2D keys: `bookcaster art`, else photographic - the registry's words
+    for a book nobody chose a style for (11-24: it was the pen-and-ink default here and photographic at the keys)."""
+    from . import video
+    return art_style(book) or video._rg().PHOTO_STYLE
+
+
 def set_art_style(book: Path, style: str) -> None:
     f = book / "art_style.txt"
     if style.strip():
@@ -1397,7 +1404,7 @@ def plan_pictures_for(book: Path, f: Path, log) -> dict:
     from . import video
     text = _chapter_text(f)
     return video.ensure_plan(text, _video_work(book, f), LLM_URL, LLM_MODEL,
-                             art_style(book) or video.DEFAULT_STYLE,
+                             book_style(book),
                              len(text) / CHARS_PER_SEC, log=log)
 
 
@@ -1405,7 +1412,7 @@ def draw_pictures_for(book: Path, f: Path, log) -> None:
     from . import video
     plan = plan_pictures_for(book, f, log)
     video.draw_checked(plan["pictures"], _video_work(book, f) / "img", plan,
-                       art_style(book) or video.DEFAULT_STYLE, LLM_URL, LLM_MODEL, log=log)
+                       book_style(book), LLM_URL, LLM_MODEL, log=log)
 
 
 def redraw_pictures(book: Path, f: Path, which: list[str]) -> list[str]:
@@ -1474,7 +1481,7 @@ def animate_for(book: Path, f: Path, level: str, log, phase: str = "all") -> lis
     if not voices.exists() or not timeline.exists():
         raise RuntimeError(f"{f.stem} isn't recorded yet")
     return animate.animate_chapter(level, _chapter_text(f), voices, timeline, _video_work(book, f),
-                                   art_style(book) or video.DEFAULT_STYLE, log=log,
+                                   book_style(book), log=log,
                                    narrator=narrator_character(book), llm_url=LLM_URL, llm_model=LLM_MODEL,
                                    phase=phase)
 
@@ -1563,7 +1570,7 @@ def art_sample(book: Path) -> Path:
     files = chapter_files(book)
     if not files:
         sys.exit("pick chapters first: bookcaster pick <book> ...")
-    style = art_style(book) or video.DEFAULT_STYLE
+    style = book_style(book)
     paras = video.paragraphs(_chapter_text(files[0]))[:40]
     plan = video.plan_pictures(paras, LLM_URL, LLM_MODEL, style, 1)
     p = plan["pictures"][0]
@@ -2098,9 +2105,10 @@ def shots_ready(book: Path, stem: str, log=print, status=lambda **k: None) -> No
     shot_flow.wardrobe(book, stem, log)      # wardrobe planned after the LoRAs made them stale at the keys)
     from . import video
     plan = json.loads((vd / "plan.json").read_text())   # then any sheet a changed look or outfit needs: each LoRA
-    st = vd / "style.txt"                               # learns from its sheet (10-25: the Disciple's trained on
-    video.draw([], vd / "img", log=log, plan=plan,     # his old white-and-blue one)
-               style=st.read_text().strip() if st.exists() else video.DEFAULT_STYLE)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))   # learns from its sheet (10-25: one
+    import registry as RG                                # trained on an old sheet); in the REFERENCE style, the
+    video.draw([], vd / "img", log=log, plan=plan,       # registry's (photographic when nobody chose one)
+               style=RG.Book(book).ref_style(vd.name))
     # the LoRAs: shot_flow.run trains them on both cards beside the director (11-06, loras_beside)
 
 
@@ -2743,8 +2751,7 @@ def main(argv: list[str] | None = None) -> int:
             set_art_style(d, "" if a.clear else " ".join(a.style))
         if getattr(a, "auto", False):                # 11-05: the story chooses (the planner's language model)
             art_auto(d)
-        from .video import DEFAULT_STYLE
-        print(f"picture style for {d.name}: {art_style(d) or DEFAULT_STYLE + ' (default)'}")
+        print(f"picture style for {d.name}: {art_style(d) or book_style(d) + ' (none chosen: photographic)'}")
         if a.sample:
             with foreground(d, "art --sample"):
                 print(art_sample(d))

@@ -73,7 +73,7 @@ p2.update(pictures=[], sheet_cast=["Disciple", "Peter"])
 (vd / "refs" / "disciple-00000000.png").write_bytes(b"old")
 c = charlora.Char(str(book), "Disciple")
 check(c.sheet(None) is None, "sheet: an older look's sheet is not used", c.sheet(None))
-# (10-27: in the book's one style, registry.style(): the default here, never '')
+# (10-27: in the book's one style, registry.style(): photographic here (11-24), never '')
 want = video.ref_path(vd / "refs", "Disciple", video.ref_prompts(json.loads((vd / "02_chapter_2" / "plan.json").read_text()),
                                                                  c.R.style())["Disciple"][0])
 want.write_bytes(b"new")
