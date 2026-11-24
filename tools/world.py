@@ -1239,6 +1239,17 @@ def set_entry(where: str, wd: Path) -> dict:
             "view_region": w.get("view_region")}
 
 
+def named_after(w, names):
+    """Another place this one is named after ("River below the forge" -> "The Forge"): its picture is the
+    reference, so the forge on the river bank IS the forge (user 10-21)."""
+    base_ = VARIANT_RX.sub("", w).lower()
+    for o_ in names:
+        n_ = re.sub(r"(?i)^(the|a|an)\s+", "", VARIANT_RX.sub("", o_)).lower()
+        if o_ != w and n_ and n_ != re.sub(r"(?i)^(the|a|an)\s+", "", base_) and re.search(rf"\b{re.escape(n_)}\b", base_):
+            return o_
+    return None
+
+
 def cmd_build_book(a) -> None:
     book = Path(a.book_dir).expanduser().resolve()
     vid = book / "work" / "video"
@@ -1249,15 +1260,8 @@ def cmd_build_book(a) -> None:
         a.style = (book / "art_style.txt").read_text().strip()
     entries, report = [], []
 
-    def related(w):
-        """Another place this one is named after ("River below the forge" -> "The Forge"): its picture is the
-        reference, so the forge on the river bank IS the forge (user 10-21)."""
-        base_ = VARIANT_RX.sub("", w).lower()
-        for o_ in locs:
-            n_ = re.sub(r"(?i)^(the|a|an)\s+", "", VARIANT_RX.sub("", o_)).lower()
-            if o_ != w and n_ and n_ != re.sub(r"(?i)^(the|a|an)\s+", "", base_) and re.search(rf"\b{re.escape(n_)}\b", base_):
-                return o_
-        return None
+    def related(w):              # (11-24: the rule itself is named_after, shared with flow3d's time window)
+        return named_after(w, locs)
     # the places others are named after build first
     locs = dict(sorted(locs.items(), key=lambda kv: related(kv[0]) is not None))
     for where, e in locs.items():

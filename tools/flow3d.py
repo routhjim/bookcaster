@@ -515,7 +515,7 @@ def infer_art_style(book, text: str, log=print, force: bool = False) -> str:
     return a
 
 
-def _sets_parallel(book, lg, log=print, cards=("05", "65")) -> None:
+def _sets_parallel(book, lg, log=print, cards=("05", "65"), only=None) -> None:
     """The sets to build, split over both cards (one world.py build-book --only per card, at once); the places
     named after another place (drawn with its picture as reference) and the registry prune are left to the
     full pass that follows (everything else is reused by then)."""
@@ -529,7 +529,7 @@ def _sets_parallel(book, lg, log=print, cards=("05", "65")) -> None:
     sys.path.insert(0, str(HERE))
     import world as Wd
     names = [x["where"] for x in rows]
-    todo = [x["where"] for x in rows if x.get("status") == "would build"
+    todo = [x["where"] for x in rows if x.get("status") == "would build" and (only is None or x["where"] in only)
             and not any(o != x["where"] and re.search(rf"\b{re.escape(re.sub(r'(?i)^(the|a|an)\s+', '', Wd.VARIANT_RX.sub('', o)).lower())}\b",
                                                       Wd.VARIANT_RX.sub("", x["where"]).lower())
                         and Wd.VARIANT_RX.sub("", o) != Wd.VARIANT_RX.sub("", x["where"]) for o in names)]
@@ -590,13 +590,15 @@ def plan_lint(book, stems, log=print) -> list:
     return out
 
 
-def normalize_wheres(book, work: Path, log=print, sets: set | None = None) -> list:
+def normalize_wheres(book, work: Path, log=print, sets: set | None = None, only: set | None = None) -> list:
     """Every keyframe's `where` is a real place of the book, one side of it (10-21 knight ch1): the planner wrote
     "The Forge: a stone building at the edge of ..." (a place's DESCRIPTION as a name) for the river quench and
     the walk to the mountain, and the forge's inside work and its doorway/yard shared one `where` (one set
     drawn from outside). A name with a description is resolved to the place its own prompt names (name words
     x3, description words x1); a place whose moments are both inside and outside gets a "<place> (outside)" /
-    "(inside)" variant for the minority side. -> [(index, old, new)], logged; anim/keyframes.json rewritten."""
+    "(inside)" variant for the minority side. -> [(index, old, new)], logged; anim/keyframes.json rewritten.
+    only: the moment ids to look at (11-24, a staged time window: with only ITS sets built, a stray place outside
+    it would be re-homed to one of them)."""
     sys.path.insert(0, str(HERE))
     import world as Wd
     kp = work / "anim" / "keyframes.json"
@@ -619,6 +621,8 @@ def normalize_wheres(book, work: Path, log=print, sets: set | None = None) -> li
     changed = []
     for i, f in enumerate(frames):
         w = f.get("where") or ""
+        if only is not None and f.get("shot") not in only:
+            continue
         if not w or w in known or (sets is None and (Wd.VARIANT_RX.sub("", w) in known or RG.place_look(w))):
             continue
         if sets is not None and (w in places or RG.place_look(w)):
@@ -952,13 +956,150 @@ def pending(book) -> list:
     return [k for k, e in register(book)["items"].items() if e["status"] == "pending"]
 
 
+# ------------------------------------------------------------------------------------------------- a time window
+# (11-24: `assets`, `stage` and `video --flow 3d` take --from/--to as the shots flow does. One span "t0:t1" -> the ids
+# of the moments that START in it -> each step works on those ids; no span = None = everything, as before.)
+
+def parse_span(span) -> tuple | None:
+    """bookcaster's span "t0:t1" (seconds) -> (t0, t1); None / "" = the whole chapter."""
+    if not span:
+        return None
+    t0, t1 = span.split(":") if isinstance(span, str) else span
+    return float(t0), float(t1)
+
+
+def span_ids(moments: list, span) -> set | None:
+    """The ids of the moments whose start is in [t0, t1) (mannequin_flow.entries' rule); None = no window."""
+    sp = parse_span(span)
+    return None if sp is None else {m["id"] for m in moments if sp[0] <= float(m["t"]) < sp[1]}
+
+
+def span_use(moments: list, ids: set | None, frames: dict, plan: dict, tl=()) -> dict:
+    """Who, where and which props the moments *ids* (None = all) show, each in first-seen order, + "wear" [(who, t)]:
+    an action moment's keyframe; a talk moment's picture and the speaker of its quote (scene_stage.moment_frame);
+    the place also as the plan's scene at the moment's middle has it (the scene layer rules every moment by it)."""
+    pics = {p["id"]: p for p in plan.get("pictures") or []}
+    scenes = sorted((s for s in plan.get("scenes") or [] if s.get("t0") is not None), key=lambda s: s["t0"])
+    who, where, props, wear = {}, {}, {}, []
+    for m in sorted(moments, key=lambda m: m["t"]):
+        if ids is not None and m["id"] not in ids:
+            continue
+        f, p = frames.get(m["id"]), pics.get(m.get("pic")) or {}
+        people = list((p if f is None else f).get("who") or [])
+        if f is None:
+            q = [x for x in tl if float(x["t"]) <= float(m["t"]) + 0.05]
+            spk = m.get("speaker") or (q[-1].get("speaker") if q and q[-1].get("kind") == "quote" else None)
+            if spk and spk != "narrator" and spk not in people:
+                people.insert(0, spk)
+        mid = float(m["t"]) + 0.5 * float(m.get("dur") or 0)
+        sc = [s for s in scenes if s["t0"] <= mid + 0.05]
+        for w in people:
+            who[w] = 1
+            wear.append((w, float(m["t"])))
+        for w in ((f or {}).get("where") or p.get("where"), sc[-1].get("where") if sc else None):
+            if w:
+                where[w] = 1
+        props.update(dict.fromkeys((f or {}).get("props") or []))
+    return {"who": list(who), "where": list(where), "props": list(props), "wear": wear}
+
+
+def span_cut(entries: list, total: float = 1e9) -> tuple:
+    """The stretch a window's video runs: its first moment's start to its last moment's end (the shots flow's
+    assemble: a clean cut, no part of a moment that is not rendered), never past the recording."""
+    return (min(float(e["t"]) for e in entries),
+            min(float(total), max(float(e["t"]) + float(e["dur"]) for e in entries)))
+
+
+def span_tag(span, end: float | None = None) -> str:
+    """The window in an output's name, as mannequin_flow.out_path writes it ("_148-432"; "" = the whole chapter);
+    an open --to is the cut's own end."""
+    sp = parse_span(span)
+    if sp is None or (sp[0] <= 0 and sp[1] >= 1e8):
+        return ""
+    return f"_{int(sp[0])}-{int(sp[1] if sp[1] < 1e8 or end is None else end)}"
+
+
+def span_models(index: dict, worn) -> list:
+    """characters.py --only names for [(cast name, outfit id or None)]: "Name:<outfit id>" = the one model worn
+    (characters.model_at's pick: an outfit without its own model is the usual look, an alias its own body), a
+    creature by its name alone."""
+    out = {}
+    for n, oid in worn:
+        ent = (index.get("characters") or {}).get(n)
+        if not ent:
+            continue
+        if ent.get("kind") == "creature":
+            out[n] = 1
+            continue
+        o = ent["outfits"].get(oid or "") or ent["outfits"].get("") or {}
+        out[f"{n}:{o.get('alias_of') if o.get('alias_of') is not None else (o.get('id') or '')}"] = 1
+    return list(out)
+
+
+def in_window(RG, key: str, e: dict, win: dict) -> bool:
+    """Is the approvals item *key* ("set:<where>", "prop:<family>", "character:..", "lora:..") one the window uses?"""
+    kind = key.split(":")[0]
+    if kind == "set":
+        return e.get("name") in win["where"]
+    if kind == "prop":
+        return str(e.get("name") or "").split("__")[0] in win["bases"]
+    return any(RG.same(e.get("name"), w) for w in win["cast"])
+
+
+def chapter_moments(book, stem) -> list:
+    """The chapter's moments in time order: anim/manifest.json + the ones the scene layer added (as
+    remake_chapter.Ctx reads them)."""
+    cd = vdir(book) / stem
+    man = json.loads((cd / "anim" / "manifest.json").read_text())
+    xm = cd / "stage" / "extra_moments.json"
+    have = {m["id"] for m in man}
+    return sorted(man + [m for m in (json.loads(xm.read_text()) if xm.exists() else []) if m["id"] not in have],
+                  key=lambda m: m["t"])
+
+
+def window(book, stem, span) -> dict | None:
+    """What the moments of a chapter's time window use: {"ids", "who", "where", "props", "wear", "cast" (the
+    registry's name of each person), "bases" (the prop families)}; None without a span."""
+    sp = parse_span(span)
+    if sp is None:
+        return None
+    book = Path(book)
+    cd = vdir(book) / stem
+    ms = chapter_moments(book, stem)
+    ids = span_ids(ms, sp)
+    if not ids:
+        raise SystemExit(f"no moment of {stem} starts in {sp[0]:g}-{min(sp[1], 99999):g} s (its moments run "
+                         f"{ms[0]['t']:g}-{ms[-1]['t'] + ms[-1]['dur']:g} s)" if ms else f"{stem} has no moments yet")
+    kp, tl = cd / "anim" / "keyframes.json", book / "work" / f"{stem}.timeline.json"
+    frames = {f["shot"]: f for f in (json.loads(kp.read_text()).get("frames") or [])} if kp.exists() else {}
+    use = span_use(ms, ids, frames, json.loads((cd / "plan.json").read_text()),
+                   json.loads(tl.read_text()) if tl.exists() else ())
+    RG = _reg(book)
+    import props_build as PB
+    return {**use, "ids": ids, "span": sp, "cast": list(dict.fromkeys(RG.person(w) or w for w in use["who"])),
+            "bases": PB.moment_bases(cd, ids)}
+
+
+def window_models(book, stem, win) -> list:
+    """The window's cast as characters.py --only names: each person in the outfit worn at each of their moments."""
+    import characters as CH
+    vd = vdir(book)
+    idx = json.loads((vd / "stage" / "characters" / "index.json").read_text())
+    RG = _reg(book)
+    name = lambda w: w if w in idx["characters"] else (RG.person(w) or w)  # noqa: E731
+    return span_models(idx, [(name(w), CH.outfit_at(vd, stem, name(w), t) if name(w) in idx["characters"] else None)
+                             for w, t in win["wear"]])
+
+
 # ------------------------------------------------------------------------------------------------- stages
 
 def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "any", only=None,
-           gpu_on=None, gpu_off=None) -> dict:
+           gpu_on=None, gpu_off=None, span=None) -> dict:
     """Characters (+ creature sheets), props, sets: each tool's own resumable entry point; GPU steps take their card
     lock per call and yield to a waiting LTX gaprun (the tools' own rule). gpu_on() / gpu_off(): called around the GPU
-    steps (bookcaster pauses the voice and music servers only for those; 10-27: they were down the whole 35 min)."""
+    steps (bookcaster pauses the voice and music servers only for those; 10-27: they were down the whole 35 min).
+    span "t0:t1" (with a chapter): only the people (in the outfits worn), LoRAs, props and places of the moments
+    that start in that stretch (11-24: a 5-minute scene of 3 people built the chapter's 20)."""
     JOB_LOG[0] = log
     disk_check(book, log)
     book = Path(book)
@@ -967,23 +1108,37 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
     stems = [chapter_stem(book, chapter)] if chapter else [f.stem for f in sorted((book / "chapters").glob("[0-9][0-9]_*.txt"))
                                                            if (vd / f.stem / "anim" / "keyframes.json").exists()]
     rc = {}
+    if span and not chapter:
+        raise SystemExit("assets: a time window (--from/--to) is of ONE chapter: give --chapter")
+    win = window(book, stems[0], span)
     plan_lint(book, stems, log)                  # the plan's words, before any GPU (10-21)
     rc["characters.plan"] = run([POSE_PY, "-I", HERE / "characters.py", "plan", book], lg)
+    beasts = None                                # the window's creatures (None = no window: every one, as before)
+    if win:
+        only = window_models(book, stems[0], win)
+        beasts = [n for n in only if ":" not in n]
+        ids_ = ["--moments", *sorted(win["ids"])]
+        _log(f"assets: the window {win['span'][0]:g}-{min(win['span'][1], 99999):g} s of {stems[0]}: "
+             f"{len(win['ids'])} moment(s), models {only}, places {win['where']}, prop families {sorted(win['bases'])}", log)
     if not plan_only and gpu_on:
         gpu_on()
     if not plan_only:
-        rc["characters.build"] = run([POSE_PY, "-I", HERE / "characters.py", "build", book, "--card", card,
-                                      *(["--only", *only] if only else [])], lg)
-        rc["creatures.sheet"] = run([POSE_PY, "-I", HERE / "characters.py", "creature-sheet", book], lg)
+        if not win or only:                      # (--only with no name = everyone: a window without people skips)
+            rc["characters.build"] = run([POSE_PY, "-I", HERE / "characters.py", "build", book, "--card", card,
+                                          *(["--only", *only] if only else [])], lg)
+        if beasts is None or beasts:
+            rc["creatures.sheet"] = run([POSE_PY, "-I", HERE / "characters.py", "creature-sheet", book,
+                                         *(["--only", *beasts] if beasts else [])], lg)
     # 2c: creatures as a procedural composite (or a user-rigged import), once the blockout agent's entry exists
-    if "creature-build" in (HERE / "characters.py").read_text():
+    # (a window with a creature runs it for all: creature-build --only would rebuild an APPROVED rig)
+    if "creature-build" in (HERE / "characters.py").read_text() and (beasts is None or beasts):
         rc["creatures.build"] = run([POSE_PY, "-I", HERE / "characters.py", "creature-build", book, "--kind",
                                      os.environ.get("BOOKCASTER_CREATURE_KIND", "composite"),
                                      *(["--dry-run"] if plan_only else [])], lg)
     # 2f: a LoRA for EVERY character / creature / outfit (charlora, cached by an input hash), one character per XTX in
     # parallel (10-21: ~35 min each on an XTX vs ~2.5 h on the iGPU, which was serial here); the key + face passes use
     # each person's LoRA in their own region
-    todo = lora_todo(book)
+    todo = lora_todo(book, win["cast"] if win else None)
     if plan_only:
         for n, why in todo.items():
             _log(f"assets: LoRA {n}: would train ({why})", log)
@@ -992,15 +1147,24 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
         # its card's lock, so props / sets take whichever card is free and queue for the rest
         import threading
         lora_res = {}
-        lth = threading.Thread(target=lambda: lora_res.update(left=ensure_loras(book, log)), daemon=True)
+        lth = threading.Thread(target=lambda: lora_res.update(
+            left=ensure_loras(book, log, only=win["cast"] if win else None)), daemon=True)
         lth.start()
     for st in stems:
-        rc[f"props.plan:{st}"] = run([POSE_PY, "-I", HERE / "props_build.py", "plan", book, st], lg)
+        rc[f"props.plan:{st}"] = run([POSE_PY, "-I", HERE / "props_build.py", "plan", book, st, *(ids_ if win else [])], lg)
         if not plan_only:
-            rc[f"props.build:{st}"] = run([POSE_PY, "-I", HERE / "props_build.py", "build", book, st, "--card", card], lg)
-    if not plan_only:
-        _sets_parallel(book, lg, log)            # both cards (10-21: six sets queued on one card while the other idled)
-    rc["sets"] = run(["python3", HERE / "world.py", "build-book", book, *(["--dry-run"] if plan_only else [])], lg)
+            rc[f"props.build:{st}"] = run([POSE_PY, "-I", HERE / "props_build.py", "build", book, st, "--card", card,
+                                           *(ids_ if win else [])], lg)
+    places = None
+    if win:                                      # + the place each is named after: its picture is the reference
+        import world as Wd
+        locs = list(Wd.book_locations(vdir(book)))
+        places = list(dict.fromkeys(x for w in win["where"] if w in locs for x in (Wd.named_after(w, locs), w) if x))
+    if not plan_only and (places is None or places):
+        _sets_parallel(book, lg, log, only=places)   # both cards (10-21: six sets queued on one card while the other idled)
+    if places is None or places:                 # (--only with no place = every place)
+        rc["sets"] = run(["python3", HERE / "world.py", "build-book", book, *(["--dry-run"] if plan_only else []),
+                          *(["--only", *places] if places else [])], lg)
     if not plan_only:                                  # the sets' own fixed objects + door/window wall anchors
         rc["sets.locate"] = run([POSE_PY, "-I", HERE / "world_locate.py", "book", book], lg)
     if not plan_only and todo:
@@ -1010,19 +1174,29 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
         gpu_off()
     ap = register(book)
     bad = {k: v for k, v in rc.items() if v}
-    _log(f"assets: {len(ap['items'])} item(s), {len(pending(book))} pending review" +
+    RG = _reg(book)
+    mine = {k: e for k, e in ap["items"].items() if not win or in_window(RG, k, e, win)}   # a window: its own items
+    wait = [k for k in pending(book) if k in mine]
+    _log(f"assets: {len(mine)} item(s), {len(wait)} pending review" +
          (f"; FAILED steps {bad} (see {lg})" if bad else ""), log)
     # the step FAILS when a build step failed or an item is held by a blocking check (10-22: assets said "done"
     # with the King's LoRA failed and all 7 people's models held; the chain ran the video step, which then
     # waited on review for 86 of 91 moments)
-    held = {k: (e.get("auto") or {}).get("blocking") for k, e in ap["items"].items()
+    held = {k: (e.get("auto") or {}).get("blocking") for k, e in mine.items()
             if e.get("status") == "pending" and (e.get("auto") or {}).get("pass") is False}
     if not plan_only and (bad or held):
         for k, why in held.items():
             _log(f"!!! {k} held: {why}", log)
         raise SystemExit(f"assets: {len(bad)} step(s) failed {sorted(bad)}, {len(held)} item(s) held by a blocking "
                          f"check {sorted(held)}: fix them (or `bookcaster approve` after looking), then re-run")
-    return {"rc": rc, "pending": pending(book)}
+    return {"rc": rc, "pending": wait}
+
+
+def _plan(R, cx, ids=None) -> dict:
+    """The chapter's plan, or a window's moments of it. flow3d/plan.json stays the WHOLE chapter's (the mannequin and
+    shots flows read their moment list from it; remake_chapter.plan(cx, only) would leave the window's there)."""
+    P = R.plan(cx)
+    return P if ids is None else {**P, "entries": [e for e in P["entries"] if e["id"] in ids]}
 
 
 def _ctx(book, stem, full3d=True):
@@ -1035,9 +1209,10 @@ def _ctx(book, stem, full3d=True):
     return R, R.Ctx(Path(book), stem, out)
 
 
-def stage(book, chapter, log=print, plan_only: bool = False, sheets: bool = True) -> dict:
+def stage(book, chapter, log=print, plan_only: bool = False, sheets: bool = True, span=None) -> dict:
     """The scene layer (tools/scene_stage.py: scenes, marks, axis, coverage, camera paths, extra moments) -> the
-    choreography (motion_batch, via the shared driver) -> renders + the validation numbers per scene."""
+    choreography (motion_batch, via the shared driver) -> renders + the validation numbers per scene.
+    span "t0:t1": only the moments that start in that stretch (11-24; their scenes, props, checks)."""
     JOB_LOG[0] = log
     disk_check(book, log)
     book = Path(book)
@@ -1047,22 +1222,27 @@ def stage(book, chapter, log=print, plan_only: bool = False, sheets: bool = True
     # every moment's place is a BUILT set, by its exact name (user 10-21): a stray `where` is re-homed or stops here
     built = {x["where"] for x in (json.loads((vd / "stage" / "assets.json").read_text()).get("sets") or [])
              if Path(x.get("world_dir", "")).joinpath("world.json").exists()} if (vd / "stage" / "assets.json").exists() else set()
-    normalize_wheres(book, vd / stem, log, sets=built)
+    win = window(book, stem, span)
+    ids = win["ids"] if win else None
+    ids_ = ["--moments", *sorted(ids)] if win else []
+    normalize_wheres(book, vd / stem, log, sets=built, only=ids)
     stray = sorted({f.get("where") for f in json.loads((vd / stem / "anim" / "keyframes.json").read_text()).get("frames", [])
-                    if f.get("where") and f["where"] not in built})
+                    if f.get("where") and f["where"] not in built and (ids is None or f.get("shot") in ids)})
     if stray and not plan_only:
         raise SystemExit(f"stage: moment(s) set in places with no built set: {stray} (`bookcaster assets` builds them)")
-    rc = run([POSE_PY, "-I", HERE / "scene_stage.py", book, stem, *(["--sheets", "--no-render"] if sheets else [])], lg)
+    rc = run([POSE_PY, "-I", HERE / "scene_stage.py", book, stem, *(["--sheets", "--no-render"] if sheets else []),
+              *ids_], lg)
     if rc:
         raise SystemExit(f"scene layer failed (rc {rc}): see {lg}")
     if not plan_only:    # the shots' set props exist only now (10-21 dry run: assets ran before the scene layer, so
         # workbench / oilcloth / ledge had no mesh and would render as plain near-white boxes)
         for sub in ("plan", "build"):
-            rc = run([POSE_PY, "-I", HERE / "props_build.py", sub, book, stem, *(["--card", "any"] if sub == "build" else [])], lg)
+            rc = run([POSE_PY, "-I", HERE / "props_build.py", sub, book, stem, *(["--card", "any"] if sub == "build" else []),
+                      *ids_], lg)
             if rc:
                 raise SystemExit(f"props {sub} after the scene layer failed (rc {rc}): see {lg}")
     R, cx = _ctx(book, stem)
-    P = R.plan(cx)
+    P = _plan(R, cx, ids)
     if plan_only:
         return {"plan": P, "blocked": blocked_lines(R, P)}
     retry_failed(cx, log)
@@ -1515,11 +1695,13 @@ def keys_gate(R, cx, part, log=print) -> dict:
 
 
 def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: bool = False,
-          keys_only: bool = False) -> Path | None:
+          keys_only: bool = False, span=None) -> Path | None:
     """The final 3D render of every UNBLOCKED, un-held moment (blocked/held ones are listed and render on a later
     pass): talk first (stills -> keys -> fast checks -> A2Vid), while the action moments' motion/renders run on the
     CPU beside it; then action (keys -> fast checks -> Mode 2); QA with one re-roll; assemble on the score + sfx mix
-    -> out/<book>_<chapter>_<stamp>_3d.mp4. A CPU audit of every job file precedes each hold."""
+    -> out/<book>_<chapter>_<stamp>_3d.mp4. A CPU audit of every job file precedes each hold.
+    span "t0:t1" (11-24): only the moments that start in that stretch, cut from the first one's start to the last
+    one's end on that part of the mix -> out/<book>_<chapter>_<stamp>_<t0>-<t1>_3d.mp4; never sent to Jellyfin."""
     JOB_LOG[0] = log
     disk_check(book, log)
     import threading
@@ -1528,10 +1710,13 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
     status = status or (lambda **k: None)
     if auto:
         auto_approve(book)
-    no_lora = ensure_loras(book, log)
+    win = window(book, stem, span)
+    if win:
+        jellyfin = False                 # a stretch is not the chapter's video
+    no_lora = ensure_loras(book, log, only=win["cast"] if win else None)
     R, cx = _ctx(book, stem)
     retry_failed(cx, log)
-    P = R.plan(cx)
+    P = _plan(R, cx, win["ids"] if win else None)
     # one job per book (its systemd unit): a render claim left at start belongs to a dead process (10-21: claims left
     # by a stopped job made the stage step skip 20 talk stills silently)
     for cl in (cx.OUT / "stage").glob("*/.rendering") if (cx.OUT / "stage").exists() else []:
@@ -1542,7 +1727,8 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
             _log(f"strict: {n_st} stale key(s) set aside (older than their shot / talk framing / a LoRA): redrawn", log)
         lo = cx.OUT / "ltx" / "out"
         old = [f for f in (sorted(lo.glob("r_*")) if lo.exists() else [])
-               if not R.clip_current(cx, re.sub(r"(_c\d+)?(\.[a-z0-9_.]+)$", "", f.name[2:]), f)]
+               if not R.clip_current(cx, re.sub(r"(_c\d+)?(\.[a-z0-9_.]+)$", "", f.name[2:]), f)
+               and (not win or re.sub(r"(_c\d+)?(\.[a-z0-9_.]+)$", "", f.name[2:]) in win["ids"])]
         if old:
             arc = cx.OUT / "ltx" / f"out_prev_{time.strftime('%m%d-%H%M')}"
             arc.mkdir(parents=True, exist_ok=True)
@@ -1681,7 +1867,8 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
     os.environ["REMAKE_SUFFIX"] = "3d"
     status(step="3d: assembling" + (" (strict: moments without a new clip are left out, listed)" if R.strict()
                                      else " (moments not rendered yet keep their old clips)"))
-    mp4 = R.assemble(cx, P)
+    cut = span_cut(P["entries"]) if win else None
+    mp4 = R.assemble(cx, P, cut=cut, tag=span_tag(span, cut[1]) if win else "")
     R.sheet(cx, P)
     fb = json.loads((cx.OUT / "FALLBACKS.json").read_text()) if (cx.OUT / "FALLBACKS.json").exists() else []
     _log(f"wrote {mp4}" + (f"; QA still flags {sorted(summ_all['fail'])}" if summ_all.get("fail") else "") +

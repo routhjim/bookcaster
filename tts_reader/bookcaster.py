@@ -2120,7 +2120,7 @@ def chapter_video(book: Path, stem: str, mp4: Path, log=print, send: bool = True
 
 @_runner
 def run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: bool = False,
-                   jellyfin: bool = False, keys_only: bool = False) -> int:
+                   jellyfin: bool = False, keys_only: bool = False, span: str | None = None) -> int:
     """The assets and stage steps draw on both XTX cards too: the voice and music servers are paused for them as
     for video (10-21: `bookcaster stop` brought the servers back onto card 05 and the stage step's prop drawing
     ran out of memory there), and come back after. assets pauses them only around its GPU steps (10-27: its CPU
@@ -2139,19 +2139,22 @@ def run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: boo
     if stage == "stage":
         gpu_on()
     try:
-        return _run_flow3d_job(book, stage, chapter, auto, jellyfin, keys_only, gpu_on, gpu_off)
+        return _run_flow3d_job(book, stage, chapter, auto, jellyfin, keys_only, gpu_on, gpu_off, span)
     finally:
         gpu_off()
 
 
 def _run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: bool = False,
-                    jellyfin: bool = False, keys_only: bool = False, gpu_on=None, gpu_off=None) -> int:
-    """A full-3D stage as the book's job (tools/flow3d.py): plan | assets | stage | video, per chapter."""
+                    jellyfin: bool = False, keys_only: bool = False, gpu_on=None, gpu_off=None,
+                    span: str | None = None) -> int:
+    """A full-3D stage as the book's job (tools/flow3d.py): plan | assets | stage | video, per chapter.
+    span "t0:t1" (11-24): assets | stage | video for the moments of that stretch of ONE chapter only."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
     import flow3d
     log = _logger(book)
     chapters = [chapter] if chapter else [f.stem for f in chapter_files(book) if final_path(book, f).exists()]
-    _set_status(book, state="running", step=f"3d {stage}", chapters=len(chapters), done=0, outputs=[],
+    _set_status(book, state="running", step=f"3d {stage}" + (f" {span.replace(':', '-')} s" if span else ""),
+                chapters=len(chapters), done=0, outputs=[],
                 started=time.strftime("%Y-%m-%d %H:%M"))
     outputs = []
     try:
@@ -2164,20 +2167,20 @@ def _run_flow3d_job(book: Path, stage: str, chapter: str | None = None, auto: bo
                         outputs=outputs, finished=time.strftime("%Y-%m-%d %H:%M"))
             return 0
         if stage == "assets":
-            r = flow3d.assets(book, chapter, log=log, gpu_on=gpu_on, gpu_off=gpu_off)
+            r = flow3d.assets(book, chapter, log=log, gpu_on=gpu_on, gpu_off=gpu_off, span=span)
             _set_status(book, state="done", step=f"3d assets: {len(r['pending'])} item(s) wait for review "
                         f"(`bookcaster review {book.name}`)", finished=time.strftime("%Y-%m-%d %H:%M"))
             return 0
         for n, c in enumerate(chapters, 1):
             if stage == "stage":
-                flow3d.stage(book, c, log=log)
+                flow3d.stage(book, c, log=log, span=span)
             else:
                 resume = None
                 from . import animate
                 resume = animate._servers("down", log)        # LTX needs both cards (voice + music paused)
                 try:
                     mp4 = flow3d.video(book, c, log=log, status=lambda **k: _set_status(book, **k), auto=auto,
-                                       jellyfin=jellyfin, keys_only=keys_only)
+                                       jellyfin=jellyfin, keys_only=keys_only, span=span)
                 finally:
                     animate._servers("up", log, resume)
                 if mp4 is None:                               # waiting for review / nothing ready: say so
@@ -2274,6 +2277,24 @@ def run_held(book: Path, fn) -> int:
         with boxlease.lease(book.name, "job", on_wait=waiting):
             _set_status(book, state="running", step="starting", box_before=box_state())
             return fn()
+
+
+def _secs(v, dflt: float) -> float:
+    """--from / --to: seconds or m:ss."""
+    if not v:
+        return dflt
+    m_, _, s_ = v.rpartition(":")
+    return float(m_ or 0) * 60 + float(s_)
+
+
+def _span(a) -> str | None:
+    """--from/--to as the job's span "t0:t1" (s); None without either = the whole chapter."""
+    return f"{_secs(a.t_from, 0.0)}:{_secs(a.t_to, 1e9)}" if (a.t_from or a.t_to) else None
+
+
+def _span_args(s, what: str) -> None:
+    s.add_argument("--from", dest="t_from", help=f"{what}: its start (seconds or m:ss; default 0)")
+    s.add_argument("--to", dest="t_to", help="its end (seconds or m:ss; default the chapter's end)")
 
 
 def start_job(book: Path, level: str = "music", music_only: bool = False,
@@ -2505,8 +2526,9 @@ def main(argv: list[str] | None = None) -> int:
                         "ControlNet + the character LoRAs + the place's hero image -> LTX (IC-LoRA for physical action); "
                         "shots: the director splits the narration into 2-5 s shots of one action each -> one opening "
                         "picture per shot (LoRAs + the place, no 3D) -> LTX two-stage for action (two takes), pipelined")
-    s.add_argument("--from", dest="t_from", help="mannequin: the stretch's start (seconds or m:ss; default 0)")
-    s.add_argument("--to", dest="t_to", help="mannequin: the stretch's end (seconds or m:ss; default the chapter's end)")
+    s.add_argument("--from", dest="t_from", help="mannequin, shots, 3d: the stretch's start (seconds or m:ss; default 0)")
+    s.add_argument("--to", dest="t_to", help="mannequin, shots, 3d: the stretch's end (seconds or m:ss; default the "
+                   "chapter's end)")
     s.add_argument("--render", default=None, help="shots: direct the whole --from/--to stretch but draw, render and "
                    "assemble only this window, e.g. 1:06-2:06 (10-27 user: a minute per learning cycle)")
     s.add_argument("--review", choices=["off", "agent", "user"], default=None,
@@ -2547,12 +2569,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--flow", choices=["3d", "mannequin"], help="the book's video flow is this (set once; the 3D "
                    "assets are only for the 3d / mannequin flows)")
     s.add_argument("--plan-only", action="store_true", help="(the default) plan and list, no GPU")
+    _span_args(s, "only what the moments of this stretch of --chapter use (people, LoRAs, props, places)")
     s = sub.add_parser("stage", help="3d: list (no --do) or stage (--do: background job) every scene of a chapter")
     s.add_argument("book")
     s.add_argument("--chapter", required=True)
     s.add_argument("--do", action="store_true", help="stage them (a background job)")
     s.add_argument("--flow", choices=["3d", "mannequin"], help="the book's video flow is this (set once)")
     s.add_argument("--plan-only", action="store_true", help="(the default)")
+    _span_args(s, "only the moments of this stretch of the chapter")
     s = sub.add_parser("review", help="3d: the QA sheets to look at and what still waits for approval")
     s.add_argument("book")
     s.add_argument("--chapter")
@@ -2726,15 +2750,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(art_sample(d))
     elif a.cmd == "video" and a.flow in ("mannequin", "shots"):
         d = book_dir(a.book)
-
-        def secs(v, dflt):
-            if not v:
-                return dflt
-            m_, _, s_ = v.rpartition(":")
-            return float(m_ or 0) * 60 + float(s_)
+        secs = _secs
         # no --from/--to is the whole chapter: no span, so the finished video is the chapter's and goes to Jellyfin
         # (11-05: a "0.0:1e9" span always went in, and a span run is never sent)
-        span = f"{secs(a.t_from, 0.0)}:{secs(a.t_to, 1e9)}" if (a.t_from or a.t_to) else None
+        span = _span(a)
         render = None
         if getattr(a, "render", None):
             r0, _, r1 = a.render.partition("-")
@@ -2752,9 +2771,11 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "video" and a.flow == "3d":
         d = book_dir(a.book)
         set_book_flow(d, "3d")
-        start_job(d, flow3d="video", chapter=a.chapter, auto_approve=a.auto_approve, jellyfin=a.jellyfin,
-                  keys_only=a.keys_only)
-        print(f"making the 3D video of {d.name} in the background — `bookcaster status {d.name}`"
+        span = _span(a)                  # (11-24) a stretch of one chapter: its moments only, never sent to Jellyfin
+        start_job(d, flow3d="video", chapter=(a.chapter or "1") if span else a.chapter, auto_approve=a.auto_approve,
+                  jellyfin=a.jellyfin and not span, keys_only=a.keys_only, span=span)
+        print(f"making the 3D video of {d.name}" + (f" ({a.t_from or '0'}-{a.t_to or 'end'})" if span else "")
+              + f" in the background — `bookcaster status {d.name}`"
               + ("" if a.auto_approve else f"; it stops for review when assets wait (`bookcaster review {d.name}`)"))
     elif a.cmd == "song":
         from . import song
@@ -2778,6 +2799,9 @@ def main(argv: list[str] | None = None) -> int:
             set_book_flow(d, a.flow)
         if a.do and a.plan_only:
             sys.exit("--do builds, --plan-only lists: pick one")
+        span = _span(a)
+        if span and not a.chapter:
+            sys.exit("--from/--to is a stretch of one chapter: give --chapter")
         if a.do and book_flow(d) not in ("3d", "mannequin"):
             sys.exit(f"{d.name}'s videos use the {book_flow(d)} flow, which needs no 3D {a.cmd}: nothing started. To "
                      f"build them for the 3D flow: bookcaster {a.cmd} {d.name} --do --flow 3d")
@@ -2785,14 +2809,15 @@ def main(argv: list[str] | None = None) -> int:
             sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
             import flow3d
             with foreground(d, f"{a.cmd} (list)", gpu=False):
-                r = (flow3d.assets(d, a.chapter, plan_only=True) if a.cmd == "assets"
-                     else flow3d.stage(d, a.chapter, plan_only=True))
+                r = (flow3d.assets(d, a.chapter, plan_only=True, span=span) if a.cmd == "assets"
+                     else flow3d.stage(d, a.chapter, plan_only=True, span=span))
             print("\n".join(r.get("blocked", [])) or json.dumps(r.get("pending", r.get("rc", {})), indent=1))
             print(f"(a listing: nothing built. `bookcaster {a.cmd} {d.name} --do` builds them in a background job "
                   "on both cards, pausing the voice and music servers)")
         else:
-            start_job(d, flow3d=a.cmd, chapter=a.chapter)
-            print(f"3d {a.cmd} for {d.name} in the background — `bookcaster status {d.name}`, then `bookcaster review {d.name}`")
+            start_job(d, flow3d=a.cmd, chapter=a.chapter, span=span)
+            print(f"3d {a.cmd} for {d.name}" + (f" ({a.t_from or '0'}-{a.t_to or 'end'})" if span else "")
+                  + f" in the background — `bookcaster status {d.name}`, then `bookcaster review {d.name}`")
     elif a.cmd in ("review", "approve"):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
         import flow3d
@@ -2906,7 +2931,7 @@ def main(argv: list[str] | None = None) -> int:
                                          review=getattr(a, "review", None))
             if a.flow3d:
                 return run_flow3d_job(Path(a.book), a.flow3d, a.chapter, auto=a.auto_approve, jellyfin=a.jellyfin,
-                                      keys_only=a.keys_only)
+                                      keys_only=a.keys_only, span=a.span)
             if a.storyboard:
                 return run_storyboard_job(Path(a.book))
             if a.sfx_only:

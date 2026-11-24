@@ -1450,6 +1450,7 @@ def main(argv=None) -> int:
     ap.add_argument("--sheets", action="store_true")
     ap.add_argument("--no-render", action="store_true", help="sheets without clay renders (overlays only)")
     ap.add_argument("--only", nargs="*", default=None)
+    ap.add_argument("--moments", nargs="*", default=None, help="only the scenes with one of these moments (a time window)")
     a = ap.parse_args(argv)
     vd, cd, man, kf, plan, tl, cast = load(a.book, a.chapter)
     import blockout_props as _PRL
@@ -1505,7 +1506,7 @@ def main(argv=None) -> int:
     for sc in scenes:
         scene = block_scene(sc, moments, frames, cast, a.chapter, prior=layouts.get(sc["where"]))
         layouts[sc["where"]] = scene               # the place's layout grows scene by scene (props accumulate)
-        if a.only and sc["id"] not in a.only:
+        if (a.only and sc["id"] not in a.only) or (a.moments is not None and not set(a.moments) & set(sc["moments"])):
             continue                               # (its layout still feeds the later scenes at the place)
         scene["book"] = a.book
         (sd / f"{sc['id']}.json").write_text(json.dumps(scene, indent=1, default=lambda o: np.asarray(o).tolist()))

@@ -3708,13 +3708,17 @@ def new_clip(cx: Ctx, e: dict) -> Path | None:
     return p if p.exists() else None
 
 
-def assemble(cx: Ctx, P: dict) -> Path:
+def assemble(cx: Ctx, P: dict, cut: tuple | None = None, tag: str = "") -> Path:
+    """cut (t0, t1) + tag "_148-432" (11-24, a time window of the chapter): only P's moments, the picture and the
+    mix cut to that stretch, the window in the file's name; a moment outside it is neither shown nor missing."""
     video = cx.video
     man = []
     by = {e["id"]: e for e in P["entries"]}
     kept_old = []
     for m in cx.manifest:
         e = by.get(m["id"])
+        if cut and e is None:
+            continue
         c = new_clip(cx, e) if e else None
         if c is None and m.get("extra"):
             log_entry(cx.OUT, {"phase": "assemble", "id": m["id"], "note": "added moment has no clip: left out"})
@@ -3739,12 +3743,12 @@ def assemble(cx: Ctx, P: dict) -> Path:
             (cx.OUT / d).symlink_to(cx.V / d)
     stamp = time.strftime("%m%d-%H%M")
     sfx = os.environ.get('REMAKE_SUFFIX', 'ltx') + ("_INCOMPLETE" if strict() and kept_old else "")
-    out = cx.book / "out" / f"{cx.book.name}_{cx.stem}_{stamp}_{sfx}.mp4"
+    out = cx.book / "out" / f"{cx.book.name}_{cx.stem}_{stamp}{tag}_{sfx}.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)      # a fresh book has no out/ yet (10-21 dry run: ffmpeg 254)
     (cx.OUT / "MISSING.json").write_text(json.dumps(kept_old if strict() else [], indent=1))
     log_entry(cx.OUT, {"phase": "assemble", "new": len(man) - len(kept_old), "kept_old": kept_old, "out": str(out)})
     video.build(pics, cx.OUT / "img", audio, video.restore_text(cx.timeline, cx.text), out, cx.OUT,
-                subtitles=True, log=print, anims=man, frames=frames)
+                subtitles=True, log=print, anims=man, frames=frames, window=cut)
     return out
 
 
