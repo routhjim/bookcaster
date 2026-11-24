@@ -1193,6 +1193,49 @@ def set_look(book: Path, name: str, desc: str, pinned: bool = False) -> str:
     return key
 
 
+PHOTO_ASK = ("Describe this person for an illustrator in one phrase of at most 30 words: sex, apparent age, hair "
+             "(colour and length; if a hat hides it, leave hair out), beard or clean-shaven, eye colour, build. "
+             "Nothing about their clothes, hat, glasses, expression or the background. Reply with ONLY the phrase.")
+PHOTO_MERGE = ("A character in an illustrated story is described as:\n{look}\n\nThey are now to be drawn as this "
+               "real person: {seen}\n\nRewrite the description in one sentence: the person's sex, age, hair, beard, "
+               "eyes and build come from the real person; what they WEAR and carry stays exactly as in the "
+               "description. Reply with ONLY the new description.")
+
+
+def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, str]:
+    """Draw a character from photographs of a real person (`bookcaster look --photo NAME FILE...`): the pictures
+    are kept in work/video/faces/<person>/, the look's face, hair, age and build are rewritten from the first one
+    (their clothes stay) and pinned, and their sheet is drawn from the photographs at the next storyboard or video
+    job; the LoRA and every key follow the sheet. -> the name the look is stored under."""
+    from PIL import Image, ImageOps
+    from . import video
+    from .speakers import NO_THINKING, post_chat
+    if not (book / "work" / "video" / "look.json").exists():
+        sys.exit("no looks yet: run bookcaster storyboard first")
+    R = _registry(book)
+    key = R.person(name)
+    if key is None:
+        sub = [k for k in R.people() if name.lower() in k.lower()]
+        if len(sub) != 1:
+            sys.exit(f"which character? " + ", ".join(sorted(sub or R.people())))
+        key = sub[0]
+    d = book / "work" / "video" / "faces" / video.slug(key)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    for i, f in enumerate(files[:3], 1):
+        im = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
+        im.thumbnail((1024, 1024))
+        im.save(d / f"photo{i}.png")
+    seen = video._look_at(LLM_URL, LLM_MODEL, d / "photo1.png", PHOTO_ASK).strip().strip('"')
+    r = post_chat(LLM_URL, {"model": LLM_MODEL, "temperature": 0.2, "max_tokens": 300,
+                            "messages": [{"role": "user", "content": PHOTO_MERGE.format(look=R.look(key), seen=seen)}],
+                            "chat_template_kwargs": NO_THINKING}, timeout=300)
+    desc = " ".join(r["choices"][0]["message"]["content"].split()).strip('"')
+    log(f"seen in the photograph: {seen}")
+    return set_look(book, key, desc, pinned=True), desc
+
+
 def swap_looks(book: Path, a: str, b: str, log=print) -> None:
     """Two characters trade appearances (10-25 user: "John looks like what most people have seen as Jesus and vice
     versa ... just swap, no need to redo the LoRA"): the looks (pinned), the trained LoRAs and their base sheets
@@ -2536,6 +2579,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--do", action="append", default=[], metavar="NAME = DESCRIPTION",
                    help='full new description of a character or a place, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
     s.add_argument("--swap", nargs=2, metavar=("A", "B"), help="two characters trade looks (LoRAs + sheets too)")
+    s.add_argument("--photo", nargs="+", metavar=("NAME", "FILE"),
+                   help="draw a character from 1-3 photographs of a real person (yourself, or someone who agreed)")
     s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
     s.add_argument("book")
     s.add_argument("which", nargs="+", help="when it's on screen (12:30) or its number (p021)")
@@ -2905,6 +2950,13 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         if a.swap:
             swap_looks(d, *a.swap)
+            return 0
+        if a.photo:
+            if len(a.photo) < 2:
+                sys.exit("use --photo NAME FILE [FILE ...]")
+            who, desc = set_photo(d, a.photo[0], a.photo[1:])
+            print(f"{who} now: {desc}\n(drawn from the photographs: their sheet and scenes are redrawn at the "
+                  "next storyboard or video job)")
             return 0
         for cmd in a.do:
             if "=" not in cmd:
