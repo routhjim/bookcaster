@@ -363,8 +363,9 @@ def apose_prompt(o, name, view, trigger, style):
     side_ = {"left": "LEFT", "right": "RIGHT"}.get(view)
     vtxt = ("front view" if view == "front" else
             (f"exact SIDE VIEW, a full profile: the person faces the {side_} edge of the picture, we see one side of "
-             f"the head (ear, cheek, the hair at the side and back) and one side of the body, the arms hanging out at "
-             f"the sides; the SAME person as in image 2 turned sideways: the same face, hair colour, length and style, "
+             f"the head (ear, cheek, the hair at the side and back) and one side of the body: the chest, shoulders, "
+             f"hips and feet are turned sideways with the head, the near shoulder toward the viewer and the far "
+             f"shoulder hidden behind it, the near arm hanging down; the SAME person as in image 2 turned sideways: the same face, hair colour, length and style, "
              f"the same clothes, age and build") if side_ else
             "BACK VIEW seen from directly behind: we see the back of the head (hair, no face) and the back of the "
             "body; the SAME person as in image 2 turned around: the same hair colour, length and style, the same age "
@@ -472,6 +473,8 @@ def step_draw(entries, vd, card, seeds, style, force=False):
         # back + BOTH SIDES (10-21: painted from front + back only, every head's sides were the front picture stretched
         # sideways = the melted talk faces at a 3/4 camera); the chosen front as image 2 keeps them on-model
         for v in VIEWS[1:]:
+            if (d / f"apose_{v}.none").exists():     # every draw of this side failed its measure: not drawn again
+                continue
             j = {"id": f"{o['key']}_{v}", "prompt": apose_prompt(o, name, v, trig, style), "seed": o.get("side_seed", 3),
                  "path": str(d / f"apose_{v}.png"), "size": [896, 1344], "refs": [str(d / "ref_cut.png"), str(best)],
                  "control": {"image": str(TPL / f"apose_{v}_skel.png"), "type": "pose", "scale": 0.8}}
@@ -535,14 +538,14 @@ def side_views_geometric(entries) -> list:
             # picture over the model's sides); front + back paint only, and what was built with it is rebuilt
             log(f"!!! {o['key']}: the {v} view is no {v} profile (head {m.get('ratio')}, body {m.get('body')}, facing "
                 f"{m.get('facing')}) and the {other} one cannot stand in: not painted from the side")
-            if (d / f"apose_{v}.ok").exists():
-                arc = d / f"side_geo_{time.strftime('%H%M%S')}_{v}"
-                arc.mkdir(exist_ok=True)
-                for f in [d / f"apose_{v}.ok", *(d.glob(f"apose_{v}_*")), *(d.glob(f"head_{v}*")), d / "shape.glb",
-                          d / "rigged.blend", d / "model.blend", d / "rig.json", d / "qa.jpg", d / "qa.json", d / "front.png"]:
-                    if f.exists():
-                        shutil.move(str(f), arc / f.name)
-            (d / f"apose_{v}.geo").write_text(json.dumps({**m, "dropped": True}))
+            # the drawing itself is set aside too: the next build draws the side again and measures each try
+            arc = d / f"side_geo_{time.strftime('%H%M%S')}_{v}"
+            arc.mkdir(exist_ok=True)
+            for f in [pth, d / f"apose_{v}.ok", *(d.glob(f"apose_{v}_*")), *(d.glob(f"head_{v}*")), d / "shape.glb",
+                      d / "rigged.blend", d / "model.blend", d / "rig.json", d / "qa.jpg", d / "qa.json", d / "front.png"]:
+                if f.exists():
+                    shutil.move(str(f), arc / f.name)
+            (arc / "dropped.json").write_text(json.dumps({**m, "dropped": True}))
             done.append((o["key"], v))
             continue
         arc = d / f"side_geo_{time.strftime('%H%M%S')}"
@@ -614,6 +617,10 @@ def side_views_checked(entries, wd, card, style, tries=2):
                 ImageOps.mirror(Image.open(d / f"apose_{other}.png")).save(d / f"apose_{v}.png")
                 (d / f"apose_{v}.ok").write_text(f"mirrored from {other}")
                 log(f"{o['key']}: the {v} view mirrored from the {other} profile")
+        for v in ("left", "right"):              # no draw of either side measured as one: front + back paint only
+            if not (d / f"apose_{v}.png").exists() and any(d.glob(f"apose_{v}_bad*.png")):
+                (d / f"apose_{v}.none").write_text("no draw of this side was a profile")
+                log(f"!!! {o['key']}: no {v} side view (every draw failed its measure): painted from front and back")
 
 
 def sheet_guard(o, name=None, style="") -> bool:
