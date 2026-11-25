@@ -1822,12 +1822,46 @@ def keys_gate(R, cx, part, log=print) -> dict:
     return still
 
 
+def shots_ltx(R, cx, P: dict, kept: set, tag: str = "", log=print, status=None) -> tuple:
+    """The gated keys through the shots flow's LTX stage and cut (11-25 user: the two flows are identical when it
+    comes to running LTX; only the keyframes differ): keys3d_plan writes them as a plan + keys folder,
+    shot_flow.supplied_keys renders them (its talk recipe, takes, judges; the staged motion as each action clip's
+    guide), shot_flow.assemble_stretch cuts P's stretch. A moment without a new clip is black in the cut and listed
+    (MISSING.json), never an older clip. -> (the cut, the moments without a new clip)"""
+    import keys3d_plan as K
+    import shot_flow as S
+    status = status or (lambda **k: None)
+    lg = lambda m: _log(m, log)  # noqa: E731
+    plan, keys, ids, lost = K.build(R, cx, P, kept, lg)
+    if not ids:
+        raise SystemExit("3d: no moment has a key to render (see keys_failing.json)")
+    status(step=f"3d: LTX, as the shots flow runs it ({len(ids)} shots)")
+    S.supplied_keys(cx.book, cx.stem, plan, keys, ids, lg, review="off", key_people_=True, in_place=True)
+    sd = S.shot_dir(cx.book, cx.stem)
+
+    def new(i):          # made from this key (the strict rule, remake_chapter.clip_current)
+        c, k = sd / "ltx" / "out" / f"{i}.mp4", sd / i.rsplit("_s", 1)[0] / i / "key.png"
+        return i not in S.STOPPED and c.exists() and k.exists() and c.stat().st_mtime >= k.stat().st_mtime
+    gone = {i.rsplit("_s", 1)[0]: S.STOPPED.get(i) or "its clip was not made" for i in ids if not new(i)}
+    K.blank(plan, gone)
+    miss = [e["id"] for e in P["entries"] if e["id"] in gone or e["id"] in lost]
+    (cx.OUT / "MISSING.json").write_text(json.dumps(miss, indent=1))
+    for m in miss:
+        _log(f"!!! {m}: no clip: {gone.get(m) or 'no key passed the gate (or it is blocked / held)'}", log)
+    status(step="3d: assembling (moments without a new clip are left black, listed)")
+    E = sorted(P["entries"], key=lambda e: e["t"])
+    out = cx.book / "out" / (f"{cx.book.name}_{cx.stem}_{time.strftime('%m%d-%H%M')}{tag}_3d"
+                             f"{'_INCOMPLETE' if miss else ''}.mp4")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return S.assemble_stretch(cx.book, cx.stem, plan, f"{E[0]['id']}_s0", f"{E[-1]['id']}_s0", out, lg), miss
+
+
 def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: bool = False,
           keys_only: bool = False, span=None) -> Path | None:
     """The final 3D render of every UNBLOCKED, un-held moment (blocked/held ones are listed and render on a later
-    pass): talk first (stills -> keys -> fast checks -> A2Vid), while the action moments' motion/renders run on the
-    CPU beside it; then action (keys -> fast checks -> Mode 2); QA with one re-roll; assemble on the score + sfx mix
-    -> out/<book>_<chapter>_<stamp>_3d.mp4. A CPU audit of every job file precedes each hold.
+    pass): talk first (stills -> keys -> fast checks), while the action moments' motion/renders run on the CPU beside
+    it; then action (keys -> fast checks); then every gated key through the shots flow's LTX stage and cut
+    (shots_ltx) -> out/<book>_<chapter>_<stamp>_3d.mp4.
     span "t0:t1" (11-24): only the moments that start in that stretch, cut from the first one's start to the last
     one's end on that part of the mix -> out/<book>_<chapter>_<stamp>_<t0>-<t1>_3d.mp4; never sent to Jellyfin."""
     JOB_LOG[0] = log
@@ -1920,6 +1954,8 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
     bg = threading.Thread(target=_bg, daemon=True)
     bg.start()
     summ_all = {"fail": {}}
+    own = os.environ.get("FLOW3D_OWN_LTX") == "1"    # this flow's own LTX jobs, QA and cut, as before 11-25 (to compare)
+    kept = set()                                     # the moments whose key passed the gate
     # READY FIRST (user 10-20: clips ASAP): moments whose key already exists go to checks -> LTX before any still or
     # key is made for the rest; then talk, then the remaining action (after its renders)
     has_key = lambda e: (cx.OUT / "stage" / e["id"] / "key.png").exists()  # noqa: E731
@@ -1952,8 +1988,9 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
                 _log(f"!!! {len(drop)} key(s) still failing a hard check: not rendered (listed): {sorted(drop)}", log)
             status(step=f"3d {kind}: {len(bad) - len(drop)} failing key(s) rendered anyway, {len(drop)} left out "
                         f"(no key): {sorted(drop)[:4]}")
-        if keys_only:                # user 10-21: every key reviewed (the preview) before any LTX hour
-            continue
+        kept |= {e["id"] for e in part["entries"]}
+        if keys_only or not own:     # user 10-21: every key reviewed (the preview) before any LTX hour; 11-25: LTX
+            continue                 # for all of them at once, after the last key (shots_ltx)
         if kind == "action":         # Mode 2 needs the moment's whole depth clip (the stage step rendered stills only)
             bg.join()
             if bg_err:
@@ -1979,9 +2016,10 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
     if bg_err:
         raise SystemExit(f"the action motion/render thread failed: {bg_err[0]}")
     # the chapter's mix with the sound effects (a copy; work/final stays as recorded); remade when the final mix is newer
+    # (11-25: for the keys preview and this flow's own cut; the shots flow's cut lays the effects itself)
     audio = cx.OUT / "audio" / "score_sfx.mp3"
     fin = book / "work" / "final" / f"{stem}.mp3"
-    if not audio.exists() or (fin.exists() and fin.stat().st_mtime > audio.stat().st_mtime):
+    if (keys_only or own) and (not audio.exists() or (fin.exists() and fin.stat().st_mtime > audio.stat().st_mtime)):
         audio = _mix_with_sfx(book, stem, cx.OUT / "audio", log)
     if keys_only:
         import keys_preview
@@ -1991,17 +2029,21 @@ def video(book, chapter, log=print, status=None, auto: bool = False, jellyfin: b
              f"`bookcaster video {book.name} --flow 3d`", log)
         status(step=f"3d: keyframes ready for review — {pv.name} ({nk['no_key']} moment(s) without a key)")
         return pv
-    os.environ["REMAKE_AUDIO"] = str(audio)
-    os.environ["REMAKE_SUFFIX"] = "3d"
-    status(step="3d: assembling" + (" (strict: moments without a new clip are left out, listed)" if R.strict()
-                                     else " (moments not rendered yet keep their old clips)"))
     cut = span_cut(P["entries"]) if win else None
-    mp4 = R.assemble(cx, P, cut=cut, tag=span_tag(span, cut[1]) if win else "")
-    R.sheet(cx, P)
-    fb = json.loads((cx.OUT / "FALLBACKS.json").read_text()) if (cx.OUT / "FALLBACKS.json").exists() else []
-    _log(f"wrote {mp4}" + (f"; QA still flags {sorted(summ_all['fail'])}" if summ_all.get("fail") else "") +
-         (f"; {len(fb)} fallback(s)" if fb else ""), log)
-    miss = json.loads((cx.OUT / "MISSING.json").read_text()) if (cx.OUT / "MISSING.json").exists() else []
+    if own:
+        os.environ["REMAKE_AUDIO"] = str(audio)
+        os.environ["REMAKE_SUFFIX"] = "3d"
+        status(step="3d: assembling" + (" (strict: moments without a new clip are left out, listed)" if R.strict()
+                                         else " (moments not rendered yet keep their old clips)"))
+        mp4 = R.assemble(cx, P, cut=cut, tag=span_tag(span, cut[1]) if win else "")
+        R.sheet(cx, P)
+        fb = json.loads((cx.OUT / "FALLBACKS.json").read_text()) if (cx.OUT / "FALLBACKS.json").exists() else []
+        _log(f"wrote {mp4}" + (f"; QA still flags {sorted(summ_all['fail'])}" if summ_all.get("fail") else "") +
+             (f"; {len(fb)} fallback(s)" if fb else ""), log)
+        miss = json.loads((cx.OUT / "MISSING.json").read_text()) if (cx.OUT / "MISSING.json").exists() else []
+    else:
+        mp4, miss = shots_ltx(R, cx, P, kept, span_tag(span, cut[1]) if win else "", log, status)
+        _log(f"wrote {mp4}", log)
     if miss:             # strict: a chapter with any gap is never delivered
         _log(f"!!! INCOMPLETE: {len(miss)} moment(s) have no new 3D clip: {miss[:10]} - not delivered", log)
         status(step=f"3d: INCOMPLETE, {len(miss)} moment(s) without a new 3D clip (see MISSING.json): {miss[:4]}")

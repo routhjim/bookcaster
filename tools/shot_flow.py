@@ -4040,9 +4040,25 @@ def drive_af(pitch: float | None) -> str:
     return f"rubberband=pitch={r:.3f}:formant=preserved,{TALK_SHIFT_TREBLE},{TALK_DRIVE_AF}"
 
 
+def _guided(R, j: dict, c: dict, emb: str, held: dict | None) -> dict:
+    """An action or quiet job following its shot's motion guide (11-25: one LTX stage for both flows - the 3D flow's
+    staged motion comes here as the shot's "control" {"video": a depth video of the motion, "attn", "key_end",
+    "key_end_strength"}, where its own job builder made frozen, unsynced clips): the job as this flow builds it
+    (words, seed, take, frames, head count), on the IC-LoRA route the 3D flow guided with - the key at full strength,
+    the move's end key at its last frame, the depth video as control. The two-stage fields go (that route has none)."""
+    g = {k: v for k, v in j.items() if k not in ("neg_extra", "steps", "guider", "aguider", "base")}
+    imgs = [dict(j["images"][0], strength=1.0)]
+    if c.get("key_end"):
+        imgs.append({"path": str(c["key_end"]), "frame": j["frames"] - 1,
+                     "strength": float(c.get("key_end_strength", R.END_GUIDE))})
+    return dict(g, emb=emb, held=held, route="stage", images=imgs,
+                control={"path": str(c["video"]), "attn": float(c.get("attn", R.MODE2_ATTN))})
+
+
 def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | None = None,
         retake: set | None = None, quiet_keys: _QuietKeys | None = None) -> None:
-    """The clips, pipelined over both XTXs: action = two-stage in TAKES, quiet = distilled, talk = A2Vid.
+    """The clips, pipelined over both XTXs: action = two-stage in TAKES, quiet = distilled, talk = A2Vid; an action
+    or quiet shot with a motion guide (its "control", _guided) = the IC-LoRA route, in its own hold.
     quiet_keys: the quiet shots' keys still being drawn on the iGPU (their jobs wait for them until the quiet hold)."""
     import flow3d as F
     R, cx = _ctx(book, stem)
@@ -4062,7 +4078,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
              for k in {e.get("speaker") for e in es if e.get("speaker")}}
     for k, v in sorted(pitch.items()):
         log(f"voice {k}: pitch {v and round(v)} Hz -> LTX hears {drive_af(v).split(',')[0]}")
-    enc_dev, enc_dist, two, quiet, talk, chains = [], [], [], [], [], []
+    enc_dev, enc_dist, two, quiet, talk, chains, guided = [], [], [], [], [], [], []
     for s in shots:
         mid = s["id"].rsplit("_s", 1)[0]
         key = sd / mid / s["id"] / "key.png"
@@ -4143,12 +4159,20 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             act = with_facts(_offscreen(cx, s, figurative(s["action"]) + _pose_hold(cx, s), only=False) +
                              STILL_CROWD * bool(s.get("crowd")), s)
             emb = f"x_{s['id']}_{MF._h(act + MF.FIGHT_NEG)}"
-            enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
-            hd = None
+            ctl, hd, g_hd = s.get("control"), None, None    # (a motion guide: its words through the IC route's encoder)
+            if ctl:
+                g_emb = f"gx_{s['id']}_{MF._h(act)}"
+                enc_dist.append({"name": g_emb, "prompt": act})
+            else:
+                enc_dev += [{"name": emb, "prompt": act}, {"name": emb + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             if s.get("who") and not s.get("crowd"):      # the narrowed prompt, encoded now for a retake on the loaded model
                 hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"xh_{s['id']}_{MF._h(hp + MF.FIGHT_NEG)}", "prompt": hp}
-                enc_dev += [{"name": hd["emb"], "prompt": hp}, {"name": hd["emb"] + "__neg", "prompt": neg + MF.FIGHT_NEG}]
+                if ctl:
+                    g_hd = {"emb": f"gxh_{s['id']}_{MF._h(hp)}", "prompt": hp}
+                    enc_dist.append({"name": g_hd["emb"], "prompt": hp})
+                else:
+                    enc_dev += [{"name": hd["emb"], "prompt": hp}, {"name": hd["emb"] + "__neg", "prompt": neg + MF.FIGHT_NEG}]
             # (11-12: the given take seeds, as for quiet shots, to tell a prompt change from seed noise)
             ts_ = QUIET_SEEDS or TAKES
             for t, seed in enumerate(ts_ + ((next(x for x in (RETAKE + 101 * i for i in range(len(ts_) + 1))
@@ -4158,17 +4182,21 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                             "frames": n, "line": s["id"], "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS,
                             "guider": GUIDER, "aguider": GUIDER, "images": img, "held": hd,
                             "people": None if s.get("crowd") else len(s.get("who") or []) + len(s.get("others") or [])})
+                if ctl:
+                    guided.append(_guided(R, two.pop(), ctl, g_emb, g_hd))
         else:
             p_ = _offscreen(cx, s, figurative(s["action"] or "Small, natural movements; the camera holds still.") +
                             _pose_hold(cx, s)) + STILL_CROWD * bool(s.get("crowd"))
             p_ = with_facts(p_, s)
             emb = f"qd_{s['id']}_{MF._h(p_)}"     # (10-28: the dev model's connector - "q_" were the distilled's)
-            enc_dev.append({"name": emb, "prompt": p_})          # (no negative: the distilled pipeline has no CFG)
-            hd = None
+            ctl, g_emb, g_hd = s.get("control"), f"gq_{s['id']}_{MF._h(p_)}", None   # (a motion guide: the IC route's)
+            (enc_dist if ctl else enc_dev).append({"name": g_emb if ctl else emb, "prompt": p_})   # (no negative: the
+            hd = None                                            # distilled pipeline has no CFG)
             if s.get("who") and not s.get("crowd"):
                 hp = with_facts(_held(cx, s), s)
                 hd = {"emb": f"qh_{s['id']}_{MF._h(hp)}", "prompt": hp}
-                enc_dev.append({"name": hd["emb"], "prompt": hp})
+                g_hd = {"emb": f"gqh_{s['id']}_{MF._h(hp)}", "prompt": hp}
+                (enc_dist if ctl else enc_dev).append({"name": (g_hd if ctl else hd)["emb"], "prompt": hp})
             qs_ = quiet_take_seeds(False)
             if len(qs_) > 1 and not all((L / "out" / f"{s['id']}{'' if t == 0 else f'_t{t + 1}'}.mp4").exists()
                                         for t in range(len(qs_))):
@@ -4178,6 +4206,8 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                               "width": W, "height": H, "fps": FPS, "seed": seed + shot_seed(s["id"]), "frames": n, "line": s["id"],
                               "route": "i2v", "images": img, "held": hd,
                               "people": None if s.get("crowd") else len(s.get("who") or [])})
+                if ctl:
+                    guided.append(_guided(R, quiet.pop(), ctl, g_emb, g_hd))
     def drop_stale(j):                  # a clip from another key or other words is drawn again
         c, rj = L / "out" / f"{j['name']}.mp4", L / "out" / f"{j['name']}.json"
         src = L / "out" / f"{j.get('chain_from')}.mp4"
@@ -4188,7 +4218,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             stale = stale or old.get("prompt") != j["prompt"] or old.get("seed") != j["seed"] or \
                 old.get("frames") != j["frames"] or old.get("chain_from") != j.get("chain_from") or \
                 old.get("audio_src") != j.get("audio_src") or \
-                any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end", "base"))
+                any(old.get(k) != j.get(k) for k in ("steps", "guider", "lock_end", "base", "control"))
             # (10-27: a new voice cut is a new clip; 10-28: so are other render settings)
             if not stale and j.get("route") != "a2v" and "people" in j and "people" in old and \
                     old["people"] != j["people"] and not re.search(r"_t\d+$", j["name"]):
@@ -4213,7 +4243,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
                 (L / "out" / f"{b_}.synced").unlink(missing_ok=True)
                 for k in range(2, 1 + TALK_TAKES):
                     (L / "out" / f"{b_}_t{k}_c{j['chunk'][0]}.mp4").unlink(missing_ok=True)
-    for j in talk + two + ([] if quiet_keys else quiet):    # (the quiet ones' keys may change: at the quiet hold)
+    for j in talk + two + guided + ([] if quiet_keys else quiet):   # (the quiet ones' keys may change: at the quiet hold)
         drop_stale(j)
     for sid in chains:                  # every chain line's words, known in advance: encoded with the rest
         st = json.loads((L / "chains" / f"{sid}.json").read_text())
@@ -4222,7 +4252,7 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
             e_ = _chain_emb(sid, t_)
             enc_dev += [{"name": e_, "prompt": t_}, {"name": e_ + "__neg", "prompt": neg + MF.FIGHT_NEG}]
     for nm, x in (("enc_dev", enc_dev), ("enc_dist", enc_dist), ("talk_jobs", talk), ("two_jobs", two),
-                  ("quiet_jobs", quiet), ("two_talk_jobs", two + talk)):
+                  ("quiet_jobs", quiet), ("two_talk_jobs", two + talk), ("guided_jobs", guided)):
         (L / f"{nm}.json").write_text(json.dumps(x, indent=1))
     from types import SimpleNamespace
     # ONE long hold per batch (10-23: 15-minute holds reloaded the DiT every 3 clips, +35 s a clip); the runner still
@@ -4343,6 +4373,23 @@ def ltx(book: Path, stem: str, es: list, shots: list, log=print, redo: set | Non
     left_ = [sid for sid in chains if not json.loads((L / "chains" / f"{sid}.json").read_text())["done"]]
     if left_:
         log(f"!!! chains not finished: {left_} (their key is held)")
+    if guided:
+        # 11-25: the shots with a motion guide, in their own hold: the runner builds the IC-LoRA pipeline only when
+        # neither two-stage route is asked for (with --ti2v or --a2vid a job's control is not read), so they cannot
+        # join the hold above. As the 3D flow ran them (the distilled model + the union control LoRA); judged as
+        # they land, a faulted one's retake queued on the loaded runner, like the quiet ones below
+        more, done = L / "guided_more.json", L / "guided_more.done"
+        more.write_text("[]")
+        done.unlink(missing_ok=True)
+        stop = threading.Event()
+        th = threading.Thread(target=_judge_as_they_land, args=(L / "out", guided, more, done, stop, log), daemon=True)
+        th.start()
+        try:
+            gen("guided", guided, ["--ic-lora", str(R.IC_LORA), "--fa-amd", "--blaslt",
+                                   "--more", more.name, "--more-done", done.name], F._pp_split(sd, "ic", 17))
+        finally:
+            stop.set()
+            th.join(60)
     if quiet_keys:                      # the quiet keys: the iGPU's, and the cards' for what it did not settle
         quiet_keys.finish()
         for j in [j for j in quiet if not Path(j["images"][0]["path"]).exists()]:
