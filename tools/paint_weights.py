@@ -23,3 +23,32 @@ def view_weights(normals, names) -> np.ndarray:
     if "front" in names:
         W[:, list(names).index("front")] *= FRONT_BIAS
     return W
+
+
+FACE_SPLIT = 0.8     # along the head's depth (0 = back of the head, 1 = tip of the nose): the side drawings stop here
+                     # (the nose, the eye sockets, the mouth; the cheeks stay the side drawings' - painted from the
+                     # front alone, a head seen in profile is the front drawing stretched)
+FACE_SEAM = 0.12     # ...fading out over this share of the depth behind it
+
+
+def face_from_front(W, names, co, head_frac: float) -> np.ndarray:
+    """The side drawings take no part in the FACE (11-24: with one view per point the flank of the nose and the eye
+    sockets - surfaces that look sideways - still took the side drawing: a stripe of profile down the middle of every
+    woman's face). In the head band (the top `head_frac` of the figure, which faces +X) the side views' weights fall
+    to nothing over the front of the face; what is left there is the front drawing. `co` = (n, 3) rest positions."""
+    co = np.asarray(co, float)
+    W = np.array(W, float)
+    side = [i for i, v in enumerate(names) if v in ("left", "right")]
+    if not side or "front" not in names or len(co) == 0:
+        return W
+    z0, z1 = co[:, 2].min(), co[:, 2].max()
+    head = co[:, 2] >= z1 - head_frac * (z1 - z0)
+    if head.sum() < 10:
+        return W
+    x0, x1 = np.percentile(co[head, 0], 1), np.percentile(co[head, 0], 99)
+    depth = max(x1 - x0, 1e-6)
+    t = (co[:, 0] - x0) / depth
+    keep = np.clip((FACE_SPLIT - t) / FACE_SEAM, 0.0, 1.0)
+    keep[~head] = 1.0
+    W[:, side] *= keep[:, None]
+    return W

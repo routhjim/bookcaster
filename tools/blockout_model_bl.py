@@ -282,6 +282,8 @@ def paint_views(ob, views: dict):
     side_ = [i for i, v in enumerate(names) if v in ("left", "right")]      # (the side views: there the hanging arm
     if side_:                                                                 # covers the hip; front/back see A-pose
         W[:, side_] *= _visible(ob, [np.array(VIEW_DIRS[names[i]], float) for i in side_])   # arms held clear)
+    from paint_weights import face_from_front        # the face is the front drawing's alone
+    W = face_from_front(W, names, np.array([v.co[:] for v in me.vertices]), HEAD_FRAC)
     W[:, 0] += 0.02                                     # straight up/down: the front picture
     W /= W.sum(1, keepdims=True)
     cols = [_project(ob, views[v], view=v) for v in names]
