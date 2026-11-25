@@ -1788,6 +1788,15 @@ def build_all(book: str, characters: list[str] | None = None, card: str = "igpu"
             prev = json.loads(bj.read_text()) if bj.exists() else {}
             if not force and hash_current(c, prev.get("hash"), steps, prev.get("shape_hash")) and \
                     Path(prev.get("lora", "")).exists():
+                if pick_stale(c.out):              # trained, but its checkpoints were never compared
+                    log_fn(f"charlora {name}: its checkpoints were scored on an older LoRA's pictures: picking again")
+                    with open(c.out / "build.log", "a") as lf:
+                        r = subprocess.run([card_py(card), "-I", str(HERE / "charlora.py"), "pick", book, name],
+                                           env=_card_env(card), stdout=lf, stderr=lf)
+                    use_ = c.out / "lora" / "USE"
+                    if r.returncode == 0 and use_.exists():
+                        prev["lora"] = str(c.out / "lora" / use_.read_text().strip())
+                        bj.write_text(json.dumps(prev, indent=1))
                 out[name] = prev
                 log_fn(f"charlora {name}: up to date ({Path(prev['lora']).name})")
                 continue
@@ -1872,6 +1881,21 @@ PICK_SCENES = ["Portrait of {n}, {d} {where}",
                "Close-up of {n}'s face, looking up in surprise, warm firelight. {n} is {d}"]
 
 
+def pick_stale(out_dir, n_scenes: int | None = None) -> list:
+    """The test pictures under <out>/pick that do not show the checkpoints now in <out>/lora: missing, or drawn
+    before their checkpoint was trained (11-25: a retrained LoRA was scored on the pictures of the one before it,
+    so the same checkpoint won with the same scores to four places). -> [(checkpoint, picture path)]"""
+    out_dir = Path(out_dir)
+    n = len(PICK_SCENES) if n_scenes is None else n_scenes
+    bad = []
+    for ck in sorted((out_dir / "lora").glob("step_*.safetensors")):
+        for i in range(n):
+            f = out_dir / "pick" / f"{ck.stem}_{i}.png"
+            if not f.exists() or f.stat().st_mtime < ck.stat().st_mtime:
+                bad.append((ck, f))
+    return bad
+
+
 def pick_checkpoint(book: str, name: str) -> dict:
     """Early stopping by SCORE (10-21 A/B: Edric's likeness 0.79 at 200 steps, 0.70 at 800 - the 800-step LoRA pulled
     its training backgrounds into new scenes; Hulda peaked at 600): the same 4 scenes drawn with every saved
@@ -1885,6 +1909,8 @@ def pick_checkpoint(book: str, name: str) -> dict:
         raise RuntimeError(f"{name}: no checkpoints in {ld}")
     out = c.out / "pick"
     out.mkdir(parents=True, exist_ok=True)
+    for _, f in pick_stale(c.out):               # an older LoRA's test pictures are not this one's
+        f.unlink(missing_ok=True)
     jobs = []
     for ck in cks:
         for i, sc_ in enumerate(PICK_SCENES):
