@@ -267,13 +267,15 @@ def _visible(ob, dirs) -> np.ndarray:
 
 def paint_views(ob, views: dict):
     """FOUR (or more) drawings, each projected at full resolution through its own UV map and blended per vertex by
-    how squarely the REST surface faces that view (cos^2 of the normal; 10-21: front + back only = every head's
+    how squarely the REST surface faces that view (tools/paint_weights.py; 10-21: front + back only = every head's
     sides were the front picture stretched sideways -> melted talk faces). The blend factors are baked per vertex
     (posing turns the body by its bones); the shader mixes the textures in order with cumulative factors."""
     me = ob.data
     nrm = np.array([v.normal[:] for v in me.vertices])
     names = [v for v in VIEW_DIRS if views.get(v)]
-    W = np.stack([np.clip(nrm @ np.array(VIEW_DIRS[v]), 0, None) ** 2 for v in names], 1)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from paint_weights import view_weights      # nearly one view per point: a blend of two drawings is a double face
+    W = view_weights(nrm, names)
     # a view paints only what it SEES (10-22: in the side drawings the hanging hand sits in front of the hip; projected,
     # it painted a hand on the hip, a third hand once the arm moved): a vertex hidden from a view by the mesh itself
     # (the A-pose arm in front of the hip) takes nothing from that view
