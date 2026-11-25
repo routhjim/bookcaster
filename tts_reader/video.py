@@ -996,13 +996,54 @@ def place_light(plan: dict, name: str, side: str, R=None) -> str:
     return _W.lighting_sentence(tod, "exterior" if "OUTSIDE" in side else "interior") + " "
 
 
-def face_photos(R, name: str) -> list[str]:
-    """The photographs a person is drawn from (`bookcaster look --photo`): <book>/work/video/faces/<person>/*.png,
-    at most three. [] for everyone else."""
+PHOTO_MAX = 8        # photographs kept per person; the sheet is drawn from at most SHEET_PHOTOS of them
+SHEET_PHOTOS = 3
+PHOTO_VIEWS = ("front", "three-quarter left", "three-quarter right", "profile left", "profile right")
+# (the side a turned face points to is said by the picture's edge: "their left" and "our left" are answered both ways)
+VIEW_ASK = ("Which way is this person's face turned? front = toward the camera, both eyes and both cheeks seen. "
+            "three-quarter = turned partly to one side, both eyes still seen. profile = turned fully to one side, "
+            "only one eye seen. For a turned face say which edge of the picture the nose points toward. Reply with "
+            "ONLY one of: front, three-quarter left, three-quarter right, profile left, profile right.")
+
+
+def photo_view(answer: str) -> str:
+    """A VIEW_ASK answer as one of PHOTO_VIEWS; "front" when it says nothing usable (a photograph of unknown view
+    is used as the sheet's always were)."""
+    a = re.sub(r"[^a-z0-9 ]", " ", str(answer or "").lower())
+    kind = "profile" if "profile" in a else "three-quarter" if re.search(r"three|quarter|3 4", a) else ""
+    side = "left" if re.search(r"\bleft\b", a) else "right" if re.search(r"\bright\b", a) else ""
+    return f"{kind} {side}" if kind and side else "front"
+
+
+def photo_views(d: Path) -> dict:
+    """{photograph file name: view} as `bookcaster look --photo` wrote it beside the photographs (views.json)."""
+    try:
+        v = json.loads((Path(d) / "views.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: x for k, x in v.items() if x in PHOTO_VIEWS}
+
+
+def photos_by_view(R, name: str) -> list[tuple[str, str]]:
+    """Every photograph a person is drawn from, with the view it shows: [(path, view)], "front" for one nobody
+    classed. [] for everyone else."""
     if R is None:
         return []
     d = R.vd / "faces" / slug(R.person(name) or name)
-    return sorted(str(f) for f in d.glob("*.png"))[:3] if d.is_dir() else []
+    if not d.is_dir():
+        return []
+    vs = photo_views(d)
+    return [(str(f), vs.get(f.name, "front")) for f in sorted(d.glob("*.png"))[:PHOTO_MAX]]
+
+
+def face_photos(R, name: str) -> list[str]:
+    """The photographs a person's SHEET is drawn from (`bookcaster look --photo`): <book>/work/video/faces/
+    <person>/*.png, at most three, [] for everyone else. The sheet is a portrait facing the viewer, so a profile
+    photograph is not one of them while there is any other: those go to the training pictures seen from the side
+    (charlora), and adding one leaves the sheet, and the 3D model made from it, as they are."""
+    ps = photos_by_view(R, name)
+    facing = [f for f, v in ps if not v.startswith("profile")]
+    return (facing or [f for f, _ in ps])[:SHEET_PHOTOS]
 
 
 # 11-23, measured on one face, three seeds each: with the whole photographs as refs the portrait kept the

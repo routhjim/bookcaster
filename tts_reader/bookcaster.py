@@ -1202,14 +1202,8 @@ PHOTO_MERGE = ("A character in an illustrated story is described as:\n{look}\n\n
                "description. Reply with ONLY the new description.")
 
 
-def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, str]:
-    """Draw a character from photographs of a real person (`bookcaster look --photo NAME FILE...`): the pictures
-    are kept in work/video/faces/<person>/, the look's face, hair, age and build are rewritten from the first one
-    (their clothes stay) and pinned, and their sheet is drawn from the photographs at the next storyboard or video
-    job; the LoRA and every key follow the sheet. -> the name the look is stored under."""
-    from PIL import Image, ImageOps
-    from . import video
-    from .speakers import NO_THINKING, post_chat
+def _photo_person(book: Path, name: str) -> tuple:
+    """(registry, the name the person's look is stored under), any spelling or an unambiguous part of one."""
     if not (book / "work" / "video" / "look.json").exists():
         sys.exit("no looks yet: run bookcaster storyboard first")
     R = _registry(book)
@@ -1219,17 +1213,42 @@ def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, 
         if len(sub) != 1:
             sys.exit(f"which character? " + ", ".join(sorted(sub or R.people())))
         key = sub[0]
-    d = book / "work" / "video" / "faces" / video.slug(key)
-    if d.exists():
-        shutil.rmtree(d)
-    d.mkdir(parents=True)
-    for i, f in enumerate(files[:3], 1):
+    return R, key
+
+
+def _store_photos(d: Path, files: list[str], first: int, log=print) -> None:
+    """The photographs cut to the head as d/photo<first>.png ..., each one's view (front, three-quarter, profile,
+    and the side) asked once and kept in d/views.json - for these and any stored before the views were asked."""
+    from PIL import Image, ImageOps
+    from . import video
+    for i, f in enumerate(files, first):
         im = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
         im.thumbnail((1024, 1024))
         im.save(d / "_whole.png")                # cut to the head: clothes left in a photograph get drawn
         im = video.head_crop(im, video._look_at(LLM_URL, LLM_MODEL, d / "_whole.png", video.HEAD_ASK))
         (d / "_whole.png").unlink()
         im.save(d / f"photo{i}.png")
+    views = video.photo_views(d)
+    for f in sorted(d.glob("*.png")):
+        if f.name not in views:
+            views[f.name] = video.photo_view(video._look_at(LLM_URL, LLM_MODEL, f, video.VIEW_ASK))
+            log(f"{f.name}: {views[f.name]}")
+    (d / "views.json").write_text(json.dumps(views, indent=1))
+
+
+def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, str]:
+    """Draw a character from photographs of a real person (`bookcaster look --photo NAME FILE...`): the pictures
+    are kept in work/video/faces/<person>/, the look's face, hair, age and build are rewritten from the first one
+    (their clothes stay) and pinned, and their sheet is drawn from the photographs at the next storyboard or video
+    job; the LoRA and every key follow the sheet. -> the name the look is stored under."""
+    from . import video
+    from .speakers import NO_THINKING, post_chat
+    R, key = _photo_person(book, name)
+    d = book / "work" / "video" / "faces" / video.slug(key)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    _store_photos(d, files[:video.PHOTO_MAX], 1, log)
     # a sheet is named by its words alone: one drawn from the old photographs would be kept as current
     for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
         old_sheet.unlink()
@@ -1240,6 +1259,32 @@ def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, 
     desc = " ".join(r["choices"][0]["message"]["content"].split()).strip('"')
     log(f"seen in the photograph: {seen}")
     return set_look(book, key, desc, pinned=True), desc
+
+
+def add_photos(book: Path, name: str, files: list[str], log=print) -> tuple[str, bool]:
+    """More photographs of someone already drawn from photographs (`bookcaster look --photo-add NAME FILE...`),
+    e.g. their face from each side. The look's words stay. Photographs in profile go to the LoRA's training
+    pictures only: the sheet and the 3D model stay, the LoRA is trained again and the keys follow it. One that
+    faces the camera while the sheet has room for it changes what the sheet is drawn from: then the sheet is drawn
+    again too, as after --photo. -> (the name the look is stored under, whether the sheet is drawn again)."""
+    from . import video
+    R, key = _photo_person(book, name)
+    d = book / "work" / "video" / "faces" / video.slug(key)
+    have = sorted(d.glob("*.png")) if d.is_dir() else []
+    if not have:
+        sys.exit(f"{key} is not drawn from photographs yet: bookcaster look --photo first")
+    room = video.PHOTO_MAX - len(have)
+    if len(files) > room:
+        sys.exit(f"{key} has {len(have)} photographs, at most {video.PHOTO_MAX}: {room} more fit")
+    # the stored ones are classed before the new ones arrive: what the sheet was drawn from is compared like for like
+    _store_photos(d, [], 0, log)
+    before = video.face_photos(R, key)
+    _store_photos(d, files, len(have) + 1, log)
+    redraw = video.face_photos(R, key) != before
+    if redraw:
+        for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
+            old_sheet.unlink()
+    return key, redraw
 
 
 def swap_looks(book: Path, a: str, b: str, log=print) -> None:
@@ -2618,7 +2663,10 @@ def main(argv: list[str] | None = None) -> int:
                    help='full new description of a character or a place, e.g. "Roylott = a man of about 60, clean-shaven, black hair, ..."')
     s.add_argument("--swap", nargs=2, metavar=("A", "B"), help="two characters trade looks (LoRAs + sheets too)")
     s.add_argument("--photo", nargs="+", metavar=("NAME", "FILE"),
-                   help="draw a character from 1-3 photographs of a real person (yourself, or someone who agreed)")
+                   help="draw a character from photographs of a real person (yourself, or someone who agreed): up to 8, "
+                        "facing the camera and from the sides")
+    s.add_argument("--photo-add", nargs="+", metavar=("NAME", "FILE"),
+                   help="more photographs of someone already drawn from photographs, e.g. their face from each side")
     s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
     s.add_argument("book")
     s.add_argument("which", nargs="+", help="when it's on screen (12:30) or its number (p021)")
@@ -2988,6 +3036,14 @@ def main(argv: list[str] | None = None) -> int:
         d = book_dir(a.book)
         if a.swap:
             swap_looks(d, *a.swap)
+            return 0
+        if a.photo_add:
+            if len(a.photo_add) < 2:
+                sys.exit("use --photo-add NAME FILE [FILE ...]")
+            who, redraw = add_photos(d, a.photo_add[0], a.photo_add[1:])
+            print(f"{who}: photographs added. " + ("Their sheet is drawn again from them" if redraw else
+                  "Their sheet stays; their LoRA is trained again with the side views") +
+                  " at the next video job.")
             return 0
         if a.photo:
             if len(a.photo) < 2:
