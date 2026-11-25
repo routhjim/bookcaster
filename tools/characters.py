@@ -856,6 +856,14 @@ _VL = {"p": None}
 _VL_LOCK = __import__("threading").Lock()
 
 
+def igpu_room() -> None:
+    """The iGPU's memory for the vision judge: the language model, if it is up, is stopped first (they cannot share
+    it; whoever needs the language model next starts it again)."""
+    sys.path.insert(0, str(HERE.parent)) if str(HERE.parent) not in sys.path else None
+    from tts_reader import animate
+    animate.strata_down(log, "the vision judge needs the iGPU's memory")
+
+
 def vl_close() -> None:
     """Stop the loaded vision judge (its ~17 GB on the iGPU): before the language model takes the iGPU."""
     p = _VL["p"]
@@ -881,6 +889,7 @@ def vl_ask(items):
         for attempt in range(2):
             p = _VL["p"]
             if p is None or p.poll() is not None:
+                igpu_room()
                 ig = subprocess.run([os.path.expanduser("~/bin/hip-index"), "igpu"], capture_output=True,
                                     text=True).stdout.strip()
                 env = dict(os.environ, HIP_VISIBLE_DEVICES=ig, HSA_CU_MASK=f"{ig}:0-38")

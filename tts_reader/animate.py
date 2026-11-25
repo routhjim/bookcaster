@@ -2662,12 +2662,29 @@ def igpu(tenant: str, log=print) -> None:
             except OSError:
                 time.sleep(5)
         raise RuntimeError("the language model didn't come up (journalctl --user -u strata-eval)")
-    if active(STRATA_UNIT):
-        log("  stopping the language model (the renders need the iGPU's memory)")
-        subprocess.run(["systemctl", "--user", "stop", STRATA_UNIT], capture_output=True)
-        time.sleep(5)
+    strata_down(log, "the renders need the iGPU's memory")
     _flush()
     _vae_server("up", log)
+
+
+def strata_up() -> bool:
+    return subprocess.run(["systemctl", "--user", "is-active", "-q", STRATA_UNIT]).returncode == 0
+
+
+def strata_down(log=print, why: str = "") -> bool:
+    """Stop the language model if it is up and give its memory back. -> whether it was up. Everything else that
+    loads a model on the iGPU calls this first (11-25: the model build's vision judge was started beside it, left
+    up by an earlier command, and the kernel killed the job twice)."""
+    if not strata_up():
+        return False
+    log("  stopping the language model" + (f" ({why})" if why else ""))
+    subprocess.run(["systemctl", "--user", "stop", STRATA_UNIT], capture_output=True)
+    time.sleep(STRATA_STOP_WAIT_S)
+    _flush()
+    return True
+
+
+STRATA_STOP_WAIT_S = 5
 
 
 STRATA_NEED_GB = int(os.environ.get("STRATA_NEED_GB", "96"))       # fish_stack.sh's figure: ~90 GB pinned + margin
