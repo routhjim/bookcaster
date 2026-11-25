@@ -971,6 +971,31 @@ def place_desc(plan: dict, name: str, desc: str) -> str:
                                 _W.prop_names({"props": {p: "" for p in props}}))
 
 
+def place_light(plan: dict, name: str, side: str, R=None) -> str:
+    """The lighting sentence of a place picture whose scenes are not by day (11-24: a ball at night was drawn in
+    daylight, and the set built from the picture stayed in daylight): the time of day the place's pictures vote for
+    (tools/world.py time_of_day, over every planned chapter of the book), '' by day or without evidence - so a
+    daytime place keeps its prompt and its picture.
+    NOTE: changes the prompt (and so the file name) of places that are not by day: their pictures are redrawn."""
+    import sys as _s
+    _s.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import world as _W
+    plans = [plan]
+    vd = getattr(R, "vd", None)
+    if vd:
+        for pj in sorted(Path(vd).glob("[0-9][0-9]_*/plan.json")):
+            try:
+                plans.append(json.loads(pj.read_text()))
+            except (OSError, ValueError):
+                pass
+    pics = [p_ for pl in plans for p_ in (pl.get("pictures") or []) if p_.get("where") == name]
+    tod, why = _W.time_of_day([str(p_["when"]) for p_ in pics if p_.get("when")],
+                              list(dict.fromkeys(p_.get("prompt", "") for p_ in pics)))
+    if why["source"] == "default" or tod == "day":
+        return ""
+    return _W.lighting_sentence(tod, "exterior" if "OUTSIDE" in side else "interior") + " "
+
+
 def face_photos(R, name: str) -> list[str]:
     """The photographs a person is drawn from (`bookcaster look --photo`): <book>/work/video/faces/<person>/*.png,
     at most three. [] for everyone else."""
@@ -1054,8 +1079,10 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     per = period_line(str(R.vd)).strip() if R is not None and getattr(R, "vd", None) else ""
     for name, desc in places.items():
         if name in used:
-            out[name] = (f"Establishing view of {name}, no people. {place_side(plan, name, desc)}"
-                         f"{place_desc(plan, name, desc).rstrip('.')}. " + (f"{per} " if per else "") +
+            side = place_side(plan, name, desc)
+            out[name] = (f"Establishing view of {name}, no people. {side}"
+                         f"{place_desc(plan, name, desc).rstrip('.')}. " + place_light(plan, name, side, R) +
+                         (f"{per} " if per else "") +
                          f"{style}. No text, no lettering, no signature.", [1024, 576])
     return out
 
