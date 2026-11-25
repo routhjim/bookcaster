@@ -293,7 +293,10 @@ def build(frame):
         if lay == "creature" and mo is not None and mo.type == "MESH":
             _creature_light(mo, float(frame.get("exposure", 0.85)))
         if m.get("who") and not m.get("static") and not m.get("template"):   # the posed hands (humans)
-            arm = [o for o in bpy.data.objects if o.type == "ARMATURE"][-1]
+            # THIS model's rig (11-24: the last armature by name was another person's whenever two stood in a shot,
+            # so the hand check measured one person's hands against the other's solved wrists)
+            arm = (_MODELS.get((m["blend"], m.get("who"))) or {}).get("rig") or \
+                [o for o in bpy.data.objects if o.type == "ARMATURE"][-1]
             out = {}
             for s in ("r", "l"):
                 pb = arm.pose.bones[f"{s}_hand"]
