@@ -2360,9 +2360,50 @@ def white_frac(img: Path, box=None) -> float:
     return float((a.min(axis=2) > 0.95).mean()) if a.size else 0.0
 
 
-def white_blob(img: Path, s: int = 4) -> float:
+WHITE_CLOTH = re.compile(r"\b(white|ivory|cream|snowy|pale)\b[^.;]{0,60}\b(gown|dress|frock|robe|shirt|shift|apron|"
+                         r"veil|cloak|coat|cravat|collar|waistcoat|blouse|tunic|muslin|linen|silk|satin|lace)\b", re.I)
+
+
+def wears_white(desc: str) -> bool:
+    """The look names a white garment: a near-white patch on this person is their clothes (11-25)."""
+    return bool(WHITE_CLOTH.search((desc or "").split("wearing", 1)[-1]))
+
+
+def in_white_clothes(centre, figs: dict, looks: dict, size) -> bool:
+    """The white patch's centre (as shares of the frame) lies on a visible person whose look names a white
+    garment. figs = {who: bbox in the still's pixels}, size = the still's (W, H)."""
+    if not centre:
+        return False
+    x, y = centre[0] * size[0], centre[1] * size[1]
+    return any(b[0] <= x <= b[2] and b[1] <= y <= b[3] and wears_white(looks.get(w, "")) for w, b in figs.items())
+
+
+def beard_question(side: str, want: str) -> str:
+    """Someone who should be clean-shaven fails on a full beard, not on stubble; someone who should be bearded passes
+    on ANY beard: a light short one is still a beard (11-25: a short beard read as 'no full beard' in 15 keys)."""
+    if want == "yes":
+        return f"the person {side}: any beard or moustache at all, even a short, light or trimmed one? yes or no"
+    return f"the person {side}: a full beard or a moustache (ignore light stubble)? yes or no"
+
+
+FACE_CUT = 0.15
+
+
+FIG_SMALL = 0.3
+
+
+def face_in_frame(b, W: float, H: float = 0) -> bool:
+    """A figure the frame's side cuts down to a sliver shows no face to judge (11-25: a sleeve at the frame's edge
+    'lost the beard'), nor does a far figure under FIG_SMALL of the frame's height (a man 'not a man' at 19 %)."""
+    if H and (b[3] - b[1]) < FIG_SMALL * H:
+        return False
+    return not ((b[0] <= 1 or b[2] >= W - 1) and (b[2] - b[0]) < FACE_CUT * W)
+
+
+def white_blob(img: Path, s: int = 4, centre: bool = False):
     """The largest connected near-white (> 0.95) region as a share of the frame: an unpainted proxy/prop or a
-    blown-out head (10-20, 793 = 2.0 %); candles/windows in a good key stay < 1 % (340 = 0.7 %)."""
+    blown-out head (10-20, 793 = 2.0 %); candles/windows in a good key stay < 1 % (340 = 0.7 %). centre=True ->
+    (share, (x, y) of its centre as shares of the frame, or None)."""
     import numpy as np
     from collections import deque
     from PIL import Image
@@ -2371,21 +2412,24 @@ def white_blob(img: Path, s: int = 4) -> float:
     H, W = m.shape
     m = m[:H // s * s, :W // s * s].reshape(H // s, s, W // s, s).mean((1, 3)) > 0.5
     seen = np.zeros_like(m)
-    best = 0
+    best, at = 0, None
     for y, x in zip(*np.nonzero(m)):
         if seen[y, x]:
             continue
-        q, n = deque([(y, x)]), 0
+        q, n, sy, sx = deque([(y, x)]), 0, 0, 0
         seen[y, x] = True
         while q:
             cy, cx = q.popleft()
             n += 1
+            sy += cy
+            sx += cx
             for ny, nx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
                 if 0 <= ny < m.shape[0] and 0 <= nx < m.shape[1] and m[ny, nx] and not seen[ny, nx]:
                     seen[ny, nx] = True
                     q.append((ny, nx))
-        best = max(best, n)
-    return best / max(m.size, 1)
+        if n > best:
+            best, at = n, (sx / n / m.shape[1], sy / n / m.shape[0])
+    return (best / max(m.size, 1), at) if centre else best / max(m.size, 1)
 
 
 def short_name(w: str) -> str:
@@ -3270,11 +3314,13 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
         d = cx.OUT / "stage" / e["id"]
         img = start_image(cx, e)
         ex = json.loads((d / "render" / "start_expect.json").read_text()) if (d / "render" / "start_expect.json").exists() else {}
-        W = ex.get("size", Image.open(img).size)[0]
+        W, H_ = ex.get("size", Image.open(img).size)[:2]
         figs = {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}
         cam = json.loads(Path(e["shot"]).read_text()).get("camera", {}) if e.get("shot") and Path(e["shot"]).exists() else {}
         behind = {cam["ots"][0]} if cam.get("ots") else set()
         r = res.setdefault(e["id"], {"image": img, "flags": [], "people": {}})
+        r["_figs"], r["_looks"] = figs, {w: cx.look(w, e["t"]) or "" for w in figs}
+        r["_size"] = ex.get("size") or list(Image.open(img).size)
         qs = {}
         for w, b in figs.items():
             desc = cx.look(w, e["t"])
@@ -3288,11 +3334,11 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
                 qs[f"outfit|{w}"] = (f"the person {side} ({short}): their main garment, material and colour, "
                                      "max 4 words")
                 r["people"].setdefault(w, {})["outfit"] = ", ".join(mo.group(1).split(", ")[:3])[:120]
-            if w not in behind:
+            if w not in behind and face_in_frame(b, W, H_):
                 want = "no" if re.search(r"clean-shaven|beardless|no beard", desc, re.I) else \
                     "yes" if re.search(r"\b(beard|moustache|mustache)\b", desc, re.I) else None
                 if want:
-                    qs[f"beard|{w}"] = f"the person {side}: a full beard or a moustache (ignore light stubble)? yes or no"
+                    qs[f"beard|{w}"] = beard_question(side, want)
                     r["people"].setdefault(w, {})["beard"] = want
         pl = shot_place(cx, e)
         if pl["kind"] in ("interior", "exterior"):
@@ -3311,7 +3357,8 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
         rd0 = d / "render"
         for w, b in figs.items():          # gender + age as the look says, per visible face (10-20: 8 Hulda keys = a man)
             dsc = cx.chars.get(w, "")
-            if is_creature(dsc) or not dsc or w in behind or (rd0.exists() and facing_away(rd0, w)):
+            if is_creature(dsc) or not dsc or w in behind or (rd0.exists() and facing_away(rd0, w)) \
+                    or not face_in_frame(b, W, H_):
                 continue
             g_, a_ = gender_of(dsc), age_of(dsc)
             if g_ in ("woman", "man"):
@@ -3377,8 +3424,9 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
             r.setdefault("notes", []).append(f"period judge said no but named nothing concrete ({what_ or '-'})")
         kp = cx.OUT / "stage" / e["id"] / "key.png"
         fx_ = bool(re.search(r"spark|strike|hammer|fire|flame", ((cx.frames.get(e["id"]) or {}).get("motion") or "").lower()))
-        wf = white_blob(kp)
-        if wf > 0.01 and not fx_:
+        wf, at_ = white_blob(kp, centre=True)
+        own_ = in_white_clothes(at_, r.pop("_figs", None) or {}, r.pop("_looks", None) or {}, r.pop("_size", None) or (1, 1))
+        if wf > 0.01 and not fx_ and not own_:
             r["flags"].append(f"white: a {wf * 100:.1f}% near-white blob (an unpainted object or a blown-out head)")
         rd_ = cx.OUT / "stage" / e["id"] / "render"
         away = [w for w in r["people"] if facing_away(rd_, w)] if rd_.exists() else []
