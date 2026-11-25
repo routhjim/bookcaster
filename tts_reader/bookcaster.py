@@ -1216,12 +1216,30 @@ def _photo_person(book: Path, name: str) -> tuple:
     return R, key
 
 
+class _llm_lent:
+    """The language model for one command run outside a job: started if it is down, and stopped again at the end if
+    this command started it (11-25: left up, it was still holding the iGPU when the next job loaded its own models)."""
+    def __init__(self, log=print):
+        self.log = log
+
+    def __enter__(self):
+        from . import animate
+        self.was = animate.strata_up()
+        animate.igpu("strata", self.log)
+        return self
+
+    def __exit__(self, *exc):
+        from . import animate
+        if not self.was:
+            animate.strata_down(self.log, "this command started it")
+        return False
+
+
 def _store_photos(d: Path, files: list[str], first: int, log=print) -> None:
     """The photographs cut to the head as d/photo<first>.png ..., each one's view (front, three-quarter, profile,
     and the side) asked once and kept in d/views.json - for these and any stored before the views were asked."""
     from PIL import Image, ImageOps
-    from . import animate, video
-    animate.igpu("strata", log)                  # the questions below need the language model (as the plan starts it)
+    from . import video
     for i, f in enumerate(files, first):
         im = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
         im.thumbnail((1024, 1024))
@@ -3041,7 +3059,8 @@ def main(argv: list[str] | None = None) -> int:
         if a.photo_add:
             if len(a.photo_add) < 2:
                 sys.exit("use --photo-add NAME FILE [FILE ...]")
-            who, redraw = add_photos(d, a.photo_add[0], a.photo_add[1:])
+            with _llm_lent():
+                who, redraw = add_photos(d, a.photo_add[0], a.photo_add[1:])
             print(f"{who}: photographs added. " + ("Their sheet is drawn again from them" if redraw else
                   "Their sheet stays; their LoRA is trained again with the side views") +
                   " at the next video job.")
@@ -3049,7 +3068,8 @@ def main(argv: list[str] | None = None) -> int:
         if a.photo:
             if len(a.photo) < 2:
                 sys.exit("use --photo NAME FILE [FILE ...]")
-            who, desc = set_photo(d, a.photo[0], a.photo[1:])
+            with _llm_lent():
+                who, desc = set_photo(d, a.photo[0], a.photo[1:])
             print(f"{who} now: {desc}\n(drawn from the photographs: their sheet and scenes are redrawn at the "
                   "next storyboard or video job)")
             return 0
