@@ -20,13 +20,14 @@ VARIANTS = (("man", 30, "short dark hair, medium build"), ("woman", 25, "fair ha
             ("man", 50, "grey hair, heavy build"), ("woman", 45, "brown hair pinned up, medium build"),
             ("man", 22, "light brown hair, slight build"), ("woman", 60, "grey hair pinned up, stout"))
 HEIGHT = {"man": 1.76, "woman": 1.62}
-MIN_N, MAX_N = 6, 24
+MIN_N, MAX_N = 6, 32
 AREA_EACH = 5.0          # m2 of free floor a guest, when the text gives no number
-CLEAR = 2.0              # m from every mark of the cast
-APART = 1.9              # m between two groups
+CLEAR = 1.7              # m from every mark of the cast
+APART = 1.6              # m between two groups
 PAIR = 0.85              # m between the two of a pair
 WALL = 0.5               # m of free floor around a group
-REACH = 8.0              # m around the middle of the cast's marks: where the cameras look
+REACH = 5.5              # m around the middle of the cast's marks: where the cameras look (11-25: at 8 m a wide
+                         # shot of a large hall showed six guests near the cast and bare floor)
 AHEAD = 0.5              # a guest nearer the camera than the nearest of the cast (+ this) is not drawn
 WORDS = {"hundred": 100, "fifty": 50, "forty": 40, "thirty": 30, "twenty": 20, "dozen": 12, "ten": 10, "eight": 8,
          "six": 6}
