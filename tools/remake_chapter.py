@@ -2420,7 +2420,7 @@ def beard_question(side: str, want: str) -> str:
 FACE_CUT = 0.15
 
 
-FIG_SMALL = 0.3
+FIG_SMALL = 0.45                                     # a head under ~6 % of the frame height shows no beard to judge
 
 
 def face_in_frame(b, W: float, H: float = 0) -> bool:
