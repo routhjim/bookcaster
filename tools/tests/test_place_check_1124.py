@@ -59,5 +59,9 @@ seen.clear()
 v = F._place_verdicts([{"id": "a", "path": "x"}], "a made-up city, around 1990")
 check("a later period is not asked about them", list(seen[0]["ask"]) == ["modern"] and v == {}, v)
 
+fx = F.place_fix(["heating radiators", "a strip light"])
+check("a known fitting is replaced by what to show, not named", "radiator" not in fx and "bare wood panelling" in fx
+      and "none of these: a strip light" in fx, fx)
+
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)

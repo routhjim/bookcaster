@@ -346,7 +346,13 @@ PLACE_FITTINGS = {"heating radiators": "a heating radiator (a ribbed or flat met
                   "electric lights": "an electric light, lamp or light bulb",
                   "light switches or wall sockets": "a light switch or an electric wall socket",
                   "cables or pipes on the walls": "an electric cable or a metal pipe running along a wall"}
-PLACE_CHECK_V = 2                   # a picture judged by an older set of questions is judged again
+# what the redraw is told to show INSTEAD (11-24: "shows none of these: heating radiators" drew them again twice;
+# a drawing model draws the words it reads)
+PLACE_INSTEAD = {"heating radiators": "the wall below every window is bare wood panelling down to the floor",
+                 "electric lights": "lit only by daylight, candles and firelight",
+                 "light switches or wall sockets": "every wall surface is plain and unbroken",
+                 "cables or pipes on the walls": "every wall surface is plain and unbroken"}
+PLACE_CHECK_V = 3                   # a picture judged by an older set of questions is judged again
 
 
 def _place_verdicts(jobs, per) -> dict:
@@ -374,6 +380,13 @@ def _place_verdicts(jobs, per) -> dict:
     return out
 
 
+def place_fix(things) -> str:
+    """The redraw's extra words: what to show instead of each known fitting; anything else named as absent."""
+    pos = list(dict.fromkeys(PLACE_INSTEAD[t] for t in things if t in PLACE_INSTEAD))
+    neg = [t for t in things if t not in PLACE_INSTEAD]
+    return "; ".join(pos + ([f"the picture shows none of these: {', '.join(neg)}"] if neg else [])) + "."
+
+
 def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
     """The period at the source for PLACES (11-24: a room of two hundred years ago came out with today's fittings
     under its windows, and the set built from the picture kept them): when the book has a period, the judge lists
@@ -399,8 +412,7 @@ def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
     fails = _place_verdicts(jobs, per)
     hist = {j["id"]: [(len(fails.get(j["id"], [])), Path(j["path"]).read_bytes(), fails.get(j["id"], []))] for j in jobs}
     for k in range(1, tries + 1):
-        redo = [{**j, "seed": j["seed"] + 101 * k,
-                 "prompt": j["prompt"] + " IMPORTANT: the picture shows none of these: " + ", ".join(fails[j["id"]]) + "."}
+        redo = [{**j, "seed": j["seed"] + 101 * k, "prompt": j["prompt"] + " IMPORTANT: " + place_fix(fails[j["id"]])}
                 for j in jobs if j["id"] in fails]
         if not redo:
             break
@@ -414,6 +426,9 @@ def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
         now = _place_verdicts(redo, per)
         for j in redo:
             hist[j["id"]].append((len(now.get(j["id"], [])), Path(j["path"]).read_bytes(), now.get(j["id"], [])))
+            td = Path(refs) / "place_tries"         # every attempt kept to look at
+            td.mkdir(exist_ok=True)
+            (td / f"{j['id']}_try{k}.png").write_bytes(hist[j["id"]][-1][1])
         fails = now
     for j in jobs:                                # the best attempt stays in place
         best = min(hist[j["id"]], key=lambda t: t[0])
