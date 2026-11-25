@@ -2958,11 +2958,16 @@ def missing(L: Path, jobs_f: Path, key="name") -> list[str]:
     return [j[key] for j in json.loads(jobs_f.read_text()) if not (L / "out" / f"{j[key]}.mp4").exists()]
 
 
+RUNNER_NEXT = ("ltx_split_next.py", "vae_conv3d.py", "eager_fuse.py")   # the pipelined runner and the modules it imports
+
+
 def ltx(cx: Ctx, P: dict, which: str = "talk,action", last: set | None = None) -> None:
     L = cx.OUT / "ltx"
     L.mkdir(parents=True, exist_ok=True)
     import filecmp
-    for f in ("ltx_split.py", "stitch_talk.py") + (("ltx_split_next.py",) if PP else ()):   # frozen per run start
+    # (11-25: the pipelined runner imports its fused kernels from its own folder; copied without them it died at
+    # import, "No module named 'vae_conv3d'", and no clip was made)
+    for f in ("ltx_split.py", "stitch_talk.py") + ((RUNNER_NEXT if PP else ())):            # frozen per run start
         if not (L / f).exists() or not filecmp.cmp(RUNNER_DIR / f, L / f, shallow=False):   # (10-21: was copy-once:
             shutil.copy(RUNNER_DIR / f, L / f)                                              # runner fixes never reached a chapter)
     miss = [e["id"] for e in P["entries"] if e["route"] == "missing" or (full3d() and e.get("unready"))]
