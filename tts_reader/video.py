@@ -1049,10 +1049,13 @@ def ref_prompts(plan: dict, style: str | None, R=None) -> dict[str, tuple[str, l
     for name, desc in chars.items():
         if name in used:
             out[name] = (sheet_prompt(desc, style, bool(face_photos(R, name))), [1280, 896])
+    # a place is drawn in the book's period (11-24: a photographic style with no period drew a room of long ago as
+    # it stands today, with today's fittings on its walls; the set built from that picture kept them)
+    per = period_line(str(R.vd)).strip() if R is not None and getattr(R, "vd", None) else ""
     for name, desc in places.items():
         if name in used:
             out[name] = (f"Establishing view of {name}, no people. {place_side(plan, name, desc)}"
-                         f"{place_desc(plan, name, desc).rstrip('.')}. "
+                         f"{place_desc(plan, name, desc).rstrip('.')}. " + (f"{per} " if per else "") +
                          f"{style}. No text, no lettering, no signature.", [1024, 576])
     return out
 
