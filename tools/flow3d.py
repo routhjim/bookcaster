@@ -341,18 +341,35 @@ def check_sheets(plan, style, refs, log=print, tries: int = 2) -> dict:
     return fails
 
 
+PLACE_FITTINGS_FROM = 1880          # a period before this year has none of these fitted to its buildings
+PLACE_FITTINGS = {"heating radiators": "a heating radiator (a ribbed or flat metal panel on a wall or under a window)",
+                  "electric lights": "an electric light, lamp or light bulb",
+                  "light switches or wall sockets": "a light switch or an electric wall socket",
+                  "cables or pipes on the walls": "an electric cable or a metal pipe running along a wall"}
+PLACE_CHECK_V = 2                   # a picture judged by an older set of questions is judged again
+
+
 def _place_verdicts(jobs, per) -> dict:
     """What the vision judge names in each place picture that is out of its period. -> {job id: [things]}"""
     import remake_chapter as R
     ask = (f"This picture should show a place in {per}. List the things in it that could not have existed then "
            f"(look at what is fitted to the walls, floor and ceiling, the lighting, the heating, any writing). "
            f"Answer with a short comma-separated list, or the one word none.")
-    ans = R.vl_batch([{"id": j["id"], "image": j["path"], "ask": {"modern": ask}} for j in jobs])
+    # asked to list, the judge answered "none" of a room with heating radiators under its windows (11-24): before
+    # those fittings existed it is also asked about each, yes or no
+    yr = re.search(r"\b(\d{3,4})\b", per)
+    fit = PLACE_FITTINGS if yr and int(yr.group(1)) < PLACE_FITTINGS_FROM else {}
+    asks = {"modern": ask, **{k: f"Answer yes or no: does this picture show {q}?" for k, q in fit.items()}}
+    ans = R.vl_batch([{"id": j["id"], "image": j["path"], "ask": asks} for j in jobs])
     out = {}
     for j in jobs:
-        a = str((ans.get(j["id"]) or {}).get("modern", "")).strip().strip(".").lower()
+        an = ans.get(j["id"]) or {}
+        a = str(an.get("modern", "")).strip().strip(".").lower()
         things = [t.strip() for t in re.split(r"[,;\n]", a) if t.strip()]
-        if things and not re.match(r"(none|nothing|no)\b", things[0]):
+        if things and re.match(r"(none|nothing|no)\b", things[0]):
+            things = []
+        things += [k for k in fit if str(an.get(k, "")).strip().lower().startswith("yes") and k not in things]
+        if things:
             out[j["id"]] = things[:6]
     return out
 
@@ -376,7 +393,7 @@ def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
     except (OSError, ValueError):
         memo = {}
     sig = lambda j: hashlib.sha1(Path(j["path"]).read_bytes()).hexdigest()[:16]
-    jobs = [j for j in jobs if (memo.get(j["id"]) or {}).get("sig") != sig(j)]
+    jobs = [j for j in jobs if (memo.get(j["id"]) or {}).get("sig") != sig(j) or memo[j["id"]].get("v") != PLACE_CHECK_V]
     if not jobs:
         return {i: v["out"] for i, v in memo.items() if v.get("out")}
     fails = _place_verdicts(jobs, per)
@@ -401,7 +418,7 @@ def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
     for j in jobs:                                # the best attempt stays in place
         best = min(hist[j["id"]], key=lambda t: t[0])
         Path(j["path"]).write_bytes(best[1])
-        memo[j["id"]] = {"sig": sig(j), "out": best[2], "tries": len(hist[j["id"]]) - 1}
+        memo[j["id"]] = {"sig": sig(j), "out": best[2], "tries": len(hist[j["id"]]) - 1, "v": PLACE_CHECK_V}
     memo_p.write_text(json.dumps(memo, indent=1))
     return {i: v["out"] for i, v in memo.items() if v.get("out")}
 
