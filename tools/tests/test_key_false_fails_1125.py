@@ -34,6 +34,8 @@ check("a sliver at the right edge is not", not R.face_in_frame([1020, 0, 1152, 6
 check("a sliver at the left edge is not", not R.face_in_frame([0, 0, 120, 640], 1152, 640))
 check("a wide figure at the edge is judged", R.face_in_frame([0, 0, 400, 640], 1152, 640))
 check("a far small figure is not", not R.face_in_frame([500, 200, 540, 330], 1152, 640))
+check("a figure a third of the frame high is not", not R.face_in_frame([500, 200, 580, 440], 1152, 640))
+check("a figure half the frame high is judged", R.face_in_frame([500, 200, 620, 530], 1152, 640))
 
 with tempfile.TemporaryDirectory() as td:
     im = Image.new("RGB", (640, 360), (90, 70, 40))
