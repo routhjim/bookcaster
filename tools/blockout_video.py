@@ -360,6 +360,8 @@ def render_frames(shot, info0, info1, seqs, cam, move, move_amount, N, fdir):
         pr_ = next((q for q in (shot.get("set") or {}).get("props", []) if (q.get("prop") or q.get("name")) == op["prop"]), None)
         if pr_ is not None and P_.joint_handle(pr_, op["joint"], None) is not None:
             ops.append((op, pr_, P_.set_entry(pr_)[1].get("mesh")))
+    import crowd as _CR                # the scene's unnamed people: part of the set, where the first frame's camera
+    guests_ = _CR.models(shot, camera_at(cam, move, move_amount, 0.0)["pos"])     # shows them, still all clip long
     for i in range(N):
         prims = list(info0["_set_prims"])
         op_ang = {}
@@ -696,7 +698,7 @@ def render_frames(shot, info0, info1, seqs, cam, move, move_amount, N, fdir):
                                     shot.get("set"), anchors, t=(i - i0 + 1) / 15.0)
         ci = camera_at(cam, move, move_amount, i / max(N - 1, 1))
         prims += B.room_walls(shot.get("set") or {}, ci["pos"])
-        fr = {"name": f"f{i:04d}", "prims": [B._jsonable(p) for p in prims], "models": models,
+        fr = {"name": f"f{i:04d}", "prims": [B._jsonable(p) for p in prims], "models": models + guests_,
               "camera": {"pos": ci["pos"], "R": ci["R"], "lens": ci["lens"]},
               "clay": os.path.join(fdir, f"clay_{i:04d}.png"), "depth": os.path.join(fdir, f"depth_{i:04d}.npy")}
         if (shot.get("set") or {}).get("world"):

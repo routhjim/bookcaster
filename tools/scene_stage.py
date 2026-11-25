@@ -1560,6 +1560,9 @@ def main(argv=None) -> int:
             for ln in on_open_ground(sh_):           # 9 m out lay inside the cave rock; the camera saw the set's back)
                 sys.stderr.write(f"{mid_}: {ln}\n")
         keep_absent(sc["moments"], frames, shots, scene)
+        import crowd as CR                           # the scene's unnamed people stand behind its cast (11-25)
+        for ln in CR.stage(sc["where"], sc["moments"], frames, shots, scene.get("room"), scene.get("marks"), vd):
+            sys.stderr.write(f"scene {sc['id']}: {ln}\n")
         scene["prop_log"] = prop_states(scene, sc["moments"], frames, shots)
         (sd / f"{sc['id']}.json").write_text(json.dumps(scene, indent=1, default=lambda o: np.asarray(o).tolist()))
         for mid, shot in shots.items():

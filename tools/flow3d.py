@@ -1187,6 +1187,19 @@ def window(book, stem, span) -> dict | None:
             "bases": PB.moment_bases(cd, ids)}
 
 
+def crowd_places(book, stems, places=None) -> dict:
+    """{place: the crowd's words} for every place where a keyframe of these chapters names unnamed people; places:
+    only these (a window's)."""
+    out = {}
+    for st in stems:
+        kp = vdir(book) / st / "anim" / "keyframes.json"
+        for f in (json.loads(kp.read_text()).get("frames") or []) if kp.exists() else []:
+            c, w = str(f.get("crowd") or "").strip(), str(f.get("where") or "").strip()
+            if c and w and (places is None or w in places):
+                out.setdefault(w, c)
+    return out
+
+
 def window_models(book, stem, win) -> list:
     """The window's cast as characters.py --only names: each person in the outfit worn at each of their moments."""
     import characters as CH
@@ -1236,6 +1249,12 @@ def assets(book, chapter=None, log=print, plan_only: bool = False, card: str = "
         if beasts is None or beasts:
             rc["creatures.sheet"] = run([POSE_PY, "-I", HERE / "characters.py", "creature-sheet", book,
                                          *(["--only", *beasts] if beasts else [])], lg)
+    # the unnamed people of each place whose scenes name a crowd (tools/crowd.py): a few plain guest models a place
+    for wh_, txt_ in crowd_places(book, stems, win["where"] if win else None).items():
+        _log(f"assets: the crowd at {wh_} ({txt_}): guest models" + (" (would build)" if plan_only else ""), log)
+        if not plan_only:
+            rc[f"extras:{wh_}"] = run([POSE_PY, "-I", HERE / "characters.py", "extras", book, "--place", wh_,
+                                       "--card", card], lg)
     # 2c: creatures as a procedural composite (or a user-rigged import), once the blockout agent's entry exists
     # (a window with a creature runs it for all: creature-build --only would rebuild an APPROVED rig)
     if "creature-build" in (HERE / "characters.py").read_text() and (beasts is None or beasts):

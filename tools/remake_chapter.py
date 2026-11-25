@@ -1272,7 +1272,7 @@ def render_sig(cx: Ctx, e: dict) -> str:
     # each figure's MODEL (its paint version + rig: 10-22, re-painted models kept their old ghost-hand renders) and the
     # staging RENDER version (camera / cleanup rules: 10-22, six walled-in cameras were reused after the fix)
     h.update(STAGE_RENDER_VERSION.encode())
-    for f in sh.get("figures", []):
+    for f in sh.get("figures", []) + (sh.get("crowd") or []):
         m = f.get("model")
         if m:
             d_ = Path(m).parent
@@ -2196,6 +2196,14 @@ def scene_crowd(frames: dict, mid: str) -> str:
     return ""
 
 
+def shot_guests(e: dict) -> bool:
+    """The moment's staged shot has the scene's unnamed people in it (tools/crowd.py)."""
+    try:
+        return bool(json.loads(Path(e["shot"]).read_text()).get("crowd"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def draw_prompt(cx: Ctx, e: dict, idx: dict | None = None, scene_only: bool = False) -> str:
     """The keyframe prompt: the shot's picture prompt, each person tagged with their look (wardrobe in force), with
     their image conditions named ("the person on the left is Edric: the face of image 1, the outfit of image 2")."""
@@ -2203,10 +2211,12 @@ def draw_prompt(cx: Ctx, e: dict, idx: dict | None = None, scene_only: bool = Fa
     who = moment_who(cx, e)
     crowd = scene_crowd(cx.frames, e["id"]) if full3d() else ""
     if e.get("route") == "talk" and full3d() and TALK_SINGLE and e.get("speaker"):
-        crowd = ""                                # the clean single stays clean
+        if not shot_guests(e):                    # the clean single stays clean, unless the still itself shows the
+            crowd = ""                            # scene's guests far behind the speaker (tools/crowd.py, 11-25)
         pl = shot_place(cx, e)                    # the clean single the still shows, not the 2D picture's scene
-        f = {"prompt": (f"Head-and-shoulders portrait of {e['speaker']} speaking, face clearly visible, the only person "
-                        f"in the picture" + (f", in {pl['where']}" if pl.get("where") else "") + ".")}
+        f = {"prompt": (f"Head-and-shoulders portrait of {e['speaker']} speaking, face clearly visible, "
+                        + ("alone in the foreground" if crowd else "the only person in the picture")
+                        + (f", in {pl['where']}" if pl.get("where") else "") + ".")}
     elif not f.get("prompt"):                     # a talking moment: the scene picture's prompt + who speaks
         pic = next((p for p in cx.plan.get("pictures", []) if p["id"] == e.get("pic")), {})
         f = {"prompt": (pic.get("prompt", "") + (f" {e['speaker']} is speaking" + (f" to {e['listener']}" if e.get("listener") else "")
