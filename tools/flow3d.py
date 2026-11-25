@@ -1595,6 +1595,9 @@ def _is_person(book, name) -> bool:
         return True
 
 
+OLD_DRAWINGS = "drawings older than the render"
+
+
 def refresh_stale_keys(R, cx, P) -> int:
     """All-new also means keys (10-21: a talk key from the night before, drawn without Hulda's LoRA, was reused).
     A key older than its scene-layer shot, its talk framing (shot_talk.json as talk_shot would write it now), or
@@ -1611,6 +1614,11 @@ def refresh_stale_keys(R, cx, P) -> int:
         rc_ = d / "render" / "start_color.png"     # drawn over an OLDER staging render (10-22: 16 cameras re-staged out
         if rc_.exists() and rc_.stat().st_mtime > kt:  # of the set's rock after their keys were drawn)
             why.append("render")
+        # ... or put together from drawings made over an older render (11-25: a key set aside left its seed drawings
+        # behind, the draw step kept every drawing whose file existed, and each "redrawn" key was the old drawing)
+        old = [f for f in (d / "key_seeds").glob("s*.png")] if rc_.exists() else []
+        if old and not why and min(f.stat().st_mtime for f in old) < rc_.stat().st_mtime:
+            why.append(OLD_DRAWINGS)
         if e.get("shot") and Path(e["shot"]).exists():
             # the shot's CONTENT decides (10-21 dry run: scene_stage rewrites every shot each run, so mtime alone
             # would redraw all 95 keys); the key's shot hash is recorded the first time it is seen current
@@ -1639,8 +1647,10 @@ def refresh_stale_keys(R, cx, P) -> int:
         if why:
             arc = d / f"stale_{stamp}"
             arc.mkdir(exist_ok=True)
-            for f in [*d.glob("key*.png"), d / "face.json", d / "render", d / "shot_talk.json", d / "key.shot.sha"]:
-                if f.exists():
+            keep = (d / "render", d / "shot_talk.json", d / "key.shot.sha") if why == [OLD_DRAWINGS] else ()
+            for f in [*d.glob("key*.png"), *d.glob("key*_seeds"), d / "face.json", d / "render", d / "shot_talk.json",
+                      d / "key.shot.sha"]:             # the render is current when only the drawings are old
+                if f.exists() and f not in keep:
                     shutil.move(str(f), arc / f.name)
             (arc / "WHY").write_text(", ".join(why))
             n += 1

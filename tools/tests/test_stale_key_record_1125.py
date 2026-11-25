@@ -38,5 +38,20 @@ with tempfile.TemporaryDirectory() as td:
     put(d / "key.png", "k", 100)                                # no record, the shot newer than the key
     check("a key older than its shot is set aside", F.refresh_stale_keys(R, cx, P) == 1)
 
+    # a key put together again from drawings older than its render
+    d2 = td / "stage" / "talk-2"
+    (d2 / "render").mkdir(parents=True); (d2 / "key_seeds").mkdir()
+    P2 = {"entries": [{"id": "talk-2", "route": "action", "who": ["Tam"]}]}
+    put(d2 / "render" / "start_color.png", "still", 200)
+    put(d2 / "key_seeds" / "s11.png", "old drawing", 900)
+    put(d2 / "key.png", "k", 100)
+    check("drawings older than the render set the key aside", F.refresh_stale_keys(R, cx, P2) == 1 and not (d2 / "key.png").exists())
+    check("... with the drawings", not (d2 / "key_seeds").exists())
+    check("... and the render stays", (d2 / "render" / "start_color.png").exists())
+    (d2 / "key_seeds").mkdir()
+    put(d2 / "key_seeds" / "s11.png", "new drawing", 150)
+    put(d2 / "key.png", "k", 100)
+    check("drawings made over the render: the key stays", F.refresh_stale_keys(R, cx, P2) == 0)
+
 print("all passed" if ok else "FAILED")
 sys.exit(0 if ok else 1)
