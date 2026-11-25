@@ -1486,7 +1486,7 @@ def stage(cx: Ctx, P: dict, steps: str = "motion,render,draw", workers: int = 2,
             sh = {"stills": str(d / "render"), "frame": "start", "prompt": draw_prompt(cx, e, idx, scene_only=reg), "refs": refs[:10],
                   "out": str(d / "key.png"), "seeds": seeds, "strength": KEY_STRENGTH, "depth": 1.0, "edges": 0.6,
                   "fx": bool(re.search(r"spark|strike|hammer|fire|flame", (f.get("motion") or "").lower())),
-                  "likeness": [f"{w}={x}" for w in who if (x := ref_sheet(cx.refs, w)) and not is_creature(cx.chars.get(w, ""))],
+                  "likeness": likeness_refs(cx, who, d / "render" / "start_expect.json"),
                   "lora": staged_loras(cx, who, d / "render" / "start_expect.json")}
             if sh["fx"]:
                 sh["edges"] = 0.3                 # sparks: weaker edges (keyframe_draw's own fx rule)
@@ -1658,9 +1658,39 @@ def back_ref(cx: "Ctx", e: dict, who: str) -> str | None:
     return None
 
 
+class Figs(dict):
+    """A staged frame's figure boxes by name, found under any spelling of the name (11-25: the staging wrote a
+    title abbreviated, the keyframe plan wrote it out in full; every exact lookup missed, so that person got no
+    regional LoRA, no face pass and no likeness score in any key they shared)."""
+
+    def _k(self, k):
+        if dict.__contains__(self, k) or not isinstance(k, str):
+            return k
+        from tts_reader import video
+        c = video.canon(k)
+        return next((x for x in self if video.canon(x) == c), k)
+
+    def __contains__(self, k):
+        return dict.__contains__(self, self._k(k))
+
+    def __getitem__(self, k):
+        return dict.__getitem__(self, self._k(k))
+
+    def get(self, k, default=None):
+        return dict.get(self, self._k(k), default)
+
+    def name(self, k):
+        """The staging's own spelling of *k* (what <frame>_expect.json calls them), else *k*."""
+        return self._k(k)
+
+
+def fig_boxes(ex: dict) -> "Figs":
+    return Figs({f["who"]: f["bbox"] for f in (ex or {}).get("figures", []) if f.get("bbox")})
+
+
 def _boxes(rd: Path) -> tuple[dict, tuple]:
     ex = json.loads((rd / "start_expect.json").read_text()) if (rd / "start_expect.json").exists() else {}
-    return {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}, tuple(ex.get("size", [832, 448]))
+    return fig_boxes(ex), tuple(ex.get("size", [832, 448]))
 
 
 def _pad(b, W, H, f=0.15):
@@ -2004,6 +2034,13 @@ def lora_fallbacks(cx: "Ctx", P: dict) -> list[dict]:
     return out
 
 
+def likeness_refs(cx: "Ctx", who: list, expect: Path) -> list[str]:
+    """keyframe_draw's likeness refs, 'WHO=sheet', WHO spelled as the staged frame spells them (the scorer finds
+    each figure's crop by that name)."""
+    figs = fig_boxes(json.loads(expect.read_text()) if expect.exists() else {})
+    return [f"{figs.name(w)}={x}" for w in who if (x := ref_sheet(cx.refs, w)) and not is_creature(cx.chars.get(w, ""))]
+
+
 def staged_loras(cx: "Ctx", who: list, expect: Path) -> list[str]:
     """keyframe_draw --lora specs for a staged frame: one person = global; several = each person's LoRA only inside
     their blockout figure box (<frame>_expect.json, padded 15 %), 'PATH=1.0@x0,y0,x1,y1'."""
@@ -2012,7 +2049,7 @@ def staged_loras(cx: "Ctx", who: list, expect: Path) -> list[str]:
         return char_loras(cx, people)
     ex = json.loads(expect.read_text()) if expect.exists() else {}
     W, H = ex.get("size", [1, 1])
-    boxes = {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}
+    boxes = fig_boxes(ex)
     out = []
     for w in people:
         x = char_lora(cx, w)
@@ -3201,7 +3238,7 @@ def talk_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
         img = start_image(cx, e)
         ex = json.loads((d / "render" / "start_expect.json").read_text()) if (d / "render" / "start_expect.json").exists() else {}
         W, H = ex.get("size", Image.open(img).size)
-        figs = {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}
+        figs = fig_boxes(ex)
         r = res.setdefault(e["id"], {"image": img, "flags": []})
         # the over-the-shoulder foreground person is seen from BEHIND: no face checks (age/beard read noise:
         # "Edric reads 40" from the back of his head), only hair, clothes and no face painted on the back
@@ -3351,7 +3388,7 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
         img = start_image(cx, e)
         ex = json.loads((d / "render" / "start_expect.json").read_text()) if (d / "render" / "start_expect.json").exists() else {}
         W, H_ = ex.get("size", Image.open(img).size)[:2]
-        figs = {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}
+        figs = fig_boxes(ex)
         cam = json.loads(Path(e["shot"]).read_text()).get("camera", {}) if e.get("shot") and Path(e["shot"]).exists() else {}
         behind = {cam["ots"][0]} if cam.get("ots") else set()
         r = res.setdefault(e["id"], {"image": img, "flags": [], "people": {}})
@@ -3472,7 +3509,7 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
             # facing PRESERVED: a face the painter added (in the key, not in the still) inside a back-turned figure.
             # (the still's own 3/4 faces are not flags - 10-20 the key-only rule flagged 12 good keys)
             exd = json.loads((rd_ / "start_expect.json").read_text()) if (rd_ / "start_expect.json").exists() else {}
-            bx = {f["who"]: f["bbox"] for f in exd.get("figures", []) if f.get("bbox")}
+            bx = fig_boxes(exd)
             st_ = rd_ / "start_color.png"
             FF = _faces([kp, st_])
             kW, sW = Image.open(kp).size[0], Image.open(st_).size[0]
@@ -3496,7 +3533,7 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
                 hard_ = False                       # blurred foreground back is fine (10-20: 9 false flags on Edric)
                 try:
                     exd = json.loads((cx.OUT / "stage" / e["id"] / "render" / "start_expect.json").read_text())
-                    b = next(f["bbox"] for f in exd["figures"] if f["who"] == w_)
+                    b = fig_boxes(exd)[w_]
                     im_ = Image.open(kp).convert("L")
                     sc_ = im_.size[0] / exd["size"][0]
                     import numpy as _np
@@ -3545,7 +3582,7 @@ def hair_fix(cx: "Ctx", P: dict, bad: dict, seeds: int = 4) -> None:
         refs = [str(x) for x in (ref_sheet(cx.refs, w) for w in who) if x]
         shots.append({"stills": str(d / "render"), "frame": "start", "prompt": draw_prompt(cx, e) + " " + extra,
                       "refs": refs[:10], "out": str(d / f"key_fix{tag}.png"), "seeds": seeds, "seed0": 31 + 50 * len(list(d.glob("key_fix*_seeds"))),
-                      "likeness": [f"{w}={x}" for w in who if (x := ref_sheet(cx.refs, w)) and not is_creature(cx.chars.get(w, ""))],
+                      "likeness": likeness_refs(cx, who, d / "render" / "start_expect.json"),
                       "lora": staged_loras(cx, who, d / "render" / "start_expect.json")})
     lf = cx.OUT / "stage" / f"hair_fix_{time.strftime('%H%M%S')}.json"
     lf.write_text(json.dumps(shots, indent=1))
@@ -3560,7 +3597,7 @@ def hair_fix(cx: "Ctx", P: dict, bad: dict, seeds: int = 4) -> None:
         d = cx.OUT / "stage" / i
         ex = json.loads((d / "render" / "start_expect.json").read_text())
         W, H = ex["size"]
-        figs = {f["who"]: f["bbox"] for f in ex.get("figures", []) if f.get("bbox")}
+        figs = fig_boxes(ex)
         for png in sorted((d).glob(f"key_fix{tag}_seeds/s*.png")):
             for w, L in rr.get("listeners", {}).items():
                 b = figs[w]
