@@ -756,9 +756,26 @@ def step_cut(o, force=False):
             rembg_rgba(src, dst)
 
 
+def used_views(d: Path) -> list:
+    """The cut-out views a figure is shaped and painted from: the front, the back, and each side that passed its check."""
+    return [p for v in VIEWS if (p := d / f"apose_{v}_rgba.png").exists()
+            and (v in ("front", "back") or (d / f"apose_{v}.ok").exists())]
+
+
+def views_newer(d: Path, built: Path) -> list:
+    """The used views made AFTER `built` was (11-24: side views drawn again after a failed measure stayed unused -
+    the shape and the rigged model existed, and every step only asks whether its file is there)."""
+    return [p.name for p in used_views(d) if built.exists() and p.stat().st_mtime > built.stat().st_mtime]
+
+
 def step_shape(o, card, force=False):
     d = Path(o["dir"])
     src, glb = d / "apose_front_rgba.png", d / "shape.glb"
+    newer = views_newer(d, glb)
+    if newer and not force:
+        log(f"{o['key']}: view(s) {newer} are newer than the shape: shaped, painted and rigged again")
+        for f in ("shape.glb", "rigged.blend", "model.blend", "rig.json", "qa.json", "qa.jpg", "front.png"):
+            (d / f).unlink(missing_ok=True)
     if not src.exists() or (glb.exists() and not force):
         return
     fd = gpu_turn(card)
