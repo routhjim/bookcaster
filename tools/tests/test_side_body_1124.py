@@ -25,7 +25,11 @@ check("a turned-away head on a side-on body is no profile", not PC.is_profile(0.
 check("an unmeasured body leaves the head's verdict", PC.is_profile(0.1, None) and not PC.is_profile(None, 0.3))
 src = (HERE.parent / "characters.py").read_text()
 check("the redraw loop measures the drawings", "meas = measure_sides(" in src)
-check("no stand-in: the side is not painted", '"dropped": True' in src and "kept, flagged" not in src)
+check("no stand-in: the side is set aside to be drawn again", '"dropped": True' in src and "kept, flagged" not in src)
+check("a side whose every draw failed is not drawn again", 'apose_{v}.none' in src)
+import characters as C
+pr = C.apose_prompt({"text": "a tall person, wearing a plain coat"}, "Orla", "left", "", "plain. ")
+check("the side prompt turns the body, not only the head", "shoulders" in pr and "hanging out at the sides" not in pr, pr)
 
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)
