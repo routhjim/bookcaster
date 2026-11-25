@@ -7,6 +7,11 @@ Geometry, not a question: the whole-body keypoints' eyes and the ear/nose. In a 
 seen from the side (their horizontal separation is small next to the ear-to-nose distance): ratio = |eye_l.x -
 eye_r.x| / |nose.x - ear.x| (the ear with the better score). Frontal ~0.8-1, three-quarter 0.2-0.6, profile < 0.15.
 "facing" = "left" / "right": the side of the picture the nose points to.
+
+The BODY too (11-24: a "side" drawing with the head in profile on a body facing the front passed, and painted onto
+the model's sides it laid a second front picture over the first - a doubled face, doubled arms): "body" = the
+shoulders' horizontal separation over the shoulder-to-hip height. Front views 0.61-0.79, true side views 0.24-0.42.
+A profile needs both.
 """
 
 from __future__ import annotations
@@ -14,7 +19,20 @@ from __future__ import annotations
 import json
 import sys
 
+BODY_MAX = 0.45                    # 11-24 cast of 17: side views 0.24-0.42, front-facing bodies 0.48-0.79
 PROFILE_MAX = 0.15                 # 10-22 cast: left profiles 0.07-0.12, the (three-quarter) right views 0.20-0.26
+
+
+def body_ratio(k):
+    """Shoulder separation over shoulder-to-hip height (whole-body keypoints 5, 6 = shoulders, 11, 12 = hips);
+    None when the trunk has no height."""
+    torso = abs(float((k[5][1] + k[6][1]) / 2 - (k[11][1] + k[12][1]) / 2))
+    return round(abs(float(k[5][0] - k[6][0])) / torso, 3) if torso > 3 else None
+
+
+def is_profile(ratio, body) -> bool:
+    """Head AND body seen from the side (a body that cannot be measured does not fail the head's verdict)."""
+    return ratio is not None and ratio < PROFILE_MAX and (body is None or body < BODY_MAX)
 
 
 def check(path: str, model=None) -> dict:
@@ -34,7 +52,9 @@ def check(path: str, model=None) -> dict:
     if span < 3:
         return {"ratio": None, "facing": None, "profile": False, "why": "ear on the nose (frontal or unclear)"}
     ratio = abs(float(el[0] - er[0])) / span
-    return {"ratio": round(ratio, 3), "facing": "right" if nose[0] > ear[0] else "left", "profile": ratio < PROFILE_MAX,
+    body = body_ratio(k)
+    return {"ratio": round(ratio, 3), "body": body, "facing": "right" if nose[0] > ear[0] else "left",
+            "profile": is_profile(ratio, body),
             "scores": {"eyes": [round(float(s[1]), 2), round(float(s[2]), 2)], "ears": [round(float(s[3]), 2), round(float(s[4]), 2)]}}
 
 
