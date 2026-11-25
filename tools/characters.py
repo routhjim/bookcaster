@@ -796,7 +796,7 @@ def step_shape(o, card, force=False):
         fd.close()
 
 
-PAINT_VERSION = "visible-only-1022"   # bump when the texture projection changes: older models are re-painted + re-rigged
+PAINT_VERSION = "one-view-1124"       # bump when the texture projection changes: older models are re-painted + re-rigged
 
 
 def step_rig(o, height, force=False):
