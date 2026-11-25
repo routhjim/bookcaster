@@ -97,5 +97,10 @@ near = {"marks": {"Orla": {"at": [-1.0, 4.0]}, "Tam": {"at": [1.0, 4.0]}}, "refe
 b = {"figures": [{"who": w, "kind": "human", "at": list(near["marks"][w]["at"]), "facing": 180.0} for w in ("Orla", "Tam")]}
 check("two who talk within a shared frame stay", SS.gather(b, near, {}, talk=True) == [])
 
+fr = {"f": {"who": ["Mister Vane"], "poses": [{"who": "Mister Vane", "pose": "standing", "box": [0, 0, 1, 1]}]}}
+BP.canon_frames(fr, ["Mr. Vane", "Orla Pike"])
+check("the motion step's frames use the same rule", fr["f"]["who"] == ["Mr. Vane"] and fr["f"]["poses"][0]["who"] == "Mr. Vane", fr)
+check("the motion step applies it", "canon_frames({" in (HERE.parent / "motion_batch.py").read_text())
+
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)
