@@ -158,6 +158,11 @@ class Char:
         # look's number does not (11-24: every dataset picture of a face that matched its photographs was rejected
         # for its age, so no LoRA was trained)
         self.photo = bool(V.face_photos(R, self.name))
+        # their photographs that show the face turned: {view: path} (video.PHOTO_VIEWS, the first of each view)
+        self.turned = {}
+        for f, v in V.photos_by_view(R, self.name):
+            if v != "front":
+                self.turned.setdefault(v, f)
         # facial hair stated in the look: the judge must see the same (a clean-shaven knight was painted
         # bearded in the keys, 10-20)
         d = self.desc.lower()
@@ -562,6 +567,116 @@ def gen_jobs_pose(c: Char, n: int, main_oid, rng: random.Random) -> list[dict]:
     return jobs
 
 
+# A person drawn from photographs, with photographs of their face turned (11-25: a LoRA trained from one front-facing
+# sheet - 40 of 40 pose pictures judged "front", the 5 asked in profile or three-quarter among them - drew a
+# different man whenever the camera was beside him). Their turned views are drawn from the photograph that SHOWS
+# that side, never from the front one, and are a set share of the training pictures.
+SIDE_SHARE = 0.4            # turned-view drawings asked, as a share of the pose drawings
+SIDE_FLOOR = 0.2            # the least share of the training pictures the judge must see in profile
+MIN_KEPT = 12               # a dataset is never cut below what a build needs (build_all)
+TURNS = {"profile": "seen in profile, the face turned fully toward the {side} edge of the picture",
+         "three-quarter": "in three-quarter view, the face turned partly toward the {side} edge of the picture"}
+
+
+def turned_ref(c: Char, kind: str, side: str) -> str | None:
+    """The person's photograph showing their face in this view ("profile" | "three-quarter", turned "left" |
+    "right"), cut out onto grey; the other side's photograph mirrored when only that one exists. None without
+    either: that view is not drawn from a photograph of another."""
+    from PIL import Image, ImageOps
+    src, flip = c.turned.get(f"{kind} {side}"), False
+    if not src:
+        src, flip = c.turned.get(f"{kind} {'right' if side == 'left' else 'left'}"), True
+    if not src:
+        return None
+    p = c.out / "refs" / f"photo_{kind}_{side}.png"
+    if not p.exists():
+        im = Image.open(src).convert("RGB")
+        _save(ImageOps.mirror(im) if flip else im, p)
+    return str(cutout(p, p.with_name(p.stem + "_cut.png")))
+
+
+def turn_plan(turned: dict, n: int) -> list[tuple[str, str]]:
+    """Which (kind, side) each of n turned-view drawings shows: profiles first and twice as often as three-quarter
+    views (the front-facing drawings already lean three-quarter), both sides of each kind in turn. [] when the
+    person has no photograph of their face turned."""
+    kinds = [k for k in ("profile", "three-quarter") if any(v.startswith(k) for v in turned)]
+    if not kinds or n <= 0:
+        return []
+    cycle = [k for k in kinds for _ in range(2 if k == "profile" else 1)]
+    out = []
+    for i in range(n):
+        k = cycle[i % len(cycle)]
+        out.append((k, ("left", "right")[sum(1 for x, _ in out if x == k) % 2]))
+    return out
+
+
+def gen_jobs_side(c: Char, n: int, main_oid, rng: random.Random) -> list:
+    """n pictures of the person with their face turned, each drawn with the photograph of that side as its one
+    reference (the head only, as a close-up's: a second reference came out as a second person, 10-31) and the
+    clothes in words."""
+    places = list((c.look.get("places") or {}).items())
+    jobs = []
+    for k, (kind, side) in enumerate(turn_plan(c.turned, n)):
+        ref = turned_ref(c, kind, side)
+        if not ref:
+            continue
+        oid = list(c.outfits)[k % len(c.outfits)] if main_oid == "*" and c.outfits else c.pick(main_oid, rng)
+        close = rng.random() < 0.6
+        W, H = (1024, 768) if rng.random() < 0.3 else (768, 1024)
+        place, pdesc = rng.choice(places) if places else ("", "")
+        pdesc = re.sub(r"^(\s*(inside|outside)\s*:\s*)+", "", pdesc, flags=re.I)
+        setting = f"in {place}: {pdesc.split(',')[0].rstrip('.')}" if place else "in a plain stone room"
+        light = rng.choice(LIGHTS)
+        what = "a close-up portrait, head and shoulders" if close else "from the waist up, standing"
+        view = TURNS[kind].format(side=side)
+        clothes = f", wearing {c.outfits[oid]['dress'].rstrip('.')}" if oid else ""
+        job = {"id": f"gen_side_{k:03d}", "seed": rng.randrange(1, 10**6), "size": [W, H], "refs": [ref],
+               "prompt": (f"{c.name}, {what}, {view}. {c.name} is {c.text(oid) if oid is None else c.face}{clothes}; "
+                          f"exactly the face, age and hair of the person in image 1, and seen from the same side "
+                          f"as in image 1: the same nose, brow, jaw and hairline in outline. Only this one person "
+                          f"in the picture. The scene is {setting}, {light}. {c.style} {c.period_s}No text, no "
+                          f"lettering, no signature.")}
+        meta = {"src": "pose", "outfit": oid, "framing": f"{what}, {view}", "setting": setting + ", " + light,
+                "photo": ref, "turn": kind}
+        jobs.append((job, meta))
+    return jobs
+
+
+def front_surplus(rows: list[dict], floor: float = SIDE_FLOOR, min_kept: int = MIN_KEPT) -> list:
+    """The ids to leave out of a training set so its profile pictures are at least *floor* of it: the front-facing
+    drawn pictures the least like the person, first. rows = [{"id", "src", "view", "like"}] of the pictures that
+    passed. Never the sheets, never below *min_kept* pictures, and none at all when no profile passed (the set is
+    then front-only, and said so)."""
+    side = sum(1 for r in rows if r.get("view") == "side")
+    if not side:
+        return []
+    cut = len(rows) - max(min_kept, int(side / floor))
+    spare = sorted((r for r in rows if r.get("src") != "sheet" and r.get("view", "front") == "front"),
+                   key=lambda r: r.get("like") or 0)
+    return [r["id"] for r in spare[:max(0, cut)]]
+
+
+def leave_out(data: Path, kept: list, rej: list, ids: list) -> list:
+    """A written training set without these pictures: their files removed, the rest numbered on from 000 (the
+    trainer reads every NNN.png with its NNN.txt), each noted in *rej*. -> the kept rows, renumbered."""
+    if not ids:
+        return kept
+    out = []
+    for k in kept:
+        png, txt = data / f"{k['n']:03d}.png", data / f"{k['n']:03d}.txt"
+        if k["id"] in ids:
+            png.unlink(missing_ok=True)
+            txt.unlink(missing_ok=True)
+            rej.append((k["id"], ["front view over its share (too few in profile)"]))
+            continue
+        n = len(out)
+        if n != k["n"]:
+            png.rename(data / f"{n:03d}.png")
+            txt.rename(data / f"{n:03d}.txt")
+        out.append({**k, "n": n})
+    return out
+
+
 def gen_jobs_mesh(c: Char, model: str | None, motions: list[str], n: int, main_oid, rng: random.Random,
                   strength: tuple) -> list:
     """Render the rigged model (Blender, Workbench) from n cameras, then img2img each through Qwen with the
@@ -789,6 +904,11 @@ def judge(c: Char, cands: list, S: Scorer, ref_heads: dict, q: Path | None = Non
             r["head_px"] = min(head.size)
             r["head_frac"] = round(float(hb[3] - hb[1]), 3)
             r["like"] = round(float(S.embed(head) @ ref_heads["any"]), 4)
+            if cd.get("photo") and Path(cd["photo"]).exists():
+                # a face drawn turned is like the photograph of that side, not like the sheet's front portrait
+                r["like_front"] = r["like"]
+                r["like"] = max(r["like"], round(float(S.embed(head) @ S.embed(
+                    Image.open(cd["photo"]).convert("RGB"))), 4))
             if c.age:
                 r["age"] = _num(S.ask(head, "How old does this person look, judging only by the face and skin? "
                                             "Answer with one number of years."))
@@ -981,7 +1101,14 @@ def select(c: Char, cands: list, J: dict, a) -> list:
         cap = ", ".join(p.strip().rstrip(".") for p in parts if p and p.strip()) + ", " + c.style.split(":")[0]
         (data / f"{n:03d}.txt").write_text(cap)
         kept.append({"n": n, "id": cd["id"], "src": cd["src"], "outfit": oid, "caption": cap,
-                     "like": r.get("like"), "age": r.get("age")})
+                     "like": r.get("like"), "age": r.get("age"), "view": r.get("view", "front")})
+    if c.turned:
+        kept = leave_out(data, kept, rej, front_surplus(kept))
+        side = sum(1 for k in kept if k["view"] == "side")
+        log(f"views: {side} of {len(kept)} in profile (floor {SIDE_FLOOR:.0%})")
+        if side < SIDE_FLOOR * len(kept):
+            log(f"!!! {c.name}: only {side} of {len(kept)} training pictures show the face in profile: seen from "
+                f"the side the keys rely on the 3D model's head")
     (data / "meta.json").write_text(json.dumps({"trigger": c.trigger, "kept": kept, "rejected": rej}, indent=1))
     by = {}
     for k in kept:
@@ -1055,6 +1182,13 @@ def cmd_dataset(a) -> int:
     gen = []
     if a.n_pose:
         gen += gen_jobs_pose(c, a.n_pose, main_oid, rng)
+    if c.kind == "human" and c.turned:
+        n_side = a.n_side if a.n_side is not None else round(SIDE_SHARE * a.n_pose)
+        # (its own stream of random numbers: the pose drawings of a person given side photographs later are the
+        # same pictures as before, so a retry keeps the ones already drawn)
+        side = gen_jobs_side(c, n_side, main_oid, random.Random(a.seed + 1))
+        log(f"{len(side)} drawings of the face turned, from the photographs of {sorted(c.turned)}")
+        gen += side
     # not a creature's (11-01: Vorgrath's rig was built from his old upright sheet; its 7 views stood him on two legs)
     if a.n_mesh and c.kind == "human" and (a.model or any(c.model(o) for o in c.outfits)):
         gen += gen_jobs_mesh(c, a.model, a.motion, a.n_mesh, main_oid, rng, (a.strength_lo, a.strength_hi))
@@ -1507,6 +1641,13 @@ def _same_attempt(c: Char, key: str) -> bool:
         return False
 
 
+def _turned_sig(c: Char) -> list:
+    """The photographs of the face turned, as part of what a LoRA is made from: [] without any, so everyone
+    else's hash is what it was (no retrain); one added or changed is a new training set."""
+    t = getattr(c, "turned", None) or {}
+    return [["turned", SIDE_SHARE, SIDE_FLOOR] + [[v, _fsig(t[v])] for v in sorted(t)]] if t else []
+
+
 def data_hash(c: Char) -> str:
     """What the TRAINING PICTURES are made from (the look, outfits, sheets, models, style) -- not the training
     recipe: a retrain with other steps / resolution reuses the dataset (10-21 research: 15 min saved per retrain)."""
@@ -1523,7 +1664,7 @@ def hash_current(c: "Char", h: str | None, steps: int | None = None, shape_h: st
 
 def shape_hash(c: "Char", steps: int | None) -> str:
     """input_hash with each outfit's model SHAPE (shape.glb beside it) in place of the painted model file."""
-    parts = [TOOL_VERSION, steps, c.desc, c.style, c.kind]
+    parts = [TOOL_VERSION, steps, c.desc, c.style, c.kind] + _turned_sig(c)
     for oid, row in c.outfits.items():
         m = c.model(oid)
         shp = str(Path(m).parent / "shape.glb") if m else None
@@ -1555,7 +1696,7 @@ def stamp_shape(book) -> list:
 def input_hash(c: Char, steps: int | None) -> str:
     """Everything a LoRA is made from: the look, every outfit's words, sheet and model, the style, the
     recipe. A changed look/outfit/sheet/model -> a new hash -> rebuilt; otherwise reused."""
-    parts = [TOOL_VERSION, steps, c.desc, c.style, c.kind]
+    parts = [TOOL_VERSION, steps, c.desc, c.style, c.kind] + _turned_sig(c)
     for oid, row in c.outfits.items():
         parts += [oid, row.get("dress"), _fsig(c.sheet(oid)), _fsig(c.model(oid))]
     return hashlib.sha1(json.dumps(parts, default=str).encode()).hexdigest()[:16]
@@ -1789,6 +1930,9 @@ def main(argv=None) -> int:
                                                    "'*' = every outfit equally)")
     d.add_argument("--n-pose", type=int, default=40)
     d.add_argument("--n-mesh", type=int, default=0)
+    d.add_argument("--n-side", type=int, default=None,
+                   help="drawings of the face turned, for a person with photographs from the side "
+                        "(default: 0.4 of --n-pose)")
     d.add_argument("--model", help="rigged.blend of the character (default: stage/characters/index.json's, "
                                    "per outfit)")
     d.add_argument("--motion", nargs="*", default=[], help="RigMotion bases on that rig (pose variety)")
