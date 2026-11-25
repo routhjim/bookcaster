@@ -796,7 +796,7 @@ def step_shape(o, card, force=False):
         fd.close()
 
 
-PAINT_VERSION = "arms-front-1125"     # bump when the texture projection changes: older models are re-painted + re-rigged
+PAINT_VERSION = "clean-rim-1125"      # bump when the texture projection changes: older models are re-painted + re-rigged
 
 
 def step_rig(o, height, force=False):
@@ -1061,8 +1061,29 @@ def step_qa(name, o, ent, force=False):
         if res["side"].get("pass") is False:
             res.setdefault("blocking", []).append(f"head smeared from the side: {res['side'].get('bad')}")
             log(f"!!! {o['key']}: the model's head reads smeared/stretched from {res['side'].get('bad')}")
+    pq = paint_qa(d, o["key"])
+    res.setdefault("blocking", []).extend(pq.pop("blocking", [])) if pq.get("blocking") else None
+    res.update(pq)
     (d / "qa.json").write_text(json.dumps(res, indent=1, default=str))
     sheet_qa(d, name, o, t_png, p_png, res)
+
+
+def paint_qa(d: Path, key: str = "") -> dict:
+    """The paint step's own measure (paint.json, tools/paint_weights.py off_drawing): the share of the figure whose
+    colour no drawing shows and that was carried in from the nearest part a drawing does show (a shoulder's top,
+    the crown of the head). Above its bar the shape and the drawings do not agree: BLOCKING, as a smeared head is."""
+    pj = Path(d) / "paint.json"
+    if not pj.exists():
+        return {}
+    try:
+        pq = json.loads(pj.read_text())
+    except ValueError:
+        return {}
+    out = {"paint": pq}
+    if float(pq.get("off_drawing", 0.0)) > float(pq.get("bar", 1.0)):
+        out["blocking"] = [f"{pq['off_drawing']:.0%} of the figure is painted from outside its drawings"]
+        log(f"!!! {key}: {pq['off_drawing']:.0%} of the model's surface is not shown by any drawing")
+    return out
 
 
 def side_qa(d, name, rb, h) -> dict:
