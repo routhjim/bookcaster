@@ -155,6 +155,37 @@ VERB_POSES = [
 DEPTHS = {"close-up": 2.0, "medium close-up": 2.8, "medium": 4.2, "wide": 7.5, "low angle": 3.6, "high angle": 6.0}
 
 
+def _standing() -> str:
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) if str(
+            Path(__file__).resolve().parent.parent) not in sys.path else None
+        from tts_reader import animate
+        return animate.MOTION
+    except Exception:                                # staging still runs where the package is absent
+        return ""
+
+
+def story_text(text: str) -> str:
+    """A frame's motion text without the standing instructions every clip is given for the video model. Those
+    are not the story (11-24: they name a held item as an example, so everyone in a chapter with no such item
+    was posed holding one)."""
+    t, st = text or "", _standing()
+    if st and st in t:
+        return t.replace(st, " ")
+    for sent in re.split(r"(?<=[.;])\s+", st):      # an older or re-spaced copy: sentence by sentence
+        if len(sent) > 20:
+            t = t.replace(sent, " ")
+    return re.sub(r"\s{2,}", " ", t).strip()
+
+
+def story_frame(frame: dict) -> dict:
+    """The frame as staging reads it: its motion text is the story's part only."""
+    if not frame or not frame.get("motion"):
+        return frame
+    m = story_text(frame["motion"])
+    return frame if m == frame["motion"] else {**frame, "motion": m}
+
+
 def verb_pose(text: str) -> tuple[str, str | None]:
     """(pose, the rule that matched) from the sentences about one person; ("standing", None) if none."""
     t = (text or "").lower()
@@ -259,6 +290,7 @@ def frame_to_shot(frame: dict, creatures: set | None = None, llm: bool = False, 
             ip = CH.vdir_of(bk) / "stage" / "characters" / "index.json"
         cast = json.loads(ip.read_text()) if ip and ip.exists() else {}
     _CAST = cast or {}
+    frame = story_frame(frame)
     creatures = {c.lower() for c in (creatures or set())} | {
         n.lower() for n, e in (_CAST.get("characters") or {}).items() if e.get("kind") == "creature"}
     prompt = frame.get("prompt", "")

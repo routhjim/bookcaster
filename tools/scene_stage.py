@@ -65,7 +65,7 @@ def load(book, chapter):
     vd = CH.vdir_of(book)
     cd = vd / chapter
     man = json.loads((cd / "anim" / "manifest.json").read_text())
-    kf = {f["shot"]: f for f in json.loads((cd / "anim" / "keyframes.json").read_text())["frames"]}
+    kf = {f["shot"]: BP.story_frame(f) for f in json.loads((cd / "anim" / "keyframes.json").read_text())["frames"]}
     plan = json.loads((cd / "plan.json").read_text())
     tl = json.loads((vd.parent / f"{chapter}.timeline.json").read_text())
     cast_p = vd / "stage" / "characters" / "index.json"
@@ -150,15 +150,44 @@ def canon_names(frames, cast):
     """Timeline / keyframe names -> the cast's names ("Maren", "Princess" -> "Princess Maren")."""
     names = list((cast.get("characters") or {}))
 
+    import registry as _RG
+    keys = {}
+    for n in names:
+        keys.setdefault(_RG.person_key(n), n)
+
     def canon(w):
         if not w or w in names:
             return w
+        if _RG.person_key(w) in keys:                 # a title as it is spoken is the same person (11-24)
+            return keys[_RG.person_key(w)]
         hits = [n for n in names if w.lower() in n.lower().split() or n.lower() in w.lower()]
         return hits[0] if len(hits) == 1 else w
+    def part(v):                                      # "Name:joint" keeps its part
+        if not isinstance(v, str):
+            return v
+        n, sep, rest = v.partition(":")
+        return canon(n) + sep + rest
     for f in frames.values():
         f["who"] = list(dict.fromkeys(canon(w) for w in (f.get("who") or [])))
         if f.get("speaker"):
             f["speaker"] = canon(f["speaker"])
+        # every other place a frame names a person (11-24: its pose boxes kept the spoken spelling, so the figure
+        # they placed was nobody in the cast: no model, no mark)
+        if isinstance(f.get("present"), list):
+            f["present"] = list(dict.fromkeys(canon(w) for w in f["present"]))
+        for p_ in f.get("poses") or []:
+            if isinstance(p_, dict) and p_.get("who"):
+                p_["who"] = canon(p_["who"])
+        for a_ in f.get("acts") or []:
+            if isinstance(a_, dict):
+                for k in ("who", "target", "against", "to", "from"):
+                    if a_.get(k):
+                        a_[k] = part(a_[k])
+        if isinstance(f.get("beats"), list):
+            f["beats"] = [part(b) for b in f["beats"]]
+        for k in ("pose_hint", "attach_hint", "dress"):
+            if isinstance(f.get(k), dict):
+                f[k] = {canon(w): v for w, v in f[k].items()}
 
 
 def rehome(frames, order=None):
@@ -512,13 +541,14 @@ def camera_for(m, frame, base, scene):
             cam.update(framing="medium close-up", target=[f"{spk}:head"])
             return cam
         listeners = [w for w in humans if w != spk]
-        def _gap(a, b):
-            pa, pb = scene["marks"].get(a, {}).get("at"), scene["marks"].get(b, {}).get("at")
+        def _gap(a, b):                                # where they stand in THIS moment (gathered or on marks)
+            at_ = {f["who"]: f.get("at") for f in base["figures"]}
+            pa, pb = at_.get(a) or scene["marks"].get(a, {}).get("at"), at_.get(b) or scene["marks"].get(b, {}).get("at")
             return float(np.hypot(pa[0] - pb[0], pa[1] - pb[1])) if pa and pb else 99.0
         # an over-the-shoulder needs the pair CLOSE (the listener's shoulder in frame with the speaker's face
         # big enough); farther apart -> a single on the speaker
         if spk in who and len(listeners) == 1 and fr != "close-up" and spk in scene["marks"] and \
-                listeners[0] in scene["marks"] and _gap(listeners[0], spk) <= 2.2:
+                listeners[0] in scene["marks"] and _gap(listeners[0], spk) <= OTS_GAP:
             cam = {"ots": [listeners[0], spk], "line": pair_line(scene, listeners[0], spk), "lens": 50}
         elif spk in who:
             cam.update(framing="medium close-up" if fr != "close-up" else "close-up", target=spk)
@@ -664,6 +694,55 @@ def confront_rule(shot, frame):
             f["facing"] = min(hu, key=lambda g: np.linalg.norm(np.asarray(g.get("at", [0, 0]), float) - me))["who"]
 
 
+TALK_GAP = 1.1                                     # metres between people who stand together
+OTS_GAP = 2.2                                      # farther apart, a speaker and a listener share no frame
+
+
+def gather(base, scene, frame, talk: bool = False) -> list:
+    """The people of ONE moment stand together (11-24: a scene of many people gives each a mark along one line,
+    so two who talk or dance in a moment stood a room apart with the absent ones' marks between them; the camera
+    could hold neither). When an absent person's mark lies between two who are present, those present close up:
+    in their scene order (nobody changes side), TALK_GAP apart, about the centre of the scene's marks; a pair
+    turns to each other. Two who TALK to each other from farther than a shared frame holds (OTS_GAP) close up the
+    same way about the point midway between them. People held by a prop, an act or another figure keep their
+    marks. -> who moved."""
+    marks = scene.get("marks") or {}
+    figs = [f for f in base["figures"] if f["who"] in marks and f.get("kind", "human") != "creature"
+            and not f.get("attach")]
+    if len(figs) < 2 or frame.get("acts"):
+        return []
+    pts = np.array([list(mk["at"])[:2] for mk in marks.values()], float)
+    cen = pts.mean(axis=0)
+    d = pts[:, None, :] - pts[None, :, :]
+    i, j = np.unravel_index(np.argmax((d ** 2).sum(-1)), d.shape[:2])
+    line = pts[j] - pts[i]
+    if float(np.linalg.norm(line)) < 1e-6:
+        return []
+    line = line / np.linalg.norm(line)
+    rc = scene.get("reference_camera") or {}
+    fw = np.asarray(rc.get("look", [0, 5, 0])[:2], float) - np.asarray(rc.get("pos", [0, 0, 0])[:2], float)
+    if float(np.dot(line, [fw[1], -fw[0]])) < 0:      # left to right as the scene's reference camera sees it
+        line = -line
+    x = lambda w: float(np.dot(np.asarray(list(marks[w]["at"])[:2], float) - cen, line))
+    figs.sort(key=lambda f: x(f["who"]))
+    here = {f["who"] for f in base["figures"]}
+    lo, hi = x(figs[0]["who"]), x(figs[-1]["who"])
+    if not any(lo < x(w) < hi for w in marks if w not in here):
+        apart = float(np.linalg.norm(np.asarray(figs[0]["at"][:2], float) - np.asarray(figs[-1]["at"][:2], float)))
+        if not (talk and len(figs) == 2 and len(here) == 2 and apart > OTS_GAP):
+            return []
+        cen = (np.asarray(figs[0]["at"][:2], float) + np.asarray(figs[-1]["at"][:2], float)) / 2
+    n = len(figs)
+    for k, f in enumerate(figs):
+        at = cen + line * (k - (n - 1) / 2) * TALK_GAP
+        f["at"] = [round(float(at[0]), 3), round(float(at[1]), 3)] + list(f["at"][2:])
+    if n == 2:
+        for f, g in ((figs[0], figs[1]), (figs[1], figs[0])):
+            if not isinstance(f.get("facing"), str):
+                f["facing"] = g["who"]
+    return [f["who"] for f in figs]
+
+
 def shot_for(m, frame, scene, cast, chapter):
     import interaction as IA
     IA.carry_hints(frame)                          # an interaction program's carries attach before the placing
@@ -690,6 +769,9 @@ def shot_for(m, frame, scene, cast, chapter):
                 if g["who"] == ah["to"] and frame.get("pose_hint", {}).get(ah["to"]):
                     g["pose"] = frame["pose_hint"][ah["to"]]
                     g.setdefault("z", 3.5)
+    moved = gather(base, scene, frame, talk=m["kind"] == "talk")
+    if moved:
+        base.setdefault("plan_notes", {})["gathered"] = moved
     present = {f["who"] for f in base["figures"]}
     if m["kind"] == "talk":                        # the speaker faces whoever they talk to
         spk = frame.get("speaker")
@@ -1495,6 +1577,7 @@ def main(argv=None) -> int:
             sys.stderr.write(f"{m['id']}: {ln} (scene {sc_['id']})\n")
         # (who is IN each picture is the plan review's call, moment by moment against the text: a scene's "present"
         # list is too coarse - "Wide shot of the empty stone hall" would have got the King, 10-22)
+    canon_names(frames, cast)                         # the scene's own spellings of who is present, too (11-24)
     for mid, was, now in rehome(frames, [m["id"] for m in sorted(moments, key=lambda m: m["t"])]):
         sys.stderr.write(f"{mid}: where {was!r} -> {now!r} (its fixed props live there)\n")
     scenes = scenes_of(moments, frames)
