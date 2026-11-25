@@ -292,7 +292,7 @@ def build(frame):
                 o["layer"] = lay
         if lay == "creature" and mo is not None and mo.type == "MESH":
             _creature_light(mo, float(frame.get("exposure", 0.85)))
-        if m.get("who") and not m.get("static") and not m.get("template"):   # the posed hands (humans)
+        if m.get("who") and not m.get("static") and not m.get("template") and lay != "set":   # the posed hands (humans)
             # THIS model's rig (11-24: the last armature by name was another person's whenever two stood in a shot,
             # so the hand check measured one person's hands against the other's solved wrists)
             arm = (_MODELS.get((m["blend"], m.get("who"))) or {}).get("rig") or \

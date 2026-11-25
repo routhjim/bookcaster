@@ -1086,7 +1086,8 @@ def run(shot, out_dir, size=(1536, 864), samples=16, blend=False, camera_from=No
               "depth": os.path.join(out_dir, f"{name}_depth.npy")}
         if blend:
             fr["blend"] = os.path.join(out_dir, f"{name}.blend")
-        models = info.get("_models")
+        import crowd as _CR                            # the scene's unnamed people, part of the set (11-25)
+        models = (info.get("_models") or []) + _CR.models(shot, cam["pos"])
         if models:
             fr["models"] = models
         if (shot.get("set") or {}).get("world"):        # a HY-World set (mesh) instead of a primitive room
@@ -1137,6 +1138,8 @@ def run(shot, out_dir, size=(1536, 864), samples=16, blend=False, camera_from=No
         if hj["frame"] not in [nm for nm, *_ in staged]:
             continue                                    # a close-up frame
         info = next(inf for nm, _, _, _, inf in staged if nm == hj["frame"])
+        if hj["who"] not in info:
+            continue                                    # a guest of the set (tools/crowd.py): nothing solved on it
         J = info[hj["who"]]["joints"]
         mdl = next(m for m in info["_models"] if m.get("who") == hj["who"])
         for s_, (h_, t_) in hj["hands"].items():

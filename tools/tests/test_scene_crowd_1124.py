@@ -23,6 +23,15 @@ check("another scene has none", R.scene_crowd(F, "a6") == "")
 check("an unknown moment has none", R.scene_crowd(F, "zz") == "")
 src = (HERE.parent / "remake_chapter.py").read_text()
 check("the key prompt puts them far behind the named people", "in the foreground, each appearing once" in src and "Far behind" in src)
-check("a talking single stays clean", 'crowd = ""                                # the clean single stays clean' in src)
+check("a talking single stays clean unless its still shows the guests", "if not shot_guests(e):" in src
+      and '"alone in the foreground" if crowd else "the only person in the picture"' in src)
+import json, tempfile
+with tempfile.TemporaryDirectory() as td:
+    a_, b_ = Path(td) / "a.json", Path(td) / "b.json"
+    a_.write_text(json.dumps({"figures": [], "crowd": [{"who": "guest 1 #0"}]}))
+    b_.write_text(json.dumps({"figures": []}))
+    check("a shot with guests", R.shot_guests({"shot": str(a_)}))
+    check("a shot without", not R.shot_guests({"shot": str(b_)}))
+    check("no shot file", not R.shot_guests({"shot": str(Path(td) / "none.json")}) and not R.shot_guests({}))
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)

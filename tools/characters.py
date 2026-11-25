@@ -1291,7 +1291,91 @@ def creature_build(idx, vd, only=None, kind="composite", model=None, dry_run=Fal
     return done
 
 
+def extras(book: str, where: str, card: str = "any", seeds: int = 2) -> dict:
+    """The plain guests of a place (tools/crowd.py: the unnamed people behind a scene's cast): a sheet each from
+    crowd.looks' words, then the cast's own build steps (A-pose views, shape, paint, rig) into
+    stage/extras/<place>__guestN/. Every step is exists-gated, as the cast's. They stand far behind and are not
+    held for review; each gets the cast's QA sheet (qa.jpg) to look at. -> the place's entry of stage/extras/index.json"""
+    import crowd as CR
+    import registry as RG
+    from tts_reader import video as V
+    vd = vdir_of(book)
+    root = vd / "stage" / "extras"
+    root.mkdir(parents=True, exist_ok=True)
+    R = RG.at(vd)
+    rstyle = R.ref_style() if R is not None else RG.PHOTO_STYLE
+    style = figure_style(vd)
+    period = V.period_of(str(vd))
+    dstyle = style + V.period_line(str(vd)).strip() + " " if period else style
+    entries, sheets = [], []
+    for g in CR.looks(where, period):
+        d = root / g["key"]
+        d.mkdir(exist_ok=True)
+        o = {"key": g["key"], "id": None, "dir": str(d), "sheet": str(d / "sheet.png"), "text": g["desc"],
+             "slug": g["key"], "who": g["who"], "kind": g["kind"], "height": g["height"]}
+        sheets.append({"id": f"{g['key']}_sheet", "prompt": V.sheet_prompt(g["desc"], rstyle), "seed": 3,
+                       "path": o["sheet"], "size": [1280, 896]})
+        entries.append((g["who"], o))
+    cards = ["05", "65"] if card == "any" else [card]
+    wd = vd / "stage" / "characters" / "_qwen"
+    wd.mkdir(parents=True, exist_ok=True)
+    run_qwen(sheets, wd, cards[0])
+    entries = [(n, o) for n, o in entries if Path(o["sheet"]).exists()]
+    halves = [entries[i::len(cards)] for i in range(len(cards))]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(len(cards)) as ex:
+        list(ex.map(lambda hc: step_draw(hc[0], vd, hc[1], seeds, dstyle), [(h, c) for h, c in zip(halves, cards) if h]))
+    if HEAD_HD:
+        for c_, h_ in zip(cards, halves):
+            if h_:
+                step_head_detail(h_, c_, dstyle)
+    for n, o in entries:
+        step_cut(o)
+    import queue
+    q = queue.Queue()
+    for n, o in entries:
+        q.put((n, o))
+
+    def body_worker(c):
+        while True:
+            try:
+                n, o = q.get_nowait()
+            except queue.Empty:
+                return
+            step_shape(o, c)
+            step_rig(o, o["height"])
+    with ThreadPoolExecutor(len(cards)) as ex:
+        list(ex.map(body_worker, cards))
+    people = []
+    for n, o in entries:
+        rb = Path(o["dir"]) / "rigged.blend"
+        if not rb.exists():
+            log(f"!!! {o['key']}: no model (this guest is left out)")
+            continue
+        try:
+            step_qa(n, o, {"height": o["height"], "kind": "human"})
+        except Exception as e:                           # noqa: BLE001 - the sheet is to look at, not a gate
+            log(f"{o['key']}: QA sheet failed: {e}")
+        people.append({"who": n, "key": o["key"], "kind": o["kind"], "height": o["height"], "model": str(rb)})
+    ip = Path(CR.index_path(vd))
+    idx = json.loads(ip.read_text()) if ip.exists() else {}
+    idx[CR.slug(where)] = {"where": where, "people": people}
+    ip.write_text(json.dumps(idx, indent=1))
+    log(f"extras: {len(people)} guest model(s) for {where!r}")
+    return idx[CR.slug(where)]
+
+
 def main(argv=None) -> int:
+    if (argv or sys.argv[1:])[:1] == ["extras"]:
+        ap = argparse.ArgumentParser()
+        ap.add_argument("cmd")
+        ap.add_argument("book")
+        ap.add_argument("--place", required=True)
+        ap.add_argument("--card", default="any")
+        ap.add_argument("--seeds", type=int, default=2)
+        a = ap.parse_args(argv)
+        print(json.dumps(extras(a.book, a.place, a.card, a.seeds)))
+        return 0
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["plan", "build", "qa", "sheet", "creature-sheet", "creature-build"])
     ap.add_argument("--kind", default="composite", choices=["composite", "import"])
