@@ -956,6 +956,9 @@ def _plan_draw(book, f, r, refs, man, work, log, shot_flow: bool = False) -> dic
 FAILED_BEFORE = "failed before on these very inputs: not tried again until its look or sheet changes"
 
 
+PICK_AGAIN = "its checkpoints were never compared (picked again, no training)"
+
+
 def lora_todo(book, only=None) -> dict:
     """The cast (look.json characters, creatures included) whose LoRA is missing -> {name: why}. charlora's own
     input hash decides a retrain when the look/refs change; this is the cheap plan-time listing."""
@@ -993,6 +996,8 @@ def lora_todo(book, only=None) -> dict:
             prev = bjd.get("hash")
             if prev and not L.hash_current(L.Char(str(book), n), prev, None, bjd.get("shape_hash")):
                 out[n] = "stale (its look, sheet or model changed)"
+            elif L.pick_stale(d.parent):       # trained, but the best checkpoint was chosen from an older LoRA's
+                out[n] = PICK_AGAIN            # test pictures: charlora picks again, without training
         except Exception as exc:                          # noqa: BLE001 - the listing must not stop the job
             out[n] = f"unknown ({type(exc).__name__}: {exc})"
     return out
