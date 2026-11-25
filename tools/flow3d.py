@@ -341,6 +341,71 @@ def check_sheets(plan, style, refs, log=print, tries: int = 2) -> dict:
     return fails
 
 
+def _place_verdicts(jobs, per) -> dict:
+    """What the vision judge names in each place picture that is out of its period. -> {job id: [things]}"""
+    import remake_chapter as R
+    ask = (f"This picture should show a place in {per}. List the things in it that could not have existed then "
+           f"(look at what is fitted to the walls, floor and ceiling, the lighting, the heating, any writing). "
+           f"Answer with a short comma-separated list, or the one word none.")
+    ans = R.vl_batch([{"id": j["id"], "image": j["path"], "ask": {"modern": ask}} for j in jobs])
+    out = {}
+    for j in jobs:
+        a = str((ans.get(j["id"]) or {}).get("modern", "")).strip().strip(".").lower()
+        things = [t.strip() for t in re.split(r"[,;\n]", a) if t.strip()]
+        if things and not re.match(r"(none|nothing|no)\b", things[0]):
+            out[j["id"]] = things[:6]
+    return out
+
+
+def check_places(plan, style, refs, log=print, tries: int = 2) -> dict:
+    """The period at the source for PLACES (11-24: a room of two hundred years ago came out with today's fittings
+    under its windows, and the set built from the picture kept them): when the book has a period, the judge lists
+    what in each place picture is out of it; such a picture is redrawn in place with a new seed and those things
+    named as absent, up to `tries` times, the attempt with the fewest kept. A picture is judged once (by its
+    content: refs/place_checks.json), so a place whose set is built is not redrawn again.
+    -> {job id: things still out of period}"""
+    import hashlib
+    from tts_reader import video
+    per = video.period_of(str(Path(refs).parent))
+    if not per:
+        return {}
+    jobs = [j for j in video.reference_jobs(plan, style, refs) if j["size"] == [1024, 576] and Path(j["path"]).exists()]
+    memo_p = Path(refs) / "place_checks.json"
+    try:
+        memo = json.loads(memo_p.read_text())
+    except (OSError, ValueError):
+        memo = {}
+    sig = lambda j: hashlib.sha1(Path(j["path"]).read_bytes()).hexdigest()[:16]
+    jobs = [j for j in jobs if (memo.get(j["id"]) or {}).get("sig") != sig(j)]
+    if not jobs:
+        return {i: v["out"] for i, v in memo.items() if v.get("out")}
+    fails = _place_verdicts(jobs, per)
+    hist = {j["id"]: [(len(fails.get(j["id"], [])), Path(j["path"]).read_bytes(), fails.get(j["id"], []))] for j in jobs}
+    for k in range(1, tries + 1):
+        redo = [{**j, "seed": j["seed"] + 101 * k,
+                 "prompt": j["prompt"] + " IMPORTANT: the picture shows none of these: " + ", ".join(fails[j["id"]]) + "."}
+                for j in jobs if j["id"] in fails]
+        if not redo:
+            break
+        _log(f"plan: place check: {len(redo)} place picture(s) redrawn (try {k}): {fails}", log)
+        for j in redo:
+            Path(j["path"]).unlink(missing_ok=True)
+        video.draw_jobs(redo, refs, log)
+        for j in redo:
+            if not Path(j["path"]).exists():      # a failed redraw: the previous attempt back
+                Path(j["path"]).write_bytes(hist[j["id"]][-1][1])
+        now = _place_verdicts(redo, per)
+        for j in redo:
+            hist[j["id"]].append((len(now.get(j["id"], [])), Path(j["path"]).read_bytes(), now.get(j["id"], [])))
+        fails = now
+    for j in jobs:                                # the best attempt stays in place
+        best = min(hist[j["id"]], key=lambda t: t[0])
+        Path(j["path"]).write_bytes(best[1])
+        memo[j["id"]] = {"sig": sig(j), "out": best[2], "tries": len(hist[j["id"]]) - 1}
+    memo_p.write_text(json.dumps(memo, indent=1))
+    return {i: v["out"] for i, v in memo.items() if v.get("out")}
+
+
 LOOK_SEX = (("man", re.compile(r"^\W*(?:an?\s+)?(?:\w+\s+){0,2}(man|boy|gentleman|youth|king|prince|lord)\b", re.I)),
             ("woman", re.compile(r"^\W*(?:an?\s+)?(?:\w+\s+){0,2}(woman|girl|lady|queen|princess)\b", re.I)))
 
@@ -833,6 +898,9 @@ def _plan_draw(book, f, r, refs, man, work, log, shot_flow: bool = False) -> dic
     bad = check_sheets(r["plan"], st, refs, log)
     if bad:
         _log(f"!!! plan: {len(bad)} sheet(s) still fail after their redraws (refs/sheet_checks.json): {bad}", log)
+    out_ = check_places(r["plan"], st, refs, log)
+    if out_:
+        _log(f"!!! plan: {len(out_)} place picture(s) still show things out of period (refs/place_checks.json): {out_}", log)
     _log("plan: the chapter's still pictures (the stretches between moments)", log)
     # the stills' picture check asks the language model (10-22: it was stopped for the sheet judge's memory, so
     # every still went unchecked - "picture check skipped"): up again for the stills only, then down
