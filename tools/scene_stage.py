@@ -704,6 +704,21 @@ def gather(base, scene, frame, talk: bool = False) -> list:
     return [f["who"] for f in figs]
 
 
+def path_blocked(shot, path, view=None) -> bool:
+    """A camera move any of whose points has the set between it and what it looks at (11-25: a pull-back began
+    behind a pier of the room; the whole clip was the pier's back). view: the set's view (tests); else
+    motion_camera.SetView(shot). No measured set: nothing to test."""
+    if view is None:
+        try:
+            import motion_camera as MC
+            view = MC.SetView(shot)
+        except Exception:                           # noqa: BLE001
+            return False
+    if getattr(view, "dep", None) is None:
+        return False
+    return any(view.blocks(np.asarray(k["pos"], float), np.asarray(k["look"], float)) for k in path or [])
+
+
 def shot_for(m, frame, scene, cast, chapter):
     import interaction as IA
     IA.carry_hints(frame)                          # an interaction program's carries attach before the placing
@@ -757,8 +772,12 @@ def shot_for(m, frame, scene, cast, chapter):
     mv = move_of(frame) if m["kind"] == "action" else None
     if mv:
         try:
-            base["camera"]["path"] = path_for(base, mv, n)
-            base["camera"]["move"] = mv
+            path = path_for(base, mv, n)
+            if path_blocked(base, path):           # (the renderer moves a STILL camera clear of the set, not a path)
+                base.setdefault("plan_notes", {})["camera_path_blocked"] = f"{mv}: the set stands in its view; a still camera"
+            else:
+                base["camera"]["path"] = path
+                base["camera"]["move"] = mv
         except Exception as e:                     # noqa: BLE001 - a path is a bonus; static is valid
             base.setdefault("plan_notes", {})["camera_path_error"] = str(e)[:200]
     base["scene"] = {"id": scene["id"], "axis": scene["axis"], "frames": n}
