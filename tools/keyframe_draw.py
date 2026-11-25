@@ -99,6 +99,58 @@ _DEF = {"frame": "start", "refs": [], "seeds": 4, "seed0": 7, "strength": 0.85, 
         "fx": False, "pose": 0.0, "lora": [], "likeness": [], "mask": None, "strength_bg": None}
 
 
+SIG_BYTES = 32 << 20     # a file up to this size is named by its contents, a larger one (a LoRA) by size + time
+
+
+def _file_stamp(p: str) -> str:
+    import hashlib
+    st = os.stat(p)
+    if st.st_size > SIG_BYTES:
+        return f"{st.st_size}:{st.st_mtime_ns}"
+    with open(p, "rb") as f:
+        return hashlib.sha1(f.read()).hexdigest()
+
+
+def job_sig(job: dict) -> str:
+    """What a seed's drawing was made from: the whole request (prompt, seed, size, strengths, LoRAs) and the
+    contents of every picture it names (the still, the controls, the mask, the references). Its id and its own
+    path are not part of it."""
+    import hashlib
+
+    def walk(v):
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in sorted(v.items())}
+        if isinstance(v, (list, tuple)):
+            return [walk(x) for x in v]
+        if isinstance(v, str) and os.path.isabs(v) and os.path.isfile(v):
+            return ["file", _file_stamp(v)]
+        return v
+    body = walk({k: v for k, v in job.items() if k not in ("id", "path")})
+    return hashlib.sha1(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def keep_or_drop(job: dict) -> bool:
+    """True when the seed's drawing on disk was made from this very request (a stopped run picks up where it was).
+    Otherwise the old drawing and what was measured on it are removed, so it is drawn again (11-25: a drawing was
+    kept whenever its file existed - after a new still, light, model or LoRA every "redrawn" key was the old
+    drawing, scored and pasted again). The request's signature is written beside it either way."""
+    path = job["path"]
+    sf = os.path.splitext(path)[0] + ".sig"
+    sig = job_sig(job)
+    old = open(sf).read().strip() if os.path.exists(sf) else None
+    if os.path.exists(path) and old == sig:
+        return True
+    wdir, stem = os.path.dirname(path), os.path.splitext(os.path.basename(path))[0]
+    for f in os.listdir(wdir) if os.path.isdir(wdir) else []:
+        base = os.path.splitext(f)[0]
+        if f == os.path.basename(path) or base == stem + "_likeness" or base.endswith("_" + stem + "_check") \
+                or base == stem + "_check":
+            os.remove(os.path.join(wdir, f))
+    with open(sf, "w") as f:
+        f.write(sig)
+    return False
+
+
 def build(spec):
     """One shot's Qwen jobs (N seeds) + the context finish() needs."""
     a = dict(_DEF, **{k: v for k, v in spec.items() if v is not None})
@@ -134,6 +186,8 @@ def build(spec):
                               **({"mask": a["mask"], "strength_bg": a["strength_bg"]} if a.get("mask") and a.get("strength_bg") else {})}})
         if a["lora"]:
             jobs[-1]["loras"] = [_lora_spec(l) for l in a["lora"]]
+    for j in jobs:
+        keep_or_drop(j)
     return jobs, {"a": a, "color": color, "expect": expect, "out": out, "stem": stem, "wdir": wdir, "edges_scale": es}
 
 
