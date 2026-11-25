@@ -1220,7 +1220,8 @@ def _store_photos(d: Path, files: list[str], first: int, log=print) -> None:
     """The photographs cut to the head as d/photo<first>.png ..., each one's view (front, three-quarter, profile,
     and the side) asked once and kept in d/views.json - for these and any stored before the views were asked."""
     from PIL import Image, ImageOps
-    from . import video
+    from . import animate, video
+    animate.igpu("strata", log)                  # the questions below need the language model (as the plan starts it)
     for i, f in enumerate(files, first):
         im = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
         im.thumbnail((1024, 1024))
