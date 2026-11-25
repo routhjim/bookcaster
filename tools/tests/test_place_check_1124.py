@@ -49,5 +49,15 @@ with tempfile.TemporaryDirectory() as td:
     check("the best attempt stays and is reported", hall.read_bytes() in (b"hall0", b"hall2") and len(out["ref_hall"]) == 2, out)
     video.reference_jobs = video_jobs
 
+# before such fittings existed each is asked about; a yes counts even when the list said none
+seen = []
+R.vl_batch = lambda items: (seen.extend(items), {i["id"]: {"modern": "none", "heating radiators": "Yes."} for i in items})[1]
+v = F._place_verdicts([{"id": "a", "path": "x"}], "a made-up age, around the year 300")
+check("a fitting answered yes fails the picture", v == {"a": ["heating radiators"]}, v)
+check("each fitting is asked", set(F.PLACE_FITTINGS) <= set(seen[0]["ask"]), seen[0]["ask"].keys())
+seen.clear()
+v = F._place_verdicts([{"id": "a", "path": "x"}], "a made-up city, around 1990")
+check("a later period is not asked about them", list(seen[0]["ask"]) == ["modern"] and v == {}, v)
+
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)
