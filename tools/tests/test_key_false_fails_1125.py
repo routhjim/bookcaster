@@ -46,5 +46,17 @@ with tempfile.TemporaryDirectory() as td:
     Image.new("RGB", (640, 360), (90, 70, 40)).save(Path(td) / "n.png")
     check("no patch: no centre", R.white_blob(Path(td) / "n.png", centre=True) == (0.0, None))
 
+with tempfile.TemporaryDirectory() as td:
+    lt, dk = Path(td) / "light.png", Path(td) / "dark.png"
+    im = Image.new("RGB", (640, 360), (90, 70, 40))
+    ImageDraw.Draw(im).rectangle([100, 150, 300, 359], fill=(235, 232, 225))
+    im.save(lt)
+    Image.new("RGB", (640, 360), (90, 70, 40)).save(dk)
+    fg = {"Orla": [100, 0, 500, 640]}
+    check("white where the model is white: theirs", R.white_in_still((0.3, 0.7), fg, (1152, 640), lt))
+    check("white where the model is dark: a blown-out head", not R.white_in_still((0.3, 0.7), fg, (1152, 640), dk))
+    check("white off every person: an object", not R.white_in_still((0.3, 0.7), {"Orla": [700, 0, 900, 640]}, (1152, 640), lt))
+    check("no still: no claim", not R.white_in_still((0.3, 0.7), fg, (1152, 640), Path(td) / "none.png"))
+
 print("\nFAILED: " + ", ".join(fails) if fails else "\nall passed")
 sys.exit(1 if fails else 0)
