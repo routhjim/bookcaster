@@ -1021,6 +1021,36 @@ def face_visibility(cam_pos, who, info):
     return vis / len(S)
 
 
+SET_LUMA_FULL = 0.40      # a set picture this light keeps the people's lights as they were tuned (daylight rooms)
+SET_GAIN_MIN = 0.45       # the darkest set still shows its people (a face must read at all)
+LIGHT_BOOST = 2 ** 0.85   # the people's lights were tuned under +0.85 EV
+
+
+def set_light(world: dict) -> dict:
+    """The lights of a still in a painted set, from the set's own picture (11-25: every still was rendered at +0.85 EV
+    with one strong key, whatever the hour - a candlelit hall's picture at mean luma 0.27 came out at 0.48 with 14 %
+    blown, and the keys kept it). The set is unlit paint, so it is shown as painted (exposure 0); the people's lights
+    follow how light the picture is and take half of its colour. No picture: the lights as before."""
+    for n in ("source.png", "pano.png"):
+        f = os.path.join(str(world.get("dir") or ""), n)
+        if os.path.exists(f):
+            break
+    else:
+        return {}
+    from PIL import Image
+    a = np.asarray(Image.open(f).convert("RGB").resize((256, 144)), dtype=np.float32) / 255.0
+    return light_for(a.reshape(-1, 3).mean(axis=0))
+
+
+def light_for(rgb) -> dict:
+    rgb = np.asarray(rgb, dtype=np.float32)
+    luma = float(rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32))
+    g = min(1.0, max(SET_GAIN_MIN, luma / SET_LUMA_FULL)) * LIGHT_BOOST
+    tint = 0.5 + 0.5 * rgb / max(float(rgb.max()), 1e-3)          # half white, half the picture's colour
+    return {"exposure": 0.0, "key_light": round(7.2 * g, 2), "fill_light": round(440.0 * g, 1),
+            "rim_light": round(280.0 * g, 1), "light_color": [round(float(x), 3) for x in tint], "set_luma": round(luma, 3)}
+
+
 def run(shot, out_dir, size=(1536, 864), samples=16, blend=False, camera_from=None):
     t0 = time.time()
     if shot.get("book"):
@@ -1092,6 +1122,7 @@ def run(shot, out_dir, size=(1536, 864), samples=16, blend=False, camera_from=No
             fr["models"] = models
         if (shot.get("set") or {}).get("world"):        # a HY-World set (mesh) instead of a primitive room
             fr["world"] = shot["set"]["world"]
+            fr.update(set_light(fr["world"]))
         scene["frames"].append(fr)
         pts2d = []
         for p in people:
