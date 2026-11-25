@@ -184,35 +184,43 @@ def _bbox_uv(ob, image_path, back=False, view=None):
     return img, rgb, pu, pv, w, h
 
 
-def _project(ob, image_path, back=False, view=None):
+_BLED = {}
+
+
+def _bled(image_path, img=None):
+    """(colour, seed) of a drawing, top row first: its colour carried outward from the trusted inside of the cut-out
+    (tools/paint_weights.py bleed_seed: the rim of a cut-out is the card's grey), so that a point of the mesh that
+    lands on the rim or just outside the outline takes the nearest colour of the figure. Cached per picture."""
+    key = os.path.abspath(image_path)
+    if key not in _BLED:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from paint_weights import bleed, bleed_seed
+        img = img or bpy.data.images.load(image_path)
+        w, h = img.size
+        px = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, -1)[::-1]
+        if px.shape[2] == 4 and px[..., 3].min() < 0.99:
+            seed = bleed_seed(px[..., 3])
+            # a cut-out's colours are stored multiplied by their alpha: the solid inside is as drawn
+            _BLED[key] = (bleed(px[..., :3], seed), seed)
+        else:
+            _BLED[key] = (px[..., :3].copy(), np.ones((h, w), bool))
+    return _BLED[key]
+
+
+def _project(ob, image_path, back=False, view=None, stats=None):
     img, rgb, pu, pv, w, h = _bbox_uv(ob, image_path, back, view)
-    return rgb[np.clip(pv.round().astype(int), 0, h - 1), np.clip(pu.round().astype(int), 0, w - 1)]
+    col, seed = _bled(image_path, img)
+    yi, xi = np.clip(pv.round().astype(int), 0, h - 1), np.clip(pu.round().astype(int), 0, w - 1)
+    if stats is not None:
+        stats.append(seed[yi, xi])
+    return col[yi, xi]
 
 
-def _bled_image(img, rgb, w, h, name):
-    """The drawing with its colour BLED outward over the transparent background (iterated neighbour fill) and
-    no alpha: mesh areas just outside the drawing's silhouette (a tail curled differently, a wing edge) get the
-    nearest figure colour instead of transparent/black."""
-    px = np.array(img.pixels[:], dtype=np.float32).reshape(h, w, -1)
-    a = px[..., 3] > 0.5 if px.shape[2] == 4 else np.ones((h, w), bool)
-    col = px[..., :3].copy()
-    col[~a] = 0
-    filled = a.copy()
-    for _ in range(int(max(w, h) / 6)):
-        if filled.all():
-            break
-        acc = np.zeros_like(col)
-        cnt = np.zeros((h, w), np.float32)
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            sh_f = np.roll(filled, (dy, dx), (0, 1))
-            sh_c = np.roll(col, (dy, dx), (0, 1))
-            acc += sh_c * sh_f[..., None]
-            cnt += sh_f
-        new = (~filled) & (cnt > 0)
-        col[new] = acc[new] / cnt[new][:, None]
-        filled |= new
-    if not filled.all():
-        col[~filled] = col[filled].mean(0)
+def _bled_image(img, image_path, w, h, name):
+    """The drawing with its colour BLED outward over the transparent background and no alpha: mesh areas on the
+    rim of the drawing's silhouette or just outside it (a shoulder's top, a tail curled differently, a wing edge)
+    get the nearest figure colour instead of the card's grey / transparent / black."""
+    col = _bled(image_path, img)[0][::-1]
     tmp = bpy.data.images.new(name, w, h, alpha=False)
     tmp.pixels.foreach_set(np.concatenate([col, np.ones((h, w, 1), np.float32)], -1).ravel())
     path = os.path.join(os.path.dirname(job["out_blend"]), f"{name}.png")
@@ -236,7 +244,7 @@ def _uv_layer(ob, name, image_path, back=False, view=None):
     vi = np.zeros(len(me.loops), int)
     me.loops.foreach_get("vertex_index", vi)
     uv.data.foreach_set("uv", np.stack([U[vi], Vv[vi]], 1).ravel())
-    return _bled_image(img, rgb, w, h, f"{name}_tex")
+    return _bled_image(img, image_path, w, h, f"{name}_tex")
 
 
 VIEW_DIRS = {"front": (1.0, 0.0, 0.0), "back": (-1.0, 0.0, 0.0), "left": (0.0, 1.0, 0.0), "right": (0.0, -1.0, 0.0)}
@@ -288,7 +296,13 @@ def paint_views(ob, views: dict):
     W = arms_from_front_back(W, names, np.array([v.co[:] for v in me.vertices]))
     W[:, 0] += 0.02                                     # straight up/down: the front picture
     W /= W.sum(1, keepdims=True)
-    cols = [_project(ob, views[v], view=v) for v in names]
+    ins = []
+    cols = [_project(ob, views[v], view=v, stats=ins) for v in names]
+    from paint_weights import off_drawing, OFF_BAR      # how much of the figure no drawing shows: the model's record
+    off = off_drawing(W, np.stack(ins, 1))
+    with open(os.path.join(os.path.dirname(job["out_blend"]), "paint.json"), "w") as f:
+        json.dump({"off_drawing": round(off, 4), "bar": OFF_BAR, "views": names}, f)
+    print("PAINT", json.dumps({"off_drawing": round(off, 4)}))
     col = sum(c * W[:, i:i + 1] for i, c in enumerate(cols))
     col = _srgb_to_linear(col)
     if not me.color_attributes.get("Col"):

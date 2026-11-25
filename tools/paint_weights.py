@@ -84,3 +84,109 @@ def arms_from_front_back(W, names, co) -> np.ndarray:
     keep[zr < ARM_FROM] = 1.0
     W[:, side] *= keep[:, None]
     return W
+
+
+EDGE_FRAC = 0.002    # of the picture's longer side: a cut-out's rim this deep is not trusted for colour
+SOLID = 0.98         # alpha from which a cut-out pixel is the figure and nothing of the card behind it
+
+
+def _shifted(a, dy, dx):
+    """`a` moved by (dy, dx) with nothing wrapping round the picture's edges (zeros come in)."""
+    out = np.zeros_like(a)
+    h, w = a.shape[:2]
+    out[max(dy, 0):h + min(dy, 0), max(dx, 0):w + min(dx, 0)] = a[max(-dy, 0):h + min(-dy, 0), max(-dx, 0):w + min(-dx, 0)]
+    return out
+
+
+def erode(mask, r: int) -> np.ndarray:
+    m = np.asarray(mask, bool)
+    for _ in range(int(r)):
+        m = m & _shifted(m, 1, 0) & _shifted(m, -1, 0) & _shifted(m, 0, 1) & _shifted(m, 0, -1)
+    return m
+
+
+def dilate(mask, r: int) -> np.ndarray:
+    m = np.asarray(mask, bool)
+    for _ in range(int(r)):
+        m = m | _shifted(m, 1, 0) | _shifted(m, -1, 0) | _shifted(m, 0, 1) | _shifted(m, 0, -1)
+    return m
+
+
+def bleed_seed(alpha) -> np.ndarray:
+    """The pixels of a cut-out drawing whose colour is the figure's own (11-25: the rim of a cut-out is the figure
+    mixed with the card it was drawn on, and darkened by the cut; the fill that carries colour out past the outline
+    started from that rim, so every surface the drawing does not show squarely - the tops of the shoulders, the crown
+    of the head, the edge of a sleeve - was painted the card's grey, in streaks). The seed is the solid figure less a
+    rim of EDGE_FRAC of the picture; parts thinner than that rim (a lock of hair, a finger) keep their solid
+    pixels, so they are not painted with their neighbour's colour. An image with no usable solid part
+    falls back to alpha > 0.5."""
+    a = np.asarray(alpha, np.float32)
+    solid = a >= SOLID
+    r = max(2, int(round(max(a.shape) * EDGE_FRAC)))
+    deep = erode(solid, r)
+    thin = solid & ~dilate(deep, 2 * r)
+    seed = deep | thin
+    return seed if seed.any() else a > 0.5
+
+
+NEAR_FRAC = 0.01     # of the picture's longer side: this far out of the seed the colour is carried pixel by pixel
+COARSE = 4           # ... beyond it, on a picture this many times smaller (the same reach in a sixtieth of the time)
+
+
+def _spread(col, filled, iters):
+    h, w = filled.shape
+    for _ in range(int(iters)):
+        if filled.all():
+            break
+        acc = np.zeros_like(col)
+        cnt = np.zeros((h, w), np.float32)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            sh_f = _shifted(filled, dy, dx)
+            acc += _shifted(col, dy, dx) * sh_f[..., None]
+            cnt += sh_f
+        new = (~filled) & (cnt > 0)
+        if not new.any():
+            break
+        col[new] = acc[new] / cnt[new][:, None]
+        filled |= new
+    return col, filled
+
+
+def bleed(col, seed) -> np.ndarray:
+    """`col` (h, w, 3) with every pixel outside `seed` given the colour carried outward from the seed's edge
+    (iterated neighbour mean: pixel by pixel near the seed, on a smaller picture farther out)."""
+    col = np.array(col, np.float32)
+    seed = np.array(seed, bool)
+    h, w = seed.shape
+    col[~seed] = 0
+    if not seed.any():
+        return col
+    col, filled = _spread(col, seed.copy(), max(4, int(max(h, w) * NEAR_FRAC)))
+    if not filled.all():
+        c = COARSE
+        H, Wd = -(-h // c) * c, -(-w // c) * c
+        pc = np.zeros((H, Wd, 3), np.float32); pc[:h, :w] = col
+        pf = np.zeros((H, Wd), np.float32); pf[:h, :w] = filled
+        sc = pc.reshape(H // c, c, Wd // c, c, 3).sum((1, 3))
+        sf = pf.reshape(H // c, c, Wd // c, c).sum((1, 3))
+        cf = sf > 0
+        cc = np.where(cf[..., None], sc / np.maximum(sf, 1)[..., None], 0).astype(np.float32)
+        cc, cf = _spread(cc, cf, H // c + Wd // c)
+        cc[~cf] = col[seed].mean(0)
+        up = np.repeat(np.repeat(cc, c, 0), c, 1)[:h, :w]
+        col[~filled] = up[~filled]
+    return col
+
+
+OFF_BAR = 0.50       # more of a figure than this painted from outside its drawings: the shape and the drawings disagree
+                     # (11-25, one ordinary figure with four views: 0.26)
+
+
+def off_drawing(W, inside) -> float:
+    """The share of a figure's points whose colour comes from OUTSIDE the drawings: `W` (n, views) the normalised
+    view weights, `inside` (n, views) whether the point lands on that drawing's seed. 0 = every point is painted by
+    what a drawing shows of it."""
+    W = np.asarray(W, float)
+    if W.size == 0:
+        return 0.0
+    return float((W * (1.0 - np.asarray(inside, float))).sum() / max(W.sum(), 1e-9))
