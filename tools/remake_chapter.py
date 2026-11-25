@@ -1876,6 +1876,128 @@ def _faces(paths: list) -> dict:
         return {}
 
 
+def own_faces(faces: list, boxes: dict, sx: float, sy: float, H: float) -> dict:
+    """{who: face} - the ONE face of each staged person among the faces found in a key. A face belongs to the
+    smallest staged figure box its centre falls in; of several in one person's box theirs is the largest (11-25: a
+    crowd behind a close figure put four more faces in her box, every one was repainted as her into the same files,
+    and the last crop drawn - a guest's - was pasted over her own head). The others are nobody the key names: they
+    are left as drawn."""
+    best = {}
+    for f in faces:
+        x0, y0, x1, y1 = f["box"]
+        cxf, cyf = (x0 + x1) / 2, (y0 + y1) / 2
+        cand = [(w, b) for w, b in boxes.items() if b[0] * sx <= cxf <= b[2] * sx and b[1] * sy - 0.1 * H <= cyf <= b[3] * sy]
+        if not cand:
+            continue
+        w = min(cand, key=lambda x: (x[1][2] - x[1][0]) * (x[1][3] - x[1][1]))[0]
+        if w not in best or (x1 - x0) * (y1 - y0) > _area(best[w]["box"]):
+            best[w] = f
+    return best
+
+
+def _area(b) -> float:
+    return (b[2] - b[0]) * (b[3] - b[1])
+
+
+TURN_PROFILE_YAW = 60.0     # from here a turned head is "in profile" (angle_words says so from the same angle)
+
+
+def face_ref(cx: "Ctx", w: str, yaw: float | None) -> tuple[str | None, str]:
+    """(picture, what it shows) - the ONE identity picture for a person's face repaint, of the view the head is
+    seen from: the sheet's front headshot up to FACE_REF_MAX_YAW; past it the person's own face turned that way
+    (charlora's refs/photo_<three-quarter|profile>_<left|right>_cut.png, made from their photographs) when they have
+    one, else none - a front face is never the picture for a turned head (10-21: it pulled the head round)."""
+    if not FACE_REF:
+        return None, ""
+    if yaw is None or abs(yaw) <= FACE_REF_MAX_YAW:
+        sh_ = ref_sheet(cx.refs, w)
+        if not sh_:
+            return None, ""
+        hf_ = cx.W / "video" / "charlora" / pslug(w) / "refs" / "head_fixed.png"   # a repaired head (the Knight's
+        return (str(hf_) if hf_.exists() else headshot(cx, w, str(sh_))), "front"  # sheet had stubble)
+    kind = "profile" if abs(yaw) >= TURN_PROFILE_YAW else "three-quarter"
+    side = "right" if yaw > 0 else "left"
+    t = cx.W / "video" / "charlora" / pslug(w) / "refs" / f"photo_{kind}_{side}_cut.png"
+    return (str(t), f"{kind} {side}") if t.exists() else (None, "")
+
+
+FACE_SIM_SLACK = 0.02       # a repaint may measure this much less like the sheet than the drawing and still be kept
+FACE_AGE_SLACK = 5.0        # ... or read this many years farther from the sheet's age
+FACE_AGE_BAND = 10.0        # (face_batch's own band: inside it an age reading is not a difference)
+FACE_SHARP_MIN = 0.4        # ... and must keep this share of the drawing's sharpness inside the face
+
+
+def sharpness(im, box=None) -> float:
+    """Variance of the Laplacian of the picture's grey levels inside `box` (the whole picture without one)."""
+    import numpy as np
+    g = np.asarray((im.crop([int(v) for v in box]) if box else im).convert("L"), np.float32)
+    if min(g.shape) < 3:
+        return 0.0
+    lap = g[1:-1, 1:-1] * 4 - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]
+    return float(lap.var())
+
+
+def repaint_verdict(before: dict | None, after: dict | None, sharp_before: float, sharp_after: float) -> str:
+    """"" when a face repaint may replace the drawing it started from, else why not. before / after: face_batch's
+    reading of the face in the crop before and after ({face_sim, age_gap, skipped?}; None = not measured). The
+    repaint is kept unless it is measurably worse: no face where there was one, less like the sheet, farther from
+    the sheet's age, or blurrier (11-25: every repaint was pasted in unseen)."""
+    def seen(r):
+        return bool(r) and r.get("face_sim") is not None
+    if sharp_before > 0 and sharp_after < FACE_SHARP_MIN * sharp_before:
+        return f"blurrier ({sharp_after:.0f} against {sharp_before:.0f})"
+    if seen(before) and not seen(after):
+        return "no face to measure after the repaint"
+    if seen(before) and seen(after):
+        if after["face_sim"] < before["face_sim"] - FACE_SIM_SLACK:
+            return f"less like the sheet ({after['face_sim']:.2f} against {before['face_sim']:.2f})"
+        ga, gb = abs(after.get("age_gap") or 0.0), abs(before.get("age_gap") or 0.0)
+        if ga > FACE_AGE_BAND and ga > gb + FACE_AGE_SLACK:
+            return f"farther from the sheet's age ({ga:.0f} years off against {gb:.0f})"
+    return ""
+
+
+def face_paste(im, patch, c0: list, fb: list):
+    """`patch` (the repainted crop, at the crop's size) blended into `im` at crop c0 over the face + hair oval of
+    face box fb. The blend fades out inside the crop (no straight edge where the oval runs past a side that is
+    not the picture's own edge) and the patch is shifted to the drawing's colour in the band where the two mix."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFilter
+    W, H = im.size
+    cw, ch = c0[2] - c0[0], c0[3] - c0[1]
+    m = Image.new("L", (cw, ch), 0)               # the face + hair oval, feathered
+    fx0, fy0, fx1, fy1 = fb[0] - c0[0], fb[1] - c0[1], fb[2] - c0[0], fb[3] - c0[1]
+    mx, my = 0.35 * (fx1 - fx0), 0.45 * (fy1 - fy0)
+    ImageDraw.Draw(m).ellipse([fx0 - mx, fy0 - my * 1.2, fx1 + mx, fy1 + my * 0.6], fill=255)
+    r = max(3, cw // 20)
+    m = m.filter(ImageFilter.GaussianBlur(r))
+    a = np.asarray(m, np.float32) / 255.0
+    ramp = np.ones((ch, cw), np.float32)
+    n = min(2 * r, cw // 2, ch // 2)
+    if n > 0:
+        t = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        if c0[0] > 0:
+            ramp[:, :n] *= t[None, :]
+        if c0[2] < W:
+            ramp[:, -n:] *= t[::-1][None, :]
+        if c0[1] > 0:
+            ramp[:n, :] *= t[:, None]
+        if c0[3] < H:
+            ramp[-n:, :] *= t[::-1][:, None]
+    a = a * ramp
+    P = np.asarray(patch.convert("RGB"), np.float32)
+    O = np.asarray(im.crop(c0).convert("RGB"), np.float32)
+    band = (a > 0.03) & (a < 0.5)
+    if band.sum() > 50:
+        P = np.clip(P + np.clip(O[band].mean(0) - P[band].mean(0), -FACE_TONE_MAX, FACE_TONE_MAX), 0, 255)
+    out = im.copy()
+    out.paste(Image.fromarray((P * a[..., None] + O * (1 - a[..., None])).round().astype("uint8")), tuple(c0[:2]))
+    return out
+
+
+FACE_TONE_MAX = 24.0        # grey levels: the most a repainted crop is shifted towards the drawing's colour
+
+
 def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> dict:
     """ADetailer-style FACE-DETAIL pass after the main key (10-20): each visible face (DWPose), mapped to its staged
     figure, cropped at 2.2x its box (>= 512 px), img2img at FACE_STRENGTH with ONLY that character's LoRA + their face
@@ -1898,16 +2020,12 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
         boxes, (W0, H0) = _boxes(d / "render")
         sx, sy = W / W0, H / H0
         beh = behind_of(e)
-        for f in (F.get(str(d / key)) or {}).get("faces", []):
+        for w, f in own_faces((F.get(str(d / key)) or {}).get("faces", []), boxes, sx, sy, H).items():
             x0, y0, x1, y1 = f["box"]
             fw, fh = x1 - x0, y1 - y0
             if fw < 28:
                 continue
             cxf, cyf = (x0 + x1) / 2, (y0 + y1) / 2
-            cand = [(w, b) for w, b in boxes.items() if b[0] * sx <= cxf <= b[2] * sx and b[1] * sy - 0.1 * H <= cyf <= b[3] * sy]
-            if not cand:
-                continue
-            w = min(cand, key=lambda x: (x[1][2] - x[1][0]) * (x[1][3] - x[1][1]))[0]
             if w == beh or is_creature(cx.chars.get(w, "")) or not cx.chars.get(w) or facing_away(d / "render", w):
                 continue          # back-turned: never paint a face onto the back of a head (10-20, 793)
             side = max(fw, fh) * 2.2
@@ -1934,12 +2052,11 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
             yaw = yaw if yaw is not None else head_yaw(d / "render", w)
             if yaw is not None and abs(yaw) > FACE_MAX_YAW:
                 continue
-            sh_ = ref_sheet(cx.refs, w) if FACE_REF and (yaw is None or abs(yaw) <= FACE_REF_MAX_YAW) else None
-            hf_ = cx.W / "video" / "charlora" / pslug(w) / "refs" / "head_fixed.png"   # a repaired head (the Knight's
-            hs_ = (str(hf_) if hf_.exists() else headshot(cx, w, str(sh_))) if sh_ else None  # sheet had stubble)
+            hs_, hv_ = face_ref(cx, w, yaw)
             prompt = (f"{'chr_' + pslug(w) + ' ' if lr else ''}A close-up of the face of {w}, {angle_words(yaw)}: "
                       f"{face_words(cx, w)}. "
-                      + ("This person's face is the face in image 1, at this picture's head angle. " if hs_ else "") +
+                      + ("This person's face is the face in image 1, at this picture's head angle. " if hs_ and hv_ == "front"
+                         else "This person's face is the face in image 1, seen from the same side. " if hs_ else "") +
                       f"{short_look(cx.look(w, e['t']).rstrip('.'))}. Keep the head exactly as turned in this picture, "
                       f"same expression, same lighting, the face clearly lit. "
                       f"{style_for(cx, e).rstrip('.')}. No text.")
@@ -1966,7 +2083,9 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
         list(ex_.map(lambda k: _qwen(cx, jobs[k::len(cards)], cx.OUT / "stage", cards[k], f"face_{cards[k]}_{time.strftime('%H%M%S')}")
                      if jobs[k::len(cards)] else None, range(len(cards))))
     log_entry(cx.OUT, {"phase": "face-pass", "faces": len(jobs), "sec": round(time.time() - t)})
-    out = {}
+    read = face_readings(cx, [(w, j["init"]["image"], j["path"]) for (e, d, w, c0, fb), j in zip(plan, jobs)
+                              if Path(j["path"]).exists()])
+    out, dropped = {}, []
     for (e, d, w, c0, fb), j in zip(plan, jobs):
         if not Path(j["path"]).exists():
             continue
@@ -1976,17 +2095,45 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
         im = Image.open(d / key).convert("RGB")
         cw, ch = c0[2] - c0[0], c0[3] - c0[1]
         patch = Image.open(j["path"]).convert("RGB").resize((cw, ch), Image.LANCZOS)
-        m = Image.new("L", (cw, ch), 0)               # the face + hair oval, feathered
-        fx0, fy0, fx1, fy1 = fb[0] - c0[0], fb[1] - c0[1], fb[2] - c0[0], fb[3] - c0[1]
-        mx, my = 0.35 * (fx1 - fx0), 0.45 * (fy1 - fy0)
-        ImageDraw.Draw(m).ellipse([fx0 - mx, fy0 - my * 1.2, fx1 + mx, fy1 + my * 0.6], fill=255)
-        m = m.filter(ImageFilter.GaussianBlur(max(3, cw // 20)))
-        im.paste(patch, c0[:2], m)
-        im.save(d / key)
-        out.setdefault(e["id"], []).append({"who": w, "box": fb, "crop": c0})
+        fbc = [fb[0] - c0[0], fb[1] - c0[1], fb[2] - c0[0], fb[3] - c0[1]]
+        bf, af = read.get(j["init"]["image"]), read.get(j["path"])
+        why = repaint_verdict(bf, af, sharpness(im.crop(c0), fbc), sharpness(patch, fbc))
+        rec = {"who": w, "box": fb, "crop": c0, "kept": not why,
+               "like": [(r or {}).get("face_sim") for r in (bf, af)], "age_gap": [(r or {}).get("age_gap") for r in (bf, af)]}
+        if why:                                       # the drawing stays: the repaint is worse than what it replaces
+            rec["why"] = why
+            dropped.append(f"{e['id']} {w}: {why}")
+        else:
+            face_paste(im, patch, c0, fb).save(d / key)
+        out.setdefault(e["id"], []).append(rec)
+    if dropped:
+        log_entry(cx.OUT, {"phase": "face-pass-kept-drawing", "faces": dropped})
+        print(f"  face pass: {len(dropped)} repaint(s) worse than the drawing, the drawing kept: {dropped[:6]}", flush=True)
     for i, v in out.items():
         (cx.OUT / "stage" / i / "face.json").write_text(json.dumps(v, indent=1))
     return out
+
+
+def face_readings(cx: "Ctx", trios: list) -> dict:
+    """{picture: face_batch reading} for every face crop before and after its repaint, against the person's sheet
+    (one batch: one pose load, one scorer load). The age is read against the sheet's own, so someone drawn from
+    photographs is held to their sheet, not to the look's number. {} when nothing could be measured."""
+    jobs = []
+    for w, before, after in trios:
+        sheet = ref_sheet(cx.refs, w)
+        if sheet is None:
+            continue
+        for p_ in (before, after):
+            jobs.append({"id": str(p_), "image": str(p_), "ref": str(sheet), "gender": gender_of(cx.chars.get(w, "")),
+                         "age": None, "side": "any"})
+    if not jobs:
+        return {}
+    try:
+        import face_batch
+        return face_batch.run(jobs)
+    except Exception as exc:                          # noqa: BLE001 - unmeasured: the sharpness rule alone decides
+        print(f"  face pass: the repaints could not be measured ({type(exc).__name__}: {exc})", flush=True)
+        return {}
 
 
 RENDER_WORKERS = int(os.environ.get("REMAKE_RENDER_WORKERS", "1"))   # nice 19; the GPU is the bottleneck (10-20)
