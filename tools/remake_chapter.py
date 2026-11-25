@@ -2176,12 +2176,34 @@ def key_refs(cx: "Ctx", e: dict, who: list) -> tuple[list, dict]:
     return refs, idx
 
 
+def scene_crowd(frames: dict, mid: str) -> str:
+    """The unnamed people around a moment's named ones: its own keyframe's "crowd", else that of the nearest
+    keyframe (in list order) of the same scene and place that has one (11-24: half of one evening's keyframes in
+    one room named the guests behind, half named nobody, and the 3D keys drew an empty room for all of them)."""
+    ids = list(frames)
+    f = frames.get(mid) or {}
+    own = str(f.get("crowd") or "").strip()
+    if own or mid not in frames:
+        return own
+    i = ids.index(mid)
+    for d in range(1, len(ids)):
+        for j in (i - d, i + d):
+            if 0 <= j < len(ids):
+                g = frames[ids[j]]
+                c = str(g.get("crowd") or "").strip()
+                if c and g.get("scene") == f.get("scene") and g.get("where") == f.get("where"):
+                    return c
+    return ""
+
+
 def draw_prompt(cx: Ctx, e: dict, idx: dict | None = None, scene_only: bool = False) -> str:
     """The keyframe prompt: the shot's picture prompt, each person tagged with their look (wardrobe in force), with
     their image conditions named ("the person on the left is Edric: the face of image 1, the outfit of image 2")."""
     f = cx.frames.get(e["id"]) or {}
     who = moment_who(cx, e)
+    crowd = scene_crowd(cx.frames, e["id"]) if full3d() else ""
     if e.get("route") == "talk" and full3d() and TALK_SINGLE and e.get("speaker"):
+        crowd = ""                                # the clean single stays clean
         pl = shot_place(cx, e)                    # the clean single the still shows, not the 2D picture's scene
         f = {"prompt": (f"Head-and-shoulders portrait of {e['speaker']} speaking, face clearly visible, the only person "
                         f"in the picture" + (f", in {pl['where']}" if pl.get("where") else "") + ".")}
@@ -2226,6 +2248,10 @@ def draw_prompt(cx: Ctx, e: dict, idx: dict | None = None, scene_only: bool = Fa
     tags = [tag(w) for w in who if cx.look(w, e["t"])]
     n = len([w for w in who if not is_creature(cx.chars.get(w, ""))])
     cnt = f" Exactly {n} {'person' if n == 1 else 'people'} in the picture, each appearing once." if n else ""
+    if crowd:            # the named people in front, the scene's unnamed people far behind them
+        cnt = (f" Exactly {n} {'person' if n == 1 else 'people'} in the foreground, each appearing once. " if n else " ") + \
+            f"Far behind, small and soft in the depth of the room: {crowd.rstrip('. ')}, ordinary unnamed people in the " \
+            f"dress of the place and time who look nothing like the people in front."
     shave = [w for w in who if re.search(r"clean-shaven|beardless|no beard", cx.chars.get(w, ""), re.I)]
     shave_t = "".join(f" {w} is clean-shaven with a smooth jaw: no beard, no moustache, no stubble, no shadow on the chin."
                       for w in shave)
