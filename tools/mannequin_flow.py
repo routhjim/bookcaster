@@ -1509,7 +1509,8 @@ def ltx(book: Path, stem: str, es: list, log=print, redo: dict | None = None, pr
     os.environ["REMAKE_LTX_SPLIT_TALK"] = str(F._pp_split(md, "a2vid", 25))
     os.environ["REMAKE_LTX_SPLIT_ACT"] = str(F._pp_split(md, "ic", 17))
     R.PP = True                             # lanes/stagger/pool/decode-b = R.LTX_PP_ARGS (10-26: one default set)
-    shutil.copy(HERE / "ltx_runner" / "ltx_split_next.py", L / "ltx_split_next.py")
+    for f_ in R.RUNNER_NEXT:
+        shutil.copy(HERE / "ltx_runner" / f_, L / f_)
     cxl = SimpleNamespace(OUT=md)
 
     def step(args, name):
