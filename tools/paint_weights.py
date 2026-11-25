@@ -52,3 +52,35 @@ def face_from_front(W, names, co, head_frac: float) -> np.ndarray:
     keep[~head] = 1.0
     W[:, side] *= keep[:, None]
     return W
+
+
+LEG_BAND = (0.10, 0.40)   # of the figure's height: the legs, whose width across is the torso's
+ARM_FROM = 0.45           # the arms are above this height ...
+ARM_OUT = 1.15            # ... and farther out to the side than the legs' half-width x this
+ARM_SEAM = 0.15           # the side drawings fade out over this share of the half-width beyond it
+
+
+def arms_from_front_back(W, names, co) -> np.ndarray:
+    """The side drawings take no part in the ARMS (11-25: the figure is shaped with its arms held out, the side
+    drawings show the near arm hanging down, so on the arm the side drawing projected the wall behind the figure:
+    a grey, streaked sleeve). Out past the torso's width (measured on the legs, which never reach out), above the
+    hips, the side views' weights fall to nothing; the front and back drawings, which show the arms where the shape
+    has them, paint them. `co` = (n, 3) rest positions, the figure facing +X, +Z up."""
+    co = np.asarray(co, float)
+    W = np.array(W, float)
+    side = [i for i, v in enumerate(names) if v in ("left", "right")]
+    if not side or len(co) == 0:
+        return W
+    z0, z1 = co[:, 2].min(), co[:, 2].max()
+    h = max(z1 - z0, 1e-6)
+    zr = (co[:, 2] - z0) / h
+    legs = (zr >= LEG_BAND[0]) & (zr <= LEG_BAND[1])
+    if legs.sum() < 10:
+        return W
+    mid = float(np.median(co[legs, 1]))
+    half = float(np.percentile(np.abs(co[legs, 1] - mid), 98)) * ARM_OUT
+    out = (np.abs(co[:, 1] - mid) - half) / max(ARM_SEAM * half, 1e-6)
+    keep = 1.0 - np.clip(out, 0.0, 1.0)
+    keep[zr < ARM_FROM] = 1.0
+    W[:, side] *= keep[:, None]
+    return W
