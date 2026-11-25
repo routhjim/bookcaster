@@ -2378,6 +2378,27 @@ def in_white_clothes(centre, figs: dict, looks: dict, size) -> bool:
     return any(b[0] <= x <= b[2] and b[1] <= y <= b[3] and wears_white(looks.get(w, "")) for w, b in figs.items())
 
 
+STILL_LIGHT = 0.7
+
+
+def white_in_still(centre, figs: dict, size, still) -> bool:
+    """The white patch lies on a visible person and the 3D still is light there too: it is how their MODEL looks
+    (a white gown whose wardrobe words name no colour, a powdered wig: 11-25, 20 good keys of a woman in white
+    failed), not a head the painter blew out or an object it left unpainted. still = the still's picture."""
+    if not centre or not still or not Path(still).exists():
+        return False
+    x, y = centre[0] * size[0], centre[1] * size[1]
+    if not any(b[0] <= x <= b[2] and b[1] <= y <= b[3] for b in figs.values()):
+        return False
+    import numpy as np
+    from PIL import Image
+    a = np.asarray(Image.open(still).convert("RGB"), dtype=np.float32) / 255.0
+    H, W = a.shape[:2]
+    cx_, cy_, r = int(centre[0] * W), int(centre[1] * H), max(2, int(0.03 * W))
+    win = a[max(0, cy_ - r):cy_ + r + 1, max(0, cx_ - r):cx_ + r + 1]
+    return bool(win.size) and float(np.median(win.min(axis=2))) >= STILL_LIGHT
+
+
 def beard_question(side: str, want: str) -> str:
     """Someone who should be clean-shaven fails on a full beard, not on stubble; someone who should be bearded passes
     on ANY beard: a light short one is still a beard (11-25: a short beard read as 'no full beard' in 15 keys)."""
@@ -3425,7 +3446,9 @@ def quick_key_checks(cx: "Ctx", P: dict, fix: bool = True) -> dict:
         kp = cx.OUT / "stage" / e["id"] / "key.png"
         fx_ = bool(re.search(r"spark|strike|hammer|fire|flame", ((cx.frames.get(e["id"]) or {}).get("motion") or "").lower()))
         wf, at_ = white_blob(kp, centre=True)
-        own_ = in_white_clothes(at_, r.pop("_figs", None) or {}, r.pop("_looks", None) or {}, r.pop("_size", None) or (1, 1))
+        fg_, sz_ = r.pop("_figs", None) or {}, r.pop("_size", None) or (1, 1)
+        own_ = in_white_clothes(at_, fg_, r.pop("_looks", None) or {}, sz_) or \
+            white_in_still(at_, fg_, sz_, cx.OUT / "stage" / e["id"] / "render" / "start_color.png")
         if wf > 0.01 and not fx_ and not own_:
             r["flags"].append(f"white: a {wf * 100:.1f}% near-white blob (an unpainted object or a blown-out head)")
         rd_ = cx.OUT / "stage" / e["id"] / "render"
