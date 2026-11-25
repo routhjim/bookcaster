@@ -483,6 +483,18 @@ def step_draw(entries, vd, card, seeds, style, force=False):
     side_views_geometric(entries)
 
 
+def measure_sides(paths) -> dict | None:
+    """tools/profile_check.py on drawings -> {path: {"ratio", "body", "facing", "profile"}}; None when it did not run."""
+    if not paths:
+        return {}
+    r = subprocess.run([POSE_PY, "-I", str(HERE / "profile_check.py"), *map(str, paths)], capture_output=True, text=True)
+    line = next((ln for ln in r.stdout.splitlines() if ln.startswith("JSON ")), None)
+    if line is None:
+        log(f"!!! side views not measured (profile_check failed): {r.stderr[-300:]}")
+        return None
+    return json.loads(line[5:])
+
+
 def side_views_geometric(entries) -> list:
     """The side views measured, not asked (10-22: every cast member's "right" drawing was a three-quarter view the
     vision judge passed as a profile; projected onto the model it put the face on the side of the head and every
@@ -519,8 +531,19 @@ def side_views_geometric(entries) -> list:
         if mo is None and (d / f"apose_{other}.geo").exists():
             mo = json.loads((d / f"apose_{other}.geo").read_text())
         if not (mo and mo.get("profile") and mo.get("facing") == other):
-            log(f"!!! {o['key']}: the {v} view is no {v} profile ({m.get('ratio')}, facing {m.get('facing')}) and the "
-                f"{other} one cannot stand in: kept, flagged")
+            # neither side is a side view: NEITHER is painted (11-24: kept, a front-facing "side" laid a second front
+            # picture over the model's sides); front + back paint only, and what was built with it is rebuilt
+            log(f"!!! {o['key']}: the {v} view is no {v} profile (head {m.get('ratio')}, body {m.get('body')}, facing "
+                f"{m.get('facing')}) and the {other} one cannot stand in: not painted from the side")
+            if (d / f"apose_{v}.ok").exists():
+                arc = d / f"side_geo_{time.strftime('%H%M%S')}_{v}"
+                arc.mkdir(exist_ok=True)
+                for f in [d / f"apose_{v}.ok", *(d.glob(f"apose_{v}_*")), *(d.glob(f"head_{v}*")), d / "shape.glb",
+                          d / "rigged.blend", d / "model.blend", d / "rig.json", d / "qa.jpg", d / "qa.json", d / "front.png"]:
+                    if f.exists():
+                        shutil.move(str(f), arc / f.name)
+            (d / f"apose_{v}.geo").write_text(json.dumps({**m, "dropped": True}))
+            done.append((o["key"], v))
             continue
         arc = d / f"side_geo_{time.strftime('%H%M%S')}"
         arc.mkdir()
@@ -554,14 +577,18 @@ def side_views_checked(entries, wd, card, style, tries=2):
                                 f"visible), facing the {v.upper()} edge of the picture?"}})
         if not items:
             return
-        ans = vl_ask(items)
+        meas = measure_sides([it["image"] for it in items])     # measured, not asked: head AND body in profile
+        ans = vl_ask(items) if meas is None else {}
         redo = []
         for it in items:
             key, v = it["id"].rsplit("|", 1)
             name, o = next((n_, o_) for n_, o_ in entries if o_["key"] == key)
             d = Path(o["dir"])
-            if _yes((ans.get(it["id"]) or {}).get("side")):
+            m_ = (meas or {}).get(it["image"])
+            if (m_.get("profile") and m_.get("facing") == v) if m_ is not None else _yes((ans.get(it["id"]) or {}).get("side")):
                 (d / f"apose_{v}.ok").write_text("profile")
+                if m_ is not None:
+                    (d / f"apose_{v}.geo").write_text(json.dumps(m_))
                 continue
             log(f"{key}: the {v} view is not a {v} profile (try {k + 1})")
             (d / f"apose_{v}.png").replace(d / f"apose_{v}_bad{k}.png")
