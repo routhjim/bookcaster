@@ -186,6 +186,53 @@ def story_frame(frame: dict) -> dict:
     return frame if m == frame["motion"] else {**frame, "motion": m}
 
 
+def canon_frames(frames: dict, names: list) -> None:
+    """Every place a frame names a person takes the cast's spelling of that name (in place). One rule for every
+    reader of the planner's frames: the scene layer and the motion step must agree on who a figure is (11-24:
+    the motion step read the frame's spoken spelling beside the scene layer's figure and staged the same person
+    twice, the second as a default)."""
+    names = list(names or [])
+
+    import registry as _RG
+    keys = {}
+    for n in names:
+        keys.setdefault(_RG.person_key(n), n)
+
+    def canon(w):
+        if not w or w in names:
+            return w
+        if _RG.person_key(w) in keys:                 # a title as it is spoken is the same person (11-24)
+            return keys[_RG.person_key(w)]
+        hits = [n for n in names if w.lower() in n.lower().split() or n.lower() in w.lower()]
+        return hits[0] if len(hits) == 1 else w
+    def part(v):                                      # "Name:joint" keeps its part
+        if not isinstance(v, str):
+            return v
+        n, sep, rest = v.partition(":")
+        return canon(n) + sep + rest
+    for f in frames.values():
+        f["who"] = list(dict.fromkeys(canon(w) for w in (f.get("who") or [])))
+        if f.get("speaker"):
+            f["speaker"] = canon(f["speaker"])
+        # every other place a frame names a person (11-24: its pose boxes kept the spoken spelling, so the figure
+        # they placed was nobody in the cast: no model, no mark)
+        if isinstance(f.get("present"), list):
+            f["present"] = list(dict.fromkeys(canon(w) for w in f["present"]))
+        for p_ in f.get("poses") or []:
+            if isinstance(p_, dict) and p_.get("who"):
+                p_["who"] = canon(p_["who"])
+        for a_ in f.get("acts") or []:
+            if isinstance(a_, dict):
+                for k in ("who", "target", "against", "to", "from"):
+                    if a_.get(k):
+                        a_[k] = part(a_[k])
+        if isinstance(f.get("beats"), list):
+            f["beats"] = [part(b) for b in f["beats"]]
+        for k in ("pose_hint", "attach_hint", "dress"):
+            if isinstance(f.get(k), dict):
+                f[k] = {canon(w): v for w, v in f[k].items()}
+
+
 def verb_pose(text: str) -> tuple[str, str | None]:
     """(pose, the rule that matched) from the sentences about one person; ("standing", None) if none."""
     t = (text or "").lower()
