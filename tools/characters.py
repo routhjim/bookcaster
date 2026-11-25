@@ -799,6 +799,25 @@ def step_shape(o, card, force=False):
 PAINT_VERSION = "clean-rim-1125"      # bump when the texture projection changes: older models are re-painted + re-rigged
 
 
+RIG_ROOM_GB = 24     # less memory free than this: one paint + rig at a time (11-25: two at once, about 4.5 GB each,
+                     # beside the language model on a box with 12 GB free -> the kernel killed the job)
+_RIG_TURN = __import__("threading").Lock()
+
+
+def mem_free_gb() -> float:
+    return next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable")) / 1048576
+
+
+def rig_turn(free=mem_free_gb):
+    """A lock to hold while one model is painted and rigged, or None when there is room for several at once.
+    The room is read with the lock held, so two workers arriving together do not both see it as free."""
+    _RIG_TURN.acquire()
+    if free() >= RIG_ROOM_GB:
+        _RIG_TURN.release()
+        return None
+    return _RIG_TURN
+
+
 def step_rig(o, height, force=False):
     d = Path(o["dir"])
     glb, rb = d / "shape.glb", d / "rigged.blend"
@@ -815,7 +834,12 @@ def step_rig(o, height, force=False):
     for v in VIEWS[1:]:                              # back + the VERIFIED side views, blended by surface direction
         if (d / f"apose_{v}_rgba.png").exists() and (v == "back" or (d / f"apose_{v}.ok").exists()):
             cmd += [f"--texture-{v}", str(d / f"apose_{v}_rgba.png")]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+    turn = rig_turn()
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+    finally:
+        if turn is not None:
+            turn.release()
     (d / "rig.log").write_text(r.stdout[-4000:] + r.stderr[-4000:])
     if r.returncode or not rb.exists():
         log(f"{o['key']}: rig FAILED (see {d / 'rig.log'})")
