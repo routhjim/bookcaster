@@ -470,7 +470,7 @@ def is_creature(who, shot):
 def run(items, out_dir, fps=24, seed=1, checks=False, fit=True):
     import blockout as B
     import motion_shot as MS
-    from blockout_plan import frame_to_shot
+    from blockout_plan import frame_to_shot, story_text
     from motion_canonical import CanonicalMotion
     from motion_creature import animate
     from motion_source import hymotion_batch
@@ -488,7 +488,7 @@ def run(items, out_dir, fps=24, seed=1, checks=False, fit=True):
             if bp and not os.environ.get("BLOCKOUT_PROPS_EXTRA"):      # the book's own props (the cleanup reads it)
                 os.environ["BLOCKOUT_PROPS_EXTRA"] = bp
             frame = load_frame(it["frame"]) if it.get("frame") else {}
-            text = it.get("motion") or frame.get("motion", "")
+            text = story_text(it.get("motion") or frame.get("motion", ""))
             creatures_ = {w for w in frame.get("who", []) if cast_kind(w) == "creature"} or None
             if it.get("shot"):
                 shot = json.load(open(it["shot"]))
