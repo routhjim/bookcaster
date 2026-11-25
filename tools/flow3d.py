@@ -1612,7 +1612,9 @@ def refresh_stale_keys(R, cx, P) -> int:
             import hashlib
             sh = hashlib.sha1(Path(e["shot"]).read_bytes()).hexdigest()[:16]
             rec = d / "key.shot.sha"
-            if rec.exists():
+            # a record OLDER than the key is of a key since redrawn (11-25: 40 keys redrawn after their failed checks
+            # kept the record of the shot before, and were all set aside again on the next run)
+            if rec.exists() and rec.stat().st_mtime >= kt:
                 if rec.read_text().strip() != sh:
                     why.append("shot")
             elif Path(e["shot"]).stat().st_mtime > kt:
