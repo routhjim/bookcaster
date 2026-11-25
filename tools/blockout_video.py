@@ -703,6 +703,7 @@ def render_frames(shot, info0, info1, seqs, cam, move, move_amount, N, fdir):
               "clay": os.path.join(fdir, f"clay_{i:04d}.png"), "depth": os.path.join(fdir, f"depth_{i:04d}.npy")}
         if (shot.get("set") or {}).get("world"):
             fr["world"] = shot["set"]["world"]
+            fr.update(B.set_light(fr["world"]))          # lit from the set's own picture (blockout.set_light)
         if LAYERS:
             fr["layers"] = LAYERS
         frames.append(fr)

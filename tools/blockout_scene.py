@@ -319,6 +319,8 @@ def build(frame):
     sun_d = bpy.data.lights.new("sun", "SUN")
     sun_d.energy = float(frame.get("key_light", 7.2))          # the key (faces must read: mean luma >= 0.35)
     sun_d.angle = 0.2
+    lc_ = tuple(frame.get("light_color") or (1.0, 1.0, 1.0))    # the set picture's own colour, half-way (set_light)
+    sun_d.color = lc_
     sun = bpy.data.objects.new("sun", sun_d)
     R = np.asarray(frame["camera"]["R"])
     d = -R[:, 2] + R[:, 0] * 0.6 - R[:, 1] * 0.9          # light travels away from upper left
@@ -329,6 +331,7 @@ def build(frame):
     fl_d = bpy.data.lights.new("fill", "AREA")
     fl_d.energy = float(frame.get("fill_light", 440.0))
     fl_d.size = 3.0
+    fl_d.color = lc_
     fl_ = bpy.data.objects.new("fill", fl_d)
     cp_ = np.asarray(frame["camera"]["pos"], float)
     Mf, _ = frame_from_dir(cp_.tolist(), (cp_ + R[:, 2]).tolist())   # local -Z (the emission) toward the scene
@@ -343,6 +346,7 @@ def build(frame):
         rm_d = bpy.data.lights.new("rim", "AREA")
         rm_d.energy = rim_e
         rm_d.size = 2.0
+        rm_d.color = lc_
         rm_ = bpy.data.objects.new("rim", rm_d)
         tgt_ = cp_ - R[:, 2] * float(frame.get("subject_dist", 3.0))
         pos_ = tgt_ - R[:, 2] * 2.5 + R[:, 1] * 2.0 + R[:, 0] * 1.0
