@@ -56,6 +56,7 @@ from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
 HOME = Path(os.environ.get("BOOKCASTER_HOME", Path.home() / "audiobooks")).expanduser()
+ARCHIVE = Path(os.environ.get("BOOKCASTER_ARCHIVE", Path.home() / "dev-nvme" / "bookcaster-archive")).expanduser()
 LLM_URL = os.environ.get("BOOKCASTER_LLM_URL", "http://127.0.0.1:18100/v1/chat/completions")
 LLM_MODEL = os.environ.get("BOOKCASTER_LLM_MODEL", "flashnext-c2t8")
 FISH_URL = os.environ.get("BOOKCASTER_FISH_URL", "http://127.0.0.1:5014/v1/audio/speech")
@@ -2787,6 +2788,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--tag", default="", help="send as a new version beside the old one: --tag v2")
     s.add_argument("--part", default=None, help="send this cut of a chapter (a --from/--to video in out/) as-is, "
                    "beside the chapter: \"09 The Speckled Band (0-10 min).mp4\"")
+    s = sub.add_parser("tidy", help="list a book's waste (leftovers nothing reads any more); --do removes it")
+    s.add_argument("book", nargs="?", help="default: every book")
+    s.add_argument("--do", action="store_true", help="remove what is listed (the essentials always stay)")
+    s = sub.add_parser("archive", help="copy a book's essentials (the book without its waste) to another disk")
+    s.add_argument("book", nargs="?", help="default: every book")
+    s.add_argument("--to", default=None, help=f"the folder the copies go in (default: {ARCHIVE})")
     sub.add_parser("library", help="books on this machine")
     sub.add_parser("services", help="voice / music / LLM server status")
     s = sub.add_parser("_job")
@@ -3061,6 +3068,20 @@ def main(argv: list[str] | None = None) -> int:
         elif not any((b / "work" / "final" / f"{f.stem}.mp4").exists()
                      for b in books for f in chapter_files(b)):
             print("no finished videos to send")
+    elif a.cmd in ("tidy", "archive"):
+        from . import tidy as TD
+        books = [book_dir(a.book)] if a.book else [d.parent for d in sorted(HOME.glob("*/book.txt"))]
+        total, bad = 0, 0
+        for d in books:
+            if a.cmd == "archive":
+                bad += bool(TD.archive(d, Path(a.to or ARCHIVE).expanduser()))
+            elif a.do and _unit_active(unit_name(d)):
+                print(f"{d.name}: a job is running; not touched")
+            else:
+                total += TD.tidy(d, do=a.do)
+        if a.cmd == "tidy" and len(books) > 1:
+            print(f"all books: {total / 2**30:.1f} GB of waste " + ("removed" if a.do else "found"))
+        return 1 if bad else 0
     elif a.cmd == "library":
         for d in sorted(HOME.glob("*/book.txt")):
             meta = json.loads((d.parent / "meta.json").read_text()) if (d.parent / "meta.json").exists() else {}
@@ -3086,7 +3107,16 @@ def main(argv: list[str] | None = None) -> int:
                 return run_video_job(Path(a.book), a.level)
             return run_job(Path(a.book), a.level, music_only=a.music_only, sfx=a.sfx,
                            chapter=a.chapter if a.music_only else None)
-        return run_held(Path(a.book), job)
+        def job_then_tidy():
+            rc = job()
+            if not rc:                  # a job that ended well clears what its LoRA picks prove unused (tidy.AUTO)
+                from . import tidy as TD
+                try:
+                    TD.tidy(Path(a.book), do=True, kinds=TD.AUTO)
+                except OSError as e:
+                    print(f"tidy: {e}")
+            return rc
+        return run_held(Path(a.book), job_then_tidy)
     elif a.cmd == "estimate":
         print(estimate_text(book_dir(a.book)))
     elif a.cmd == "pace":
