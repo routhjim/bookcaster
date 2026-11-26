@@ -83,13 +83,15 @@ def line_up(log=print) -> None:
             raise RuntimeError(f"the asset line did not start: {(r.stdout + r.stderr).strip()[-300:]}")
 
 
-def engine_keys(book: Path, plan: Path, keys: Path, log=print) -> int:
+def engine_keys(book: Path, plan: Path, keys: Path, log=print, redo=()) -> int:
     """story_keys.py on the plan, its lines told as they come (and kept in work/video/engine/keys.log). -> its exit code"""
     work = engine_dir(book)
     work.mkdir(parents=True, exist_ok=True)
     keys.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, str(HERE / "assets" / "story_keys.py"), str(plan), str(book), str(work), str(keys),
            "--prefix", prefix_of(book), "--jobs", str(KEYS_JOBS)]
+    for st in redo or ():                # steps asked for again (`bookcaster video --flow 3d --rebuild`)
+        cmd += ["--redo", st]
     with open(work / "keys.log", "a") as f:
         f.write(f"\n=== {time.strftime('%m-%d %H:%M')} {' '.join(cmd)}\n")
         p = subprocess.Popen(cmd, cwd=str(HERE.parent), env=engine_env(), stdout=subprocess.PIPE,
@@ -122,14 +124,14 @@ def key_sheet(shots: list, keys: Path, out: Path, cols: int = 4, w: int = 480) -
 
 
 def run(book: Path, stem: str, t0: float, t1: float, hero, mix: Path, log=print, until: str | None = None,
-        guide: str | None = None, render: tuple | None = None, review: str | None = None) -> Path:
+        guide: str | None = None, render: tuple | None = None, review: str | None = None, redo=()) -> Path:
     import shot_flow as SF
     plan = SF.run(book, stem, t0, t1, hero, mix, log, until="plan", render=render)
     shots = plan_shots(plan)
     keys = keys_dir(SF.shot_dir(book, stem), plan)
     SF._step(book, f"3d keys: figures, sets and staging in the engine ({len(shots)} shots)")
     line_up(log)
-    rc = engine_keys(book, plan, keys, log)
+    rc = engine_keys(book, plan, keys, log, redo)
     have, lost = keyed(shots, keys)
     if lost:
         log(f"!!! 3d: {len(lost)} of {len(shots)} shots have no engine key: {lost[:12]}")

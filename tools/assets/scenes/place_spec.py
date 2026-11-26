@@ -557,6 +557,22 @@ def open_floor(spec: dict, phr: list, acts: list, url: str, cache: Path) -> list
     return out
 
 
+# (a ball was staged in an all but empty room: nothing said how full of people a place is, 11-26)
+CROWD_ASK = ("A story has a scene in a place named \"{place}\".\nThe passage:\n{story}\nThe unnamed people there, as "
+             "the set sheet has them: {crowd}\nApart from the people the passage names, how full of people is this place "
+             "during the scene? Answer with exactly one word:\nnone: nobody else is there\nfew: a handful of others, "
+             "the place mostly empty\nmany: the place is full of people, a crowd, a gathering, a busy public place")
+
+
+def crowd_size(place: str, spec: dict, psg: str, url: str, cache: Path) -> str:
+    """How full of unnamed people the place is: "none", "few" or "many" (the set stands more figures in a full
+    place and the keys' pictures fill it, place_build.with_crowd, redraw.crowd_words)."""
+    crowd = "; ".join(x for x in (str(spec.get("crowd") or "").strip(), str(spec.get("_director_crowd") or "").strip()) if x)
+    ans = ask(url, CROWD_ASK.format(place=place, story=psg, crowd=crowd or "none named"), cache).lower()
+    said = re.findall(r"\b(none|few|many)\b", ans)
+    return said[-1] if said else ("few" if crowd else "none")
+
+
 # (a place in the open whose set sheet names one part of it, a door in a wall: its picture was that part, and the set
 # made from it one arch on bare ground, 11-18. The whole place, said once, for its picture)
 WHOLE_ASK = """A story has a place in the open air named "{place}". A painter who knows nothing else of the story paints one
@@ -655,6 +671,7 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
     # is said there and nowhere else)
     out["_director_room"] = next((plan[i][0].get("room") for i in ids if plan[i][0].get("room")), "")
     out["_director_crowd"] = next((plan[i][0].get("crowd") for i in ids if plan[i][0].get("crowd")), "")
+    out["_crowd_size"] = crowd_size(place, out, passage(timeline, plan, ids, all_ids), url, cache)
     if str(out.get("outside") or "").strip() and len(ids) > 1:
         out["_views"] = views(plan, ids, place, str(out["outside"]).strip(), url, cache)
     if out.get("kind") == "outdoors":

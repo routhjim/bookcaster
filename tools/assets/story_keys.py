@@ -58,7 +58,7 @@ import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 # a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
-STEP_RULE = {"spec": 2}
+STEP_RULE = {"spec": 3}
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
@@ -467,6 +467,20 @@ OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from w
               "around it and the sky above. Empty: no people. {style}")
 
 
+def chapter_timeline(book: Path, plan_p: Path):
+    """The narration timeline of the chapter the plan is of: the plan lies in <book>/work/video/<chapter>/shots/, the
+    timeline is <book>/work/<chapter>.timeline.json. A book of one chapter has only one; in a book of several the
+    first was read for every chapter, and a dance in the fourth was specified, staged and lit from the lines spoken at
+    the same minute of the first (11-26). With no chapter to be told from the plan's place: the book's only timeline,
+    else none."""
+    tl = sorted(q for q in (book / "work").glob("*.timeline.json") if ".raw." not in q.name)
+    for anc in Path(plan_p).resolve().parents:
+        hit = [q for q in tl if q.name == f"{anc.name}.timeline.json"]
+        if hit:
+            return hit[0]
+    return tl[0] if len(tl) == 1 else None
+
+
 class Story:
     def __init__(self, plan_p: Path, book: Path, work: Path, keys: Path, prefix: str):
         self.plan_p, self.book, self.work, self.keys, self.prefix = plan_p, book, work, keys, prefix
@@ -474,8 +488,7 @@ class Story:
         self.video = book / "work" / "video"
         self.look_p = self.video / "look.json"
         self.look = json.loads(self.look_p.read_text())
-        tl = sorted(q for q in (book / "work").glob("*.timeline.json") if ".raw." not in q.name)
-        self.timeline = tl[0] if tl else None
+        self.timeline = chapter_timeline(book, plan_p)
         work.mkdir(parents=True, exist_ok=True)
         keys.mkdir(parents=True, exist_ok=True)
         self.ids = [k for k, v in self.plan.items() if not k.startswith("_") and isinstance(v, list) and v]

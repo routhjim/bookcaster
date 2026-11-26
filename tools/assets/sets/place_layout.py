@@ -581,7 +581,8 @@ class Ctx:
         focal = [o for o in self.openings if o["kind"] == self.rk.get("focal")]
         self.focal = focal[0] if focal else None
         # the picture's own pieces (prepare): dressing that stands only where it keeps off the plan's floor
-        self.optional = {pid for pid, p in self.pieces.items() if p.get("_picture")}
+        # (the picture's own things, and the crowd's figures: stood where there is room, never a reason a set fails)
+        self.optional = {pid for pid, p in self.pieces.items() if p.get("_picture") or p.get("kind") == "bystander"}
         self.refused = []
         # fire pieces, what serves them beside them on their wall, and the piece worked at before each
         fr = fire_rules(self.R)

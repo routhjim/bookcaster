@@ -665,7 +665,7 @@ def main():
         for p in spec.get("pieces") or []:
             if (P.kinds().get(p.get("kind")) or {}).get("made_as") == "world":
                 stale_world(P.generation_request(p), library)
-    res = P.resolve(spec.get("pieces") or [], P.load_records(library))
+    res = P.resolve(spec.get("pieces") or [], P.period_records(spec, P.load_records(library)))
     todo = [p for p in res["pieces"] if p["status"] == "generate" and (not only or p["kind"] in only)]
     # a bed of the library that has a tier above its mattress is made again as the one asked for
     by_id = {p["id"]: p for p in spec.get("pieces") or []}

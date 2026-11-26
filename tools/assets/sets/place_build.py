@@ -31,16 +31,7 @@ NORMAL = {"north": (0.0, -1.0), "south": (0.0, 1.0), "east": (-1.0, 0.0), "west"
 
 def records_for(spec: dict, library) -> tuple:
     recs = P.load_records(library)
-    # a piece made for another period does not furnish this one (a ship's cabin was offered mahogany): a record
-    # whose tags or description name a period other than the place's is left out; one that names none serves any
-    periods = set(json.loads((HERE.parent / "scenes" / "place_kinds.json").read_text())["PERIODS"])
-    own = spec.get("period")
-    if own in periods:
-        def named(r):
-            words = {str(t).lower() for t in r.get("tags") or []} | set(
-                re.findall(r"[a-z_]+", (r.get("description") or "").lower().replace("far future", "far_future")))
-            return periods & words
-        recs = [r for r in recs if not named(r) or own in named(r)]
+    recs = P.period_records(spec, recs)
     res = P.resolve(spec.get("pieces") or [], recs)
     by = {r["asset_id"]: r for r in recs}
     # a piece's room on the floor is its mesh's own measure, where the record has it (a made piece's "size_m" is the
@@ -1291,6 +1282,21 @@ def with_beds(spec: dict) -> dict:
 
 CROWD_M2 = 20.0                  # floor per bystander: a crowd is a few figures far off, never a full room
 CROWD_MAX = 6
+CROWD_MANY_M2 = 8.0              # ... but a place the story has full of people gets a figure to this much floor
+CROWD_MANY_MAX = 12
+
+
+def crowd_line(spec: dict) -> str:
+    """The place's unnamed people in words: those the story's passage has there (the spec's "crowd") and those the
+    director's set sheet adds, each group once. (A ball's sheet named its musicians and servants and left out the
+    guests: the room was drawn all but empty, 11-26.)"""
+    out = []
+    for src in (spec.get("crowd"), spec.get("_director_crowd")):
+        for t in re.split(r";", str(src or "")):
+            t = t.strip().rstrip(".")
+            if t and t.lower() not in [o.lower() for o in out]:
+                out.append(t)
+    return "; ".join(out)
 
 
 def with_crowd(spec: dict) -> dict:
@@ -1298,18 +1304,25 @@ def with_crowd(spec: dict) -> dict:
     words, shaped, stood on the free floor), with no rig and no likeness to keep. Nobody of the cast is among them;
     the keys' pictures fill the rest of the crowd in behind (redraw.py)."""
     # (the director's own line for the place's crowd says who they are and what they wear; each of its groups one term)
-    terms = [t.strip().rstrip(".") for t in re.split(r",| and ", str(spec.get("_director_crowd") or spec.get("crowd") or ""))
-             if len(t.strip()) > 3]
+    terms = [t.strip().rstrip(".") for t in re.split(r",| and |;", crowd_line(spec)) if len(t.strip()) > 3]
     rk = L.load_data()["room_kinds"]
     size = (rk.get(spec.get("kind")) or {}).get("sizes_m", {}).get(spec.get("size"))
-    n = min(CROWD_MAX, int((size[0] * size[1]) // CROWD_M2)) if terms and size else 0
+    # (the room as its picture was measured, where it was: a hall "large" by its kind's table was 20 m2, by its
+    # picture 92)
+    seen = spec.get("_room_m")
+    if isinstance(seen, (list, tuple)) and len(seen) >= 2 and seen[0] * seen[1] > 0:
+        size = seen
+    full = spec.get("_crowd_size") == "many"            # a place the story has full of people (place_spec.crowd_size)
+    n = min(CROWD_MANY_MAX if full else CROWD_MAX, int((size[0] * size[1]) // (CROWD_MANY_M2 if full else CROWD_M2))) \
+        if terms and size else 0
     if not n:
         return spec
     sp = json.loads(json.dumps(spec))
     period = str(sp.get("period") or "").replace("_", " ")
     for i in range(n):
         t = terms[i % len(terms)]
-        who = "one of them" if i < len(terms) else "another of them, unlike the first"
+        # (two looks of each group; a fuller crowd stands the same figures again elsewhere on the floor)
+        who = "one of them" if (i // len(terms)) % 2 == 0 else "another of them, unlike the first"
         sp.setdefault("pieces", []).append({
             "id": f"x{i + 1}", "kind": "bystander", "against": "free", "phrases": [],
             "look": f"{t[0].lower() + t[1:]} ({period}), {who}: a single person standing at ease, the whole figure "
@@ -1652,8 +1665,10 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     out = dict(id=set_id, place=spec.get("place"),        # (the plan's place it was built for: from_plan picks it)
                description=spec.get("room") or "", style=spec.get("period"), tags=[spec.get("kind")],
                **dress(ss, lay, spec, kit))
-    if str(spec.get("_director_crowd") or spec.get("crowd") or "").strip():      # the place's crowd, in the director's words
-        out["crowd"] = str(spec.get("_director_crowd") or spec["crowd"]).strip()
+    if crowd_line(spec):                                 # the place's crowd, in the story's and the director's words
+        out["crowd"] = crowd_line(spec)
+        if spec.get("_crowd_size") == "many":
+            out["crowd_size"] = "many"
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
     if bare and out.get("structure"):
         mats = json.loads(json.dumps(out["materials"]))
