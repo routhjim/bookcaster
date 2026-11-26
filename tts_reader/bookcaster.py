@@ -1263,6 +1263,20 @@ def _store_photos(d: Path, files: list[str], first: int, log=print) -> None:
     (d / "ages.json").write_text(json.dumps(ages, indent=1))
 
 
+def _drop_sheets(book: Path, key: str) -> list:
+    """A person's own sheets are removed under every spelling of their name (11-25: the plan wrote the title as it
+    is spoken, the cast list abbreviated it; the sheet under the plan's spelling stayed and was used as current).
+    Their outfit sheets have other names and stay. -> the files removed"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import registry as RG
+    gone = []
+    for f in sorted((book / "work" / "video" / "refs").glob("*-????????.png")):
+        if RG.person_key(f.stem[:-9]) == RG.person_key(key):
+            f.unlink()
+            gone.append(f)
+    return gone
+
+
 def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, str]:
     """Draw a character from photographs of a real person (`bookcaster look --photo NAME FILE...`): the pictures
     are kept in work/video/faces/<person>/, the look's face, hair, age and build are rewritten from the first one
@@ -1277,8 +1291,7 @@ def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, 
     d.mkdir(parents=True)
     _store_photos(d, files[:video.PHOTO_MAX], 1, log)
     # a sheet is named by its words alone: one drawn from the old photographs would be kept as current
-    for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
-        old_sheet.unlink()
+    _drop_sheets(book, key)
     seen = video._look_at(LLM_URL, LLM_MODEL, d / "photo1.png", PHOTO_ASK).strip().strip('"')
     r = post_chat(LLM_URL, {"model": LLM_MODEL, "temperature": 0.2, "max_tokens": 300,
                             "messages": [{"role": "user", "content": PHOTO_MERGE.format(look=R.look(key), seen=seen)}],
@@ -1312,8 +1325,7 @@ def add_photos(book: Path, name: str, files: list[str], log=print) -> tuple[str,
     if yd is not None and not all((yd / f.name).exists() for f in sorted(d.glob("*.png"))):  # yet shown at its age
         redraw = True
     if redraw:
-        for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
-            old_sheet.unlink()
+        _drop_sheets(book, key)
     return key, redraw
 
 
