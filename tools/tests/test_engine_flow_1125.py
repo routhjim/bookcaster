@@ -103,6 +103,24 @@ td_ = {"Orla": "stale", "Tam": "stale", "Wren": "picked again"}
 check("the LoRAs of people in none of the stretch's moments wait", SF2.stretch_todo(td_, {"Orla": 3, "Tam": 0, "Wren": 1}) == ({"Orla": "stale", "Wren": "picked again"}, ["Tam"]))
 check("moments that name nobody: everyone's is built, as before", SF2.stretch_todo(td_, {"Orla": 0, "Tam": 0}) == (td_, []))
 
+# --- a process of the job that holds the box may use its servers ----------------------------------------------------
+import os
+from tts_reader import boxlease as BL
+real_holder, real_held = BL.holder, BL.held
+BL.held = lambda: False
+BL.holder = lambda: {"book": "orla", "unit": "bookcaster-orla"}
+os.environ["BOOKCASTER_JOB"] = "bookcaster-orla"
+check("a process tagged with the holding job is the holder's", BL.mine_or_free())
+os.environ["BOOKCASTER_JOB"] = "bookcaster-tam"
+check("another job's process is not", not BL.mine_or_free())
+os.environ.pop("BOOKCASTER_JOB")
+check("an untagged process is not", not BL.mine_or_free())
+BL.holder = lambda: {"book": "orla", "unit": ""}
+check("a holder without a unit lends to nobody", not BL.mine_or_free())
+BL.holder = lambda: {}
+check("a free box is anyone's", BL.mine_or_free())
+BL.holder, BL.held = real_holder, real_held
+
 # --- the retired commands --------------------------------------------------------------------------------------------
 from tts_reader import bookcaster as BC
 for argv in (["assets", "orla", "--do"], ["stage", "orla", "--chapter", "1", "--do"], ["review", "orla"],
