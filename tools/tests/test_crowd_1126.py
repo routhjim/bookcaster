@@ -23,9 +23,9 @@ def test_a_full_place_stands_more_figures_of_the_same_few_looks():
             "_room_m": [8.0, 12.0, 4.0]}
     few = [p for p in PB.with_crowd(base)["pieces"] if p["kind"] == "bystander"]
     many = [p for p in PB.with_crowd(dict(base, _crowd_size="many"))["pieces"] if p["kind"] == "bystander"]
-    assert len(few) == 4 and len(many) == PB.CROWD_MANY_MAX            # 96 m2: one to 20 m2, one to 8 m2 (capped)
+    assert len(few) == 4 and len(many) == PB.CROWD_MANY_MAX            # 96 m2: one to 20 m2, one to 4 m2 (capped)
     assert len({p["look"] for p in many}) == 4                         # two groups, two looks of each, stood again
-    assert {p["against"] for p in many} == {"wall"} and {p["against"] for p in few} == {"free"}
+    assert {p["against"] for p in many} == {"wall", "free"} and {p["against"] for p in few} == {"free"}
     who = PB.crowd_line(dict(base, _crowd_who="fair-goers in Sunday clothes"))
     assert who.startswith("fair-goers in Sunday clothes; townsfolk")
     assert PB.with_crowd(dict(base, crowd=""))["pieces"] == []

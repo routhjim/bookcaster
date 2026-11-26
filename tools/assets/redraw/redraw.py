@@ -293,6 +293,23 @@ def laid_words(sd: Path, cam: str, ppl: list) -> str:
             f"at its size: {', '.join(names_)}; nothing else lies there.")
 
 
+def entry_whole(fig: str | None) -> bool:
+    """Whether a built figure is whole (shaped from its own drawing, head and hair and all): the grooms its record
+    lists are on a head nobody sees. Its look is the book's own words for the person, not those grooms: a man built
+    whole was said in every key to have a "chin strap moustache and short pencil thin beard" his sheet never had,
+    and nothing of his age or build was said at all (11-26)."""
+    if not fig:
+        return False
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import config as C
+    parts = fig.split("_")
+    for n in range(len(parts), 1, -1):
+        p = Path(C.LIBRARY) / "character" / "_".join(parts[:n]) / "character.json"
+        if p.exists():
+            return bool(json.loads(p.read_text()).get("whole_figure"))
+    return False
+
+
 def look_words(f: dict, pos: str, covered: bool = False) -> tuple:
     """Hair, facial hair and missing layers in words, from the entry's facts -> (words, missing fact names).
     `covered`: the head has a thing on it in this shot, the hair is not said."""
@@ -1060,6 +1077,8 @@ def main():
                         lw_, miss = ("", []) if c2.get("stand_in") else look_words(
                             entry_facts(wv.get("id")), "her" if c2.get("noun") in ("woman", "girl") else "his",
                             covered=bool(on_head.get(k)))
+                        if not c2.get("stand_in") and c2.get("as") and entry_whole(wv.get("id")):
+                            lw_, miss = c2["as"], []       # (a whole figure: the book's own words for the person)
                         if on_head.get(k):   # (said with the person, before the place and the shot)
                             c2["wear"] = (c2.get("wear", "") + "; on the head, worn over the hair and covering it: "
                                           + ", ".join(on_head[k]))
