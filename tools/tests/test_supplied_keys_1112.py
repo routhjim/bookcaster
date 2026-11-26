@@ -85,18 +85,22 @@ ES = [{"id": "talk-000100", "kind": "talk", "speaker": "Person A", "t": 1.0, "du
       {"id": "quiet-000300", "kind": "quiet", "t": 9.0, "dur": 3.0}]
 vis = lambda *names, boxes=None: [dict({"name": n}, **({"box": boxes[i]} if boxes else {})) for i, n in enumerate(names)]
 
-# --- 8: the camera-hold sentence is dropped only for a camera move ----------------------------------------------------
+# --- 8: the camera-hold sentence: quiet and talk shots, dropped only for a camera move; never action words -------------
 S.HOLD_CAMERA, S.SCENE_FACTS, S.KEY_PEOPLE = True, "", {}
 HOLD = "The camera holds the opening picture's framing"
 for words in ("A close-up of her hands on the table.", "The camera holds on her face.",
               "She pushes in the drawer.", "He pulls back to look at her."):
-    check(f"hold kept: {words!r}", HOLD in S.with_facts("x.", {"id": "a", "kind": "action", "action": words}))
+    check(f"hold kept: {words!r}", HOLD in S.with_facts("x.", {"id": "a", "kind": "quiet", "action": words}))
 for words in ("The camera pans left across the room.", "The camera slowly pushes in on his face.",
               "A slow zoom in on the letter.", "A tracking shot along the wall.", "Dolly in toward the door."):
     check(f"hold dropped for a camera move: {words!r}",
-          HOLD not in S.with_facts("x.", {"id": "a", "kind": "action", "action": words}))
+          HOLD not in S.with_facts("x.", {"id": "a", "kind": "quiet", "action": words}))
 check("a talk prompt that already holds the camera gets no second sentence",
       HOLD not in S.with_facts("Static camera, the framing does not change. x.", {"id": "a", "kind": "talk"}))
+check("a talk prompt without its own camera words gets the sentence", HOLD in S.with_facts("x.", {"id": "a", "kind": "talk"}))
+check("an action shot's words carry no camera sentence",
+      HOLD not in S.with_facts("x.", {"id": "a", "kind": "action", "action": "She pushes in the drawer."}))
+check("a chain line carries no camera sentence", HOLD not in S._chain_words({"id": "c"}, "She walks to the chair."))
 
 # --- 7: the scene's facts go on quiet shots only -----------------------------------------------------------------------
 S.SCENE_FACTS, S.HOLD_CAMERA = "The fire is lit.", False
@@ -127,12 +131,12 @@ check("no option: the speaker's zone is the layout's", S._speaker_box({"id": "t"
 (L / "out" / "action-000900_s0_x1a.mp4").write_text("old take")
 S.HOLD_CAMERA = True
 st1 = S._chain_state(L, ch, key)
-check("the camera sentence on: the chain starts again", st1["sig"] != st0["sig"] and
-      not (L / "out" / "action-000900_s0_x1a.mp4").exists())
-check("... and stays while nothing changes", S._chain_state(L, ch, key)["sig"] == st1["sig"])
+check("the camera sentence on: a chain's words and takes are as they were", st1["sig"] == st0["sig"] and
+      (L / "out" / "action-000900_s0_x1a.mp4").exists())
 S.KEY_PEOPLE = {"action-000900_s0": 3}
 st2 = S._chain_state(L, ch, key)
-check("the key's people count is part of the chain", st2["sig"] != st1["sig"])
+check("the key's people count is part of the chain: it starts again", st2["sig"] != st1["sig"] and
+      not (L / "out" / "action-000900_s0_x1a.mp4").exists())
 S.KEY_PEOPLE = {"action-000900_s0": 2}
 check("... a changed count starts it again", S._chain_state(L, ch, key)["sig"] != st2["sig"])
 S.HOLD_CAMERA, S.KEY_PEOPLE = False, {}
@@ -348,3 +352,20 @@ check("a chapter without a final mix: a clear error", ok, msg)
 
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
+
+# --- 11-21: with a supplied key each person is named plainly in the words a clip is made of ---------------------------
+check("a garment's own name only", S.plain_name("the man in the old grey wool coat") == "the man in the coat")
+check("... without its trailing words", S.plain_name("the woman in the long green dress stained with mud") == "the woman in the dress")
+check("... a stuff or a plural without an article", S.plain_name("the man in the dull plate armour") == "the man in armour" and
+      S.plain_name("the man in the red robes") == "the man in robes")
+check("... a description without clothes as it is", S.plain_name("the dog") == "the dog")
+S.KEY_NAMES.clear()
+S.KEY_NAMES["a"] = {"the man in the old grey wool coat": "the man in the coat"}
+check("an action shot's words name him plainly, the sentence's capital kept",
+      S.with_facts("The man in the old grey wool coat turns. He sees the man in the old grey wool coat's hat.",
+                   {"id": "a", "kind": "action"}) == "The man in the coat turns. He sees the man in the coat's hat.")
+check("a chain line too", S._chain_words({"id": "a"}, "the man in the old grey wool coat sits.") == "the man in the coat sits.")
+check("talk words keep their own description", "old grey wool coat" in
+      S.with_facts("the man in the old grey wool coat speaks.", {"id": "a", "kind": "talk"}))
+check("a shot without key names is unchanged", "old grey" in S.with_facts("the man in the old grey wool coat sits.", {"id": "b", "kind": "action"}))
+S.KEY_NAMES.clear()

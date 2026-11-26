@@ -325,7 +325,63 @@ QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys
 HOLD_FIRST = os.environ.get("BOOKCASTER_HOLD_FIRST", "off") == "on"
 
 
+KEY_NAMES: dict = {}     # shot id -> {a person's description: its plain form} (supplied_keys: the key carries the look)
+NO_ARTICLE = {"armour", "armor", "mail", "plate", "leather", "rags", "furs", "fur", "silk", "wool", "linen", "clothes",
+              "clothing", "black", "white", "red", "blue", "green", "grey", "gray", "brown"}
+
+
+def plain_name(d: str) -> str:
+    """A person's description for the video model at its plainest: who they are and the one garment's own name ("the
+    man in the dull unpolished star-iron armour" -> "the man in armour"). The key picture carries the rest. (11-21
+    user: the words should just say the dragon and the man in armour; extra words make the clip worse.)"""
+    m = re.match(r"(?i)^(the \w+) in (?:the |a |an )?(.+)$", d.strip())
+    if not m:
+        return d
+    cl = re.split(r"(?i),|\s+(?:stained|covered|with|and|of|over|under|at|on)\b", m[2], 1)[0].split()
+    if not cl:
+        return m[1]
+    head = cl[-1]
+    return f"{m[1]} in {head}" if head.lower() in NO_ARTICLE or (head.lower().endswith("s") and not head.lower().endswith("ss")) else f"{m[1]} in the {head}"
+
+
+def key_names(R_, cx, s: dict) -> dict:
+    """{description: plain form} for everyone a shot's words may describe (the cast, in their clothes then and their
+    look's own), longest first. People of the shot whose plain forms would be the same keep their own descriptions."""
+    people = R_.people()
+    try:
+        dress = MF._dress(cx.book, cx.stem, str(s.get("id") or "").rsplit("_s", 1)[0], people)
+    except Exception:                                   # noqa: BLE001 - no wardrobe: the looks' own clothes
+        dress = {}
+    by = {}
+    for w in people:
+        for d in {describe(R_, w, dress), describe(R_, w), describe(R_, w, _shot_dress(cx, s))}:
+            if d and d != "the figure":
+                by.setdefault(d, set()).add(w)
+    here = set(s.get("who") or [])
+    seen = {}
+    for d, ws in by.items():
+        if ws & here:
+            seen.setdefault(plain_name(d).lower(), set()).update(ws & here)
+    out = {d: plain_name(d) for d in by}
+    return {d: v for d, v in sorted(out.items(), key=lambda x: -len(x[0]))
+            if v != d and len(seen.get(v.lower(), ())) < 2}
+
+
+def plain_words(prompt: str, s: dict) -> str:
+    for d, v in (KEY_NAMES.get(str(s.get("id") or "")) or {}).items():
+        prompt = re.sub(re.escape(d) + r"(?![\w-])", lambda m, v=v: (v[0].upper() + v[1:]) if m[0][0].isupper() else v,
+                        prompt, flags=re.I)
+    return prompt
+
+
 def with_facts(prompt: str, s: dict, words: str = "") -> str:
+    """The words a clip is made of: _with_facts, each person then named plainly (plain_words; talk words keep their
+    own description of the speaker)."""
+    out = _with_facts(prompt, s, words)
+    return out if s.get("kind") == "talk" else plain_words(out, s)
+
+
+def _with_facts(prompt: str, s: dict, words: str = "") -> str:
     """A clip's words with what a supplied-keys run adds. The key's head count closes a talk shot's words. The camera
     is held on the opening picture's framing (hold, or facts) unless the director's own words for the shot (its
     action, or `words`: a chain line) ask for a camera move. The scene's fixed state (SCENE_FACTS) goes on QUIET
@@ -339,7 +395,11 @@ def with_facts(prompt: str, s: dict, words: str = "") -> str:
                                                     be="is" if n == 1 else "are")
     if not (SCENE_FACTS or HOLD_CAMERA):
         return prompt
-    hold = "" if CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or re.search(r"(?i)\bstatic camera\b", prompt) \
+    # (11-21 user: the sentence is for talk and quiet shots; on an action shot or a chain line, one short sentence of
+    # action, it was the longer half of the words and all of it "no move")
+    moving = s.get("kind") == "action" or bool(words)
+    hold = "" if moving or CAMERA_MOVE.search(f"{s.get('action') or ''} {words}") or \
+        re.search(r"(?i)\bstatic camera\b", prompt) \
         else " The camera holds the opening picture's framing the whole time: no pan, no tilt, no zoom, no move."
     if hold and HOLD_FIRST and s.get("kind") == "quiet":     # (an experiment's arm: the talk clips' opening words)
         prompt, hold = f"Static camera, the framing does not change. {prompt[0].upper() + prompt[1:]}", ""
@@ -6659,6 +6719,7 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     count, judge, lip-sync zone, side words), and a talk shot whose speaker is not among them is not rendered
     (STOPPED). -> the shots' clips."""
     global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED, NO_STATUS
+    KEY_NAMES.clear()
     global DROP_ABSENT, AUDIT
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
@@ -6732,6 +6793,7 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
                     s["action"] = reside(Rb, cx, s, s["action"])
                 if s.get("chain") and s["chain"].get("lines"):
                     s["chain"]["lines"] = [reside(Rb, cx, s, x) for x in s["chain"]["lines"]]
+                KEY_NAMES[s["id"]] = key_names(Rb, cx, s)
     sd = shot_dir(book, stem)
     for s in shots:
         src = Path(keys) / f"{s['id']}.png"
