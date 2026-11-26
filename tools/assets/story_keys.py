@@ -193,6 +193,12 @@ def staging_miss(st: dict) -> list:
         return list(map(str, lb.get("misses") or []))
     return list(map(str, lb.get("misses") or (st.get("history") or [{}])[-1].get("why") or st.get("why") or []))
 
+def shots_listed(f: Path, ids: list) -> bool:
+    """Whether the place's shot list on disk is exactly these shots, in this order."""
+    f = Path(f)
+    return f.exists() and f.read_text().split() == [str(i) for i in ids]
+
+
 class Watch:
     """Tells the log when a running step is past its usual time (a thread; with: around the step)."""
     def __init__(self, what: str, step: str, shots: int, every_s: float = 30.0):
@@ -550,6 +556,11 @@ class Story:
         # made stays as it is: its set failed on a spec written under the old rule, and every restart kept that spec)
         n = STEP_RULE.get(step)
         if n and f"rule {n}" not in fp.read_text() and not (self.d(place) / ".done_keys").exists():
+            return False
+        # the place's list of shots is the plan's: a list written for another stretch of the chapter is not this
+        # plan's (11-26: a longer stretch was staged from the five shots of an earlier one, and the pass stopped on
+        # a shot the plan did not have, after the cast's figures had been built for an hour and a half)
+        if step == "shots" and not shots_listed(self.d(place) / "shots.txt", self.shots_of(place)):
             return False
         return True
 
