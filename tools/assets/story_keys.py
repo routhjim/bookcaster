@@ -951,6 +951,14 @@ class Story:
             if not (w / f).exists():
                 (w / f).write_text(time.strftime("%F %T"))
 
+    def _sheet_newer(self, name) -> bool:
+        """Whether the person's sheet was drawn after their figure's record was written."""
+        try:
+            rec = C.LIBRARY / "character" / self.cast[name] / "character.json"
+            return Path(self.person(name)["sheet"]).stat().st_mtime > rec.stat().st_mtime
+        except (OSError, KeyError, TypeError):
+            return False
+
     def _built(self, name) -> bool:
         if name in self.cast and CRE.is_id(self.cast[name]):            # a library creature with its rig
             return CRE.rig(C.LIBRARY, self.cast[name]) is not None
@@ -996,6 +1004,13 @@ class Story:
                 self._cast_creature(place, name)
                 continue
             fid, w, base = self._cast_cmd(name)
+            if self._built(name) and self._sheet_newer(name):
+                # (a figure made from a sheet that has since been drawn again is not that person any more)
+                log(f"{name}: the sheet was drawn again after the figure was made; the figure is drawn and shaped again")
+                self._fit_mark(w)
+                if sh(base + ["--from", "draw", "--until", "seats"], w / "run.log"):
+                    log(f"{name}: the figure could not be made again; see {w / 'run.log'}")
+                continue
             if self._built(name):
                 self._hands_again(name, w, base)
                 continue
