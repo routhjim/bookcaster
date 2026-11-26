@@ -462,7 +462,8 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                 break
     at_ = opts.get("at_thing")               # what the subject sits at: its top is in the frame, from any side
     if at_:
-        q = framing.project(cam, [at_["center"][0], at_["center"][1], at_["top"]], res)
+        sub_ = (subjects.get(opts.get("subject")) or {}).get("measured") or {}
+        q = framing.project(cam, at_point(at_, sub_.get("eye_xy")), res)
         if not q or not (0.03 < q[0] < 0.97 and 0.03 < q[1] < 0.97):
             why.append(f"the {at_['name']} (where the subject sits or works) is out of the frame")
     if lm:                                   # the end place's landmark seen from its front, not from behind it
@@ -556,6 +557,26 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
         hs = head_share(cam, subjects[k]["measured"], res) if k in subjects else None
         if k in facts and (not in_picture(facts[k]) or (hs is not None and hs < SLIVER)):
             why.append(f"{k} (named for the shot) is not in the picture")
+    if kind in ("full", "wide") and len([k for k in show or [] if k in subjects]) > 1:
+        # a full shot of several people holds them at sizes of one picture: from behind one's shoulder that one's
+        # back was a third of the frame, the seated one at its edge and the third a speck (11-20)
+        hh = {k: head_h(cam, subjects[k]["measured"], res) for k in show if k in subjects and k in facts
+              and in_picture(facts[k]) and not subjects[k]["measured"].get("creature")}
+        # (nor one of them behind another: from behind the one standing before a seat the one seated was not seen at
+        # all, and the shot of three was a back and a far figure, 11-20)
+        for k in hh:
+            ek = subjects[k]["measured"]["eye_xy"]
+            for o in hh:
+                eo = subjects[o]["measured"]["eye_xy"]
+                if o != k and math.dist(cam["position"][:2], eo) < math.dist(cam["position"][:2], ek) - 0.3 and \
+                        seg_point_dist(list(eo) + [0.0], list(cam["position"][:2]) + [0.0], list(ek) + [0.0]) < BEHIND_M:
+                    why.append(f"{k} (named for the shot) is behind {o}")
+        if lead and not speaker and lead in hh and turned_away(cam, subjects[lead]["measured"]):
+            why.append(f"a {kind} shot of {len(hh)} people from behind {lead} (the shot is about {lead})")
+        if len(hh) > 1 and max(hh.values()) > FULL_HEADS_K * max(min(hh.values()), 1e-6):
+            big, small = max(hh, key=hh.get), min(hh, key=hh.get)
+            why.append(f"a {kind} shot of {len(hh)} people: {big}'s head ({hh[big]:.3f}) is over {FULL_HEADS_K:g} "
+                       f"times {small}'s ({hh[small]:.3f})")
     sk = opts.get("subject")                 # the plan's shot class: a close is a close
     if kind == "close" and sk in subjects and head_h(cam, subjects[sk]["measured"], res) < MIN_FACE_H["close"]:
         why.append(f"{sk}'s face {head_h(cam, subjects[sk]['measured'], res):.3f} of the frame: not a close")
@@ -731,12 +752,14 @@ ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # a
                                                                              # near the chin (both / either), measured
 
 
-WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work")     # the work start poses (ue/pose.py), measured
+WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work",     # the work start poses (ue/pose.py), measured
+              "weapon_ready")                                       # (and a fighter's guard: READY_ACTIONS)
 
 
 def work_hands_why(act: str, m: dict) -> list:
     """A work pose as measured: the tool raised has the working (right) hand over the head; striking down and
-    working have both hands in front of the body between the waist and the chin."""
+    working, and a fighter's guard (weapon_ready), have both hands in front of the body between the waist and the
+    chin."""
     j = m.get("joints") or {}
     if not all(h in j for h in ("hand_l", "hand_r")):
         return [f"action '{act}': hands not measured"]
@@ -747,7 +770,8 @@ def work_hands_why(act: str, m: dict) -> list:
     for h in ("hand_l", "hand_r"):
         fwd = (j[h][0] - m["pelvis_xy"][0]) * f[0] + (j[h][1] - m["pelvis_xy"][1]) * f[1]
         if fwd < 0.15 or not (m.get("waist_z", 0.9) - 0.25 <= j[h][2] <= m["chin_z"]):
-            out.append(f"action '{act}': {h} not at the work in front")
+            out.append(f"action '{act}': {h} not " + ("held in front at the ready" if act == "weapon_ready"
+                                                       else "at the work in front"))
     return out
 
 
@@ -1105,7 +1129,8 @@ def landmark(spec, c):
     x, y = t["center"][:2]
     walls = [(W / 2 - x, [-1.0, 0.0]), (W / 2 + x, [1.0, 0.0]), (D / 2 - y, [0.0, -1.0]), (D / 2 + y, [0.0, 1.0])]
     front = min(walls, key=lambda w: w[0])[1]
-    return {"name": t["name"], "center": list(t["center"]), "top": t["center"][2] + t["half"][2], "front": front}
+    return {"name": t["name"], "center": list(t["center"]), "half": list(t["half"]),
+            "top": t["center"][2] + t["half"][2], "front": front}
 
 
 def cam_opts(spec, c):
@@ -1594,7 +1619,67 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
     return len(last) == n and bool(last[0]) and len(set(last)) == 1
 
 
-def fallback_camera(ms: list, room, tried=()) -> dict | None:
+BEHIND_M = 0.3               # someone this near the line from a camera to another's eyes, and nearer it, hides them
+FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
+FALLBACK_FORE_DEG = 40.0      # someone nearer a wide's camera than its subject, this near its aim, is in its foreground
+FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
+SPECK_H = 0.2                # a person under this share of a wide's height is a speck in it
+DEPTH_BACK_M = (5.0, 7.0, 9.0, 3.5)   # the depth view's camera: this far behind its foreground person ...
+DEPTH_SIDE_M = 1.2           # ... and this far to their side (they stand at one side of the frame, not over its middle)
+AT_TALL_M = 2.5              # a thing taller than this that a shot is at (a building by its door) need not show its top
+
+
+def at_point(at_: dict, sub_xy) -> list:
+    """The point of the thing a subject sits or works at that their shot holds: its top's middle; of a thing far
+    taller than a person (they stand at a building's door), its nearest point to them at a standing head's height.
+    (Held by its top, a full shot of two people at a door stood 9 m off to take in the roof 9 m up: each was 0.4% of
+    the frame and the key had nobody the render could name, 11-21.)"""
+    c, h = at_["center"], at_.get("half")
+    if at_["top"] <= AT_TALL_M or not h or not sub_xy:
+        return [c[0], c[1], at_["top"]]
+    return [max(c[0] - h[0], min(c[0] + h[0], sub_xy[0])), max(c[1] - h[1], min(c[1] + h[1], sub_xy[1])), 1.9]
+
+
+def speck_wide(ms: list) -> bool:
+    """Whether one wide that holds all these measured people makes a person a speck: they stand so far apart (or
+    from a creature among them) that the lens that takes them all in shows a standing person under SPECK_H of its
+    height."""
+    if len(ms) < 2 or all(m.get("creature") for m in ms):
+        return False
+    xy = [m["eye_xy"] for m in ms]
+    mid = [sum(e[i] for e in xy) / len(xy) for i in range(2)]
+    r0 = 1.15 * max(math.dist(e, mid) for e in xy) / (framing.SENSOR_W / 2.0 / FALLBACK_MM)
+    return 1.7 / (2.0 * r0 * framing.SENSOR_W / 2.0 / FALLBACK_MM * 9.0 / 16.0) < SPECK_H if r0 > 0 else False
+
+
+def depth_camera(ms: list, room, tried=()) -> dict | None:
+    """The view in depth of a creature and people far from it (the first of them: whom the shot is about): from
+    behind a person and to their side, aimed at the creature's head: that person large at one side of the frame, the
+    creature and whoever stands between at their distance beyond. The person: the first one, or with the creature
+    first the one furthest from it. None with no creature, or no standpoint with a clear line to it. (One wide on a
+    beast and two people 25 m apart stood 20 m from their middle: the people were a thousandth of the frame each,
+    the beast out of its edge, 11-21.)"""
+    beast = next((m for m in ms if m.get("creature")), None)
+    people = [m for m in ms if not m.get("creature")]
+    if not beast or not people:
+        return None
+    le = [beast["eye_xy"][0], beast["eye_xy"][1], beast["eye_z"]]
+    fore = max(people, key=lambda m: math.dist(m["eye_xy"], le[:2])) if ms[0] is beast else ms[0]
+    d = math.dist(fore["eye_xy"], le[:2])
+    if d < 1e-3:
+        return None
+    u = [(fore["eye_xy"][0] - le[0]) / d, (fore["eye_xy"][1] - le[1]) / d]
+    for back in DEPTH_BACK_M:
+        for sg in (1, -1):
+            p = [fore["eye_xy"][0] + back * u[0] - sg * DEPTH_SIDE_M * u[1],
+                 fore["eye_xy"][1] + back * u[1] + sg * DEPTH_SIDE_M * u[0], 1.7]
+            if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or solid_between(p, le):
+                continue
+            return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in le], "focal_mm": FALLBACK_MM}
+    return None
+
+
+def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
     of its things and of the cameras already tried, with a clear line to every one of their eyes, else to the
@@ -1603,6 +1688,11 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
     shot that had rendered black was rendered black again, 11-18.)"""
     if not ms:
         return None
+    if not _fore and speck_wide(ms):         # too far apart for one wide: the creature in depth past a person, or
+        far = depth_camera(ms, room, tried) or fallback_camera(   # the first one alone, the others out of its foreground
+            ms[:1], room, tried, _fore=[[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms[1:]])
+        if far:
+            return far
     eyes = [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms]
     mid = [sum(e[i] for e in eyes) / len(eyes) for i in range(3)]
     spread = max([math.dist(e[:2], mid[:2]) for e in eyes] + [0.5])
@@ -1617,13 +1707,29 @@ def fallback_camera(ms: list, room, tried=()) -> dict | None:
     f0 = ms[0].get("head_fwd_xy")
     a0 = math.degrees(math.atan2(f0[1], f0[0])) if f0 and math.hypot(*f0) > 1e-6 else 0.0
     sweep = [a0 + sg * d for d in range(0, 181, 15) for sg in ((1,) if d in (0, 180) else (1, -1))]
-    for need in (eyes, eyes[:1]):
+    # (and first from where the one the shot is about is no further off than the others: the wide on a man at the
+    # far wall stood by the woman near it, her head four times his, 11-20)
+    for need, lead_near in ((eyes, True), (eyes, None), (eyes, False), (eyes[:1], True), (eyes[:1], False)):
+        if lead_near is None:
+            # (no standpoint holds them all with the first the nearer: then the first alone, from before their face,
+            # the others not in its foreground - a wide on a man at work in a corner and a woman across the room had
+            # no such standpoint, and stood by her, 11-20)
+            alone = fallback_camera(ms[:1], room, tried, _fore=eyes[1:]) if len(ms) > 1 and not _fore else None
+            if alone:
+                return alone
+            continue
         for r in [r0 + d for d in (0.0, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 12.0)]:
             for z in zs:
                 for a in sweep:
                     p = [mid[0] + r * math.cos(math.radians(a)), mid[1] + r * math.sin(math.radians(a)), z]
                     if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or \
                             any(solid_between(p, e) for e in need):
+                        continue
+                    if lead_near and any(math.dist(p, e) < FALLBACK_LEAD_K * math.dist(p, eyes[0]) and not m.get("creature")
+                                         for e, m in zip(eyes[1:], ms[1:])):
+                        continue
+                    if lead_near and any(math.dist(p, e) < math.dist(p, eyes[0]) and plan_angle(
+                            [mid[0] - p[0], mid[1] - p[1]], p, e) < FALLBACK_FORE_DEG for e in _fore):
                         continue
                     if any(seg_point_dist(e, p, eyes[0]) < FALLBACK_CLEAR_M for e in eyes[1:]):
                         continue
@@ -1654,12 +1760,25 @@ def fallback_people(c: dict, subjects: dict) -> list:
     return [k for k in dict.fromkeys(([lead] if lead else []) + list(ks)) if k in subjects]
 
 
+TALL_LAND: dict = {}          # a place in the open: where its land rises too high for a camera to stand (the set's
+#                               "high_land", sets/place_build.py land_high; run_scene() fills it)
+
+
+def in_tall_land(p) -> bool:
+    if not TALL_LAND.get("runs"):
+        return False
+    sys.path.insert(0, str(HERE.parent / "places")) if str(HERE.parent / "places") not in sys.path else None
+    import ground_map as GM
+    return GM.in_water(TALL_LAND, p[0], p[1])
+
+
 def in_room(p, room):
     W, D, H = room
     if OPEN_GROUND:
         # no walls: anywhere on the flat ground round the stage, clear of its standing things (a 13 m stage held a
         # 10 m beast and the man it fought, and no camera on it could step back far enough, 11-17)
-        return 0.3 < p[2] < OPEN_SKY_M and math.dist(p[:2], OPEN_GROUND[:2]) < OPEN_GROUND[2] and not inside_solid(p)
+        return 0.3 < p[2] < OPEN_SKY_M and math.dist(p[:2], OPEN_GROUND[:2]) < OPEN_GROUND[2] and not inside_solid(p) \
+            and not in_tall_land(p)
     if not 0.3 < p[2] < H - 0.2:
         return False
     if inside_solid(p):
@@ -1824,6 +1943,9 @@ def main():
     set_spec = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())
     room = set_spec["size_m"]
     OPEN_GROUND[:] = open_ground(set_spec, Path(C.LIBRARY))
+    hl = set_spec.get("high_land") or {}
+    TALL_LAND.clear()
+    TALL_LAND.update({"cell_m": hl.get("cell_m"), "half_m": hl.get("half_m"), "runs": hl.get("tall_runs")} if hl.get("tall_runs") else {})
     if OPEN_GROUND:                          # the camera search reaches over the whole flat ground
         r_ = OPEN_GROUND[2] + max(abs(OPEN_GROUND[0]), abs(OPEN_GROUND[1]))
         room = [max(room[0], 2 * r_), max(room[1], 2 * r_), max(room[2], OPEN_SKY_M)]
@@ -1895,6 +2017,12 @@ def main():
     keys = spec.get("line") or list(spec["characters"])[:2]
     line = [spec["characters"][k]["position"][:2] for k in keys] if len(keys) == 2 else None
     est_side = None
+    if OPEN_GROUND and line:
+        # a place in the open is made from one picture of it, seen from one side: what lies the way that picture
+        # looks is the place (its things, its water, its hills); behind the picture's eye the land is only more
+        # ground. The cameras keep to the eye's side of the people's line, so they look into the place (every shot
+        # of a river bank was framed away from the river, onto flat empty ground, 11-19)
+        est_side = side(line, [OPEN_GROUND[0], OPEN_GROUND[1] - 1000.0]) or None
     for c in spec["cameras"]:                # a wide sets the side of the line; with none, the first camera that
         if line and c.get("position") and c["kind"] in ("wide", "full"):     # passes does (in the rounds below):
             est_side = side(line, c["position"]) or est_side                 # a failing first camera set it and
@@ -2103,6 +2231,11 @@ def main():
                 pw += subject_face_why(sh, c["line_subject"], subjects, res,
                                        c["line_subject"] in (cam_opts(spec, c).get("covered") or ()),
                                        shared=len([k for k in c.get("show") or [] if k in subjects]) >= 2)
+            if c.get("fight") and rnd == 0 and not pw and not still_why(sh, chk):
+                # a fight's own camera (from_plan.fight_camera): its framing is the shot. What the measures of an
+                # ordinary shot miss in it (a head larger than the subject's, a back to the camera, a body cut by
+                # the edge) is kept as notes; only a still that shows nothing sends it to the search
+                chk = dict(chk, ok=True, notes=list(chk.get("why") or []), why=[], framing=[])
             sw = still_why(sh, chk)          # a still of nothing (black, or someone's own pixels everywhere)
             if sw:
                 pw += sw

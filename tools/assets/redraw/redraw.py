@@ -341,7 +341,50 @@ def crowd_words(crowd: str | None, kind: str) -> str:
             " None of them is near the camera and none has the face of anyone named above.")
 
 
-def setting_words(sd: Path, cam: str) -> str:
+def drawn_free(sd: Path, cam: str) -> bool:
+    """Whether this shot is drawn without the staging's shapes holding it (the staged camera's "free"): a view of
+    the whole place with nobody of the cast in it, where the shot's words may name what was never staged - riders,
+    a crowd, a herd. The staged still is still where the drawing starts. (Held to the depth of an empty field, a
+    shot of riders leaving a tower was drawn as the empty field, 11-20.)"""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return False
+    return bool(next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam),
+                     {}).get("free"))
+
+
+def free_start(run: dict, still: str) -> str:
+    """The picture a free shot's drawing starts from: the place's own picture (the run's first extra reference)
+    when it is the size of the stills, else the engine still. Such a shot is the whole place as its picture sees
+    it; the engine's frame of it adds nothing the picture lacks. (From the picture's eye the engine stood at the
+    edge of the land made from the picture and half its frame was blank, 11-20.)"""
+    ref = next(iter(run.get("extra_refs") or []), None)
+    try:
+        from PIL import Image
+        if ref and Path(ref).exists() and Image.open(ref).size == Image.open(still).size:
+            return str(ref)
+    except OSError:
+        pass
+    return still
+
+
+FREE_STRENGTH = 0.95         # a free shot with a moment of its own is drawn this far from the place's picture
+
+
+def moment_words(sd: Path, cam: str) -> str:
+    """What happens in a free shot, in the director's words (the plan's "moment", carried on the staged camera),
+    said first: who and what is in the picture that the place's own picture does not have. (Said last, after the
+    whole place, and started from the place's picture, riders leaving a tower were not drawn at all, 11-20.)"""
+    rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
+    if not rounds:
+        return ""
+    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    m = str(c.get("moment") or "").strip().rstrip(".")
+    return (f"The subject of this picture, in the middle ground, clear and large enough to read, every one of them "
+            f"drawn: {m}. They are in the place described below.") if m else ""
+
+
+def setting_words(sd: Path, cam: str, face_only: bool = False) -> str:
     """The director's own words for what this shot shows of the place (the plan's "setting", carried on the staged
     camera): what a screen shows, what is seen outside, how the light falls. The engine cannot stage these."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
@@ -355,16 +398,20 @@ def setting_words(sd: Path, cam: str) -> str:
         return (f" In this shot, outside the cabin, seen through its glass wherever a pane is in the picture: "
                 f"{vw['words'].strip().rstrip('.')}. The glass sits in the cabin's own frame, which closes it all "
                 "round; the cabin's walls stay as the picture shows them.") if vw.get("words") else ""
-    return f" In this shot: {c['setting'].strip()}" if c.get("setting") else ""
+    return f" In this shot: {c['setting'].strip()}" if c.get("setting") and not face_only else ""
 
 
 def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> str:
     """What each person in the frame holds in this shot, from the staged camera ("holds", the plan's own words):
-    the engine stages no hand props. Not in a close shot: the hands are out of it."""
+    the engine stages no hand props. Not in a close shot: the hands are out of it; but a fighter's guard (weapon_ready)
+    is said in any shot: the thing is held up in front, in the frame of a close shot too (behind his head in a close
+    shot a sword was redrawn as a club, 11-20)."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
-    if not rounds or kind == "close":
+    if not rounds:
         return ""
-    c = next((c for c in json.loads(rounds[-1].read_text()).get("cameras") or [] if c.get("name") == cam), {})
+    sp = json.loads(rounds[-1].read_text())
+    c = next((c for c in sp.get("cameras") or [] if c.get("name") == cam), {})
+    ch = sp.get("characters") or {}
     held = c.get("holds") or {}
     nm = names(ppl, cast or {})
     try:                                     # where each hand is, from the staged bodies (the engine's own facts)
@@ -373,15 +420,37 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
         subj = {}
     out = []
     for k in [p[0] for p in ppl]:
-        if held.get(k) and str(held[k]).split(" (")[0].strip().lower() not in ("nothing", "none"):
-            who = nm.get(k, "the person")
-            where = hand_place((subj.get(k) or {}).get("measured") or {})
-            # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
-            # smith's tongs as pointed ears, 11-17)
-            out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}"
-                       + (f", {where}" if where else "") + "; it is in the hand and nowhere else, its whole length "
-                       "joined to the hand, nothing of it floating or behind the head.")
+        ready = (((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}).get("action") in READY_WORDS
+        if (kind == "close" and not ready) or not held.get(k) or \
+                str(held[k]).split(" (")[0].strip().lower() in ("nothing", "none"):
+            continue
+        who = nm.get(k, "the person")
+        where = ready_place(ch, k, subj.get(k) or {}, nm, cast or {}, {p[0] for p in ppl}) if ready else \
+            hand_place((subj.get(k) or {}).get("measured") or {})
+        # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
+        # smith's tongs as pointed ears, 11-17)
+        out.append(f"{who[0].upper() + who[1:]} holds in the hands, not worn: {held[k]}"
+                   + (f", {where}" if where else "") + "; it is in the hand and nowhere else, its whole length "
+                   "joined to the hand, nothing of it floating or behind the head.")
     return (" " + " ".join(out)) if out else ""
+
+
+READY_WORDS = ("weapon_ready",)      # the guard of a fighter (scenes/ue/pose.py READY_ACTIONS)
+
+
+def ready_place(ch: dict, k: str, sub: dict, nm: dict, cast: dict, inf: set) -> str:
+    """Where a fighter in the guard holds the thing, in plain words: at the ready in front of the body, in both hands
+    (a two-handed thing, as the engine gripped it) or in the hand it is in, pointed at whom they face."""
+    pr = ((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}
+    two = any(((h or {}).get("grip") or {}).get("two_hands") for h in (sub.get("held") or {}).values())
+    pos = who_of(cast, k).get("pos") or "their"
+    hand = "in both hands" if two else f"in the {'left' if pr.get('hand') == 'l' else 'right'} hand"
+    t = (ch.get(k) or {}).get("facing_to")
+    tgt = None
+    if t and t != k:
+        tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
+    return (f"held {hand} at the ready in front of {pos} body, between waist and chest, its length pointing "
+            f"forward and up at {tgt or 'what ' + pos + ' faces'}")
 
 
 def hand_place(m: dict) -> str:
@@ -439,9 +508,15 @@ def wears_words(sd: Path, cam: str, ppl: list, cast: dict | None) -> str:
     return (" " + " ".join(out)) if out else ""
 
 
+LOOK_AWAY_DEG = 25           # a head turned at least this far from the camera does not look at the viewer
+
+
 def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
-    """Whom each person in the frame is turned toward, from the staged spec ("facing_to"): the redraw kept the
-    engine's bodies, but a video model read two men at a window as looking out of it (11-12)."""
+    """What each person in the frame looks at, from the staged spec: whom they are turned toward ("facing_to"),
+    or the piece of the set they work at ("work_at"): eyes and head on it. The redraw kept the engine's bodies,
+    but a video model read two men at a window as looking out of it (11-12); and a man bent over his work was
+    drawn with his head turned to the viewer in key after key (11-20): a head the scene turned away from the
+    camera is said not to look at the viewer."""
     rounds = sorted(sd.glob("spec_round*.json"), key=lambda q: int(q.stem.split("round")[1]))
     if not rounds or not cast:
         return ""
@@ -449,13 +524,24 @@ def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
     inf = {p[0] for p in ppl}
     nm = names(ppl, cast)
     out = []
-    for k in [p[0] for p in ppl]:
-        t = (ch.get(k) or {}).get("facing_to")
-        if t and t in ch and t != k:
-            who = nm.get(k, "the person")
+    for p in ppl:
+        k, ang = p[0], p[2]
+        if who_of(cast, k).get("creature"):
+            continue
+        t, wk = (ch.get(k) or {}).get("facing_to"), (ch.get(k) or {}).get("work_at")
+        who = nm.get(k, "the person")
+        who = who[0].upper() + who[1:]
+        pos = who_of(cast, k).get("pos") or "their"
+        away = (f" {pos.capitalize()} eyes are not on the viewer and {pos} head is not turned to the camera."
+                if ang >= LOOK_AWAY_DEG else "")
+        if wk:
+            thing = re.sub(r"[_\d]+", " ", str(wk)).strip()
+            out.append(f"{who} is looking down at the {thing} in front of {pos} hands, {pos} head bowed to the work "
+                       f"and {pos} eyes on it.{away}")
+        elif t and t in ch and t != k:
             tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
             if tgt:
-                out.append(f"{who[0].upper() + who[1:]} is turned toward {tgt}.")
+                out.append(f"{who} is turned toward {tgt} and looks at {tgt}.{away}")
     return (" " + " ".join(out)) if out else ""
 
 
@@ -791,6 +877,27 @@ def image_prompt(kind: str, ppl: list, wear: str, room: str, trigger: str, thing
         look or "Real skin and hair, woven cloth with natural folds, natural light, film grain."] if x)
 
 
+FACE_SEEN_DEG = 115          # a head turned less than this from the camera shows its face
+FACE_SHEET_HEAD = 0.09       # a face this tall in the frame or taller (crown to chin, of the frame's height) is read
+
+
+def sheet_ref(w: dict, worn: str | None, with_lora: bool = False) -> str | None:
+    """The sheet given as a person's reference picture in a job, or None. Someone drawn by their own LoRA in their
+    usual look needs none: the LoRA is their face, build and usual clothes, and every reference picture is paid for
+    in each drawing (a job with one took 6.5 s, with two 11.7 s, three 15.3 s, four 19.4 s, and with more than one
+    the card had no room to keep the references between steps, 11-19). Their sheet is given when they wear what the
+    LoRA never saw (an outfit's own sheet, a sheet of the thing they have on), or when they have no LoRA.
+    with_lora: the usual sheet beside the LoRA all the same: asked for the whole run ("sheet_with_lora"), or for
+    this person in this shot because their face is turned to the camera and large enough to read (FACE_SHEET_HEAD).
+    From her LoRA alone a woman of seventy was drawn as one of fifty in every shot that showed her face; the man
+    beside her was himself either way (11-19). Small, turned away or far off, nobody's sheet is paid for."""
+    if worn:
+        return worn
+    if w.get("_outfit_sheet") or not w.get("lora") or with_lora:
+        return w.get("sheet")
+    return None
+
+
 def faces(ppl: list, cast: dict) -> list:
     """Each person's face reference (cast "face_ref": a crop of their face from the first accepted close shot,
     facecrop.py) for the people in frame whose face shows: beside the LoRA and the sheet, it holds one face from
@@ -935,6 +1042,7 @@ def main():
                                 c2["back_detail"] = wv["wear_back_set"].split(" and the back of ")[0]
                         if wv.get("worn_sheet"):           # (its sheet, not another of the person's worn sheets)
                             c2["sheet"], c2["worn_sheets"] = wv["worn_sheet"], {}
+                            c2["_outfit_sheet"] = True     # (an outfit's own sheet: a reference their LoRA has not)
                         # hair, facial hair, missing layers: the built figure's own facts (library entry), never
                         # a hand-written cast line (one said "dark brown-black" of a figure built black and grey)
                         # one fixed wording from the entry's facts in every key (the text is the fact; the hair check
@@ -958,8 +1066,12 @@ def main():
                 worn_now = cam_wears(sd, cam)
                 if cast:          # each person's own LoRA on their own region; their sheets as references
                     loras, sheets = [], []
-                    for k, b, *_ in ppl:
+                    for k, b, *rest_ in ppl:
                         w = who_of(cast, k)
+                        j2_ = (sh["people"].get(k) or {}).get("joints2d") or {}
+                        hh_ = (j2_["chin"][1] - j2_["head_top"][1]) if "chin" in j2_ and "head_top" in j2_ else None
+                        face_big = (rest_[0] if rest_ else 0) < FACE_SEEN_DEG and (
+                            hh_ >= FACE_SHEET_HEAD if hh_ is not None else (b[3] - b[1]) >= 0.6)
                         if w.get("lora"):
                             pad = run.get("lora_pad", 0.06)
                             reg = (sh["people"].get(k) or {}).get("region")
@@ -975,7 +1087,7 @@ def main():
                             loras.append([w["lora"], float(w.get("lora_w", lora_by_head(lw, run, hh, len(ppl)))), area])
                         # (wearing something the book has a sheet of them in, that sheet is their reference here:
                         # told in words alone that a pilot had his helmet on, no key drew it, 11-15)
-                        ws = worn_sheet(w, worn_now.get(k)) or w.get("sheet")
+                        ws = sheet_ref(w, worn_sheet(w, worn_now.get(k)), bool(run.get("sheet_with_lora")) or face_big)
                         if ws and ws not in sheets:
                             sheets.append(ws)
                 else:
@@ -990,7 +1102,10 @@ def main():
                                                                      run.get("look", "")) if x),
                                                 sh.get("speaker"), sh, run.get("facts", False),
                                                 run.get("outdoors", False)) + edge_words(edge, cast)
-                         + setting_words(sd, cam) + crowd_words(run.get("crowd"), kind)
+                         # (a close shot of a person has their face and nothing of the place: told of the thing
+                         # they look at, the drawing put it on their head, a shimmering stone as a glow in the hair)
+                         + setting_words(sd, cam, face_only=kind == "close" and bool(ppl))
+                         + crowd_words(run.get("crowd"), kind)
                          + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast) + laid_words(sd, cam, ppl)
                          + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),
@@ -1000,12 +1115,19 @@ def main():
                          "loras": loras,
                          "init": {"image": blocked_still(run, out, sd.name, cam, sh["still"]), "strength": st},
                          "_meta": dict(base, strength=st, seed=seed)}
+                    free_ = not ppl and drawn_free(sd, cam)
+                    if free_:
+                        j["init"]["image"] = free_start(run, sh["still"])
+                        mw = moment_words(sd, cam)
+                        if mw:                   # what happens in it leads, and the picture holds it less
+                            j["prompt"] = mw + " " + j["prompt"]
+                            j["init"]["strength"] = max(st, FREE_STRENGTH)
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
                     cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
                            "scale": c.get("scale", 0.8), "end": c.get("end", 1.0), "prepared": True}
                           for c in cl if (g / f"{cam}_{pics[c['type']]}.png").exists()]
-                    if cj:
+                    if cj and not free_:
                         j["control"] = cj[0] if len(cj) == 1 else cj
                     if run.get("mask_people") and ppl:      # people redrawn harder than the room
                         mk = run.get("mask_people") if isinstance(run.get("mask_people"), str) else "people"

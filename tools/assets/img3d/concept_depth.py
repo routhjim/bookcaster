@@ -21,6 +21,8 @@ OUT.json: {"room_m": [W, D, H], "eye": [x, y, z], "things": {"spec:<id>" | "seen
 "facing", "raised_m" (it stands on a raised part of the floor, this high)}}, "off_floor": {key: {"kind"}} (things the
 picture shows hanging: not placed),
 "scale", "floor_fit"} (set frame: the room's middle at 0, y toward the back wall).
+A room's result has "faces" too: the picture on the room's own walls, floor and roof where it sees them (room_faces),
+each a PNG beside OUT.json.
 """
 from __future__ import annotations
 
@@ -133,8 +135,318 @@ def stand_before(things: dict) -> None:
             ta["xy"][j] = round(tb["xy"][j] + sg * (tb["size_m"][1] / 2 + ta["size_m"][1] / 2 + 0.05), 3)
 
 
-def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
-    """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}."""
+RELIEF_RISE_M = 0.4         # what stands this far above the ground is the land's form, not the ground
+RELIEF_FRONT_M = 1.0        # ... and no nearer the eye than the form's own front, less this
+RELIEF_FAR_M = 26.0         # ... and no farther from the eye than this: the far land is the panorama's
+RELIEF_GRID = 200           # points across the picture
+RELIEF_ON_M = (8.0, 10.0)   # a form the frame cuts is carried on past it: this far up, this far sideways
+RELIEF_ON_STEP_M = 0.5
+RELIEF_GAP_M = 5.0          # a face this long joins two things: left out
+RELIEF_BACK_M = 1.0         # the form's back stands this far behind its farthest point
+RELIEF_LEAST = 40           # a form of fewer faces across than this is no form
+
+
+def _grid(pts, mask, axes, d: float) -> tuple:
+    """The picture's points thinned to RELIEF_GRID across, in the room's frame -> (P, ok, U, V)."""
+    h0, w0 = pts.shape[:2]
+    st = max(1, w0 // RELIEF_GRID)
+    rr, cc = np.arange(st // 2, h0, st), np.arange(st // 2, w0, st)
+    P = to_room(pts[rr][:, cc], axes, d)
+    ok = mask[rr][:, cc] & np.isfinite(P).all(-1)
+    P = np.where(ok[..., None], P, 0.0)
+    U, V = np.meshgrid((cc + 0.5) / w0, (rr + 0.5) / h0)
+    return P, ok, U, V
+
+
+def _carried(P, reg, U, V, steep_only: bool = False) -> tuple:
+    """What the frame's edges cut is carried on past them: up from the top row, sideways from the end columns (the
+    picture mirrored there). steep_only: carried up only where what the top edge cuts stands steeper than it lies
+    (a rock face, a trunk): a grass slope that ran out of the top of its picture was carried up as a wall of
+    grass 8 m tall (11-19)."""
+    h, w = reg.shape
+    ku, ks = int(RELIEF_ON_M[0] / RELIEF_ON_STEP_M), int(RELIEF_ON_M[1] / RELIEF_ON_STEP_M)
+    top = reg[0].copy()
+    if steep_only and h > 3:
+        t = P[0] - P[3]
+        top &= reg[3] & (t[:, 2] > np.hypot(t[:, 0], t[:, 1]))
+    if top.any():
+        k = np.arange(ku, 0, -1)[:, None]
+        up = np.repeat(P[:1], ku, 0) + np.stack([0 * k, 0 * k, k * RELIEF_ON_STEP_M], -1) * np.ones((1, w, 1))
+        P, reg = np.concatenate([up, P]), np.concatenate([np.repeat(top[None], ku, 0), reg])
+        U = np.concatenate([np.repeat(U[:1], ku, 0), U])
+        V = np.concatenate([np.repeat(V[1:ku + 1][::-1], 1, 0) if ku < h else np.repeat(V[:1], ku, 0), V])
+    for side in (0, -1):
+        col = reg[:, side]
+        if not col.any():
+            continue
+        k = (np.arange(ks, 0, -1) if side == 0 else np.arange(1, ks + 1))[None, :]
+        sg = -1.0 if side == 0 else 1.0
+        edge = P[:, side][:, None, :]
+        on = edge + np.stack([sg * k * RELIEF_ON_STEP_M, 0 * k, 0 * k], -1)
+        ue = (U[:, 1:ks + 1][:, ::-1] if side == 0 else U[:, -ks - 1:-1][:, ::-1]) if ks < w else np.repeat(U[:, side][:, None], ks, 1)
+        ve = np.repeat(V[:, side][:, None], ks, 1)
+        re = np.repeat(col[:, None], ks, 1)
+        P = np.concatenate([on, P], 1) if side == 0 else np.concatenate([P, on], 1)
+        U = np.concatenate([ue, U], 1) if side == 0 else np.concatenate([U, ue], 1)
+        V = np.concatenate([ve, V], 1) if side == 0 else np.concatenate([V, ve], 1)
+        reg = np.concatenate([re, reg], 1) if side == 0 else np.concatenate([reg, re], 1)
+    return P, reg, U, V
+
+
+def _front(q) -> tuple:
+    """The faces of the squares q of a grid, wound toward the eye -> (faces, the points they use)."""
+    h, w = q.shape[0] + 1, q.shape[1] + 1
+    qi, qj = np.nonzero(q)
+    idx = np.arange(h * w).reshape(h, w)
+    a, b, c, e = idx[qi, qj], idx[qi + 1, qj], idx[qi, qj + 1], idx[qi + 1, qj + 1]
+    front_f = np.concatenate([np.stack([a, b, c], -1), np.stack([c, b, e], -1)])
+    return front_f, np.unique(front_f)
+
+
+def _closed(F, B, front_f, U, V) -> tuple:
+    """One solid of a front (points F, faces front_f) and its back (the same points at B): the back's faces turned
+    away, every edge of the front that only one face has joined to the back. -> (points, faces, uv: the front on
+    the left half of a picture twice as wide, the back on its right)."""
+    n0 = len(F)
+    back_f = front_f[:, ::-1] + n0
+    ed = np.concatenate([front_f[:, [0, 1]], front_f[:, [1, 2]], front_f[:, [2, 0]]])
+    key = np.sort(ed, 1)
+    _, inv, cnt = np.unique(key[:, 0] * (2 * n0) + key[:, 1], return_inverse=True, return_counts=True)
+    rim = ed[cnt[inv] == 1]
+    u_, v_ = rim[:, 0], rim[:, 1]
+    side_f = np.concatenate([np.stack([u_, u_ + n0, v_ + n0], -1), np.stack([u_, v_ + n0, v_], -1)])
+    vtx = np.concatenate([F, B])
+    faces = np.concatenate([front_f, back_f, side_f])
+    uv = np.stack([U.reshape(-1) / 2, 1.0 - V.reshape(-1)], -1)
+    uv = np.concatenate([uv, uv + [0.5, 0.0]])
+    keep = np.unique(faces)
+    re_ = np.full(len(vtx), -1)
+    re_[keep] = np.arange(len(keep))
+    return vtx[keep], re_[faces], uv[keep]
+
+
+def relief(pts, mask, axes, d: float, box: list, to_set, region: dict | None = None) -> tuple | None:
+    """The land's own form (a cliff, a rock face, a crag) as the picture shows it: every point of the picture that
+    rises from the ground and is joined to the form's box, at the form's distance or beyond it, as one solid whose
+    front is the picture's own surface and whose back is flat; where the frame cuts the form it is carried on, up
+    and to the sides. -> (points [n, 3] in the set's frame, faces, uv in a picture twice as wide as the place's:
+    the front on its left half, the back on its right), or None when no form is found. region, when given, is
+    filled with the form's own points of the grid ("reg").
+
+    Why not a shape made from the form's part of the picture: a picture-to-3D model makes a whole separate thing of
+    what it is given, and a rock face with a cave mouth, cut from its picture, came back as a stone hut three metres
+    across standing alone on a plain (11-19). The form runs out of its picture; only the picture's depth has it
+    where it is and as it is."""
+    import scipy.ndimage as ndi
+    P, ok, U, V = _grid(pts, mask, axes, d)
+    h, w = ok.shape
+    near = ok & (np.hypot(P[..., 0], P[..., 1]) < RELIEF_FAR_M)
+    rise = near & (P[..., 2] > RELIEF_RISE_M)
+    r0, r1 = int(box[1] * h), max(int(box[3] * h), int(box[1] * h) + 1)
+    c0, c1 = int(box[0] * w), max(int(box[2] * w), int(box[0] * w) + 1)
+    seed = np.zeros_like(rise)
+    seed[r0:r1, c0:c1] = rise[r0:r1, c0:c1]
+    if seed.sum() < RELIEF_LEAST:
+        return None
+    front = float(np.percentile(P[..., 1][seed], 5)) - RELIEF_FRONT_M
+    lab, _ = ndi.label(rise & (P[..., 1] > front))
+    ids = np.unique(lab[seed & (lab > 0)])
+    if not len(ids):
+        return None
+    reg = np.isin(lab, ids)
+    # down to the ground it stands on (the points just under its foot)
+    reg = ndi.binary_dilation(reg, iterations=2) & near & (P[..., 1] > front)
+    reg0 = reg
+    P, reg, U, V = _carried(P, reg, U, V)
+    P[..., 2] = np.maximum(P[..., 2], 0.0)
+    # the faces: each square of four of its points, none of them a stretch between two things
+    q = reg[:-1, :-1] & reg[1:, :-1] & reg[:-1, 1:] & reg[1:, 1:]
+    q &= (np.linalg.norm(P[:-1, :-1] - P[1:, 1:], axis=-1) < RELIEF_GAP_M) & \
+         (np.linalg.norm(P[1:, :-1] - P[:-1, 1:], axis=-1) < RELIEF_GAP_M)
+    q = ndi.binary_opening(q, structure=np.ones((2, 2), bool))
+    lab, n_ = ndi.label(q)
+    if not n_:
+        return None
+    q = lab == (1 + int(np.argmax(ndi.sum(q, lab, range(1, n_ + 1)))))
+    if q.sum() < RELIEF_LEAST:
+        return None
+    front_f, used = _front(q)
+    F = to_set(P.reshape(-1, 3))
+    # its back: the same points on an even grid, flat, behind its farthest point
+    h, w = reg.shape
+    lo, hi = F[used].min(0), F[used].max(0)
+    gx, gz = np.meshgrid(np.linspace(lo[0], hi[0], w), np.linspace(hi[2], 0.0, h))
+    B = np.stack([gx, np.full_like(gx, hi[1] + RELIEF_BACK_M), gz], -1).reshape(-1, 3)
+    if region is not None:
+        region["reg"] = reg0
+    return _closed(F, B, front_f, U, V)
+
+
+LAND_FAR_M = 90.0           # the picture's land is built this far out from its eye; beyond it the panorama's
+LAND_UNDER_M = 0.03         # its ground lies this far under the set's real ground, out of sight
+LAND_JUMP = 1.35            # neighbours whose distances from the eye differ by more than this are two things, one
+#                             behind the other: no face between them (the far one is seen past the near one's edge)
+LAND_BACK_K = 1.15          # its back: every point this much farther out along its own line from the eye, so the
+#                             solid's sides are seen end on from where the picture was drawn
+LAND_CUT_FAR_M = 24.0       # a thing of the picture nearer its eye than this is built as a piece of the set ...
+LAND_CUT_BIG_M = 30.0       # ... unless it is larger than this: those are cut out of the land, the rest are the land's
+LAND_CUT_BEHIND_M = 0.5
+
+
+LAND_LEVEL_M = (25.0, 50.0)  # the picture's ground is levelled this near its eye; left as it lies beyond the second
+LAND_LIES = 0.8             # a surface whose upward share is at least this lies (ground); less, it stands
+LAND_LEVEL_CELLS = (5.0, 20.0)
+
+
+def _ground_rise(P, reg) -> np.ndarray:
+    """How high the picture's own ground lies over the fitted plane at each point of the grid: the height of the
+    surfaces that lie (not those that stand: a rock face, a trunk), smoothed, carried under what stands on it."""
+    import scipy.ndimage as ndi
+    du = np.gradient(P, axis=1)
+    dv = np.gradient(P, axis=0)
+    n = np.cross(du, dv)
+    up = np.abs(n[..., 2]) / np.maximum(np.linalg.norm(n, axis=-1), 1e-9)
+    lies = ndi.binary_erosion(reg, iterations=1) & (up >= LAND_LIES)
+    z = np.maximum(P[..., 2], 0.0)
+    g = np.zeros(z.shape)
+    done = np.zeros(z.shape, bool)
+    for sg in LAND_LEVEL_CELLS:
+        wt = ndi.gaussian_filter(lies.astype(np.float64), sg)
+        val = ndi.gaussian_filter(np.where(lies, z, 0.0), sg) / np.maximum(wt, 1e-9)
+        ok = ~done & (wt > 0.02)
+        g[ok], done[ok] = val[ok], True
+    return np.where(reg, np.minimum(g, z), 0.0)
+
+
+def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np.ndarray,
+         keep_out: np.ndarray | None = None) -> tuple | None:
+    """All the land a place in the open's picture shows, as one solid standing where the picture has it: its ground
+    (just under the set's real ground), and every bank, slope, rock, tree and far hill rising from it, the front the
+    picture's own surface. What the frame cuts is carried on. The things that are built as pieces of the set
+    (things: their place and size in the set's frame; boxes: their part of the picture) are taken out of it, the
+    land behind each closed over; keep_out is a part of the grid left out whole (the land's own form, a solid of
+    its own). -> (points in the set's frame, faces, uv, the picture with the pieces painted over, the keys of the
+    things left in it, not to be built again), or None.
+
+    Why: the set of a place in the open was a flat disc of ground forty metres across with the pieces cut from the
+    picture stood on it, and nothing of the picture's land: every shot of every such place had bare flat ground to
+    the horizon behind its people (11-19)."""
+    import scipy.ndimage as ndi
+    P, ok, U, V = _grid(pts, mask, axes, d)
+    h, w = ok.shape
+    eye = to_room(np.zeros(3), axes, d)
+    reg = ok & (np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1]) < LAND_FAR_M)
+    if keep_out is not None:
+        reg &= ~keep_out
+    if reg.sum() < RELIEF_LEAST:
+        return None
+    F0 = to_set(P.reshape(-1, 3)).reshape(h, w, 3)
+    e_set = to_set(eye[None])[0]
+    img = image.copy()
+    sy, sx = image.shape[0] / h, image.shape[1] / w
+    has = []
+    for key, t in things.items():
+        if key not in boxes:
+            continue
+        dist = math.hypot(t["xy"][0] - e_set[0], t["xy"][1] - e_set[1])
+        if key.startswith("seen:") and (dist > LAND_CUT_FAR_M or max(t["size_m"]) > LAND_CUT_BIG_M):
+            has.append(key)                    # (far off or vast: it is the land's, and not built again)
+            continue
+        b = boxes[key]
+        r0, r1 = max(0, int(b[1] * h)), min(h, int(math.ceil(b[3] * h)))
+        c0, c1 = max(0, int(b[0] * w)), min(w, int(math.ceil(b[2] * w)))
+        m = np.zeros((h, w), bool)
+        m[r0:r1, c0:c1] = reg[r0:r1, c0:c1] & (P[r0:r1, c0:c1, 2] > RELIEF_RISE_M / 2) & \
+            (F0[r0:r1, c0:c1, 1] <= t["xy"][1] + t["size_m"][1] / 2 + LAND_CUT_BEHIND_M)
+        if not m.any():
+            continue
+        m = ndi.binary_dilation(m, iterations=1) & reg
+        # the land behind it, closed over: along each row from what lies on either side of it
+        for r in np.nonzero(m.any(1))[0]:
+            cols = np.nonzero(m[r])[0]
+            for run in np.split(cols, np.nonzero(np.diff(cols) > 1)[0] + 1):
+                a, z = run[0] - 1, run[-1] + 1
+                la, lz = a >= 0 and reg[r, a], z < w and reg[r, z]
+                if not (la and lz):           # (nothing on one side of it to close the land over from)
+                    reg[r, run] = False
+                    continue
+                f = ((run - a) / max(z - a, 1))[:, None]
+                P[r, run] = P[r, a] * (1 - f) + P[r, z] * f
+                y0, y1 = int(r * sy), max(int((r + 1) * sy), int(r * sy) + 1)
+                xa, xz = min(int((a + 0.5) * sx), image.shape[1] - 1), min(int((z + 0.5) * sx), image.shape[1] - 1)
+                x0, x1 = int(run[0] * sx), min(int((run[-1] + 1) * sx), image.shape[1])
+                if x1 > x0:
+                    g = (np.arange(x0, x1) - xa)[None, :, None] / max(xz - xa, 1) if xz != xa else np.zeros((1, x1 - x0, 1))
+                    g = np.clip(g, 0.0, 1.0)
+                    img[y0:y1, x0:x1] = (image[y0:y1, xa:xa + 1].astype(np.float32) * (1 - g)
+                                         + image[y0:y1, xz:xz + 1].astype(np.float32) * g).astype(np.uint8)
+    # the picture's own ground, where it does not lie on the fitted plane (a hillside, a bank's slope), is taken off
+    # everything near the eye, fading out farther off: people stand on the set's level ground, and land that rose
+    # with the hill stood over their heads (a man fighting on a hillside was under the hill, his sword's point out
+    # of it, 11-19)
+    g = _ground_rise(P, reg)
+    rr = np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1])
+    P[..., 2] -= g * (1.0 - np.clip((rr - LAND_LEVEL_M[0]) / (LAND_LEVEL_M[1] - LAND_LEVEL_M[0]), 0.0, 1.0))
+    P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
+    # its ground under the real ground; what rises, risen from there
+    # (eased down to the ground over the first RELIEF_RISE_M, not cut off there: the foot of an upright face would
+    # be so many points at one spot)
+    z = np.maximum(P[..., 2], 0.0)
+    P[..., 2] = np.where(z < RELIEF_RISE_M, z * z / RELIEF_RISE_M, z) - LAND_UNDER_M
+    R = np.linalg.norm(P - eye, axis=-1)
+    q = reg[:-1, :-1] & reg[1:, :-1] & reg[:-1, 1:] & reg[1:, 1:]
+    four = np.stack([R[:-1, :-1], R[1:, :-1], R[:-1, 1:], R[1:, 1:]])
+    q &= four.max(0) < LAND_JUMP * np.maximum(four.min(0), 1e-3)
+    q = ndi.binary_opening(q, structure=np.ones((2, 2), bool))
+    lab, n_ = ndi.label(q)
+    if not n_:
+        return None
+    sizes = np.asarray(ndi.sum(q, lab, range(1, n_ + 1)))
+    q = np.isin(lab, 1 + np.nonzero(sizes >= RELIEF_LEAST)[0])
+    if not q.any():
+        return None
+    front_f, _ = _front(q)
+    Pf = P.reshape(-1, 3)
+    F = to_set(Pf)
+    B = to_set(eye + (Pf - eye) * LAND_BACK_K)
+    return (*_closed(F, B, front_f, U, V), img, has)
+
+
+TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wide
+
+
+def tops_of(vtx, uv) -> dict:
+    """How high the land's front stands over each cell of the ground (the set's frame): {"cell_m", "x0", "y0",
+    "z": rows from y0 up, each from x0 right}; the staging keeps people off what rises and cameras out of it."""
+    f = vtx[uv[:, 0] <= 0.5]
+    x0, y0 = float(np.floor(f[:, 0].min())), float(np.floor(f[:, 1].min()))
+    j = ((f[:, 0] - x0) / TOPS_CELL_M).astype(int)
+    i = ((f[:, 1] - y0) / TOPS_CELL_M).astype(int)
+    z = np.zeros((i.max() + 1, j.max() + 1))
+    np.maximum.at(z, (i, j), np.maximum(f[:, 2], 0.0))
+    return {"cell_m": TOPS_CELL_M, "x0": x0, "y0": y0, "z": np.round(z, 1).tolist()}
+
+
+def write_relief(out: Path, vtx, faces, uv, image: np.ndarray) -> dict:
+    """The form's .glb (asset frame: z up, its front toward -y, standing on z 0, the middle of its footprint at the
+    origin; written y-up) with the place's picture as its texture. -> where it stands in the set's frame, its size."""
+    import trimesh
+    from PIL import Image
+    lo, hi = vtx.min(0), vtx.max(0)
+    mid = np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
+    v = vtx - mid
+    im = Image.fromarray(image)
+    im = im.resize((min(2048, im.width), int(im.height * min(2048, im.width) / im.width)), Image.LANCZOS)
+    tex = Image.fromarray(np.concatenate([np.asarray(im), np.asarray(im)], 1))
+    yup = np.stack([v[:, 0], v[:, 2], -v[:, 1]], -1)
+    trimesh.Trimesh(yup, faces, visual=trimesh.visual.TextureVisuals(uv=uv, image=tex), process=False).export(out)
+    return {"glb": str(out), "xy": [round(float(mid[0]), 3), round(float(mid[1]), 3)],
+            "size_m": [round(float(x), 3) for x in hi - lo], "faces": int(len(faces)), "z0": round(float(lo[2]), 4)}
+
+
+def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None = None) -> dict:
+    """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}.
+    keep: filled with the frame the room was measured in (for relief())."""
     n, d, fit = fit_floor(pts, mask)
     axes = frame(n, d)
     q = to_room(pts[mask], axes, d)
@@ -172,6 +484,15 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
             bq = to_room((bv * (yo / den))[None], axes, d)[0] if abs(den) > 1e-6 else None
             if bq is None or not (0.0 < float(bq[2]) <= RAISED_MOST_M):
                 hung[key] = {"kind": kind, "at_m": round(yo, 3)}
+                if bq is not None and float(bq[2]) > RAISED_MOST_M:
+                    # where it hangs: how high its lowest part is, how wide and tall it is at its own distance
+                    tv_ = ray(intr, (x0 + x1) / 2, y0)
+                    dn_ = float(tv_ @ axes[1])
+                    tq_ = to_room((tv_ * (yo / dn_))[None], axes, d)[0] if abs(dn_) > 1e-6 else None
+                    k_ = yo / max(1e-6, float(fq[1]))
+                    hung[key].update(hangs_m=round(float(bq[2]), 3), x=round(float(bq[0]), 3),
+                                     width_m=round(float(abs(rq[0] - lq[0])) * k_, 3),
+                                     height_m=round(max(0.1, float(tq_[2] - bq[2])) if tq_ is not None else 0.3, 3))
                 continue
             k = yo / max(1e-6, float(fq[1]))               # (its width, seen at its own distance and not the floor's)
             fq, lq, rq = bq, np.array([bq[0] - abs(rq[0] - lq[0]) * k / 2, yo, 0.0]), np.array([bq[0] + abs(rq[0] - lq[0]) * k / 2, yo, 0.0])
@@ -207,10 +528,456 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict) -> dict:
         out[key] = {"xy": [round(x, 3), round(y, 3)], "size_m": [round(w, 3), round(dp, 3), round(hh, 3)],
                     "against": against, "facing": facing, "kind": t["kind"],
                     **({"raised_m": round(raised[key] * scale, 3)} if key in raised else {})}
+    for key, h in hung.items():                  # (a hung thing's measures in the room's own metres and middle)
+        if "hangs_m" in h:
+            x_ = (h.pop("x") - cx) * scale
+            y_ = (h["at_m"] - cy) * scale
+            near = min((("north", D / 2 - y_), ("west", x_ + W / 2), ("east", W / 2 - x_)), key=lambda t: t[1])[0]
+            h.update(hangs_m=round(h["hangs_m"] * scale, 3), wall=near, xy=[round(x_, 3), round(y_, 3)],
+                     size_m=[round(h.pop("width_m") * scale, 3), 0.15, round(h.pop("height_m") * scale, 3)])
     stand_before(out)
+    if keep is not None:
+        keep.update(axes=axes, d=d, cx=cx, cy=cy, scale=scale, W=W, D=D, H=H)
     return {"room_m": [round(W, 2), round(D, 2), round(H, 2)],
             "eye": [round(-cx * scale, 3), round(-cy * scale, 3), round(d * scale, 3)],
             "things": out, "off_floor": hung, "scale": round(scale, 3), "floor_fit": round(fit, 3)}
+
+
+FACE_PX_PER_M = 128         # a face's picture: this many texels a metre ...
+FACE_PX_MOST = 2048         # ... and no more than this along its longer side
+FACE_BEFORE_M = {"wall": (0.3, 0.03), "floor": (0.2, 0.0)}   # a picture point this far out from a face into the
+#                             room (metres, plus this share of the face's distance from the eye) stands before it: the
+#                             face is hidden there, not painted with that thing (a wall, or the floor and the roof).
+#                             Measured square to the face, not along the eye's line: a side wall seen end on lies a
+#                             little inside the measured box, and along the line that little was a metre and more
+FACE_EDGE_PX = 2            # ... and the face is left unknown this many texels round what hides it (its edge's halo)
+FACE_LEAST = 0.03           # a face the picture sees less of than this share of is left out
+
+
+def _faces(W: float, D: float, H: float) -> dict:
+    """The room box's faces in the set's frame: {name: (corner at texel (0, 0), along the columns, along the rows,
+    columns' length, rows' length, the axes the columns and rows run along, into the room)}. A wall's picture reads as one sees it
+    standing in the room facing it (its top row the top of the wall); the floor's and the roof's as seen from above
+    with the back wall at the top."""
+    return {
+        "north": (np.array([-W / 2, D / 2, H]), np.array([1.0, 0, 0]), np.array([0, 0, -1.0]), W, H, ("x", "z"), (0, -1, 0)),
+        "west": (np.array([-W / 2, -D / 2, H]), np.array([0, 1.0, 0]), np.array([0, 0, -1.0]), D, H, ("y", "z"), (1, 0, 0)),
+        "east": (np.array([W / 2, D / 2, H]), np.array([0, -1.0, 0]), np.array([0, 0, -1.0]), D, H, ("y", "z"), (-1, 0, 0)),
+        "south": (np.array([W / 2, -D / 2, H]), np.array([-1.0, 0, 0]), np.array([0, 0, -1.0]), W, H, ("x", "z"), (0, 1, 0)),
+        "floor": (np.array([-W / 2, D / 2, 0.0]), np.array([1.0, 0, 0]), np.array([0, -1.0, 0]), W, D, ("x", "y"), (0, 0, 1)),
+        "ceiling": (np.array([-W / 2, D / 2, H]), np.array([1.0, 0, 0]), np.array([0, -1.0, 0]), W, D, ("x", "y"), (0, 0, -1)),
+    }
+
+
+def _bilinear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """The picture's colour at pixel coordinates (x, y: pixel centres at whole numbers)."""
+    h, w = image.shape[:2]
+    x, y = np.clip(x, 0, w - 1), np.clip(y, 0, h - 1)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+    x1, y1 = np.minimum(x0 + 1, w - 1), np.minimum(y0 + 1, h - 1)
+    fx, fy = (x - x0)[..., None], (y - y0)[..., None]
+    im = image.astype(np.float32)
+    top = im[y0, x0] * (1 - fx) + im[y0, x1] * fx
+    bot = im[y1, x0] * (1 - fx) + im[y1, x1] * fx
+    return top * (1 - fy) + bot * fy
+
+
+def _grow(m: np.ndarray, n: int) -> np.ndarray:
+    """m grown by n texels every way (no scipy at the test station)."""
+    for _ in range(n):
+        g = m.copy()
+        g[1:] |= m[:-1]
+        g[:-1] |= m[1:]
+        g[:, 1:] |= m[:, :-1]
+        g[:, :-1] |= m[:, 1:]
+        m = g
+    return m
+
+
+def room_faces(pts, mask, intr, image: np.ndarray, fr: dict) -> list:
+    """The picture on the room's own faces: for each face of the measured room box (fr: the frame room_from measured
+    it in), every texel of the face's plane is taken through the picture's camera to its pixel and given the
+    picture's colour there, where the picture sees that face: the texel in front of the eye and inside the frame, and
+    nothing standing before it (the picture's own point at that pixel no farther out into the room from the face
+    than FACE_BEFORE_M). A point
+    beyond the face, or none (the model's mask: the sky), is seen through it (a window, an arch): painted. Hidden,
+    outside the frame or behind the eye, the texel is unknown (alpha 0). -> [(record, RGBA texture cropped to what
+    is known)], the record: {"face", "u": [axis, at the left edge, at the right edge], "v": [axis, at the top, at the
+    bottom] (set metres), the rectangle as "x_m" / "y_m" / "z_m" ranges, "at_m" (where its plane stands on the third
+    axis), "px_per_m", "share" (of the whole face seen), "share_of_rect"}; faces seen less than FACE_LEAST left out.
+
+    Why: a room's walls were one tile of bare wall repeated, and everything the picture showed on them that was not a
+    thing to stand on the floor (its windows, arches, hangings, a drape, the roof's beams) was lost (11-20)."""
+    axes, d, cx, cy, sc = fr["axes"], fr["d"], fr["cx"], fr["cy"], fr["scale"]
+    r_, f_, u_ = (np.asarray(a, float) for a in axes)
+    W, D, H = fr["W"], fr["D"], fr["H"]
+    hp, wp = pts.shape[:2]
+    hi, wi = image.shape[:2]
+    fx, fy, ci, cj = intr[0, 0], intr[1, 1], intr[0, 2], intr[1, 2]
+    out = []
+    for name, (o, eu, ev, lu, lv, (au, av), n_in) in _faces(W, D, H).items():
+        ppm = min(FACE_PX_PER_M, FACE_PX_MOST / max(lu, lv, 1e-6))
+        nu, nv = max(1, int(round(lu * ppm))), max(1, int(round(lv * ppm)))
+        du, dv = lu / nu, lv / nv
+        jj, ii = np.mgrid[0:nv, 0:nu]
+        S = o + ((ii + 0.5) * du)[..., None] * eu + ((jj + 0.5) * dv)[..., None] * ev
+        q = S / sc + np.array([cx, cy, 0.0])                   # the room's own metres, then the camera's
+        p = q[..., :1] * r_ + q[..., 1:2] * f_ + (q[..., 2:3] - d) * u_
+        z = p[..., 2]
+        ahead = z > 1e-3
+        zs = np.where(ahead, z, 1.0)
+        un, vn = fx * p[..., 0] / zs + ci, fy * p[..., 1] / zs + cj   # (0..1 of the picture)
+        inside = ahead & (un >= 0) & (un < 1) & (vn >= 0) & (vn < 1)
+        rp = np.clip((vn * hp).astype(int), 0, hp - 1)
+        cp = np.clip((un * wp).astype(int), 0, wp - 1)
+        P = pts[rp, cp]
+        has = mask[rp, cp] & np.isfinite(P).all(-1)
+        Ps = (to_room(np.where(has[..., None], P, 0.0), axes, d) - np.array([cx, cy, 0.0])) * sc
+        out_m = (Ps - o) @ np.asarray(n_in, float)          # (how far out into the room the picture's point is)
+        tol = FACE_BEFORE_M["wall" if name not in ("floor", "ceiling") else "floor"]
+        before = inside & has & (out_m > tol[0] + tol[1] * np.linalg.norm(p, axis=-1) * sc)
+        known = inside & ~_grow(before, FACE_EDGE_PX)
+        share = float(known.mean())
+        if share < FACE_LEAST:
+            continue
+        rows, cols = np.nonzero(known.any(1))[0], np.nonzero(known.any(0))[0]
+        j0, j1, i0, i1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+        rgb = _bilinear(image, un[j0:j1, i0:i1] * wi - 0.5, vn[j0:j1, i0:i1] * hi - 0.5)
+        k = known[j0:j1, i0:i1]
+        tex = np.concatenate([np.where(k[..., None], rgb, 0.0), (k * 255.0)[..., None]], -1)
+        tex = np.clip(np.round(tex), 0, 255).astype(np.uint8)
+        a, b = o + i0 * du * eu + j0 * dv * ev, o + i1 * du * eu + j1 * dv * ev
+        ax = {"x": 0, "y": 1, "z": 2}
+        rec = {"face": name, "u": [au, round(float(a[ax[au]]), 3), round(float(b[ax[au]]), 3)],
+               "v": [av, round(float(a[ax[av]]), 3), round(float(b[ax[av]]), 3)]}
+        for n_ in (au, av):
+            rec[f"{n_}_m"] = sorted([round(float(a[ax[n_]]), 3), round(float(b[ax[n_]]), 3)])
+        third = ({"x", "y", "z"} - {au, av}).pop()
+        rec.update(at_m=round(float(o[ax[third]]), 3), px_per_m=round(1.0 / du, 2), share=round(share, 3),
+                   share_of_rect=round(float(k.mean()), 3))
+        out.append((rec, tex))
+    return out
+
+
+def write_faces(out_p: Path, got: list) -> list:
+    """Each face's picture as a PNG beside OUT.json (<stem>_face_<face>.png) -> the records, each with its "file"."""
+    from PIL import Image
+    recs = []
+    for rec, tex in got:
+        f = out_p.with_name(out_p.stem.replace("_depth", "") + f"_face_{rec['face']}.png")
+        Image.fromarray(tex).save(f)
+        recs.append(dict(rec, file=str(f.resolve())))
+    return recs
+
+
+FACE_RING = ("north", "east", "south", "west")   # facing each wall from inside the room, its right end meets the
+#                                                  next one's left end (and the last's the first's)
+FACE_BAND_SHARE = 0.5       # a face's seen run: the lines of it seen at least this share as well as its best seen line
+FACE_CLEAN_SHARE = 0.85     # ... what is mirrored from it, or carried whole over a floor: those seen this well (a run
+#                             mirrored from its half-seen lines carried their holes on; a floor's, the pieces' feet)
+FACE_EVEN_M = 1.2           # a floor's or a roof's picture evened out over this (the picture's own light pools and the
+#                             shadows of its pieces: the set lights it again, and carried across they were stripes)
+FACE_PERIOD_M = 0.8         # a face's rhythm (bays, windows, piers, flags) repeats no oftener than this ...
+FACE_PERIOD_R = 0.5         # ... and is taken where the seen run matches itself shifted by it this well (correlation)
+FACE_PERIOD_BINS = 8        # (the run is compared in this many bands across it, each band's own brightness)
+FACE_TRIM_M = 0.5           # a floor's or a roof's seen run, carried whole: this much off each of its ends first
+FACE_FEATHER_M = 0.3        # a wall's seen part fades into what is carried over the rest across this
+FACE_FILL_EDGE_M = 1.0      # what a wall's picture lacks above or below what it sees: mirrored from it this far
+FACE_WHOLE_PX_MOST = 4096   # a whole face's picture: no more texels than this along its longer side
+
+
+def face_frame(name: str, W: float, D: float, H: float) -> tuple:
+    """A face's whole rectangle as _faces lays its picture out: (u at the left edge, u's sign, its length along u,
+    v at the top, v's sign, its length along v), u and v the axes _faces gives it."""
+    return {"north": (-W / 2, 1, W, H, -1, H), "south": (W / 2, -1, W, H, -1, H),
+            "west": (-D / 2, 1, D, H, -1, H), "east": (D / 2, -1, D, H, -1, H),
+            "floor": (-W / 2, 1, W, D / 2, -1, D), "ceiling": (-W / 2, 1, W, D / 2, -1, D)}[name]
+
+
+def _resize(tex: np.ndarray, w: int, h: int) -> np.ndarray:
+    """An RGBA picture (float) at another size, its colour carried by what is known (alpha-weighted)."""
+    from PIL import Image
+    if tex.shape[1] == w and tex.shape[0] == h:
+        return tex
+    a = tex[..., 3] / 255.0
+    ch = [np.asarray(Image.fromarray(np.ascontiguousarray(x, np.float32), "F").resize((w, h), Image.BILINEAR))
+          for x in [tex[..., i] * a for i in range(3)] + [a]]
+    al = ch[3]
+    rgb = np.stack(ch[:3], -1) / np.maximum(al, 1e-6)[..., None]
+    return np.concatenate([np.clip(rgb, 0, 255), (np.where(al > 0.5, 255.0, 0.0))[..., None]], -1).astype(np.float32)
+
+
+def _paste(rec: dict, tex: np.ndarray, room_m, ppm: float) -> np.ndarray:
+    """A face's picture (its record's rectangle) laid into its whole face, ppm texels a metre: RGBA float, alpha 0
+    where nothing is known."""
+    u0, su, lu, v0, sv, lv = face_frame(rec["face"], *room_m)
+    nu, nv = max(1, int(round(lu * ppm))), max(1, int(round(lv * ppm)))
+    out = np.zeros((nv, nu, 4), np.float32)
+    c0, c1 = sorted([(rec["u"][1] - u0) * su * ppm, (rec["u"][2] - u0) * su * ppm])
+    r0, r1 = sorted([(rec["v"][1] - v0) * sv * ppm, (rec["v"][2] - v0) * sv * ppm])
+    i0, j0 = int(round(c0)), int(round(r0))
+    t = _resize(np.asarray(tex, np.float32), max(1, int(round(c1)) - i0), max(1, int(round(r1)) - j0))
+    a0, b0 = max(0, -i0), max(0, -j0)
+    a1, b1 = min(t.shape[1], nu - i0), min(t.shape[0], nv - j0)
+    if a1 > a0 and b1 > b0:
+        out[j0 + b0:j0 + b1, i0 + a0:i0 + a1] = t[b0:b1, a0:a1]
+    return out
+
+
+def _band(known: np.ndarray, axis: int, share: float = FACE_BAND_SHARE):
+    """The seen run of a face along axis (1: its columns, 0: its rows): the longest unbroken run of lines each seen at
+    least share as well as the best seen one -> (first, past the last) or None."""
+    cov = known.mean(axis=1 - axis)
+    if cov.max() <= 0:
+        return None
+    ok = cov >= share * cov.max()
+    best, start = None, None
+    for i, v in enumerate(list(ok) + [False]):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            if best is None or i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    return best
+
+
+def _period(tex: np.ndarray, known: np.ndarray, b0: int, b1: int, axis: int, ppm: float):
+    """The face's own rhythm along axis within its seen run (texels), or None: the shortest shift (at least
+    FACE_PERIOD_M, at most half the run, so that two of it are seen) at which the run matches itself at least
+    FACE_PERIOD_R and nearly as well as at any shift."""
+    lum = tex[..., :3].mean(-1)
+    if axis == 0:
+        lum, known = lum.T, known.T
+    lum, known = lum[:, b0:b1], known[:, b0:b1]
+    n = b1 - b0
+    lo, hi = max(2, int(FACE_PERIOD_M * ppm)), n // 2
+    if hi <= lo:
+        return None
+    e = np.linspace(0, lum.shape[0], FACE_PERIOD_BINS + 1).astype(int)
+    prof = []
+    x = np.arange(n)
+    for a, b in zip(e[:-1], e[1:]):
+        if b <= a:
+            continue
+        k = known[a:b]
+        cnt = k.sum(0)
+        m = np.where(cnt >= 0.3 * (b - a), (lum[a:b] * k).sum(0) / np.maximum(cnt, 1), np.nan)
+        ok = np.isfinite(m)
+        if ok.sum() > 3:                     # (the light falling off along the run is not its rhythm)
+            m = m - np.polyval(np.polyfit(x[ok], m[ok], 1), x)
+        prof.append(m)
+    prof = np.array(prof)
+    corr = np.full(hi + 1, np.nan)
+    for lag in range(lo, hi + 1):
+        A, B = prof[:, :-lag], prof[:, lag:]
+        ok = np.isfinite(A) & np.isfinite(B)
+        if ok.sum() < 0.3 * n:
+            continue
+        a_, b_ = A[ok], B[ok]
+        corr[lag] = float((a_ * b_).sum() / np.sqrt((a_ * a_).sum() * (b_ * b_).sum() + 1e-9))
+    if not np.isfinite(corr).any() or np.nanmax(corr) < FACE_PERIOD_R:
+        return None
+    top = np.nanmax(corr)
+    for lag in range(lo + 1, hi):            # (a true peak: a match falling away from the least shift is no rhythm)
+        c = corr[lag]
+        if np.isfinite(c) and c >= max(FACE_PERIOD_R, 0.85 * top) and \
+                np.isfinite(corr[lag - 1]) and corr[lag - 1] <= c and not (np.isfinite(corr[lag + 1]) and corr[lag + 1] > c):
+            return lag
+    return None
+
+
+def _source(idx: np.ndarray, b0: int, b1: int, period) -> np.ndarray:
+    """Where each line along a face (any index, before or past the face too) takes its picture from in the seen run
+    [b0, b1): the run's own lines in it; outside it the same place of its rhythm (shifted by whole periods: the
+    windows and the stonework keep their spacing and their scale), else the run mirrored at its ends (no hard cut)."""
+    idx = np.asarray(idx)
+    if period:
+        return np.where(idx < b0, b0 + np.mod(idx - b0, period),
+                        np.where(idx >= b1, b1 - period + np.mod(idx - b1, period), idx))
+    n = b1 - b0
+    t = np.mod(idx - b0, 2 * n)
+    return b0 + np.where(t < n, t, 2 * n - 1 - t)
+
+
+def _extend(tex: np.ndarray, axis: int, ppm: float, whole: bool = False) -> tuple:
+    """A face's picture carried along axis over what its picture does not see (_source); within the seen run, what
+    stood before the face filled from the same place a period or two along. whole: lines outside the run are taken
+    from it whole, not only where unknown (a floor's glimpses between the pieces carry their feet and shadows)
+    -> (picture, (b0, b1, period) or None)."""
+    known = tex[..., 3] > 127
+    b = _band(known, axis)
+    if not b:
+        return tex, None
+    b0, b1 = b
+    P = _period(tex, known, b0, b1, axis, ppm)
+    if not P or whole:                       # (mirrored, or carried whole: only from what is seen well)
+        b0, b1 = _band(known, axis, FACE_CLEAN_SHARE) or b
+        t = int(FACE_TRIM_M * ppm)
+        if whole and b1 - b0 > 4 * t:        # (a floor's seen run is edged by what stands on it)
+            b0, b1 = b0 + t, b1 - t
+        if P and P > b1 - b0:
+            P = None
+    L = tex.shape[axis]
+    moved = np.take(tex, _source(np.arange(L), b0, b1, P), axis=axis)
+    has = moved[..., 3] > 127
+    if whole:
+        line = np.zeros(L, bool)
+        line[:b0], line[b1:] = True, True
+        put = (line[None, :] if axis == 1 else line[:, None]) & has
+        put |= ~known & has
+        out = np.where(put[..., None], moved, tex)
+    else:
+        put = ~known & has
+        out = np.where(put[..., None], moved, tex)
+        # (the seen part fades into what is carried over it across FACE_FEATHER_M: no hard cut at the join)
+        n = max(1, int(FACE_FEATHER_M * ppm))
+        w = np.ones(known.shape, np.float32)
+        reached, front = put.copy(), put
+        for s in range(1, n + 1):
+            g = _grow(front, 1) & known & ~reached
+            if not g.any():
+                break
+            w[g] = s / (n + 1.0)
+            reached |= g
+            front = g
+        soft = known & has & (w < 1)
+        out = np.where(soft[..., None], tex * w[..., None] + moved * (1 - w[..., None]), out)
+        out[..., 3] = np.where(known | put, 255.0, out[..., 3])
+    if P:
+        for s in (P, -P, 2 * P, -2 * P):
+            if abs(s) >= L:
+                continue
+            k = out[..., 3] > 127
+            sh = np.roll(out, s, axis=axis)
+            valid = np.zeros(L, bool)
+            if s > 0:
+                valid[s:] = True
+            else:
+                valid[:L + s] = True
+            valid = valid[None, :] if axis == 1 else valid[:, None]
+            put = ~k & valid & (sh[..., 3] > 127)
+            out = np.where(put[..., None], sh, out)
+    return out, (b0, b1, P)
+
+
+def _box_mean(x: np.ndarray, w: np.ndarray, r: int) -> np.ndarray:
+    """The w-weighted mean of x over a (2r+1)-square round each texel (summed tables: no scipy at the test station)."""
+    def box(a):
+        c = np.pad(a, ((r + 1, r), (r + 1, r)), mode="constant").cumsum(0).cumsum(1)
+        return c[2 * r + 1:, 2 * r + 1:] - c[:-2 * r - 1, 2 * r + 1:] - c[2 * r + 1:, :-2 * r - 1] + c[:-2 * r - 1, :-2 * r - 1]
+    return box(x * w) / np.maximum(box(w), 1e-6)
+
+
+def _even(tex: np.ndarray, ppm: float) -> np.ndarray:
+    """A floor's or a roof's picture with its light evened out: each known texel scaled by its seen surroundings'
+    brightness (FACE_EVEN_M round it) to the whole seen face's middle brightness; the stones' own grain kept."""
+    k = (tex[..., 3] > 127).astype(np.float64)
+    if k.sum() < 16:
+        return tex
+    lum = tex[..., :3].astype(np.float64).mean(-1)
+    near = _box_mean(lum, k, max(1, int(FACE_EVEN_M * ppm / 2)))
+    f = np.clip(float(np.median(lum[k > 0])) / np.maximum(near, 1.0), 0.33, 3.0)
+    out = tex.copy()
+    out[..., :3] = np.where(k[..., None] > 0, np.clip(tex[..., :3] * f[..., None], 0, 255), tex[..., :3])
+    return out
+
+
+def _fill_edges(tex: np.ndarray, n: int) -> np.ndarray:
+    """What a wall's picture lacks above its topmost and below its lowest seen texel, column by column, mirrored from
+    what is seen there, up to n texels."""
+    known = tex[..., 3] > 127
+    h = known.shape[0]
+    has = known.any(0)
+    first = np.argmax(known, 0)
+    last = h - 1 - np.argmax(known[::-1], 0)
+    cols = np.arange(known.shape[1])
+    out = tex.copy()
+    for d in range(1, n + 1):
+        for r, s in ((first - d, first + d - 1), (last + d, last - d + 1)):
+            ok = has & (r >= 0) & (r < h) & (s >= 0) & (s < h)
+            rr, ss, cc = r[ok], s[ok], cols[ok]
+            put = (out[rr, cc, 3] <= 127) & (out[ss, cc, 3] > 127)
+            out[rr[put], cc[put]] = out[ss[put], cc[put]]
+    return out
+
+
+def whole_faces(recs: list, room_m) -> dict:
+    """The room's whole walls, floor and roof from what its picture sees of them (room_faces' records, each with its
+    "file"): {face: (RGBA uint8 picture of the whole face as _faces lays it out, texels a metre, how it was made)}.
+
+    A wall the picture sees: its seen run carried along the rest of it (_extend: by the wall's own rhythm, else
+    mirrored at the join), then up and down over what it lacks there (_fill_edges). A wall it never sees (the one
+    behind its eye): one neighbour's run continued round the corner over all of it (the one with a rhythm, else the
+    one seen more); failing both, the opposite wall mirrored. (Not the opposite wall first: the wall the picture
+    faces is the room's own one, what it is drawn for, a hearth, a raised end, an altar; the side walls are its running
+    fabric, and continued round a corner they meet the unseen wall without a cut.) The floor and the roof: their light evened out (_even), carried
+    across, then along, their lines outside the seen run taken whole. What is still unknown stays alpha 0 (places/generate.py face_fill).
+    Every face shares one scale: the coarsest any seen face has (texels are never made up)."""
+    from PIL import Image
+    seen = {r["face"]: r for r in recs if r.get("face") and r.get("file") and Path(r["file"]).exists()}
+    if not seen:
+        return {}
+    W, D, H = (float(v) for v in room_m)
+    ppm = min(float(r.get("px_per_m") or FACE_PX_PER_M) for r in seen.values())
+    ppm = min(ppm, FACE_WHOLE_PX_MOST / max(W, D, H))
+    out, rule, how, seen_share = {}, {}, {}, {}
+    for name, r in seen.items():
+        cv = _paste(r, np.asarray(Image.open(r["file"]).convert("RGBA"), np.float32), (W, D, H), ppm)
+        seen_share[name] = float((cv[..., 3] > 127).mean())
+        if name in FACE_RING:
+            cv, rule[name] = _extend(cv, 1, ppm)
+            cv = _fill_edges(cv, int(FACE_FILL_EDGE_M * ppm))
+            p = (rule[name] or (0, 0, None))[2]
+        else:
+            cv = _even(cv, ppm)
+            cv, ru = _extend(cv, 1, ppm, whole=True)
+            cv, rv = _extend(cv, 0, ppm, whole=True)
+            p = (ru or (0, 0, None))[2] or (rv or (0, 0, None))[2]
+        out[name] = cv
+        how[name] = "its picture, " + (f"its rhythm of {p / ppm:.2f} m repeated" if p else "mirrored") + \
+            " over what it does not see"
+    for i, name in enumerate(FACE_RING):
+        if name in out:
+            continue
+        left, right, opp = FACE_RING[i - 1], FACE_RING[(i + 1) % 4], FACE_RING[(i + 2) % 4]
+        nu = max(1, int(round(face_frame(name, W, D, H)[2] * ppm)))
+        # one neighbour carried round its corner over the whole wall: the one with a rhythm, else the one seen more
+        # (a cut at the other corner reads as the corner; two runs met in the middle of the wall read as a seam)
+        cand = [(bool(rule[nb][2]), float(seen_share.get(nb, 0.0)), k, nb) for k, nb in enumerate((left, right))
+                if out.get(nb) is not None and rule.get(nb)]
+        if cand:
+            _, _, k, nb = max(cand)
+            Ln = out[nb].shape[1]
+            idx = Ln + np.arange(nu) if k == 0 else np.arange(nu) - nu    # (past its right end / before its left)
+            cv = out[nb][:, _source(idx, *rule[nb])]
+            how[name] = f"the {nb} wall continued round the corner" + \
+                (f", its rhythm of {rule[nb][2] / ppm:.2f} m" if rule[nb][2] else ", mirrored")
+        elif out.get(opp) is not None:
+            cv = _resize(out[opp], nu, out[opp].shape[0])[:, ::-1]
+            how[name] = f"the {opp} wall mirrored"
+        else:
+            continue
+        out[name] = _fill_edges(cv, int(FACE_FILL_EDGE_M * ppm))
+    return {k: (np.clip(np.round(v), 0, 255).astype(np.uint8), round(ppm, 2), how[k]) for k, v in out.items()}
+
+
+def land_form_key(concept: dict) -> str | None:
+    """The thing of the picture that is the land's own main form: the spec's piece the concept reader found it in,
+    or the form it saw itself; else a landmark of the land itself (the largest)."""
+    sp = concept.get("spec") or {}
+    for pid, v in sp.items():
+        if v.get("land_form") and v.get("box"):
+            return f"spec:{pid}"
+    for i, sn in enumerate(concept.get("seen") or []):
+        if sn.get("group") and sn.get("natural") and sn.get("box"):
+            return f"seen:{i}"
+    kinds = concept.get("_spec_kinds") or {}
+    nat = [(pid, v) for pid, v in sp.items() if v.get("natural") and v.get("box") and kinds.get(pid) == "landmark"]
+    if nat:
+        area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
+        return "spec:" + max(nat, key=lambda t: area(t[1]["box"]))[0]
+    return None
 
 
 def boxes_of(concept: dict) -> dict:
@@ -246,9 +1013,50 @@ def main():
     fxi, cxi = np.linalg.lstsq(A, (u_[ok] + 0.5) / w, rcond=None)[0]
     fyi, cyi = np.linalg.lstsq(np.stack([yz, np.ones_like(yz)], 1), (v_[ok] + 0.5) / h, rcond=None)[0]
     intr = np.array([[fxi, 0, cxi], [0, fyi, cyi], [0, 0, 1]])
-    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()})
+    fr = {}
+    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()}, fr)
+    # the land's own form of a place in the open (scenes/concept.py: a piece of the land itself), made from the
+    # picture's depth where it stands
+    lf = land_form_key(concept) if concept.get("space") == "outdoors" else None
+    lf_reg, lf_done = {}, None
+    if lf and lf in res["things"] and fr:
+        k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
+        try:
+            got = relief(pts, mask, fr["axes"], fr["d"], bx[lf][0], lambda q: (q - off) * k_, lf_reg)
+        except ImportError as e:
+            got = None
+            print(f"no relief: {e}", file=sys.stderr)
+        if got:
+            rl = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_relief.glb"), *got, image)
+            res["relief"] = dict(rl, of=lf)
+            res["things"][lf].update(xy=rl["xy"], size_m=rl["size_m"], against=None)
+            lf_done = lf
+        else:
+            lf_reg = {}
+    if concept.get("space") == "outdoors" and fr:
+        # all the land the picture shows, for every place in the open: its scenery, standing where the picture has it
+        k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
+        try:
+            got = land(pts, mask, fr["axes"], fr["d"], lambda q: (q - off) * k_,
+                       {k: v for k, v in res["things"].items() if k != lf_done}, {k: v[0] for k, v in bx.items()},
+                       image, keep_out=lf_reg.get("reg"))
+        except ImportError as e:
+            got = None
+            print(f"no land: {e}", file=sys.stderr)
+        if got:
+            ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
+            # (its lowest point, the back of its ground, is under the set's ground by under_m)
+            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
+    if concept.get("space") != "outdoors" and fr:
+        # the picture on the room's own walls, floor and roof, where it sees them (room_faces)
+        res["faces"] = write_faces(out_p, room_faces(pts, mask, intr, image, fr))
+    # how wide the picture sees (degrees): a place in the open's panorama is made from the picture, and the land
+    # built from the picture itself stands for that much of it
+    res["hfov_deg"] = round(float(np.degrees(2 * np.arctan(0.5 / max(abs(fxi), 1e-6)))), 1)
     out_p.write_text(json.dumps(res, indent=1))
-    print(json.dumps({"room_m": res["room_m"], "things": len(res["things"]), "scale": res["scale"]}))
+    print(json.dumps({"room_m": res["room_m"], "things": len(res["things"]), "scale": res["scale"],
+                      "land": (res.get("land") or {}).get("faces"),
+                      "room_faces": [f["face"] for f in res.get("faces") or []]}))
 
 
 if __name__ == "__main__":

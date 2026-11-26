@@ -234,6 +234,20 @@ def _size_class(size_m, default):
 
 
 SHELL_SPAN_K = 1.5                      # a cabin shell may be at most this much longer than its kind's box
+SEAT_FIT_W_M = 0.48                     # a seat with arms narrower than this between them takes no sitter
+
+
+def seat_too_narrow(rec: dict) -> bool:
+    """A record of a seat with arms (its measured "seat" block has arm_z_m) whose room between the arms (width_m, or
+    the inner_x_m span) is under SEAT_FIT_W_M: nobody fits in it. A chair 0.295 m between its arms was reused for a
+    grand chair and its sitter was seated on a bench at the other end of the room (11-20)."""
+    b = rec.get("seat") if isinstance(rec.get("seat"), dict) else None
+    if not b or b.get("arm_z_m") is None:
+        return False
+    w = b.get("width_m")
+    if not isinstance(w, (int, float)) and isinstance(b.get("inner_x_m"), (list, tuple)) and len(b["inner_x_m"]) == 2:
+        w = float(b["inner_x_m"][1]) - float(b["inner_x_m"][0])
+    return isinstance(w, (int, float)) and float(w) < SEAT_FIT_W_M
 
 
 def shell_too_big(size_m, want_m) -> bool:
@@ -260,6 +274,8 @@ def score_record(piece, rec, K=None, table=None, allow_scripted=False):
         return None
     if K[kind].get("made_as") == "shell" and shell_too_big(rec.get("size_m"), K[kind].get("size_m")):
         return None
+    if K[kind].get("needs") == "seat" and K[kind].get("made_as") != "shell" and seat_too_narrow(rec):
+        return None                       # (an armed seat nobody fits in is never a seat piece: made anew)
     look_toks = [t for t in _tokens(piece.get("look", "")) if t not in _STOP]
     rec_toks = set(_tokens(" ".join([rec.get("description", ""), rec.get("look", ""), rec.get("variant") or ""]
                                     + [str(t) for t in rec.get("tags", [])])))
@@ -409,6 +425,29 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
     if piece.get("seats_abreast"):
         spec["seats_abreast"] = int(piece["seats_abreast"])
     line = [python, str(tools / "run_asset.py")]
+    rl = piece.get("relief") if isinstance(piece.get("relief"), dict) else None
+    if rl and rl.get("glb") and Path(str(rl["glb"])).exists():
+        # the land's own form of a place in the open, already shaped from the depth of the place's picture where it
+        # stands (img3d/concept_depth.py relief): nothing is drawn and no shape model is run, only the asset chain.
+        # As tall as the set has it, its other sides as the shape's own
+        g = [float(v) for v in rl["size_m"]]
+        k = float(seen[2]) / g[2] if seen and len(seen) == 3 and g[2] > 0 else 1.0
+        aid = _asset_id(kind, f"{look} relief {hashlib.sha1(Path(str(rl['glb'])).read_bytes()).hexdigest()[:10]} {k:.3f}")
+        spec.update(id=aid, made_as="relief", relief_glb=str(rl["glb"]), size_m=[round(v * k, 3) for v in g],
+                    size_tolerance=0.05, tier="hero")
+        for key in ("longest_m", "shape_res", "yaw_deg"):
+            spec.pop(key, None)
+        steps = [
+            {"step": "spec", "what": "the piece's source spec", "write": f"<library>/prop/{aid}/source/spec.json",
+             "spec": spec},
+            {"step": "shape", "what": "the form shaped from the picture's depth, through the asset chain",
+             "station": C.IMAGE_STATION, "kind": "shape",
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "shape", "--id", f"gen_shape_{aid}", "--log",
+                             str(work / f"{aid}.log"), "--", python, str(tools / "img3d" / "relief_one.py"), aid],
+             "result_id": f"{aid}_tr", "gate": "the asset's own checks pass", "on_fail": "none: the same picture "
+             "gives the same form"}]
+        return {"kind": kind, "look": look, "size_m": spec["size_m"], "needs": [], "asset_id": f"{aid}_tr",
+                "dry_run": True, "plan": {"draw_id": aid, "max_redraws": 1, "steps": steps}}
     if d.get("made_as") == "world":
         # a place in the open is made from where its people stand: one panorama of it from a standing eye, drawn with
         # the place's concept picture as its reference, then a shell of the land with a sky dome and a flat ground
@@ -418,10 +457,21 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             spec["spot"] = piece["spot"]
         if piece.get("marks"):               # the land's own things the plan sends people to: found in the panorama
             spec["marks"] = dict(piece["marks"])
-        pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
-                         + (" " + piece["spot"] if piece.get("spot") else "")
-                         + (" " + str(piece["source"]) if piece.get("source") else ""))
-        aid = pano
+        # the panorama is the place's own picture carried on all the way round (img3d/pano_from_picture.py), when
+        # the place has one measured (its "view": the picture's eye and how wide it sees, sets/place_build.py);
+        # else drawn from words
+        view = piece.get("view") if isinstance(piece.get("view"), dict) and piece.get("source") \
+            and Path(str(piece["source"])).exists() else None
+        if view:
+            pano = _asset_id(kind, f"{look} from the picture {hashlib.sha1(Path(str(piece['source'])).read_bytes()).hexdigest()[:10]}")
+            spec["view"] = {k: view[k] for k in ("eye_h", "eye_at", "front_deg")}
+        else:
+            pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
+                             + (" " + piece["spot"] if piece.get("spot") else "")
+                             + (" " + str(piece["source"]) if piece.get("source") else ""))
+        aid = pano if not view else _asset_id(kind, f"{pano} view {json.dumps(spec['view'], sort_keys=True)}")
+        if view:
+            spec["panorama_id"] = pano
         mdesc = ""
         if piece.get("map_words"):
             # the place's own ground seen from straight above, laid over the set's real ground (places/ground_map.py):
@@ -429,10 +479,17 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             # the one already drawn (the panorama keeps its own id)
             import ground_map as GM
             mdesc = GM.map_desc(piece["map_words"], piece.get("land_places"), piece.get("map_style") or "")
-            aid = _asset_id(kind, f"{pano} map {hashlib.sha1((mdesc + str(piece.get('map_source') or '')).encode()).hexdigest()[:8]}")
+            aid = _asset_id(kind, f"{aid} map {hashlib.sha1((mdesc + str(piece.get('map_source') or '')).encode()).hexdigest()[:8]}")
             spec.update(panorama_id=pano, map_id=f"{aid}_map")
         spec["id"] = aid
         steps = [
+            {"step": "draw", "what": "the place's picture carried on all the way round, as its panorama",
+             "station": C.IMAGE_STATION, "kind": "edit", "picture": "picture.png", "ref_id": pano,
+             "argv": line + ["--line-cmd", C.IMAGE_STATION, "edit", "--id", f"gen_pano_{pano}", "--",
+                             python, str(tools / "img3d" / "pano_from_picture.py"), str(piece["source"]), pano,
+                             "--desc", look.rstrip(".") + ".", "--seed", "{seed}"],
+             "gate": "nobody in the panorama", "on_fail": f"made again with the next seed, at most {MAX_REDRAWS}"}
+            if view else
             {"step": "draw", "what": "one panorama of the place from a standing eye", "station": C.IMAGE_STATION,
              "kind": "refs", "picture": "picture.png", "ref_id": pano,
              "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{pano}", "--",
@@ -564,7 +621,10 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                 hits = [h for h in hits if "panorama_shell" in (next((r for r in records
                         if r["asset_id"] == h["asset_id"]), {}).get("tags") or [])
                         and not next((r for r in records if r["asset_id"] == h["asset_id"]), {}).get("panorama_people")]
-            elif p.get("source") or K[p["kind"]].get("sized_by") == "longest" or K[p["kind"]].get("made_as") == "world":
+            elif p.get("source") or p.get("_dressing") or K[p["kind"]].get("sized_by") == "longest" or \
+                    K[p["kind"]].get("made_as") == "world":
+                # (and a thing the place is dressed with, made from its own words: a room of one age was given a
+                # screen made for another story's, a pane of glass on steel feet, four times, 11-20)
                 # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
                 # the asset already made from that same picture serves, never a near match by words. So is a thing
                 # worn or carried: a kind that holds any object, where a near match by words is another object
@@ -573,7 +633,8 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                     [{"asset_id": want, "score": 1.0, "why": "made from this piece's own picture", "others": []}
                      for r in records if r["asset_id"] == want
                      and not (K[p["kind"]].get("made_as") == "shell"
-                              and shell_too_big(r.get("size_m"), K[p["kind"]].get("size_m")))][:1]
+                              and shell_too_big(r.get("size_m"), K[p["kind"]].get("size_m")))
+                     and not (K[p["kind"]].get("needs") == "seat" and seat_too_narrow(r))][:1]
             if hits:
                 row.update(status="library", asset_id=hits[0]["asset_id"], score=hits[0]["score"],
                            why=hits[0]["why"], others=[{"asset_id": h["asset_id"], "score": h["score"]}

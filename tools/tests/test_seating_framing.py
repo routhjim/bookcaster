@@ -130,3 +130,20 @@ def test_a_lying_body_running_out_of_the_side_of_a_close_frame_is_not_cut():
     cam = framing.shot(lying, "close", 85)
     assert not speakers.frame_facts(cam, lying, (1152, 640))["cut"]          # the legs leave the frame's side
     assert speakers.frame_facts(cam, dict(m), (1152, 640))["cut"]            # (the same points on someone not lying)
+
+
+def test_a_sitter_stays_at_the_named_seat_unless_a_fitting_one_is_beside_it(tmp_path, monkeypatch):
+    def box(w):
+        return {"inner_x_m": [-w / 2, w / 2], "seat_z_m": 0.45, "front_y_m": -0.3, "back_y_m": 0.2, "arm_z_m": None}
+
+    def run(S):
+        monkeypatch.setattr(seating, "seats", lambda lib, sd: {k: dict(v) for k, v in S.items()})
+        monkeypatch.setattr(seating, "place", lambda c, s, f, place_x=0.0, *a: dict(
+            c, body_pose={"params": {}}, _seat={"name": s["name"], "x": place_x, "nudge": 0}, position=s["pos"]))
+        monkeypatch.setattr(seating, "turn_for", lambda *a: 0.0)
+        spec = {"set": "s", "characters": {"a": {"seat": "narrow", "body_pose": {"pose": "seated"}, "position": [0, 8]}}}
+        return seating.plan(spec, tmp_path)["taken"]["a"]
+    narrow = {"pos": [0.0, 8.0], "box": box(0.2), "rot": 0.0, "front": [0, -1]}
+    wide = lambda at: {"pos": at, "box": box(1.8), "rot": 0.0, "front": [0, -1]}      # noqa: E731
+    assert run({"narrow": narrow, "far": wide([0.0, -3.0])}) == "narrow"      # across the room: they sit where named
+    assert run({"narrow": narrow, "near": wide([1.5, 8.0])}) == "near"        # beside it: the one that fits

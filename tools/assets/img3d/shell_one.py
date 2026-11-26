@@ -70,6 +70,14 @@ def map_args(spec0: dict) -> list:
     return out + (["--map-facts", str(d / "map.json")] if out and (d / "map.json").exists() else [])
 
 
+def view_args(spec0: dict) -> list:
+    """pano_shell.py's options for a panorama made from the place's own picture (places/pieces.py "view")."""
+    v = spec0.get("view") or {}
+    if not v:
+        return []
+    return ["--eye-h", str(v["eye_h"]), "--eye-at", str(v["eye_at"][0]), str(v["eye_at"][1]), "--front-deg", str(v["front_deg"])]
+
+
 def main():
     aid = sys.argv[1]
     WORK.mkdir(parents=True, exist_ok=True)
@@ -87,7 +95,7 @@ def main():
         r = subprocess.run([os.environ.get("ASSETS_SHELL_PY") or sys.executable, str(HERE / "pano_shell.py"), str(pic), str(glb)]
                            + (["--outdoor"] if world else []) + (["--spot", spec0["spot"]] if world and spec0.get("spot") else [])
                            + [x for k, v in ((spec0.get("marks") or {}).items() if world else []) for x in ("--mark", f"{k}={v}")]
-                           + map_args(spec0 if world else {}))
+                           + map_args(spec0 if world else {}) + view_args(spec0 if world else {}))
         if r.returncode:
             glb.unlink(missing_ok=True)
             raise SystemExit(r.returncode)

@@ -64,6 +64,30 @@ LOOK_Q = ("Picture 1 is part of a reference render of a room; Picture 2 is the s
 OUTFIT_Q = ("Picture 1 is a costume reference sheet. Picture 2 shows the same character in a film frame. Compare "
             "the shirt collar and neckwear in Picture 2 with Picture 1. Answer with one word: same, larger, open, "
             "turned, missing.")
+COLLAR_Q = ("This is a costume reference sheet of one character. Does the costume have a shirt collar, a necktie, a "
+            "cravat, a scarf or other neckwear at the neck? Answer with one word: yes or no.")
+
+
+def has_neckwear(judge, sheet: str) -> bool:
+    """Whether a character's sheet shows a collar or neckwear at all (asked once per sheet, kept beside it). The
+    outfit question compares collar and neckwear: of a costume with neither it answered "open" or "turned" for
+    eleven keys of fifteen, before the second drawing and after it, and each cost a drawing and a check (11-20)."""
+    sp = Path(sheet)
+    cp = sp.parent / ".neckwear.json"
+    try:
+        memo = json.loads(cp.read_text())
+    except (OSError, ValueError):
+        memo = {}
+    key = f"{sp.name}:{int(sp.stat().st_mtime)}"
+    if key not in memo:
+        memo[key] = judge.ask_images([Image.open(sp).convert("RGB")], COLLAR_Q, 4, 768).strip().lower().startswith("y")
+        try:
+            cp.write_text(json.dumps(memo, indent=1))
+        except OSError:
+            pass
+    return bool(memo[key])
+
+
 OUTFIT_MIN_HEAD = 0.15   # head top to chin, of the frame's height: smaller heads are not asked about
 
 
@@ -266,6 +290,9 @@ def main():
 FOLLOW_S = float(os.environ.get("KEYCHECK_FOLLOW_S", "0"))     # > 0: the pictures are still being drawn (below)
 
 
+ALIVE = os.environ.get("KEYCHECK_ALIVE", "")                   # a file that stands while the drawers are at work
+
+
 def as_they_land(items: list, wait_s: float = FOLLOW_S):
     """The items, each when its picture is there: with KEYCHECK_FOLLOW_S the list is checked beside the drawing
     (on another device), a picture the moment it lands; an item whose picture has not come wait_s after the last
@@ -274,7 +301,9 @@ def as_they_land(items: list, wait_s: float = FOLLOW_S):
     while left:
         got = next((it for it in left if Path(it["redraw"]).exists()), None) if wait_s > 0 else left[0]
         if got is None:
-            if time.time() - last > wait_s:
+            # (while the drawers' own mark stands, they are loaded or waiting their turn on a card: a drawer kept
+            # waiting ten minutes by other work on its card had its half of the pictures given up as not drawn, 11-19)
+            if time.time() - last > wait_s and not (ALIVE and Path(ALIVE).exists()):
                 print(json.dumps({"not_drawn": [it["id"] for it in left]}), flush=True)
                 return
             time.sleep(0.5)
@@ -333,7 +362,7 @@ def check_list(cfg, pose, det, judge, dev, t0):
             j2 = p.get("joints2d") or {}
             hh = (j2["chin"][1] - j2["head_top"][1]) if "chin" in j2 and "head_top" in j2 else 0.0
             if (judge is not None and p.get("sheet") and (p.get("head_to_camera_deg") or 0) < 100
-                    and hh >= OUTFIT_MIN_HEAD and 0 <= j2["chin"][1] < 1):
+                    and hh >= OUTFIT_MIN_HEAD and 0 <= j2["chin"][1] < 1 and has_neckwear(judge, p["sheet"])):
                 # the neck and the top of the chest only, around the engine's chin: in a wide the judge saw a
                 # collar "turned" in a few pixels, so only a head big enough in the frame is asked about
                 W, H = 1152, 640

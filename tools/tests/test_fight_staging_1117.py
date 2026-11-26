@@ -188,7 +188,7 @@ def test_a_piece_that_gives_light_is_lit_and_a_fire_counts_little_toward_the_roo
     assert fire and PB.is_fire(fire[0]) and fire[0]["position"][2] > 0.9
     room = {"structure": [{"kind": "ceiling"}], "size_m": [4.0, 4.0, 3.0],
             "lights": [dict(kit["lights"]["fire"], position=[0, 0, 0.3]) for _ in range(3)]}
-    assert 3 * kit["lights"]["fire"]["lumens"] >= PB.ROOM_LM_M2 * 16 * 0.9   # as full light it would be near enough
+    assert 3 * kit["lights"]["fire"]["lumens"] >= 300.0 * 16 * 0.9   # as full light it would be near the old level
     assert PB.room_light(room, {})                                   # as a fire's, the room still gets its own light
 
 
@@ -353,7 +353,8 @@ def test_the_last_resort_camera_stands_clear_with_everyone_in_sight():
 
 def test_work_poses_are_offered_and_measured():
     assert set(PASS.WORK_POSES) <= set(PASS.POSE_WORDS) and set(PASS.WORK_POSES) == set(FP.WORK_ACTIONS)
-    assert set(FP.WORK_ACTIONS) <= set(FP.ACTION_NAMES) and set(SP.WORK_HANDS) == set(FP.WORK_ACTIONS)
+    assert set(FP.WORK_ACTIONS) <= set(FP.ACTION_NAMES) and \
+        set(SP.WORK_HANDS) == set(FP.WORK_ACTIONS) | set(FP.READY_ACTIONS)
     m = S.person([0.0, 0.0])["measured"]                 # hands hanging at the sides: neither raised nor at work
     assert SP.work_hands_why("tool_raised", m) and SP.work_hands_why("striking_down", m)
     m2 = json.loads(json.dumps(m))
@@ -413,3 +414,211 @@ def test_the_thing_worked_on_lies_on_the_piece_its_worker_stands_at(lib, tmp_pat
     t = c["carried"]["a"][0]
     assert t["asset"] == "bar_01" and t["at"] == "on" and t["xyz"][:2] == [-8.0, -8.0] and t["xyz"][2] > 0.5
     assert "worked" in PS.THING_ON
+
+
+def test_a_fight_is_someone_with_a_thing_in_hand_squared_up_to_a_creature_in_an_action_shot():
+    import from_plan as FP
+    crt = {"a": {"radius_m": 5.0, "size_m": [4.0, 10.0, 4.0]}}
+    cam = {"shot_kind": "action", "carried": {"d": [{"asset": "x", "at": "hand", "hand": "r"}]}}
+    v = {"pose": "standing", "face_target": "a"}
+    assert FP.fights("d", v, cam, crt)
+    assert not FP.fights("d", v, dict(cam, shot_kind="quiet"), crt)
+    assert not FP.fights("d", v, dict(cam, carried={}), crt)
+    assert not FP.fights("d", dict(v, face_target="b"), cam, crt)
+    assert not FP.fights("d", dict(v, pose="sitting"), cam, crt)
+    assert not FP.fights("a", v, cam, crt)                          # (the creature itself)
+    assert FP.FIGHT_POSE in FP.ACTION_NAMES
+
+
+def test_a_fights_camera_stands_at_the_fighters_scale():
+    import math
+    import from_plan as FP
+    rig = {"radius_m": 5.0, "size_m": [4.0, 10.0, 4.0]}
+    p, c = [0.0, 0.0], [8.0, 0.0]
+    over = FP.fight_camera(p, c, rig, over_shoulder=True)
+    assert over["position"][0] < 0 and 2.0 < abs(over["position"][1]) < 3.5   # beside the fighter, a step behind:
+    aim = [over["target"][0] - over["position"][0], over["target"][1] - over["position"][1]]     # they are out of it
+    to_p = [p[0] - over["position"][0], p[1] - over["position"][1]]
+    cosv = (aim[0] * to_p[0] + aim[1] * to_p[1]) / (math.hypot(*aim) * math.hypot(*to_p))
+    assert math.degrees(math.acos(cosv)) > 35
+    assert math.dist(over["position"][:2], p) < 3.0 and over["target"][0] > 4.0 and over["target"][2] >= 2.0
+    side = FP.fight_camera(p, c, rig, over_shoulder=False, take=0)         # (the square one of the side-on three)
+    assert abs(side["position"][1]) >= FP.FIGHT_SIDE_M and 0 < side["position"][0] < 8.0
+    assert 0 < side["target"][0] < 8.0
+    assert FP.fight_camera(p, [0.2, 0.0], rig, True) is None                # (on one spot: no line between them)
+
+
+def test_once_squared_up_they_hold_their_ground_and_every_shot_sees_them_face_each_other(lib, tmp_path, monkeypatch):
+    both = [{"name": "Beast", "pose": "standing", "at": "in the middle", "facing": "left"},
+            {"name": "Ash", "pose": "standing", "at": "near the desk", "facing": "right"}]
+    s1 = shot(both)
+    s2 = shot([dict(both[0])], kind="action")                       # what the creature does: only it is listed
+    s3 = shot([dict(both[0]), dict(both[1], at="near the desk")], kind="quiet")   # the plan's words put him far off again
+    s4 = shot([dict(both[1])], kind="quiet")
+    s4["framing"] = "close"
+    face = {"Ash": "Beast", "Beast": "Ash"}
+    specs = run(tmp_path, monkeypatch, {"action-1": s1, "action-2": s2, "quiet-3": s3, "quiet-4": s4},
+                {"face": {"action-1": face, "action-2": {"Beast": "Ash"}, "quiet-3": {}, "quiet-4": {}}})
+    seen = {}
+    for sp in specs:
+        ch = sp["characters"]
+        for c in sp["cameras"]:
+            seen[c["plan_id"]] = (c, {k: list(v["position"][:2]) for k, v in ch.items()}, {k: v["facing"] for k, v in ch.items()})
+    p0 = seen["action-1"][1]
+    r = 4.5
+    for sid, (c, pos, fac) in seen.items():
+        # the same ground in every shot, each facing the other
+        assert pos["a"] == pytest.approx(p0["a"], abs=0.05) and pos["b"] == pytest.approx(p0["b"], abs=0.05), sid
+        assert math.dist(pos["a"], pos["b"]) <= r + FP.STRIKE_FAR_M + 1e-6
+        assert ang(fac["a"], pos["a"], pos["b"]) < 3 and ang(fac["b"], pos["b"], pos["a"]) < 3, sid
+    # both in a shot, or a shot of neither alone: side-on, the camera off the line between them, aimed between them
+    for sid in ("action-1", "quiet-3"):
+        c, pos, _ = seen[sid]
+        assert c.get("fight") == {"person": "a", "creature": "b"}, sid
+        u = [pos["b"][0] - pos["a"][0], pos["b"][1] - pos["a"][1]]
+        w = [c["position"][0] - pos["a"][0], c["position"][1] - pos["a"][1]]
+        assert abs(u[0] * w[1] - u[1] * w[0]) / math.hypot(*u) >= 0.6 * FP.FIGHT_SIDE_M, sid
+    # the creature's own shot: over his shoulder at it
+    c, pos, _ = seen["action-2"]
+    assert c.get("fight") and math.dist(c["position"][:2], pos["a"]) < 3.0
+    # a close shot of him alone keeps its own camera
+    assert not seen["quiet-4"][0].get("fight")
+
+
+def test_how_a_shot_of_a_standoff_is_seen():
+    assert FP.standoff_view({"show": ["a", "b"]}, "a", "b") is False
+    assert FP.standoff_view({"listed": ["b"]}, "a", "b") is True
+    assert FP.standoff_view({"listed": ["a"], "kind": "medium"}, "a", "b") is False
+    assert FP.standoff_view({"listed": ["a"], "kind": "close"}, "a", "b") is None
+    assert FP.standoff_view({"listed": ["c"]}, "a", "b") is None
+    assert FP.standoff_view({"listed": ["c", "b"]}, "a", "b") is None
+    assert FP.standoff_view({"show": ["a", "b"], "shot_kind": "talk"}, "a", "b") is None
+
+
+def test_who_stays_where_they_are():
+    prev = {"position": [1.0, 2.0], "pose": "standing", "where": ["thing", "desk"]}
+    st = {"b": {"position": [1.5, 2.5]}, "c": {"position": [9.0, 9.0]}}
+    assert FP.stays(prev, "standing", None, st, {}, False)                      # words that name no place
+    assert FP.stays(prev, "crouching", None, st, {}, False)                     # ... nor does a change of stance
+    assert FP.stays(prev, "standing", ["thing", "desk"], st, {}, False)         # the same thing by other words
+    assert not FP.stays(prev, "standing", ["thing", "door"], st, {}, False)     # another thing of the set
+    assert FP.stays(prev, "standing", ["with", "b"], st, {}, False)             # beside someone they are with
+    assert not FP.stays(prev, "standing", ["with", "c"], st, {}, False)         # ... and someone they are not
+    assert not FP.stays(prev, "sitting", None, st, {}, False)                   # sitting down takes a seat
+    assert FP.stays(prev, "lying", None, st, {}, True)                          # knocked flat: where they stood
+    assert not FP.stays(dict(prev, pose="lying", bed="bed_1"), "standing", None, st, {}, True)   # up from a bed
+    assert not FP.stays({"pose": "standing"}, "standing", None, st, {}, False)  # not placed yet
+
+
+def test_words_that_name_no_place_move_nobody_and_another_thing_does(lib, tmp_path, monkeypatch):
+    def one(at, pose="standing"):
+        return shot([{"name": "Ash", "pose": pose, "at": at, "facing": "right"},
+                     {"name": "Cora", "pose": "standing", "at": "in the middle", "facing": "left"}], kind="quiet")
+    specs = run(tmp_path, monkeypatch, {"quiet-1": one("in the middle"), "quiet-2": one("lower-left foreground"),
+                                        "quiet-3": one("in the fading light", "crouching"), "quiet-4": one("at the desk")}, {})
+    at = {}
+    for sp in specs:
+        for c in sp["cameras"]:
+            at[c["plan_id"]] = sp["characters"]["a"]["position"][:2]
+    assert at["quiet-2"] == pytest.approx(at["quiet-1"], abs=0.02) and at["quiet-3"] == pytest.approx(at["quiet-1"], abs=0.02)
+    assert math.dist(at["quiet-4"], [-8.0, -8.0]) < 2.5 and math.dist(at["quiet-4"], at["quiet-1"]) > 3.0
+
+
+def test_in_the_open_a_fighter_stands_across_the_view_from_the_creature():
+    # before it along the view (+y): moved beside it, on the side he was nearer, at striking distance
+    q = FP.strike_place([0.0, 0.0], 4.0, [1.0, -5.6], [], [], [30.0, 30.0], walls=False, across=True)
+    d = math.dist(q, [0.0, 0.0])
+    assert q[0] > 0 and abs(q[1]) <= d * math.sin(math.radians(FP.STRIKE_ACROSS_DEG)) + 1e-6
+    assert 4.0 + FP.PERSON_GAP_M - 1e-6 <= d <= 4.0 + FP.STRIKE_FAR_M + 1e-6
+    # once there he stays, and a thing in the way on that side sends him to the other, still across
+    assert FP.strike_place([0.0, 0.0], 4.0, q, [], [], [30.0, 30.0], walls=False, across=True) is None
+    fx = [{"name": "rock", "kind": "fixture", "center": [6.0, 0.0, 2.0], "half": [3.0, 5.0, 2.0]}]
+    o = FP.strike_place([0.0, 0.0], 4.0, [1.0, -5.6], [], fx, [30.0, 30.0], walls=False, across=True)
+    assert o[0] < 0 and abs(o[1]) <= math.dist(o, [0, 0]) * math.sin(math.radians(FP.STRIKE_ACROSS_DEG)) + 1e-6
+    # the side-on camera on the two then looks the way the picture does
+    c = FP.fight_camera(q, [0.0, 0.0], {"radius_m": 4.0, "size_m": [8, 4, 4]}, False)
+    assert c["position"][1] < min(q[1], 0.0) and c["target"][1] > c["position"][1]
+
+
+def test_side_on_shots_of_one_fight_are_three_cameras_on_one_side_of_the_line():
+    p, c, rig = [7.0, 0.0], [0.0, 0.0], {"radius_m": 4.0, "size_m": [8, 4, 4]}
+    cams = [FP.fight_camera(p, c, rig, False, take=i) for i in range(4)]
+    assert all("fight_view" in x for x in cams)
+    assert len({tuple(x["position"]) for x in cams[:3]}) == 3 and cams[3]["position"] == cams[0]["position"]
+    assert all(x["position"][1] < 0 for x in cams)                        # one side of the line, the place's near side
+    wide, by_fighter, far = cams[:3]
+    assert math.dist(by_fighter["position"][:2], p) < math.dist(far["position"][:2], p)
+    for x in cams[:3]:                                    # none from round toward the creature's back: no nearer it
+        assert math.dist(x["position"][:2], c) >= math.dist(x["position"][:2], p) - 1e-6      # than the fighter
+    assert math.dist(far["position"][:2], wide["target"][:2]) > math.dist(wide["position"][:2], wide["target"][:2])
+    for x in cams[:3]:                                    # every one far enough off to hold the two whole
+        assert min(math.dist(x["position"][:2], p), math.dist(x["position"][:2], c)) >= 0.6 * FP.FIGHT_SIDE_M
+        assert x["target"] == wide["target"]
+    assert FP.fight_camera(p, c, rig, True)["position"][1] < 0            # the shoulder camera on that side too
+
+
+# ------------------------------------------------------------------ a work shot's camera
+def test_a_work_shot_is_framed_on_the_work_and_its_shots_are_not_one_camera():
+    piece = {"name": "block", "kind": "fixture", "center": [0.0, 0.0, 0.4], "half": [0.3, 0.2, 0.4]}
+    w = [0.0, 0.8]                                           # the worker, north of the piece, turned to it
+    cams = [FP.work_camera(w, piece, "medium", [], [piece], [8.0, 8.0], take=i) for i in range(3)]
+    assert all(cams) and len({tuple(c["position"]) for c in cams}) == 3
+    over, close, side = cams
+    assert over["position"][1] < 0 and close["position"][1] < 0          # from beyond the piece, looking back at them
+    assert math.dist(close["position"][:2], [0, 0]) < math.dist(over["position"][:2], [0, 0])
+    assert 0 < close["target"][1] < 0.4 and close["focal_mm"] == over["focal_mm"]   # the close one leans to the work,
+    #                                                                       the worker still in it
+    assert abs(side["position"][0]) > 2 * abs(side["position"][1])       # the side one: in profile
+    assert all(c_["position"][1] <= 0.05 for i in range(6)                # none from behind the worker's shoulder
+               for c_ in [FP.work_camera(w, piece, "medium", [], [piece], [8.0, 8.0], take=i)])
+    near = [cams[0]["position"][0] * 0.4 + 0.5, cams[0]["position"][1] * 0.4]     # someone in the frame's foreground
+    assert FP.work_camera(w, piece, "medium", [near], [piece], [8.0, 8.0], take=0)["position"] != cams[0]["position"]
+    # someone standing in the first choice's line sends the camera to the other side; a wall does too
+    o = [cams[0]["position"][0] * 0.5, cams[0]["position"][1] * 0.5]
+    other = FP.work_camera(w, piece, "medium", [o], [piece], [8.0, 8.0], take=0)
+    assert other and (other["position"][0] > 0) != (cams[0]["position"][0] > 0)
+    assert FP.work_camera(w, piece, "medium", [], [piece], [1.0, 1.0], take=0) is None     # no room: the shot's own
+    # another piece between the camera and the work: from the other side, or nearer
+    hearth = {"name": "h", "kind": "fixture", "center": [cams[0]["position"][0] * 0.55, cams[0]["position"][1] * 0.55, 0.4],
+              "half": [0.5, 0.5, 0.4]}
+    clear = FP.work_camera(w, piece, "medium", [], [piece, hearth], [8.0, 8.0], take=0)
+    assert clear and clear["position"] != cams[0]["position"]
+    # a tall piece right beside the work hides it as well: no camera looks across it at the work or the worker
+    tall = {"name": "t", "kind": "fixture", "center": [0.9, 0.3, 0.9], "half": [0.5, 0.6, 0.9]}
+    for i in range(6):
+        cam = FP.work_camera(w, piece, "medium", [], [piece, tall], [8.0, 8.0], take=i)
+        assert cam and cam["position"][0] < 0.3, (i, cam)
+    low = dict(tall, center=[0.9, 0.3, 0.2], half=[0.5, 0.6, 0.2])       # a low one beside it is looked over
+    assert FP.work_camera(w, piece, "medium", [], [piece, low], [8.0, 8.0], take=0)["position"] == cams[0]["position"]
+    # a full framing stands further off, whatever the take
+    assert math.dist(FP.work_camera(w, piece, "full", [], [piece], [12.0, 12.0], take=1)["position"][:2], [0, 0]) > \
+        math.dist(over["position"][:2], [0, 0])
+
+
+def test_someone_looking_on_at_two_who_face_each_other_stands_apart():
+    ppl = [{"name": "A", "facing": "B"}, {"name": "B", "facing": "A"}, {"name": "C", "facing": "B"}]
+    assert FP.looks_on(ppl[2], ppl) and not FP.looks_on(ppl[0], ppl) and not FP.looks_on(ppl[1], ppl)
+    ring = [{"name": "A", "facing": "B"}, {"name": "B", "facing": "C"}, {"name": "C", "facing": "A"}]
+    assert not any(FP.looks_on(q, ring) for q in ring)                   # three in one talk: nobody stands apart
+    assert not FP.looks_on({"name": "C", "facing": "the window"}, ppl[:2] + [{"name": "C", "facing": "the window"}])
+    assert FP.ONLOOK_M[0] > 3 * FP.PERSON_GAP_M
+
+
+def test_bystander_steps_to_the_side_of_the_work():
+    """Someone standing across a piece from the one who works at it stands where the work is seen from: they step
+    to the piece's side, and a camera then has its place on the work."""
+    import from_plan as FP
+    thing = {"name": "block", "kind": "fixture", "center": [0.0, 0.0, 0.35], "half": [0.3, 0.2, 0.35]}
+    room = [6.0, 6.0, 3.0]
+    spot = [0.0, -0.7]
+    by = {"b": {"position": [0.1, 0.6], "pose": "standing"}}
+    side = FP.stand_aside(spot, thing, by, [thing], room)
+    assert "b" in side
+    m = side["b"]
+    assert FP.WORK_ASIDE_M[0] - 0.01 <= math.dist(m, [0.0, 0.0]) <= FP.WORK_ASIDE_M[1] + 0.01
+    assert abs(m[0]) > 1.2 and m[1] < 0.5, m                  # at its side, not on past it
+    for take in range(3):
+        assert FP.work_camera(spot, thing, "medium", [m], [thing], room, take=take), take
+    # one already at the side, and one far off, stay
+    assert FP.stand_aside(spot, thing, {"b": {"position": [1.8, -0.2], "pose": "standing"}}, [thing], room) == {}
+    assert FP.stand_aside(spot, thing, {"b": {"position": [0.0, 2.9], "pose": "standing"}}, [thing], room) == {}

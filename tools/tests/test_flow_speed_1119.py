@@ -212,7 +212,7 @@ def test_a_check_takes_each_picture_as_it_lands(tmp_path, monkeypatch):
     import ast
     src = (Path(SK.HERE) / "redraw" / "keycheck.py").read_text()
     fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "as_they_land")
-    ns = {"time": time, "Path": Path, "json": json, "FOLLOW_S": 0.0}
+    ns = {"time": time, "Path": Path, "json": json, "FOLLOW_S": 0.0, "ALIVE": ""}
     exec(compile(ast.Module([fn], []), "kc", "exec"), ns)
     a, b, c = ({"id": n, "redraw": str(tmp_path / f"{n}.png")} for n in "abc")
     assert [x["id"] for x in ns["as_they_land"]([a, b, c], 0)] == ["a", "b", "c"]      # not following: all, in order
@@ -223,3 +223,43 @@ def test_a_check_takes_each_picture_as_it_lands(tmp_path, monkeypatch):
         if x["id"] == "b":
             (tmp_path / "a.png").write_bytes(b"x")
     assert got == ["b", "a"]                      # as they land; the one never drawn is left out
+
+
+def test_the_books_own_word_for_a_places_time_of_day_comes_first(tmp_path, monkeypatch):
+    st = _story(tmp_path, ["P", "Q"])
+    st.book = tmp_path / "book"
+    st.book.mkdir()
+    (st.book / "place_times.json").write_text(json.dumps({"P": "Night", "Q": "sometime"}))
+    monkeypatch.setattr(SK, "llm", lambda *a, **k: 0)
+    for p in ("p", "q"):
+        (st.work / p).mkdir(parents=True, exist_ok=True)
+    (st.work / "q" / "place_time.json").write_text(json.dumps({"time": "day"}))
+    st.plan_p = st.timeline = tmp_path / "x"
+    assert st.place_time("P") == "night"
+    assert st.place_time("Q") == "day"                      # not one of the three: the asked answer stands
+
+
+def test_a_check_gives_no_picture_up_while_the_drawers_are_at_work(tmp_path):
+    import ast
+    import threading
+    src = (Path(SK.HERE) / "redraw" / "keycheck.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "as_they_land")
+    alive = tmp_path / "alive"
+    alive.write_text("x")
+    ns = {"time": time, "Path": Path, "json": json, "FOLLOW_S": 0.0, "ALIVE": str(alive)}
+    exec(compile(ast.Module([fn], []), "kc", "exec"), ns)
+    a = {"id": "a", "redraw": str(tmp_path / "a.png")}
+    threading.Timer(1.5, lambda: (tmp_path / "a.png").write_bytes(b"x")).start()      # (later than the wait allows)
+    assert [x["id"] for x in ns["as_they_land"]([a], 0.4)] == ["a"]
+    alive.unlink()
+    b = {"id": "b", "redraw": str(tmp_path / "b.png")}
+    assert [x["id"] for x in ns["as_they_land"]([b], 0.4)] == []                      # the drawers gone: given up
+
+
+def test_what_a_drawer_was_fed_and_did_not_draw(tmp_path):
+    rows = [json.dumps({"id": f"k{i}", "prompt": "x"}) for i in range(4)]
+    lg = tmp_path / "card.log"
+    lg.write_text('loading\n{"id": "k0", "seconds": 9}\nk1: 15 s\n{"id": "k1", "seconds": 15}\n'
+                  '{"id": "k2", "error": "stuck: no picture in 300 s"}\n')
+    assert [json.loads(r)["id"] for r in SK.undrawn(rows, lg)] == ["k2", "k3"]
+    assert SK.undrawn(rows, tmp_path / "none.log") == rows

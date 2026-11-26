@@ -446,3 +446,25 @@ def test_a_drop_that_does_not_help_is_put_back():
     assert not lay["ok"] and lay["dropped"] == []
     assert {"stool", "side_table"} <= {p["kind"] for p in lay["pieces"]}
     assert lay["ladder"][-1]["step"] == "dropped pieces put back"
+
+
+def test_only_the_drop_that_made_the_room_work_stays_dropped(monkeypatch):
+    """(11-20: a hall lost both its tables on the way to dropping the one drape that was in the way.)"""
+    s = spec(kind="hall", size="large", openings=[op("o1", "door", "south")],
+             pieces=[pc_("p0", "stool", ["the stool"]), pc_("a1", "side_table"), pc_("a2", "side_table"),
+                     pc_("z9", "wardrobe")],
+             named={"the stool": "p0"})
+    real = pl.solve
+
+    def solve(spec_k, *a, **k):                              # the room works only without the wardrobe
+        lay = dict(real(spec_k, *a, **k))
+        if any(p["id"] == "z9" for p in spec_k["pieces"]):
+            lay["ok"], lay["unmet"] = False, ["no camera position for a close shot of a person at stool"]
+        return lay
+    monkeypatch.setattr(pl, "solve", solve)
+    order = copy.deepcopy(R)
+    order["ladder"]["drop_order"] = ["side_table", "wardrobe"]
+    lay = pl.solve_recover(s, rules=order)
+    assert lay["ok"] and [d["id"] for d in lay["dropped"]] == ["z9"]
+    assert sum(1 for p in lay["pieces"] if p["kind"] == "side_table") == 2
+    assert sum(1 for x in lay["ladder"] if x["step"] == "a dropped piece put back") == 2

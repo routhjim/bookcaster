@@ -217,7 +217,9 @@ def test_land_places_spot_and_validation():
 
 
 def test_kit_for_a_period_without_a_kit():
-    assert PB.kit_for("medieval") == PB.kit_for("victorian")
+    # (the kit it is most like, for its lights and its build; nothing of that period's style: place_build.plain)
+    lent, own = PB.kit_for("medieval"), PB.kit_for("victorian")
+    assert lent["lights"] == own["lights"] and lent["materials"] == own["materials"] and lent["_plain"]
     assert PB.kit_for("modern") == PB.kit_for("far_future")
     assert PB.kit_for("not stated") == PB.kit_for("victorian")
 
@@ -229,5 +231,246 @@ def test_room_light_in_a_closed_dark_room():
     add = [l for l in out["lights"] if l["type"] == "point"][1:]
     assert add and sum(l["lumens"] for l in add) + 500 >= PB.ROOM_LM_M2 * 18 - 1
     lit = {"size_m": [3.0, 6.0, 3.0], "structure": [{"kind": "ceiling"}], "lights": [{"type": "sun"}]}
-    assert not PB.room_light(lit, {})                        # (daylight through its windows)
+    assert PB.room_light(lit, {})                 # (daylight at its windows too: everyone inside is seen, 11-19)
+    assert not PB.room_light(lit, {})             # (lit enough now: nothing more is added)
+    assert not PB.room_light({"size_m": [3.0, 6.0, 3.0], "structure": [{"kind": "ceiling"}],
+                              "lights": [{"type": "strip_lights"}]}, {})    # (a room with its own strip of lights)
     assert not PB.room_light({"size_m": [9, 9, 6], "structure": [], "lights": []}, {})   # (in the open)
+
+
+def _cliff_picture():
+    """A camera 2 m up looking level: open ground, and from 45% across a rock face about 17 m off that the top
+    and the right edge of the frame cut."""
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    ground = np.where(ray[..., 1] > 1e-6, 2.0 / np.maximum(ray[..., 1], 1e-6), 1e9)
+    cliff = np.where(u > w * 0.45, 10.0 / 0.6 + 2 * np.sin(u / 17.0), 1e9)
+    t = np.minimum(ground, cliff)
+    return ray * t[..., None], t < 60
+
+
+def test_relief_is_a_closed_form_carried_on_past_the_frame():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    pts, mask = _cliff_picture()
+    n, d, _ = CD.fit_floor(pts, mask)
+    vtx, faces, uv = CD.relief(pts, mask, CD.frame(n, d), d, [0.5, 0.0, 0.8, 0.5], lambda q: q)
+    # closed: every edge has two faces, wound against each other; its volume positive (its faces look outward)
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    k = e[:, 0] * len(vtx) + e[:, 1]
+    assert len(np.unique(k)) == len(k) and set(k) == set(e[:, 1] * len(vtx) + e[:, 0])
+    a, b, c = (vtx[faces[:, i]] for i in range(3))
+    assert float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) > 0
+    lo, hi = vtx.min(0), vtx.max(0)
+    seen_top = float(CD.to_room(pts[0, 300][None], CD.frame(n, d), d)[0][2])
+    assert hi[2] > seen_top + 0.9 * CD.RELIEF_ON_M[0]         # carried on up past the frame's top
+    assert hi[0] > float(pts[:, -1, 0].max()) + 0.9 * CD.RELIEF_ON_M[1]   # ... and past its right edge
+    assert abs(lo[2]) < 1e-6 and 0.0 <= uv.min() and uv.max() <= 1.0
+    # nothing rising in the box: no form
+    assert CD.relief(pts, mask, CD.frame(n, d), d, [0.05, 0.6, 0.3, 0.95], lambda q: q) is None
+
+
+def test_land_form_key():
+    import concept_depth as CD
+    con = {"spec": {"p1": {"box": [0, 0, .2, .2], "natural": True}, "p2": {"box": [0, 0, .5, .5], "natural": True}},
+           "_spec_kinds": {"p1": "landmark", "p2": "landmark"}, "seen": []}
+    assert CD.land_form_key(con) == "spec:p2"                 # the largest of the land's own landmarks
+    con["spec"]["p1"]["land_form"] = True
+    assert CD.land_form_key(con) == "spec:p1"
+    assert CD.land_form_key({"spec": {"p1": {"box": [0, 0, 1, 1]}}, "_spec_kinds": {"p1": "landmark"}}) is None
+
+
+def test_relief_piece_is_placed_whole_and_made_without_a_drawing(tmp_path):
+    glb = tmp_path / "concept_relief.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.0], "relief": {"of": "spec:p1", "glb": str(glb), "size_m": [20.0, 6.0, 12.0]},
+                     "things": {"spec:p1": {"xy": [2.0, 9.0], "size_m": [20.0, 6.0, 12.0]},
+                                "seen:0": {"xy": [1.0, 0.0], "size_m": [1.9, 0.6, 0.85]}}},
+           "spec": {"p1": {"natural": True, "real_m": [5.0, 3.0]}}, "seen": [{"kind": "bench", "real_m": [1.2, 0.4]}]}
+    pcs = [{"id": "p1", "kind": "landmark", "look": "a rock face", "phrases": ["x"]}, {"id": "c1", "kind": "bench"}]
+    # neither the land's own thing nor a small one sets the picture's scale
+    assert PB.open_scale(pcs, con) == 1.0
+    out, stage = PB.open_places(pcs, con)
+    p1 = next(p for p in out if p["id"] == "p1")
+    assert p1["relief"]["glb"] == str(glb) and p1["_seen_size_m"] == [20.0, 6.0, 12.0] and stage[2] == 12.0
+    req = P.generation_request(dict(p1, source="crop.png"))
+    steps = [s["step"] for s in req["plan"]["steps"]]
+    assert steps == ["spec", "shape"] and req["asset_id"].endswith("_tr")
+    sp = req["plan"]["steps"][0]["spec"]
+    assert sp["made_as"] == "relief" and sp["size_m"] == [20.0, 6.0, 12.0] and "longest_m" not in sp
+    assert "relief_one.py" in " ".join(req["plan"]["steps"][1]["argv"])
+    # another shape of the same piece is another asset
+    glb.write_bytes(b"glb2")
+    assert P.generation_request(dict(p1, source="crop.png"))["asset_id"] != req["asset_id"]
+
+
+def _open_picture():
+    """A camera 2 m up looking level: open ground, a hill 30 m off that the left edge of the frame cuts, and an
+    upright thing 8 m off on the right."""
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    ground = np.where(ray[..., 1] > 1e-6, 2.0 / np.maximum(ray[..., 1], 1e-6), 1e9)
+    hill = np.where(u < w * 0.4, 30.0 / 0.6 + 3 * np.sin(u / 23.0), 1e9)
+    post = np.where((abs(u - 0.7 * w) < 12) & (v > 0.35 * h), 8.0 / 0.6, 1e9)
+    t = np.minimum(np.minimum(ground, hill), post)
+    return ray * t[..., None], t < 80
+
+
+def test_the_pictures_land_is_one_closed_solid_without_the_built_things():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    pts, mask = _open_picture()
+    n, d, _ = CD.fit_floor(pts, mask)
+    img = (np.random.RandomState(0).rand(240, 400, 3) * 255).astype(np.uint8)
+    things = {"spec:p1": {"xy": [1.6, 8.3], "size_m": [0.6, 0.6, 3.0]}, "seen:0": {"xy": [-6.0, 30.0], "size_m": [20, 5, 9]}}
+    boxes = {"spec:p1": [0.66, 0.3, 0.74, 0.75], "seen:0": [0.0, 0.2, 0.4, 0.55]}
+    vtx, faces, uv, painted, has = CD.land(pts, mask, CD.frame(n, d), d, lambda q: q, things, boxes, img)
+    e = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    k = e[:, 0] * len(vtx) + e[:, 1]
+    assert len(np.unique(k)) == len(k) and set(k) == set(e[:, 1] * len(vtx) + e[:, 0])        # closed
+    a, b, c = (vtx[faces[:, i]] for i in range(3))
+    assert float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) > 0                         # its faces look outward
+    assert int((np.linalg.norm(np.cross(b - a, c - a), axis=1) < 2e-10).sum()) == 0          # no face without area
+    front = vtx[uv[:, 0] <= 0.5]
+    # the far hill is the land's, and stands; the thing that is built as a piece is not in the land, the ground
+    # closed over where it stood and the picture painted over there
+    assert has == ["seen:0"] and front[front[:, 1] > 25][:, 2].max() > 5.0
+    at = front[(abs(front[:, 0] - 1.6) < 0.6) & (abs(front[:, 1] - 8.3) < 1.0)]
+    assert len(at) and at[:, 2].max() < 0.05
+    assert (painted != img).any() and painted.shape == img.shape
+    # carried on past the frame's left edge, its ground just under the set's
+    assert front[:, 0].min() < float(pts[:, 0, 0].min()) - 0.5 * CD.RELIEF_ON_M[1]
+    assert abs(float(np.percentile(front[:, 2], 20)) + CD.LAND_UNDER_M) < 1e-6
+
+
+def test_the_pictures_land_is_set_beside_the_world_and_what_it_has_is_not_built(tmp_path):
+    glb = tmp_path / "concept_land.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.0],
+                     "land": {"glb": str(glb), "xy": [3.0, 20.0], "size_m": [80.0, 40.0, 20.0], "has": ["seen:1"], "under_m": 0.3},
+                     "things": {"seen:0": {"xy": [1.0, 4.0], "size_m": [2.0, 1.0, 2.0]},
+                                "seen:1": {"xy": [-9.0, 15.0], "size_m": [6.0, 4.0, 5.0]}}},
+           "seen": [{"kind": "cart"}, {"kind": "tree", "natural": True}]}
+    pcs = [{"id": "c1", "kind": "cart"}, {"id": "c2", "kind": "tree"}]
+    out, stage = PB.open_places(pcs, con)
+    assert [p["id"] for p in out] == ["c1", PB.LAND_ID] and stage
+    c1, ld = out
+    # the land stands where the picture has it, in the frame the pieces are placed in
+    assert ld["scenery"] and ld["kind"] == "terrain" and ld["under_m"] == 0.3
+    assert ld["at_xy"][0] - c1["at_xy"][0] == pytest.approx(3.0 - 1.0) and ld["at_xy"][1] - c1["at_xy"][1] == pytest.approx(20.0 - 4.0)
+    req = P.generation_request(ld)
+    assert [s["step"] for s in req["plan"]["steps"]] == ["spec", "shape"]
+    assert req["plan"]["steps"][0]["spec"]["made_as"] == "relief" and req["plan"]["steps"][0]["spec"]["size_m"] == [80.0, 40.0, 20.0]
+    # a place with nothing standing on it has its land too
+    out, stage = PB.open_places([], dict(con, depth=dict(con["depth"], things={})))
+    assert [p["id"] for p in out] == [PB.LAND_ID] and stage is None and out[0]["at_xy"] == [3.0, 20.0 + 5.0 - PB.OPEN_BARE_M]
+
+
+def test_a_panorama_made_from_the_picture_keeps_its_land_on_every_side_but_ahead():
+    h, w = 64, 128
+    dirs = PS.pano_dirs(h, w)
+    dz = dirs[..., 2]
+    eye = 2.0
+    ground = np.where(dz < -1e-3, eye / np.maximum(-dz, 1e-3), 1e9)
+    hz = np.sqrt(np.maximum(1 - dz * dz, 1e-6))
+    d = np.minimum(ground, 12.0 / hz)                       # a wall of land 12 m off all the way round
+    sky = np.zeros((h, w), bool)
+    out = PS.surround(d, sky, eye, 40.0)
+    az = np.abs(np.degrees(np.arctan2(dirs[..., 0], dirs[..., 1])))
+    wall = d * hz > 11.9
+    # ahead (round +y, where the picture's own land is built) the panorama's is moved out to the far edge;
+    # everywhere else it stands where the panorama has it
+    assert (out[wall & (az < 39)] >= PS.LAND_MAX_K * PS.SKY_R_M - 1e-6).all()
+    assert np.allclose(out[wall & (az > 41)], d[wall & (az > 41)])
+    # the panorama's ground near the eye lies just under the real ground, on every side
+    g = ~wall & (dz < -0.2)
+    assert np.allclose(out[g] * -dz[g], eye + PS.GROUND_UNDER_M)
+
+
+def test_a_place_with_its_picture_measured_has_its_panorama_made_from_the_picture(tmp_path):
+    pic = tmp_path / "concept.png"
+    pic.write_bytes(b"png")
+    t = {"id": "t1", "kind": "terrain", "look": "open moor under a grey sky", "source": str(pic)}
+    old = P.generation_request(dict(t))
+    v = {"eye_at": [0.5, -8.0], "eye_h": 2.0, "front_deg": 48.0}
+    req = P.generation_request(dict(t, view=v))
+    draw = req["plan"]["steps"][0]
+    assert draw["step"] == "draw" and "pano_from_picture.py" in " ".join(draw["argv"]) and str(pic) in draw["argv"]
+    sp = next(s for s in req["plan"]["steps"] if s["step"] == "spec")["spec"]
+    assert sp["view"] == v and sp["panorama_id"] == draw["ref_id"] and req["asset_id"] != old["asset_id"]
+    # another eye is another world of the same panorama; another picture another panorama
+    r2 = P.generation_request(dict(t, view=dict(v, eye_at=[0.0, -5.0])))
+    assert r2["asset_id"] != req["asset_id"] and r2["plan"]["steps"][0]["ref_id"] == draw["ref_id"]
+    pic.write_bytes(b"png2")
+    assert P.generation_request(dict(t, view=v))["plan"]["steps"][0]["ref_id"] != draw["ref_id"]
+    import shell_one as SO
+    assert SO.view_args(sp) == ["--eye-h", "2.0", "--eye-at", "0.5", "-8.0", "--front-deg", "48.0"] and SO.view_args({}) == []
+    # the picture's eye, from where the pieces are placed
+    glb = tmp_path / "concept_land.glb"
+    glb.write_bytes(b"glb")
+    con = {"depth": {"eye": [0.0, -5.0, 2.2], "hfov_deg": 70.0,
+                     "land": {"glb": str(glb), "xy": [3.0, 20.0], "size_m": [80.0, 40.0, 20.0], "has": [], "under_m": 0.3},
+                     "things": {"seen:0": {"xy": [1.0, 4.0], "size_m": [2.0, 1.0, 2.0]}}}, "seen": [{"kind": "cart"}]}
+    out, _ = PB.open_places([{"id": "c1", "kind": "cart"}], con)
+    c1, ld = out
+    assert ld["view"]["eye_h"] == 2.2 and ld["view"]["front_deg"] == 47.0
+    # (the cart stands 9 m before the eye in the picture: so it does from the eye's place in the set)
+    assert c1["at_xy"][0] - ld["view"]["eye_at"][0] == pytest.approx(1.0) and c1["at_xy"][1] - ld["view"]["eye_at"][1] == pytest.approx(9.0)
+
+
+def test_the_panorama_is_turned_so_the_picture_looks_along_plus_y():
+    from PIL import Image
+    import pano_from_picture as PF
+    a = np.zeros((4, 8, 3), np.uint8)
+    a[:, 3:5] = 255                                           # the picture: the middle of what the model paints
+    b = np.asarray(PF.turned(Image.fromarray(a)))
+    assert (b[:, [0, 7]] == 255).all() and (b[:, 3:5] == 0).all()
+    # ... which is where pano_shell's frame has +y
+    assert PS.pano_dirs(64, 128)[32, 0][1] > 0.99
+
+
+def test_people_and_cameras_keep_off_land_that_rises():
+    import ground_map as GM
+    # the measured picture: a bank 2 m high from x 6 to 10, y 10 to 30 (1 m cells from x0 -20, y0 0); eye at 0, -5
+    z = [[2.0 if 26 <= j < 30 and 10 <= i < 30 else 0.0 for j in range(40)] for i in range(40)]
+    hi = PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": z}, [0.0, -5.0], 1.0, 0.0, 9.0)
+    # the set's middle is 9 m before the eye, at the picture's y 4: the bank lies 6 m and more beyond it
+    assert GM.in_water(hi, 8.0, 10.0) and not GM.in_water(hi, 2.0, 10.0) and not GM.in_water(hi, 8.0, 2.0)
+    tall = {"cell_m": hi["cell_m"], "half_m": hi["half_m"], "runs": hi["tall_runs"]}
+    assert GM.in_water(tall, 8.0, 10.0) and not GM.in_water(tall, 0.0, 0.0)
+    # a low rise bars people, not cameras
+    low = PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": [[0.6 * (v > 0) for v in r] for r in z]}, [0.0, -5.0], 1.0, 0.0, 9.0)
+    assert low["runs"] and not low["tall_runs"]
+    # ground that rises nearly everywhere round the set's middle is the ground: it bars nobody
+    assert PB.land_high({"cell_m": 1.0, "x0": -20.0, "y0": 0.0, "z": [[0.8] * 40 for _ in range(40)]}, [0.0, -5.0], 1.0, 0.0, 9.0) is None
+    import from_plan as FP
+    ts = FP.water_things({"high_land": hi})
+    assert [t["name"] for t in ts] == ["_high_land"] and not FP.dry([8.0, 10.0], ts) and FP.dry([2.0, 10.0], ts)
+    import speakers as SPK
+    SPK.TALL_LAND.clear()
+    SPK.TALL_LAND.update(tall)
+    try:
+        assert SPK.in_tall_land([8.0, 10.0, 1.6]) and not SPK.in_tall_land([0.0, 0.0, 1.6])
+    finally:
+        SPK.TALL_LAND.clear()
+
+
+def test_a_hillside_in_the_picture_is_levelled_near_the_eye_and_what_stands_on_it_still_stands():
+    pytest.importorskip("scipy")
+    import concept_depth as CD
+    h, w = 240, 400
+    v, u = np.mgrid[0:h, 0:w]
+    ray = np.stack([(u + .5) / w - .5, ((v + .5) / h - .5) * h / w, np.full((h, w), 0.6)], -1)
+    # level ground on the left; on the right it rises a quarter of a metre a metre across; a rock face 20 m off
+    den = ray[..., 1] + np.where(ray[..., 0] > 0, 0.25 * ray[..., 0], 0.0)
+    ground = np.where(den > 1e-6, 2.0 / np.maximum(den, 1e-6), 1e9)
+    t = np.minimum(ground, np.where(u > w * 0.6, 20.0 / 0.6, 1e9))
+    pts, mask = ray * t[..., None], t < 80
+    n, d, _ = CD.fit_floor(pts, mask & (u < 0.4 * w))
+    vtx, faces, uv, _, _ = CD.land(pts, mask, CD.frame(n, d), d, lambda q: q, {}, {}, np.zeros((h, w, 3), np.uint8))
+    f = vtx[uv[:, 0] <= 0.5]
+    near = f[(f[:, 1] < 12) & (f[:, 0] > 2) & (f[:, 0] < 6)]          # (the slope stood 0.5 to 1.5 m high here)
+    assert len(near) > 100 and near[:, 2].max() < 0.1
+    assert f[(f[:, 1] > 15) & (f[:, 0] > 4)][:, 2].max() > 8.0

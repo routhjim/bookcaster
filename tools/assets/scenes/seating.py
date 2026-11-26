@@ -97,6 +97,7 @@ def is_seated(c: dict) -> bool:
     return "sit" in p or "seat" in p
 
 
+SWAP_NEAR_M = 2.5            # a seat this near the named one may take its sitter when the named one is too narrow
 SEAT_TURN_DEG = 30.0         # how far a sitter on an open seat turns out of the seat's front toward whom they face
 
 
@@ -250,11 +251,22 @@ def plan(spec: dict, library: Path) -> dict:
         else:
             order = [c["seat"]] + sorted((n for n in S if n != c["seat"]),
                                          key=lambda n: math.dist(S[n]["pos"], S[c["seat"]]["pos"]))
-        for n in order:
+        for n, near_only in [(n, True) for n in order] + [(n, False) for n in order]:
             # a seat takes as many sitters as it has places (a sofa, a bed's edge), each on a place of their own
             places = sorted(S[n]["box"].get("places") or [0.0], key=abs)
             sat = [kk for kk, nn in taken.items() if nn == n]
-            if len(sat) >= len(places) or not fits(S[n], fitd):
+            if len(sat) >= len(places):
+                continue
+            # the seat the plan names is where the scene is: one too narrow gives way to a seat beside it, never to
+            # one across the room (a man named to a narrow chair at one end of a hall was sat on a bench at the
+            # other, eleven metres from the one he spoke with, 11-20); with none beside it they sit where named
+            if near_only and c["seat"] is not True and n != c["seat"] and \
+                    math.dist(S[n]["pos"], S[c["seat"]]["pos"]) > SWAP_NEAR_M:
+                continue
+            if not fits(S[n], fitd) and not (c["seat"] is not True and n == c["seat"] and not any(
+                    fits(S[m], fitd) and math.dist(S[m]["pos"], S[n]["pos"]) <= SWAP_NEAR_M
+                    and len([kk for kk, nn in taken.items() if nn == m]) < len(S[m]["box"].get("places") or [0.0])
+                    for m in S if m != n)):
                 continue
             used = [spec["characters"][kk].get("_seat", {}).get("x") for kk in sat]
             px = next(x for x in places if x not in used)

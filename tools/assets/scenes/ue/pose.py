@@ -15,7 +15,8 @@ target), ["curl", side, deg, thumb_deg] (relaxed fingers).
 Named poses (POSES) are functions of the measured skeleton plus a few parameters (seat and shelf heights, which
 leg takes the weight, head and chest turns): stand, stand_relaxed, stand_hand_on_mantel, gesture_point, seated,
 sit_armchair_relaxed. Feet keep their standing positions (two-bone IK) when the hips move. Start actions over a
-posture (ACTIONS): veil_lift, and the work actions any task maps onto: tool_raised, striking_down, hands_at_work.
+posture (ACTIONS): veil_lift, the work actions any task maps onto: tool_raised, striking_down, hands_at_work, and a
+fighter's guard: weapon_ready (READY_ACTIONS; the same stance solver, no work top).
 The work actions set the whole body by its mechanics (see "work: whole-body mechanics"): a staggered stance with
 bent knees, the trunk turned and folded from the hips, elbows never straight, the centre of mass kept over the feet
 (balance_margin), the head on the work, the tool gripped (grip_frame, prop_in_hand: scene_job puts the held prop in
@@ -487,7 +488,23 @@ WORK_SPEC = {
     "tool_raised": {"pelvis": 14.0, "chest": 16.0, "lean": 8.0, "lean_cm": 0.25, "tool": (-0.75, 0.6, 0.25)},
     "striking_down": {"pelvis": 8.0, "chest": -8.0, "lean": 16.0, "lean_cm": 0.45, "tool": (0.85, -0.42, -0.2)},
     "hands_at_work": {"pelvis": 6.0, "chest": -6.0, "lean": 12.0, "lean_cm": 0.45, "tool": (0.45, -0.1, -0.88)},
+    "weapon_ready": {"pelvis": 16.0, "chest": -6.0, "lean": 6.0, "lean_cm": 0.0, "tool": (0.87, 0.5, 0.0)},
 }
+# a fighter's start (11-20): squared up to the foe in a guard, the held thing in front at the ready and pointed at
+# the foe. (Held up beside the head it read as a stick held up like a torch, and in a close shot it lay behind the
+# head and was redrawn as a club; the clip plays the blow, its start frame needs only the guard.) The same stance
+# solver as the work actions, with no work top: the weapon hand READY_AHEAD of the hips toward the target, at
+# READY_HEIGHT of the way from the hips to the upper chest; the handle along the line to the target (params
+# "aim_target_ue", UE cm: the foe's head or middle), else straight ahead READY_UP_DEG up; a two-handed thing in both
+# hands on its grip, the free hand of a one-handed thing forward and out for balance; the head on the target.
+READY_ACTIONS = ("weapon_ready",)
+READY_AHEAD = 0.21          # share of the stature ahead of the hips (a 1.75 m figure: 37 cm)
+READY_HEIGHT = 0.45
+READY_UP_DEG = 30.0
+READY_SIDE = (0.06, 0.015)  # the weapon hand out toward its own side (one hand, two hands), share of the stature
+# the weapon elbow's sides tried (out, forward, up): down and out, so the forearm runs forward and in under the
+# handle and the wrist can lay it along the line to the target
+READY_POLES = ((0.6, -0.2, -0.8), (0.85, 0.0, -0.5), (0.35, 0.1, -0.95), (0.95, 0.2, -0.25), (0.5, -0.5, -0.7))
 
 # body-segment masses (Winter 2009, after Dempster): (share of body mass, proximal joint, distal joint, the segment's
 # centre of mass as a fraction of the way from proximal to distal). The head's centre lies past the head joint
@@ -1548,6 +1565,9 @@ def _work_solve(s, c, cfg):
                 best = (score, pole)
         reach[hs], targets[hs], t, h, wpt, t_want = _aim_item(s, hs, g, strike, nrm, best[1], H, tilt, headed, fwd)
         work_hands.append(hs)
+    elif kind in READY_ACTIONS:
+        reach[hs], targets[hs], t, h, t_want = _ready_hand(s, c, out, fwd)
+        work_hands.append(hs)
     else:
         if kind == "tool_raised":
             head_top = s.pos["head"][2] + 0.1 * H
@@ -1581,6 +1601,18 @@ def _work_solve(s, c, cfg):
             reach[ot], targets[ot] = _arm_to(s, ot, sub(off_palm, po2), pole_top(oo), H)
             _grip(s, ot, t, scale(nrm, -1.0) if kind == "striking_down" and g.get("work") == "head" else None)
             po2 = sub(palm_point(s, ot), s.pos[f"hand_{ot}"])
+        if kind in READY_ACTIONS:                           # (a guard's both hands are its reach)
+            work_hands.append(ot)
+    elif kind in READY_ACTIONS:
+        # the free hand forward and out for balance, a little over the weapon hand (what it holds, if anything, is
+        # gripped there afterwards: _hold_all)
+        F, _ = _ready_axes(s, c)
+        sh2 = s.pos[f"upperarm_{ot}"]
+        bal = add(sh2, add(scale(F, 0.17 * H), scale([F[1], -F[0], 0.0], -sx * 0.05 * H)))
+        bal[2] = s.pos["pelvis"][2] + 0.7 * (s.pos["spine_05"][2] - s.pos["pelvis"][2])
+        reach[ot], targets[ot] = _arm_to(s, ot, bal, pole_top(oo), H)
+        _flat_hand(s, ot, F, oo)
+        work_hands.append(ot)
     elif c.get("off_item"):
         og = c["off_item"]["grip"]
         oh = og.get("work") == "head"
@@ -1601,11 +1633,65 @@ def _work_solve(s, c, cfg):
     look = strike if kind != "hands_at_work" else [wx, wy - 0.04 * H, top]
     if fix and kind == "hands_at_work":                     # on the part the hands hold
         look = [sum(f["aim"][i] for f in fix.values()) / len(fix) for i in range(3)]
+    if kind in READY_ACTIONS:                               # on the foe, else straight ahead at eye height
+        look = _ready_axes(s, c)[1]
     _look_at(s, look, H)
     m, com, poly = balance_margin(s.pos) if c["standing"] else (None, None, None)
     return {"reach": max([reach[x] for x in set(work_hands)] or [0.0]), "reach_by_hand": reach, "targets": targets,
             "margin": m, "com": com, "poly": poly, "tool_dir": t, "tool_want": t_want, "face_dir": h,
             "drop": drop, "look": look, "strike": strike, "normal": nrm, "work_pt": wpt, "raised_pt": rpt, "off": off}
+
+
+def _ready_axes(s, c):
+    """A guard's line (READY_ACTIONS): the level way from the hips to the target (else the actor's own forward) and
+    the point the eyes and the weapon are on (the target, else a point straight ahead at eye height)."""
+    pel, tg = s.pos["pelvis"], c.get("target")
+    d = [tg[0] - pel[0], tg[1] - pel[1], 0.0] if tg else [0.0, 1.0, 0.0]
+    F = unit(d) if norm(d) > 1e-6 else [0.0, 1.0, 0.0]
+    if tg:
+        return F, list(tg)
+    return F, add(s.pos["head"], add(scale(F, 3.0 * c["H"]), [0.0, 0.0, 0.03 * c["H"]]))
+
+
+def _ready_hand(s, c, out, fwd):
+    """The weapon hand of a guard (READY_ACTIONS): the palm READY_AHEAD of the hips toward the target, at READY_HEIGHT
+    of the way up to the upper chest, a little out on its own side; the handle along the line from the palm to the
+    target (else straight ahead, READY_UP_DEG up), as far as the wrist gives it; the elbow on the side of READY_POLES
+    (down and out, never up) that lays the handle nearest that line. A two-handed thing's grips lie about the ready
+    point (the other hand behind on the handle, clear of the body). -> (reach share, wrist target, handle dir, hand
+    dir, handle dir wanted)."""
+    H, hs, g = c["H"], c["hand"], c["grip"]
+    sx = 1.0 if hs == "l" else -1.0
+    F, aim = _ready_axes(s, c)
+    left = [F[1], -F[0], 0.0]
+    pel, chest = s.pos["pelvis"], s.pos["spine_05"]
+    ready = add(pel, add(scale(F, READY_AHEAD * H), scale(left, sx * READY_SIDE[1 if g["two_hands"] else 0] * H)))
+    ready[2] = pel[2] + READY_HEIGHT * (chest[2] - pel[2])
+    a = math.radians(READY_UP_DEG)
+    ahead = unit(add(scale(F, math.cos(a)), [0.0, 0.0, math.sin(a)]))
+
+    def want(p):
+        return unit(sub(aim, p)) if c.get("target") else ahead
+    sep = 100.0 * (g["grip_from_end_m"] - g["off_from_end_m"]) if g["two_hands"] else 0.0
+    sh = s.pos[f"upperarm_{hs}"]
+    best, got = None, None
+    for pl in READY_POLES + (None,):
+        pole = best[1] if pl is None else add(scale(out, pl[0]), add(scale(fwd, pl[1]), [0.0, 0.0, pl[2]]))
+        po, tw = [0.0, 0.0, 0.0], want(ready)
+        for _ in range(3):
+            palm = add(ready, scale(tw, 0.3 * sep))
+            got = _arm_to(s, hs, sub(palm, po), pole, H)
+            tw = want(palm)
+            t, h = _grip(s, hs, tw)
+            po = sub(palm_point(s, hs), s.pos[f"hand_{hs}"])
+        if pl is None:
+            break
+        el, wr = s.pos[f"lowerarm_{hs}"], s.pos[f"hand_{hs}"]
+        up_off = perp(sub(el, sh), unit(sub(wr, sh)))[2]
+        score = (up_off > 1.0, round(angle_deg(t, tw), 1), round(got[0], 3))
+        if best is None or score < best[0]:
+            best = (score, pole)
+    return got[0], got[1], t, h, tw
 
 
 def _fix_hand(s, side, f, pole, H):
@@ -1663,7 +1749,11 @@ def _work_pose(s, p, kind):
     floor = min(s.ref_pos["foot_l"][2], s.ref_pos["foot_r"][2]) - p.get("ankle_cm", 8.0)
     H = (s.ref_pos["head"][2] - floor) / 0.9                  # the head joint at ~0.9 of the stature
     hip = s.ref_pos["pelvis"][2] - floor
-    target = s.local_pt(p["work_target_ue"]) if p.get("work_target_ue") else None
+    # (a guard aims at its foe, params "aim_target_ue"; a worked thing lying before it is not its target)
+    tgt_ue = p.get("aim_target_ue") if kind in READY_ACTIONS else p.get("work_target_ue")
+    target = s.local_pt(tgt_ue) if tgt_ue else None
+    if kind in READY_ACTIONS:
+        p = {k: v for k, v in p.items() if k not in ("work_top_cm", "fixture")}       # (no work top, no piece)
     top = floor + float(p["work_top_cm"]) if "work_top_cm" in p else (target[2] if target else floor + 0.52 * H)
     # a blow at a worked thing works at its top (where the blow lands and the other hand steadies it), not at the top
     # of the piece it lies on (11-18: under a thick worked thing the other hand reached down to the piece's top, the
@@ -1677,7 +1767,7 @@ def _work_pose(s, p, kind):
     # in one palm)
     items = _held_items(p)
     tool = next((it for it in items if it["hand"] == hs), None)
-    if kind != "hands_at_work" and (tool is None or tool["grip"].get("work") != "head"):
+    if kind in BLOW_ACTIONS and (tool is None or tool["grip"].get("work") != "head"):
         tool = next((it for it in items if it["grip"].get("work") == "head"), tool)
     tool = tool or (items[0] if items else None)
     off_item = next((it for it in items if it is not tool), None)
@@ -1875,8 +1965,16 @@ def act_hands_at_work(s, p):
     _work_pose(s, p, "hands_at_work")
 
 
+def act_weapon_ready(s, p):
+    """A fighter's guard: feet apart, the lead foot toward the foe, knees soft, a little forward lean, the chest turned
+    a little; the held thing in front of the body between hip and chest, pointed forward and up at the foe (params
+    "aim_target_ue"), a two-handed thing in both hands, the free hand forward and out; looking at the foe."""
+    _work_pose(s, p, "weapon_ready")
+
+
 ACTIONS = {"veil_lift": act_veil_lift,     # what a person begins to do as the shot starts, over any posture
-           "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work}
+           "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work,
+           "weapon_ready": act_weapon_ready}
 
 
 def pose_skel(s, pose, params):
