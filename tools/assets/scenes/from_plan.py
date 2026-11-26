@@ -336,6 +336,24 @@ def looks_on(p: dict, people: list) -> bool:
                 and face.get(to) in face and face.get(face[to]) == to and face[to] != me)
 
 
+JOIN_REACH_M = 0.62       # how far ahead of the body a joined hand is held at most (an arm not quite straight)
+
+
+def joined_with(name: str, shot_ids: list, sp: dict) -> str | None:
+    """Whom this person holds by the hand in any of these shots (the staging pass's "joined"), by name."""
+    for sid in shot_ids:
+        for a, b in ((sp or {}).get("joined") or {}).get(sid) or []:
+            if name in (a, b):
+                return b if a == name else a
+    return None
+
+
+def joined_pose(pos: list, partner_pos: list) -> dict:
+    """The stance of someone who holds a partner's hand: the hands meet half way between the two."""
+    gap = math.dist(pos[:2], partner_pos[:2])
+    return {"pose": "hand_joined", "params": {"hand": "r", "weight_on": "l", "reach_m": round(min(JOIN_REACH_M, gap / 2), 3)}}
+
+
 TALK_M = (1.1, 1.6)       # two on the open floor who are turned to each other stand this far apart (PERSON_GAP_M up)
 
 
@@ -1643,6 +1661,11 @@ def main():
                 vid = f"{base}_{var}" if var and (library / "character" / f"{base}_{var}").exists() else base
                 c = {"id": vid, "position": v["position"], "facing": v["facing"], "facing_to": v.get("facing_to"),
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
+                rev_ = {kk_: nn_ for nn_, kk_ in names.items()}
+                jw_ = names.get(joined_with(rev_.get(k, ""), [c_["plan_id"] for c_, _ in g], sp) or "")
+                if jw_ and jw_ in st and st[jw_].get("position") and st[jw_].get("pose") != "sitting" and k not in crt:
+                    c["body_pose"] = joined_pose(v["position"], st[jw_]["position"])
+                    c["joined_to"] = jw_
                 if v.get("marks"):
                     # the previous shot's mark first: it is kept whenever it still passes (no unmotivated move)
                     prev = (groups[gi - 2][-1][1].get(k) or {}).get("position") if gi > 1 else None

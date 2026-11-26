@@ -417,7 +417,32 @@ def pose_sit_armchair_relaxed(s, p):
     _turn(s, 0.0, p.get("head_deg", 10.0), p.get("head_tilt", 0.0))
 
 
-POSES = {"stand": pose_stand, "stand_relaxed": pose_stand_relaxed, "stand_hand_on_mantel": pose_stand_hand_on_mantel,
+HAND_JOIN_Z_CM = 112.0   # where two standing people's joined hands meet above the floor (between waist and chest)
+
+
+def pose_hand_joined(s, p):
+    """Standing turned to a partner with one hand held out to theirs, the two hands meeting on the line between the
+    two bodies (hand: which; reach_m: how far ahead of this body they meet, half the gap between the two;
+    hand_z_m: how high). The other arm hangs. Two who danced as partners stood a pace apart with their arms at
+    their sides, as any two who talk (11-26)."""
+    hand = p.get("hand", "r")
+    other = "l" if hand == "r" else "r"
+    _weight_on(s, p.get("weight_on", "l"), p.get("shift_cm", 2.0), p.get("knee_cm", 4.0))
+    _turn(s, p.get("chest_deg", 0.0), 0.0)
+    _arm_hang(s, other, p.get("arm_out", ARM_OUT), p.get("arm_fwd", ARM_FWD), 0.22)
+    _arm_clear(s, p, (other,))
+    sx = 1.0 if hand == "l" else -1.0
+    tgt = [s.pos["pelvis"][0] + sx * p.get("hand_x_cm", 4.0), s.pos["pelvis"][1] + p.get("reach_m", 0.5) * 100,
+           p.get("hand_z_m", HAND_JOIN_Z_CM / 100) * 100]
+    _ik(s, f"upperarm_{hand}", f"lowerarm_{hand}", f"hand_{hand}", tgt,
+        add(s.pos[f"lowerarm_{hand}"], [sx * 20.0, -10.0, -30.0]))
+    s.aim(f"hand_{hand}", f"middle_01_{hand}", [-sx * 0.15, 1.0, 0.1])
+    _curl(s, hand, 30, 14)
+    _curl(s, other, 25, 12)
+    _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", 0.0))
+
+
+POSES = {"hand_joined": pose_hand_joined, "stand": pose_stand, "stand_relaxed": pose_stand_relaxed, "stand_hand_on_mantel": pose_stand_hand_on_mantel,
          "gesture_point": pose_gesture_point, "seated": pose_seated, "sit_armchair_relaxed": pose_sit_armchair_relaxed}
 
 

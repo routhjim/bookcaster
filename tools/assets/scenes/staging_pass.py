@@ -247,6 +247,19 @@ def q_face(sh: dict, nm: str, people: list, looks: dict, at_thing: bool = True) 
                                  + [NOBODY]))
 
 
+JOINED, APART = "hands joined", "apart"
+
+
+def q_joined(psg: str, sh: dict, a: str, b: str) -> str:
+    """Whether two people of a shot who are turned to each other hold each other's hand as it starts."""
+    return ("You help stage a shot of a film.\nThe story there:\n<<<\n" + psg + "\n>>>\nThe shot's own words: "
+            + " ".join(str(sh.get(k) or "") for k in ("keyshot", "action", "setting") if sh.get(k)).strip()
+            + f"\nQuestion: as this shot starts, are {a} and {b} holding each other by the hand (as partners in a "
+            "dance do while they dance, or as one who leads, greets or steadies another does), or do they stand "
+            "apart without touching? Two who are dancing together as partners have their hands joined. Answer with "
+            f"exactly one of these, nothing else: {JOINED}; {APART}")
+
+
 def main():
     a = sys.argv[1:]
     plan = json.loads(Path(a[0]).read_text())
@@ -397,6 +410,15 @@ def main():
                                    at_ok), fo + ([AT_THING] if at_ok else []) + [NOBODY])
             if ft in fo or ft == AT_THING:
                 res.setdefault("face", {}).setdefault(sid, {})[nm] = ft
+        # two who are turned to each other: whether they hold each other's hand (partners in a dance stood a pace
+        # apart with their arms at their sides, 11-26)
+        fc_ = (res.get("face") or {}).get(sid) or {}
+        for a_ in listed:
+            b_ = fc_.get(a_)
+            if b_ in listed and a_ not in crt and b_ not in crt and (fc_.get(b_) == a_ or b_ not in fc_) and \
+                    not any(a_ in pr_ for pr_ in (res.get("joined") or {}).get(sid) or []):
+                if ask.choose(q_joined(psg, sh, a_, b_), [JOINED, APART]) == JOINED:
+                    res.setdefault("joined", {}).setdefault(sid, []).append([a_, b_])
         # the eyes as the shot opens: a figure's eyes are open in every engine still, and the redraw drew a child
         # wide awake in each shot of her asleep (11-15)
         for p in sh.get("people") or []:
