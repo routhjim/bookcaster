@@ -77,6 +77,7 @@ IMAGE_PY = Path(os.environ.get("STORY_IMAGE_PY", Path.home() / "tts-ab" / ".venv
 # check); "cards" = on the drawing cards after each round of drawing
 CHECK_ON = os.environ.get("STORY_CHECK_ON", "igpu")
 IGPU_PY = Path(os.environ.get("STORY_IGPU_PY", Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"))
+DRAW_MIND_S = float(os.environ.get("STORY_DRAW_MIND_S", "5"))  # how often the drawers' logs are read for failed pictures
 FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "120"))    # a picture not landed this long after the last: not drawn
 DRAW_CARDS = [c for c in os.environ.get("STORY_DRAW_CARDS", "05,65").split(",") if c.strip()]
 CARD_LINE = {os.environ.get("ASSETS_BLENDER_CARD", "05"): ("image", "refs"),
@@ -344,8 +345,34 @@ class Drawers:
                 os.close(fd)
                 ff.unlink(missing_ok=True)
             self.ths += [threading.Thread(target=serve), threading.Thread(target=write)]
+        self.logs, self.again = {c: logd / f"{tag}_{c}.log" for c in self.cards}, set()
         for t in self.ths:
             t.start()
+        threading.Thread(target=self._mind, daemon=True).start()
+
+    def _mind(self) -> None:
+        """A picture its drawer reports an error for is given once to another card (a card out of memory on one
+        picture draws the next ones well); one that failed twice is given up. While nothing is left to draw the
+        drawers' mark is down, so the check beside them stops waiting for pictures that will not come (a drawer
+        that reported one picture's error stayed loaded and waiting, and the check waited on it for good, 11-26)."""
+        while not self.closing:
+            time.sleep(DRAW_MIND_S)
+            live = [c for c in self.cards if not self.dead[c].is_set()]
+            if not live:
+                return
+            move, left = settle(self.fed, self.logs, self.again)
+            for card, row in move:
+                to = next((c for c in live if c != card), live[0])
+                i = json.loads(row).get("id")
+                self.again.add(i)
+                log(f"drawing: {i} failed on card {card} ({move[(card, row)]}); given once more, to card {to}")
+                self.fed[card].remove(row)
+                self._give(to, [row])
+            if left or move:
+                if not self.alive.exists():
+                    self.alive.write_text(time.strftime("%F %T"))
+            else:
+                self.alive.unlink(missing_ok=True)
 
     def _give(self, card: str, rows: list) -> None:
         self.fed[card] += rows
@@ -354,6 +381,8 @@ class Drawers:
 
     def feed(self, rows: list) -> None:
         live = [c for c in self.cards if not self.dead[c].is_set()]
+        if live and rows:
+            self.alive.write_text(time.strftime("%F %T"))
         for card, part in zip(live, split_even(rows, len(live))):
             self._give(card, part)
 
@@ -379,6 +408,41 @@ def undrawn(rows: list, card_log: Path) -> list:
             if "error" not in j:
                 done.add(j.get("id"))
     return [r for r in rows if json.loads(r).get("id") not in done]
+
+
+def draw_errors(card_log: Path) -> dict:
+    """{picture id: [its error rows' words]} of a drawer's log."""
+    out = {}
+    for x in (card_log.read_text(errors="replace").splitlines() if card_log.exists() else []):
+        if x.startswith('{"id"'):
+            try:
+                j = json.loads(x)
+            except ValueError:
+                continue
+            if j.get("id") and "error" in j:
+                out.setdefault(j["id"], []).append(str(j["error"])[:80])
+    return out
+
+
+def settle(fed: dict, logs: dict, again: set) -> tuple:
+    """Where a drawing phase stands, from what each card was fed and its log -> ({(card, row): error} the rows to
+    give once more: failed once, never given again; how many rows are still to be drawn). A row that failed after
+    it was given again (two errors over the cards) is given up: neither to move nor still to draw."""
+    errs = {}
+    for card, lg in logs.items():
+        for i, e in draw_errors(lg).items():
+            errs.setdefault(i, []).extend(e)
+    move, left = {}, 0
+    for card, rows in fed.items():
+        for row in undrawn(rows, logs[card]):
+            i = json.loads(row).get("id")
+            if i not in errs:
+                left += 1
+            elif i not in again:
+                move[(card, row)] = errs[i][0]
+            elif len(errs[i]) < 2:
+                left += 1
+    return move, left
 
 
 def rows_of(files: list) -> list:

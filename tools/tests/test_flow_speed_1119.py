@@ -263,3 +263,19 @@ def test_what_a_drawer_was_fed_and_did_not_draw(tmp_path):
                   '{"id": "k2", "error": "stuck: no picture in 300 s"}\n')
     assert [json.loads(r)["id"] for r in SK.undrawn(rows, lg)] == ["k2", "k3"]
     assert SK.undrawn(rows, tmp_path / "none.log") == rows
+
+
+def test_a_picture_that_failed_is_given_once_more_then_given_up(tmp_path):
+    rows = [json.dumps({"id": f"k{i}", "prompt": "x"}) for i in range(4)]
+    a, b = tmp_path / "a.log", tmp_path / "b.log"
+    a.write_text('{"id": "k0", "seconds": 9}\n{"id": "k1", "error": "OutOfMemoryError: no room"}\n')
+    b.write_text('{"id": "k2", "seconds": 9}\n')
+    fed, logs = {"a": rows[:2], "b": rows[2:]}, {"a": a, "b": b}
+    move, left = SK.settle(fed, logs, set())
+    assert list(move) == [("a", rows[1])] and left == 1          # k1 to give again, k3 still to draw
+    fed = {"a": rows[:1], "b": rows[2:] + [rows[1]]}              # given to the other card
+    assert SK.settle(fed, logs, {"k1"}) == ({}, 2)                # waited for there
+    b.write_text(b.read_text() + '{"id": "k3", "seconds": 9}\n{"id": "k1", "error": "OutOfMemoryError: no room"}\n')
+    assert SK.settle(fed, logs, {"k1"}) == ({}, 0)                # failed twice: given up, nothing left to wait for
+    b.write_text('{"id": "k2", "seconds": 9}\n{"id": "k3", "seconds": 9}\n{"id": "k1", "seconds": 9}\n')
+    assert SK.settle(fed, logs, {"k1"}) == ({}, 0)                # or drawn there
