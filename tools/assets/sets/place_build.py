@@ -1282,8 +1282,9 @@ def with_beds(spec: dict) -> dict:
 
 CROWD_M2 = 20.0                  # floor per bystander: a crowd is a few figures far off, never a full room
 CROWD_MAX = 6
-CROWD_MANY_M2 = 8.0              # ... but a place the story has full of people gets a figure to this much floor
-CROWD_MANY_MAX = 12
+CROWD_MANY_M2 = 4.0              # ... but a place the story has full of people gets a figure to this much floor
+CROWD_MANY_MAX = 24              # (the keys' pictures keep to the engine's frame behind the people: a crowd that is
+#                                  not standing in the set is not in the picture, whatever the words say, 11-26)
 
 
 def crowd_line(spec: dict) -> str:
@@ -1324,9 +1325,8 @@ def with_crowd(spec: dict) -> dict:
         # (two looks of each group; a fuller crowd stands the same figures again elsewhere on the floor)
         who = "one of them" if (i // len(terms)) % 2 == 0 else "another of them, unlike the first"
         sp.setdefault("pieces", []).append({
-            # (a full place's figures stand round its walls, the floor's middle left to the story's people:
-            # stood free, four of a ball's crowd were set between the two who danced and the camera)
-            "id": f"x{i + 1}", "kind": "bystander", "against": "wall" if full else "free", "phrases": [],
+            # (half of a full place's figures stand round its walls, half about the floor)
+            "id": f"x{i + 1}", "kind": "bystander", "against": "wall" if full and i % 2 == 0 else "free", "phrases": [],
             "look": f"{t[0].lower() + t[1:]} ({period}), {who}: a single person standing at ease, the whole figure "
                     "from head to feet"})
     return sp

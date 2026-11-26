@@ -558,12 +558,12 @@ def open_floor(spec: dict, phr: list, acts: list, url: str, cache: Path) -> list
 
 
 # (a ball was staged in an all but empty room: nothing said how full of people a place is, 11-26)
-CROWD_ASK = ("A story has a scene in a place named \"{place}\".\nThe passage:\n{story}\nThe unnamed people there, as "
-             "the set sheet has them: {crowd}\nApart from the people the passage names, how full of people is this place "
-             "during the scene? Begin your answer with exactly one word:\nnone: nobody else is there\nfew: a handful of others, "
-             "the place mostly empty\nmany: the place is full of people, a crowd, a gathering, a busy public place\n"
-             "Then, on the same line after a colon, say in a few plain words who these other people are and what they "
-             "wear, as someone would see them (never a name); nothing after \"none\".")
+CROWD_ASK = ("A story has a scene in a place named \"{place}\".\nThe passage:\n{story}\nApart from the people the "
+             "passage names, how full of people is this place during the scene? Begin your answer with exactly one "
+             "word:\nnone: nobody else is there\nfew: a handful of others, the place mostly empty\nmany: the place is "
+             "full of people, a crowd, a gathering, a busy public place\nThen, on the same line after a colon, say in "
+             "a few plain words who most of these other people are (those who have come to the place, before those "
+             "who work there) and what they wear, as someone would see them (never a name); nothing after \"none\".")
 
 
 def crowd_size(place: str, spec: dict, psg: str, url: str, cache: Path) -> tuple:
@@ -572,7 +572,8 @@ def crowd_size(place: str, spec: dict, psg: str, url: str, cache: Path) -> tuple
     redraw.crowd_words). Who they are is asked of the story: a ball's set sheet named its musicians and servants,
     and the room was filled with liveried musicians and no guest (11-26)."""
     crowd = "; ".join(x for x in (str(spec.get("crowd") or "").strip(), str(spec.get("_director_crowd") or "").strip()) if x)
-    ans = ask(url, CROWD_ASK.format(place=place, story=psg, crowd=crowd or "none named"), cache).lower()
+    # (the set sheet's own crowd line is not shown: shown it, the answer gave that line back, 11-26)
+    ans = ask(url, CROWD_ASK.format(place=place, story=psg), cache).lower()
     m = re.search(r"\b(none|few|many)\b\s*[:\-]?\s*(.*)", ans, re.S)
     size = m.group(1) if m else ("few" if crowd else "none")
     who = re.sub(r"\s+", " ", m.group(2)).strip(" .") if m and size != "none" else ""

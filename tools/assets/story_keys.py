@@ -58,7 +58,7 @@ import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 # a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
-STEP_RULE = {"spec": 4}
+STEP_RULE = {"spec": 5}
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
@@ -467,6 +467,21 @@ OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from w
               "around it and the sky above. Empty: no people. {style}")
 
 
+def person_noun(look: str) -> str:
+    """What a person is called in a picture's words: the look's own "man", "woman", "boy" or "girl" (its first), else
+    the word after its article. (A look that began "a tall, slim young man" made its person "the tall": every key
+    said "One tall is in the picture" and nothing said he was a man, 11-26.)"""
+    m = re.search(r"\b(man|woman|boy|girl)\b", look.split(" wearing ")[0].lower())
+    return m.group(1) if m else re.match(r"an? (\w+)", look).group(1)
+
+
+def look_person(look: str) -> str:
+    """The person as the look tells them, without what they wear, hold or express: their age, build, skin, hair and
+    face in the look's own words."""
+    head = re.split(r",?\s+(?:wearing|dressed in|holding|carrying)\b", look.strip().rstrip("."), maxsplit=1)[0]
+    return head.strip().rstrip(",")
+
+
 def chapter_timeline(book: Path, plan_p: Path):
     """The narration timeline of the chapter the plan is of: the plan lies in <book>/work/video/<chapter>/shots/, the
     timeline is <book>/work/<chapter>.timeline.json. A book of one chapter has only one; in a book of several the
@@ -542,7 +557,7 @@ class Story:
         b = json.loads((self.video / "charlora" / sl / "build.json").read_text())
         look = self.look["characters"][name]
         sheets = sorted(self.video.glob(f"refs/{sl}-*.png"))
-        noun = re.match(r"an? (\w+)", look).group(1)
+        noun = person_noun(look)
         m = re.search(r"wearing (.+?)(?:, (?:expression|holding|face)\b|\.$|$)", look)
         wear = m.group(1).strip() if m else ""
         pos = "her" if noun in ("woman", "girl") else "his"
@@ -566,6 +581,7 @@ class Story:
                 "trigger": b["trigger"], "noun": noun, "slug": sl,
                 "words": {"noun": noun, "trigger": b["trigger"], "lora": b["lora"],
                           "sheet": str(sheets[0]) if sheets else b["sheet"], "wear": wear, "worn_sheets": worn,
+                          "as": look_person(look),
                           "wear_back": f"the back of {pos} {short} and the back of {pos} head",
                           "back_detail": f"the back of {pos} {short}"}}
 
