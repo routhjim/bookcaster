@@ -1568,6 +1568,7 @@ def stage(cx: Ctx, P: dict, steps: str = "motion,render,draw", workers: int = 2,
             if regional():
                 regional_pass(cx, [e for e in ids if (sd / e["id"] / "key.png").exists()], card)
         if FACE_PASS and full3d() and "draw" in steps:   # the face-detail pass on every key (one person's LoRA + words)
+            face_rollback([sd / e["id"] for e in alive()])
             face_pass(cx, [e for e in alive() if (sd / e["id"] / "key.png").exists() and not (sd / e["id"] / "key_draw.png").exists()], card)
 
 
@@ -1998,6 +1999,36 @@ def face_paste(im, patch, c0: list, fb: list):
 FACE_TONE_MAX = 24.0        # grey levels: the most a repainted crop is shifted towards the drawing's colour
 
 
+FACE_RECIPE = "one-face-kept-if-better-1125"      # change with the repaint's method: every key repainted otherwise
+FACE_MADE = ("_preface.png", "_draw.png", "_bg.png", "_comp.png", "_mask.png")   # what the repaint and the hold leave
+
+
+def face_stamp(d: Path, key: str = "key.png") -> Path:
+    return d / key.replace(".png", "_face.ver")
+
+
+def face_rollback(dirs: list, key: str = "key.png") -> list:
+    """A key whose face repaint was made by another method goes back to its drawing, so the repaint (and the
+    background hold after it) run again (11-25: a mended repaint changed nothing on screen, every key already had
+    its repaint). The drawing is the picture kept from before the repaint, else from before the hold.
+    -> the folders rolled back"""
+    out = []
+    for d in dirs:
+        k, st = d / key, face_stamp(d, key)
+        if not k.exists() or (st.exists() and st.read_text().strip() == FACE_RECIPE):
+            continue
+        src = next((f for f in (d / key.replace(".png", x) for x in FACE_MADE[:2]) if f.exists()), None)
+        if src is None:
+            continue                                  # as drawn: the repaint runs on it anyway
+        shutil.copy(src, k)
+        for x in FACE_MADE:
+            (d / key.replace(".png", x)).unlink(missing_ok=True)
+        if key == "key.png":
+            (d / "face.json").unlink(missing_ok=True)
+        out.append(d)
+    return out
+
+
 def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> dict:
     """ADetailer-style FACE-DETAIL pass after the main key (10-20): each visible face (DWPose), mapped to its staged
     figure, cropped at 2.2x its box (>= 512 px), img2img at FACE_STRENGTH with ONLY that character's LoRA + their face
@@ -2012,6 +2043,8 @@ def face_pass(cx: "Ctx", ents: list, card: str = "05", key: str = "key.png") -> 
             items.append((e, d))
     if not items:
         return {}
+    for e, d in items:
+        face_stamp(d, key).write_text(FACE_RECIPE)
     F = _faces([d / key for e, d in items])
     jobs, plan = [], []
     for e, d in items:
