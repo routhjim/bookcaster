@@ -495,7 +495,7 @@ def crowd_facts(keys: Path, shots: list, set_dir: Path) -> int:
         ff = Path(keys) / f"{sid}.shot_facts.json"
         if ff.exists():
             f = json.loads(ff.read_text())
-            f["crowd"] = True
+            f["crowd"] = crowd
             ff.write_text(json.dumps(f, indent=1))
             n += 1
     return n

@@ -109,7 +109,7 @@ def test_a_key_of_a_place_with_a_crowd_says_so(tmp_path):
         (keys / f"{i}.shot_facts.json").write_text(json.dumps({"visible": [{"name": "Orla"}], "count": 1}))
     (sd / "spec.json").write_text(json.dumps({"crowd": "fair-goers"}))
     assert SK.crowd_facts(keys, ["s1", "s3"], sd) == 1
-    assert json.loads((keys / "s1.shot_facts.json").read_text())["crowd"] is True
+    assert json.loads((keys / "s1.shot_facts.json").read_text())["crowd"] == "fair-goers"
     assert "crowd" not in json.loads((keys / "s2.shot_facts.json").read_text())
     (sd / "spec.json").write_text(json.dumps({"crowd": ""}))
     assert SK.crowd_facts(keys, ["s2"], sd) == 0 and SK.crowd_facts(keys, ["s2"], tmp_path / "none") == 0
