@@ -293,6 +293,27 @@ def laid_words(sd: Path, cam: str, ppl: list) -> str:
             f"at its size: {', '.join(names_)}; nothing else lies there.")
 
 
+def soft_heads(g: Path, cam: str) -> str | None:
+    """The shot's depth guide with the relief inside each head smoothed away (written beside it): where the head is,
+    how large and which way it is turned stay, its features do not. A figure's head is shaped from a full-length
+    drawing, a face a few dozen pixels high: held to that relief, a man of 28 on his sheet was drawn in every close
+    key with the broad, heavy face of the shape (11-26). The face is the sheet's and the LoRA's to draw."""
+    dp, mk = g / f"{cam}_depth.png", g / f"{cam}_mask_heads.png"
+    if not (dp.exists() and mk.exists()):
+        return None
+    from PIL import Image, ImageFilter
+    d = Image.open(dp)
+    m = Image.open(mk).convert("L").resize(d.size)
+    box = m.getbbox()
+    if not box:
+        return None
+    r = max(4, (box[2] - box[0]) // 8)
+    out = Image.composite(d.filter(ImageFilter.GaussianBlur(r)), d, m.filter(ImageFilter.GaussianBlur(max(2, r // 3))))
+    op = g / f"{cam}_depth_softheads.png"
+    out.save(op)
+    return str(op)
+
+
 def entry_whole(fig: str | None) -> bool:
     """Whether a built figure is whole (shaped from its own drawing, head and hair and all): the grooms its record
     lists are on a head nobody sees. Its look is the book's own words for the person, not those grooms: a man built
@@ -1152,7 +1173,9 @@ def main():
                             j["init"]["strength"] = max(st, FREE_STRENGTH)
                     cl = run.get("controls") or ([run["control"]] if run.get("control") else [])
                     pics = {"depth": "depth", "pose": "pose", "canny": "lines"}
-                    cj = [{"image": str(g / f"{cam}_{pics[c['type']]}.png"), "type": c["type"],
+                    soft = soft_heads(g, cam) if ppl else None
+                    cj = [{"image": soft if soft and c["type"] == "depth" else str(g / f"{cam}_{pics[c['type']]}.png"),
+                           "type": c["type"],
                            "scale": c.get("scale", 0.8), "end": c.get("end", 1.0), "prepared": True}
                           for c in cl if (g / f"{cam}_{pics[c['type']]}.png").exists()]
                     if cj and not free_:

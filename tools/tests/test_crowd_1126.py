@@ -28,7 +28,36 @@ def test_a_full_place_stands_more_figures_of_the_same_few_looks():
     assert {p["against"] for p in many} == {"wall", "free"} and {p["against"] for p in few} == {"free"}
     who = PB.crowd_line(dict(base, _crowd_who="fair-goers in Sunday clothes"))
     assert who.startswith("fair-goers in Sunday clothes; townsfolk")
+    led = [p["look"] for p in PB.with_crowd(dict(base, _crowd_size="many", _crowd_who="fair-goers in Sunday clothes"))["pieces"]]
+    mine = [x for x in led if x.startswith("fair-goers")]
+    assert len(mine) == 2 * len(led) // 3 and len(set(mine)) == len(PB.CROWD_LOOKS)   # the story's people lead, in four looks
+    assert any(x.startswith("townsfolk") for x in led) and any(x.startswith("porters") for x in led)
     assert PB.with_crowd(dict(base, crowd=""))["pieces"] == []
+
+
+def test_one_of_a_crowd_is_only_the_figure_made_from_its_own_words():
+    piece = {"id": "x1", "kind": "bystander", "look": "fair-goers in Sunday clothes, one of them", "against": "free"}
+    want = P.generation_request(piece)["asset_id"]
+    other = {"asset_id": "bystander_gen_000000_01_tr", "kind": "bystander", "tags": ["bystander"], "class": "prop",
+             "description": "bystander: fair-goers in Sunday clothes, one of them, older", "size_m": [0.6, 0.45, 1.75]}
+    assert P.resolve([piece], [other])["pieces"][0]["status"] == "generate"
+    assert P.resolve([piece], [dict(other, asset_id=want)])["pieces"][0]["status"] == "library"
+
+
+def test_the_depth_guide_keeps_the_head_and_not_its_features(tmp_path):
+    import numpy as np
+    from PIL import Image
+    import redraw as RD
+    d = np.full((90, 160), 40, np.uint8)
+    d[20:60, 60:100] = 200
+    d[38:42, 78:82] = 90                                              # a feature inside the head
+    m = np.zeros((90, 160), np.uint8)
+    m[20:60, 60:100] = 255
+    Image.fromarray(d).save(tmp_path / "c_depth.png")
+    Image.fromarray(m).save(tmp_path / "c_mask_heads.png")
+    out = np.asarray(Image.open(RD.soft_heads(tmp_path, "c")))
+    assert out[40, 80] > 150 and out[5, 5] == 40                      # the feature is gone, the room untouched
+    assert RD.soft_heads(tmp_path, "nothing") is None
 
 
 def test_how_full_a_place_is_is_asked(tmp_path, monkeypatch):

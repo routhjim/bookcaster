@@ -622,7 +622,9 @@ def resolve(pieces, records, K=None, threshold=DEFAULT_THRESHOLD, allow_scripted
                         if r["asset_id"] == h["asset_id"]), {}).get("tags") or [])
                         and not next((r for r in records if r["asset_id"] == h["asset_id"]), {}).get("panorama_people")]
             elif p.get("source") or p.get("_dressing") or K[p["kind"]].get("sized_by") == "longest" or \
-                    K[p["kind"]].get("made_as") == "world":
+                    K[p["kind"]].get("made_as") == "world" or p.get("kind") == "bystander":
+                # (and one of a place's crowd, who is whoever the words say: a ball's guests were found among the
+                # library's bystanders as a servant, and fifteen of that one servant stood in the room, 11-26)
                 # (and a thing the place is dressed with, made from its own words: a room of one age was given a
                 # screen made for another story's, a pane of glass on steel feet, four times, 11-20)
                 # a piece with its own picture (its part of the place's concept) is that thing, made from it: only
