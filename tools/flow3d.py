@@ -217,8 +217,10 @@ def _sheet_facts(plan, style, refs):
     chars, _ = video.looks(plan, reg)
     out = []
 
-    def age(n, desc):       # someone drawn from photographs looks the age the photographs show (11-24)
-        return None if video.face_photos(reg, n) else R.age_of(desc)
+    def age(n, desc):       # someone drawn from photographs looks the age the photographs show (11-24), unless the
+        if video.face_photos(reg, n) and video.younger_dir(reg, n) is None:   # look is younger: then the look's age
+            return None
+        return R.age_of(desc)
     by_id = {j["id"]: j for j in video.reference_jobs(plan, style, refs)}
     for n, desc in chars.items():
         j = by_id.get(f"ref_{video.slug(n)}")
@@ -283,6 +285,54 @@ def _sheet_verdicts(items) -> dict:
         if fl:
             fails[j["id"]] = fl
     return fails
+
+
+def photo_ages(plan, style, refs, log=print, ask=None) -> list:
+    """Before the sheets are drawn: the age each photograph of a person reads is asked once (faces/<person>/
+    ages.json). Where the look is younger than the photographs by more than video.PHOTO_AGE_GAP and they are not
+    yet shown at that age, the person's sheets drawn from them as photographed are removed, so the sheet is drawn
+    again from the younger ones (the 3D model and the LoRA follow the sheet). ask: the vision judge
+    (remake_chapter.vl_batch). -> the people whose sheets were removed"""
+    from tts_reader import video
+    reg = video.registry_at(refs)
+    chars, _ = video.looks(plan, reg)
+    if ask is None:
+        import remake_chapter as R
+        ask = R.vl_batch
+    dirs = {}
+    for n in chars:
+        ps = video.photos_by_view(reg, n)
+        if ps:
+            dirs.setdefault(reg.vd / "faces" / video.slug(reg.person(n) or n), []).append(n)
+    q = []
+    for d in dirs:
+        have = video.photo_ages(d)
+        q += [{"id": str(f), "image": str(f), "ask": {"age": video.PHOTO_AGE_ASK}}
+              for f in sorted(d.glob("*.png"))[:video.PHOTO_MAX] if f.name not in have]
+    ans = ask(q) if q else {}
+    for d in dirs:
+        have = video.photo_ages(d)
+        for f in sorted(d.glob("*.png")):
+            m = re.search(r"\d+", str((ans.get(str(f)) or {}).get("age", "")))
+            if m:
+                have[f.name] = int(m.group())
+        if have:
+            (d / "ages.json").write_text(json.dumps(have, indent=1))
+    out = []
+    for d, names in dirs.items():
+        yd = video.younger_dir(reg, names[0])
+        if yd is None or all((yd / f.name).exists() for f in sorted(d.glob("*.png"))[:video.PHOTO_MAX]):
+            continue
+        base = [j for j in video.reference_jobs(plan, style, refs) if j["id"] in {f"ref_{video.slug(n)}" for n in names}]
+        own = {j["path"] for j in base}       # ... and the outfit sheets drawn from those
+        gone = base + [j for j in video.outfit_jobs(plan, style, refs) if own & set(j.get("refs") or [])]
+        for j in gone:
+            Path(j["path"]).unlink(missing_ok=True)
+        _log(f"plan: {names[0]} is drawn younger than photographed (the photographs read "
+             f"{min(video.photo_ages(d).values()):.0f}): each is shown at the look's age first, and "
+             f"{len(gone)} sheet(s) are drawn again from those", log)
+        out += names
+    return out
 
 
 def check_sheets(plan, style, refs, log=print, tries: int = 2) -> dict:
@@ -918,6 +968,7 @@ def _plan_draw(book, f, r, refs, man, work, log, shot_flow: bool = False) -> dic
     st = _reg(book).ref_style(Path(work).name)
     # base sheets FIRST: an outfit sheet is drawn from its character's base sheet (10-21: one batch = 3 outfit
     # sheets failed, their reference not drawn yet)
+    photo_ages(r["plan"], st, refs, log)
     for kind, jobs in (("reference", video.reference_jobs), ("outfit", video.outfit_jobs)):
         todo = [j for j in jobs(r["plan"], st, refs) if not Path(j["path"]).exists()]
         if todo:
