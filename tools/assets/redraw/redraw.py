@@ -588,6 +588,11 @@ def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
             tgt = nm.get(t) if t in inf else (who_of(cast, t).get("noun") and f"the {who_of(cast, t)['noun']}")
             if tgt:
                 out.append(f"{who} is turned toward {tgt} and looks at {tgt}.{away}")
+            # (whose hand they hold, as the engine's frame has it: the arm held out is not a gesture)
+            j = (ch.get(k) or {}).get("joined_to")
+            if tgt and j == t and j in inf and k < j:
+                out.append(f"{who} and {tgt} hold each other by the hand, their joined hands between them at waist "
+                           "height, as partners in a dance.")
     return (" " + " ".join(out)) if out else ""
 
 
