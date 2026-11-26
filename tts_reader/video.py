@@ -1124,7 +1124,9 @@ PHOTO_SHEET = (
     "the right the same person full length, standing. The facial features and hair are those of the person in the "
     "photographs, with a calm, neutral expression, but they are drawn at the age and build given below: where that "
     "is younger than the photographs, smooth unlined skin and no grey hair; where it is thinner, a narrower face "
-    "and body. Nothing else is taken from the photographs: not their clothes, hat, glasses or background. Drawn "
+    "and body. Nothing else is taken from the photographs: not their clothes, hat, glasses or background, and "
+    "nothing at the neck but what the description names (no band, cord, strap or collar line of the photographs' "
+    "own clothes). Drawn "
     "as: {desc}. Even light. {style}. No text, no lettering, no signature.")
 HEAD_ASK = ("Give the bounding box of this person's whole head, from the top of the hair (or hat) to the bottom of "
             "the chin, ears included, as [x1, y1, x2, y2] with each number from 0 to 1000 (fractions of the "

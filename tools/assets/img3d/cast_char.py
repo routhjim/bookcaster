@@ -78,6 +78,24 @@ POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front:
               "nothing else in the picture. A realistic full-colour photograph of a costumed actor, sharp focus.")
 
 
+# The build the sheet was measured as (choose_mh BUILDS), said again as what to draw. The look's one word for it was
+# not enough: a "tall, slim" man's four drawings all came out thick at the waist under a coat hanging open, and the
+# shape made from the drawing stood fat in every picture (11-26).
+BUILD_WORDS = {
+    "slim": (" The body is lean and narrow: slender shoulders, a narrow waist and narrow hips, a flat stomach, long "
+             "slim legs, a small head for the height. The clothes are cut close to this body and lie flat against "
+             "it, nothing hanging wide or loose."),
+    "average": (" The body is trim, of ordinary build: a flat stomach, a waist narrower than the shoulders. The "
+                "clothes are fitted to it, nothing hanging wide or loose."),
+    "stocky": " The body is broad and solid.",
+    "very heavily built": " The body is big and heavy, wide at the waist.",
+}
+
+
+def build_words(ch: dict) -> str:
+    return BUILD_WORDS.get(str((ch.get("scores") or {}).get("build") or ""), "")
+
+
 def log(m):
     print(f"[cast {time.strftime('%H:%M:%S')}] {m}", flush=True)
 
@@ -703,7 +721,7 @@ def main():
                 CH.setdefault("pose_deg", []).append(deg)
                 seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
                 jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [cw, 1344],
-                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + head_words + (
+                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + build_words(ch) + head_words + (
                              " No outer layer over the shoulders: the arms, the sides of the body and the clothes "
                              "under it all in view." if gf_.get("outer_layer") else ""), "refs": [a.sheet],
                          "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
