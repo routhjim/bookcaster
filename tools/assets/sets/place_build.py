@@ -1287,6 +1287,9 @@ CROWD_MANY_MAX = 24              # (the keys' pictures keep to the engine's fram
 #                                  not standing in the set is not in the picture, whatever the words say, 11-26)
 
 
+CROWD_LOOKS = ("one of them", "another of them, unlike the first", "a woman among them", "an older one among them")
+
+
 def crowd_line(spec: dict) -> str:
     """The place's unnamed people in words: those the story's passage has there (the spec's "crowd") and those the
     director's set sheet adds, each group once. (A ball's sheet named its musicians and servants and left out the
@@ -1320,10 +1323,15 @@ def with_crowd(spec: dict) -> dict:
         return spec
     sp = json.loads(json.dumps(spec))
     period = str(sp.get("period") or "").replace("_", " ")
+    lead = bool(str(spec.get("_crowd_who") or "").strip()) and len(terms) > 1
+    seen_of = {}
     for i in range(n):
-        t = terms[i % len(terms)]
-        # (two looks of each group; a fuller crowd stands the same figures again elsewhere on the floor)
-        who = "one of them" if (i // len(terms)) % 2 == 0 else "another of them, unlike the first"
+        # (the story's own people of the place, its first term, are two in three of a crowd; those the set sheet
+        # adds share the rest: of a ball's figures a third were guests and two thirds its musicians and servants)
+        t = terms[0] if lead and i % 3 != 2 else terms[1 + (i // 3) % (len(terms) - 1)] if lead else terms[i % len(terms)]
+        k = seen_of[t] = seen_of.get(t, -1) + 1
+        # (a few looks of each group; a fuller crowd stands the same figures again elsewhere on the floor)
+        who = CROWD_LOOKS[k % (len(CROWD_LOOKS) if lead and t == terms[0] else 2)]
         sp.setdefault("pieces", []).append({
             # (half of a full place's figures stand round its walls, half about the floor)
             "id": f"x{i + 1}", "kind": "bystander", "against": "wall" if full and i % 2 == 0 else "free", "phrases": [],
