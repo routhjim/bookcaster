@@ -47,8 +47,8 @@ with tempfile.TemporaryDirectory() as td:
     SF.assemble_stretch = lambda b, s, pl, a, z, out, log=print: calls.append(("cut", a, z)) or out
     sys.modules["shot_flow"] = SF
     made = {"ids": ["m1_s1", "m2_s1"], "rc": 0}
-    def fake_keys(book_, plan_, keys_, log=print):
-        calls.append(("engine", Path(plan_).name))
+    def fake_keys(book_, plan_, keys_, log=print, redo=()):
+        calls.append(("engine", Path(plan_).name) + ((tuple(redo),) if redo else ()))
         keys_.mkdir(parents=True, exist_ok=True)
         for i in made["ids"]:
             Image.new("RGB", (64, 36), "grey").save(keys_ / f"{i}.png")
@@ -64,6 +64,10 @@ with tempfile.TemporaryDirectory() as td:
     check("... and it ends at the sheet of the keys: no render, no cut",
           out.name == "cut_0_10_3d_keys.jpg" and out.exists() and not any(c[0] in ("render", "cut") for c in calls), (out, calls))
     check("a shot the engine gave no key is told", any("1 of 3 shots have no engine key" in m and "m1_s2" in m for m in said), said)
+    calls.clear()
+    E.run(book, "01_chapter_1", 0, 10, None, book / "mix.mp3", said.append, until="keys", redo=("spec",))
+    check("a rebuild asks the engine for the places again from their spec",
+          any(c[0] == "engine" and c[-1] == ("spec",) for c in calls), calls)
     calls.clear()
     out = E.run(book, "01_chapter_1", 0, 10, None, book / "mix.mp3", said.append, review="user", render=(2.0, 8.0))
     names = [c[0] for c in calls]

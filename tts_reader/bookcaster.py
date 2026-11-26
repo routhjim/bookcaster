@@ -2026,7 +2026,7 @@ def unit_name(book: Path) -> str:
 @_runner
 def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_only: bool = False,
                       guide: str | None = None, flow: str = "mannequin", render: str | None = None,
-                      review: str | None = None) -> int:
+                      review: str | None = None, rebuild: bool = False) -> int:
     """The mannequin flow (tools/mannequin_flow.py) over one chapter's stretch, as the book's job: needs the 3D plan
     + stage (the moments' shots and motion); draws the hero images and keys, runs LTX, assembles out/*_mannequin.mp4."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -2060,6 +2060,8 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
         kw = {"render": tuple(float(x) for x in render.split(":"))} if render and planned else {}
         if review and planned:                                # 11-05: the action chains' review cards
             kw["review"] = review
+        if rebuild and flow == "3d":                          # the stretch's places built again from their spec
+            kw["redo"] = ("spec",)
         out = MF.run(book, stem, t0, t1, None, mix, log, until="keys" if keys_only else None, guide=guide, **kw)
         if not keys_only and not render and (span is None or covers_chapter(book, stem, out)):  # a whole chapter is the chapter's video
             chapter_video(book, stem, out, log, send=span is None)   # a CLI span run is never sent on its own
@@ -2400,7 +2402,7 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
               sfx_only: bool = False, flow3d: str | None = None, chapter: str | None = None,
               auto_approve: bool = False, jellyfin: bool = False, keys_only: bool = False,
               span: str | None = None, guide: str | None = None, render: str | None = None,
-              review: str | None = None) -> None:
+              review: str | None = None, rebuild: bool = False) -> None:
     from . import boxlease
     unit = unit_name(book)
     if _unit_active(unit):
@@ -2441,7 +2443,7 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
             (["--keys-only"] if keys_only else []) + (["--span", span] if span else []) + \
             (["--render", render] if render else []) + \
             (["--review", review] if review else []) + \
-            (["--guide", guide] if guide else [])
+            (["--guide", guide] if guide else []) + (["--rebuild"] if rebuild else [])
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         if old is None:
@@ -2645,6 +2647,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--jellyfin", action="store_true", help="3d: send the finished video to Jellyfin")
     s.add_argument("--keys-only", action="store_true",
                    help="3d: draw + check every keyframe and make the keyframe preview video (out/*_keys.mp4); no LTX")
+    s.add_argument("--rebuild", action="store_true",
+                   help="3d: build the stretch's places again from their spec (set, crowd, staging, keys), though "
+                        "they were finished; the cast's figures and the library's pieces are kept")
     s.add_argument("--guide", choices=["depth", "full", "pins"],
                    help="mannequin: how a landing action's staging steers its clip - depth (the staged depth video, "
                         "light), full (the depth video at full strength), pins (start/hit/end keys drawn on the staging)")
@@ -2767,6 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--jellyfin", action="store_true")
     s.add_argument("--keys-only", action="store_true")
     s.add_argument("--guide")
+    s.add_argument("--rebuild", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd in RETIRED_CMDS or (a.cmd == "video" and a.flow == "mannequin"):
         sys.exit(RETIRED.format(what=f"`bookcaster {a.cmd}`" + (" --flow mannequin" if a.cmd == "video" else "")))
@@ -2875,7 +2881,7 @@ def main(argv: list[str] | None = None) -> int:
             render = f"{w0}:{w1}"
         set_book_flow(d, a.flow)
         start_job(d, flow3d=a.flow, chapter=a.chapter or "1", span=span, keys_only=a.keys_only, guide=a.guide,
-                  render=render, review=getattr(a, "review", None))
+                  render=render, review=getattr(a, "review", None), rebuild=getattr(a, "rebuild", False))
         print(f"making the {a.flow}-flow {'keyframes (stops before the video; review sheet in out/)' if a.keys_only else 'video'} "
               f"of {d.name} ({a.t_from or '0'}-{a.t_to or 'end'}) in the background — `bookcaster status {d.name}`")
     elif a.cmd == "song":
@@ -3029,7 +3035,7 @@ def main(argv: list[str] | None = None) -> int:
             if a.flow3d in ("shots", "3d"):
                 return run_mannequin_job(Path(a.book), a.chapter, a.span, keys_only=a.keys_only, guide=a.guide,
                                          flow=a.flow3d, render=getattr(a, "render", None),
-                                         review=getattr(a, "review", None))
+                                         review=getattr(a, "review", None), rebuild=getattr(a, "rebuild", False))
             if a.flow3d:
                 return run_flow3d_job(Path(a.book), a.flow3d, a.chapter, auto=a.auto_approve, jellyfin=a.jellyfin,
                                       keys_only=a.keys_only, span=a.span)
