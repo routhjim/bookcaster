@@ -1024,24 +1024,92 @@ def photo_views(d: Path) -> dict:
     return {k: x for k, x in v.items() if x in PHOTO_VIEWS}
 
 
-def photos_by_view(R, name: str) -> list[tuple[str, str]]:
+# A person drawn YOUNGER than their photographs (11-25: a look of 28 from photographs of someone in middle age drew
+# a sheet of middle age: the sheet's words "at the age given below" changed nothing, nor did redrawing the sheet from
+# itself; the photograph shown alone with these words, which overstate, came out at the age asked and still the
+# same person). Each photograph is first shown at the look's age, and everything drawn from the photographs (the
+# sheet, the side drawings, the face repaint's turned reference) is drawn from those.
+PHOTO_AGE_GAP = 8            # years the photographs read over the look's age before they are shown younger
+PHOTO_AGE_ASK = "How old does this person look, judging by the face and skin? Answer with one number."
+PHOTO_YOUNGER = (
+    "Image 1 is a photograph of a person. Show the same person as {words}. Keep their identity: the same bone "
+    "structure, nose, eye colour and mouth, the same hair colour and cut, the same pose, turn of the head and "
+    "background. Photograph. No text.")
+
+
+def younger_words(age: float) -> str:
+    """The age to ask for, in what to draw. It is said well under the age wanted: the drawing lands between the
+    photograph and the words."""
+    ask = max(16, int(round(age * 0.72)))
+    return (f"a {ask}-year-old: a young face with very smooth, tight, even skin without a single line, full cheeks, "
+            "no bags or creases under the eyes, a low full hairline with thick hair, and any beard of the hair's "
+            "own colour with no grey or white in it")
+
+
+def photo_ages(d: Path) -> dict:
+    """{photograph file name: the age it reads} (ages.json beside the photographs, written by the flow)."""
+    try:
+        v = json.loads((Path(d) / "ages.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: float(x) for k, x in v.items() if isinstance(x, (int, float))}
+
+
+def look_age(desc: str) -> float | None:
+    m = re.search(r"\b(?:of|about|aged?)\s+(?:about\s+)?(\d{1,3})\b", desc or "")
+    return float(m.group(1)) if m else None
+
+
+def younger_dir(R, name: str) -> Path | None:
+    """Where a person's photographs shown at their look's age are kept (faces/<person>/age<N>/), or None when they
+    are drawn as photographed: no age in the look, no age read yet, or the photographs within PHOTO_AGE_GAP of it."""
+    if R is None:
+        return None
+    d = R.vd / "faces" / slug(R.person(name) or name)
+    age, read = look_age(R.look(name) or ""), photo_ages(d)
+    if not age or not read or min(read.values()) - age <= PHOTO_AGE_GAP:
+        return None
+    return d / f"age{int(age)}"
+
+
+def younger_jobs(R, name: str) -> list[dict]:
+    """The drawing jobs that show each of a person's photographs at their look's age (none when they are drawn as
+    photographed); a job whose picture exists is skipped by the drawing step."""
+    yd = younger_dir(R, name)
+    if yd is None:
+        return []
+    from PIL import Image
+    jobs = []
+    yd.mkdir(exist_ok=True)
+    for f in sorted(yd.parent.glob("*.png"))[:PHOTO_MAX]:
+        w, h = Image.open(f).size
+        sc = (1024 * 1024 / (w * h)) ** 0.5
+        jobs.append({"id": f"age_{slug(name)}_{f.stem}", "seed": 7, "refs": [str(f)], "path": str(yd / f.name),
+                     "size": [max(256, int(w * sc) // 32 * 32), max(256, int(h * sc) // 32 * 32)],
+                     "prompt": PHOTO_YOUNGER.format(words=younger_words(look_age(R.look(name))))})
+    return jobs
+
+
+def photos_by_view(R, name: str, planned: bool = False) -> list[tuple[str, str]]:
     """Every photograph a person is drawn from, with the view it shows: [(path, view)], "front" for one nobody
-    classed. [] for everyone else."""
+    classed. [] for everyone else. A person drawn younger than photographed gets each photograph as shown at
+    their look's age, once it is drawn (planned: also before, for the job that follows its drawing)."""
     if R is None:
         return []
     d = R.vd / "faces" / slug(R.person(name) or name)
     if not d.is_dir():
         return []
-    vs = photo_views(d)
-    return [(str(f), vs.get(f.name, "front")) for f in sorted(d.glob("*.png"))[:PHOTO_MAX]]
+    vs, yd = photo_views(d), younger_dir(R, name)
+    use = lambda f: yd / f.name if yd is not None and (planned or (yd / f.name).exists()) else f  # noqa: E731
+    return [(str(use(f)), vs.get(f.name, "front")) for f in sorted(d.glob("*.png"))[:PHOTO_MAX]]
 
 
-def face_photos(R, name: str) -> list[str]:
+def face_photos(R, name: str, planned: bool = False) -> list[str]:
     """The photographs a person's SHEET is drawn from (`bookcaster look --photo`): <book>/work/video/faces/
     <person>/*.png, at most three, [] for everyone else. The sheet is a portrait facing the viewer, so a profile
     photograph is not one of them while there is any other: those go to the training pictures seen from the side
     (charlora), and adding one leaves the sheet, and the 3D model made from it, as they are."""
-    ps = photos_by_view(R, name)
+    ps = photos_by_view(R, name, planned)
     facing = [f for f, v in ps if not v.startswith("profile")]
     return (facing or [f for f, _ in ps])[:SHEET_PHOTOS]
 
@@ -1403,9 +1471,10 @@ def reference_jobs(plan: dict, style: str, refs_dir: Path) -> list[dict]:
     for n, (prompt, size) in ref_prompts(plan, style, R).items():
         job = {"id": f"ref_{slug(n)}", "size": size, "seed": 7, "prompt": prompt,
                "path": str(ref_path(refs_dir, n, prompt))}
-        photos = face_photos(R, n) if size == [1280, 896] else []     # a person's sheet, drawn from their photographs
-        if photos:
+        photos = face_photos(R, n, planned=True) if size == [1280, 896] else []   # a person's sheet, drawn from their
+        if photos:                                                    # photographs (shown at the look's age first)
             job["refs"] = photos
+            jobs += younger_jobs(R, n)
         jobs.append(job)
     return jobs
 
