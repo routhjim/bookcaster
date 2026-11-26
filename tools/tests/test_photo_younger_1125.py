@@ -78,6 +78,20 @@ with tempfile.TemporaryDirectory() as td:
     facts = {f["name"]: f["age"] for j, f in F._sheet_facts(plan, st, refs)}
     check("the sheet check holds them to the look's age, and nobody drawn as photographed", facts.get("Orla") == 25 and facts.get("Tam") is None, facts)
 
+with tempfile.TemporaryDirectory() as td:
+    vd = Path(td) / "book" / "work" / "video"
+    (vd / "refs").mkdir(parents=True)
+    (vd / "look.json").write_text(json.dumps({"characters": {"Orla": "a slim woman of 25, dark hair"}}))
+    d = vd / "faces" / "orla"
+    d.mkdir(parents=True)
+    for i in range(1, 5):
+        Image.new("RGB", (30, 40)).save(d / f"photo{i}.png")
+    R = V.registry_at(vd / "refs")
+    (d / "ages.json").write_text(json.dumps({"photo1.png": 44, "photo2.png": 45, "photo3.png": 44, "photo4.png": 31}))
+    check("one photograph reading young does not keep the others as taken", V.younger_dir(R, "Orla") == d / "age25")
+    (d / "ages.json").write_text(json.dumps({"photo1.png": 27, "photo2.png": 29, "photo3.png": 30, "photo4.png": 46}))
+    check("... nor does one reading old have them all shown younger", V.younger_dir(R, "Orla") is None)
+
 # --- the age is read when photographs are stored, and for ones stored before -----------------------------------------
 from tts_reader import bookcaster as BC
 with tempfile.TemporaryDirectory() as td:
