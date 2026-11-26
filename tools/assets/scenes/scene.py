@@ -113,7 +113,7 @@ def aim_params(pr: dict) -> dict:
     return pr
 
 
-def carried(c: dict) -> dict:
+def handed_on(c: dict) -> dict:
     """What a staged person's spec hands on to the engine job besides the body itself: a child's scale (stature.py:
     scaled, and lifted onto what they sit or lie on), a seat inside a cabin (seating.py), a bed's head and foot
     points for the cameras (lying.py), and the one they are with (from_plan: a pose that rests on another person is
@@ -192,7 +192,7 @@ def resolve(spec, cams_wanted=None):
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
                       "body_pose": bpose, "face_pose": c.get("face_pose")}
-        chars[key].update(carried(c))
+        chars[key].update(handed_on(c))
         bp_deps = cj.get("bp_deps", [])
     set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
     proj = proj or set_proj
