@@ -979,7 +979,7 @@ class Story:
             out[r["variant"]] = (vid if ok else None, r)
         return out
 
-    FITS = ("hands_again", "head_again", "depth_again", "width_again")     # the fittings a whole figure has had since its first build, by marker
+    FITS = ("hands_again", "head_again", "depth_again", "width_again", "trim_again")     # the fittings a whole figure has had since its first build, by marker
 
     def _hands_again(self, who, w, cmd) -> None:
         """A whole figure built before a fitting rule changed is made again from its fitting, once per rule (FITS):

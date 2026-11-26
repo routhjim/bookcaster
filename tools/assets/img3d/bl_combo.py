@@ -354,7 +354,20 @@ bf, bb = chest(bco0)
 ff, fb = chest(co)
 co[:, 1] += (bf + bb) / 2 - (ff + fb) / 2
 REP["chest_depth_m"] = {"body": round(float(bb - bf), 3), "figure": round(float(fb - ff), 3)}
-_k = _depth_squeeze(bb - bf, fb - ff, JOB.get("clothed_depth", 1.15))
+_k = _depth_squeeze(bb - bf, fb - ff, JOB.get("clothed_depth", 1.10), 1.03)
+# (and at the waist, where a coat hanging open stands off the body: held at the chest alone, a slim man kept a belly)
+
+
+def _waist(P):
+    m = (P[:, 2] > J("spine_01").z) & (P[:, 2] < J("spine_03").z) & (np.abs(P[:, 0] - cx) < 0.08)
+    return (np.quantile(P[m, 1], 0.02), np.quantile(P[m, 1], 0.98)) if int(m.sum()) > 20 else (0.0, 0.0)
+
+
+_wb, _wf = _waist(bco0), _waist(co)
+REP["waist_depth_m"] = {"body": round(float(_wb[1] - _wb[0]), 3), "figure": round(float(_wf[1] - _wf[0]), 3)}
+if not JOB.get("long_skirt"):            # (a gown's skirt stands off the waist by its cut, not by a guess)
+    _k = min(_k, _depth_squeeze(_wb[1] - _wb[0], _wf[1] - _wf[0], JOB.get("clothed_depth", 1.10) + 0.10, 1.03))
+_k = max(float(JOB.get("narrow_least", 0.6)), _k)
 if _k < 1.0:                    # the whole figure, about the middle of the chest (its head is as much too deep)
     co[:, 1] = (bf + bb) / 2 + (co[:, 1] - (bf + bb) / 2) * _k
     REP["chest_depth_m"].update(squeezed_by=round(float(_k), 3), figure_after=round(float((fb - ff) * _k), 3))
@@ -366,7 +379,7 @@ _xs = abs(J("upperarm_l").x - cx) + float(JOB.get("trunk_past_shoulder_m", 0.10)
 _z0, _z1 = J("spine_01").z, J("spine_03").z           # (the waist: below it a coat's skirts and a gown flare)
 _bw, _fw = _trunk_width(bco0, cx, _xs, _z0, _z1), _trunk_width(co, cx, _xs, _z0, _z1)
 REP["waist_width_m"] = {"body": round(_bw, 3), "figure": round(_fw, 3)}
-_kw = _depth_squeeze(_bw, _fw, JOB.get("clothed_width", JOB.get("clothed_depth", 1.15) + 0.10))
+_kw = _depth_squeeze(_bw, _fw, JOB.get("clothed_width", JOB.get("clothed_depth", 1.10) + 0.05), 1.03)
 _kw = max(_kw, float(JOB.get("narrow_least", 0.7)))     # (never by more than this: a measure gone wrong ruins no figure)
 if _kw < 1.0:
     co[:, 0] = _narrow_x(co[:, 0], co[:, 2], cx, _xs, _kw, J("spine_05").z, J("neck_01").z)

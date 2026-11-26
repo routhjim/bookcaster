@@ -68,3 +68,23 @@ def test_the_question_tells_where_the_shot_has_the_two_and_offers_every_band():
     assert "- Orla: standing, in the reel" in q and "- Tam: standing, in the reel" in q and "Dr. Marsh" not in q
     assert "still going on" in q and q.rstrip().endswith("; ".join(SPS.NEARS)) and "\\n" not in q
     assert set(FP.NEAR_GAP_M) < set(SPS.NEARS)
+
+
+def test_two_the_plan_has_in_a_dance_are_partners_without_asking():
+    sys.path.insert(0, str(HERE.parents[0] / "assets" / "scenes"))
+    import staging_pass as SPS
+    sh = {"people": [{"name": "Orla", "pose": "standing", "at": "in the reel"},
+                     {"name": "Tam", "pose": "dancing", "at": "on the floor"},
+                     {"name": "Dr. Marsh", "pose": "sitting", "at": "by the wall"}]}
+    assert SPS.in_a_dance(sh, "Orla", "Tam") and not SPS.in_a_dance(sh, "Orla", "Dr. Marsh")
+    assert not SPS.in_a_dance({"people": [{"name": "Orla", "at": "by the abundance of flowers"},
+                                           {"name": "Tam", "at": "by the door"}]}, "Orla", "Tam")
+
+
+def test_two_who_dance_go_on_dancing_through_shots_that_do_not_say():
+    sp = {"near": {"s2": [["Orla", "Tam", "dancing together"]], "s5": [["Orla", "Tam", "apart"]]}}
+    order = ["s1", "s2", "s3", "s4", "s5", "s6"]
+    assert FP.near_of("Orla", ["s3", "s4"], sp, order) == ("Tam", "dancing together")
+    assert FP.near_of("Orla", ["s6"], sp, order) == ("Tam", "apart")              # the latest said
+    assert FP.near_of("Orla", ["s1"], sp, order) == (None, None)                   # nothing before it
+    assert FP.near_of("Orla", ["s3"], sp) == (None, None)
