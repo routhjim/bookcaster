@@ -462,3 +462,18 @@ def test_a_figure_guessed_too_deep_is_squeezed_to_its_clothed_body():
     assert f(0.24, 0.28, 1.15) == 1.0 and f(0.24, 0.20, 1.15) == 1.0  # within the slack, or thinner: left as it is
     assert f(0.24, 0.31, 1.35) == 1.0 and f(0.24, 0.31, 1.15) < 1.0   # an outer layer is allowed more
     assert f(0.0, 0.3, 1.15) == 1.0 and f(0.24, 0.0, 1.15) == 1.0
+
+
+def test_a_figure_broader_than_its_body_is_narrowed_inside_the_shoulders_and_its_arms_keep_their_length():
+    ns = {"np": np}
+    exec(functions(COMBO, ["_narrow_x", "_trunk_width"]), ns)
+    x = np.array([0.0, 0.10, 0.20, 0.30, 0.60, -0.20, -0.60, 0.20, 0.20])
+    z = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.70, 1.50])
+    out = ns["_narrow_x"](x, z, 0.0, 0.20, 0.7, 1.40, 1.60)
+    assert np.allclose(out[:3], [0.0, 0.07, 0.14])                    # the trunk: 0.7 times as far from the middle
+    assert np.allclose(out[3] - out[2], 0.10) and np.allclose(out[4] - out[2], 0.40)   # the arm: moved in, as long
+    assert np.allclose(out[5], -0.14) and np.allclose(out[6], -0.54)  # both sides alike
+    assert np.allclose(out[7], 0.20) and 0.14 < out[8] < 0.20         # the head untouched, the neck blended
+    pts = np.array([[sx * w, 0.0, 1.0] for sx in (-1, 1) for w in np.linspace(0, 0.2, 30)] + [[0.9, 0.0, 1.0]] * 5)
+    assert abs(ns["_trunk_width"](pts, 0.0, 0.3, 0.9, 1.1) - 0.4) < 0.02            # the arm at 0.9 is left out
+    assert ns["_trunk_width"](pts, 0.0, 0.3, 2.0, 2.1) == 0.0

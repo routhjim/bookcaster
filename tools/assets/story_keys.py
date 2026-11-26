@@ -979,7 +979,7 @@ class Story:
             out[r["variant"]] = (vid if ok else None, r)
         return out
 
-    FITS = ("hands_again", "head_again", "depth_again")     # the fittings a whole figure has had since its first build, by marker
+    FITS = ("hands_again", "head_again", "depth_again", "width_again")     # the fittings a whole figure has had since its first build, by marker
 
     def _hands_again(self, who, w, cmd) -> None:
         """A whole figure built before a fitting rule changed is made again from its fitting, once per rule (FITS):
@@ -990,7 +990,7 @@ class Story:
         if not getattr(self, "whole", True) or not ch.exists() or all((w / f).exists() for f in self.FITS):
             return
         self._fit_mark(w)
-        log(f"{who}: its figure is fitted again (jointed hands, the head on the head joint, its depth the body's)")
+        log(f"{who}: its figure is fitted again (jointed hands, the head on the head joint, its depth and breadth the body's)")
         if sh(cmd + ["--from", "combo", "--until", "seats"], w / "run.log"):
             log(f"{who}: the fitting again FAILED; see {w / 'run.log'}")
 
