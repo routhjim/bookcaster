@@ -120,5 +120,18 @@ with tempfile.TemporaryDirectory() as td:
     who, redraw = BC.add_photos(book, "Orla", [], log=lambda m: None)
     check("once they are shown at the look's age nothing is asked or drawn again", not redraw and sheet.exists() and len(asked) == n, (redraw, len(asked), n))
 
+with tempfile.TemporaryDirectory() as td:
+    book = Path(td) / "book"
+    refs = book / "work" / "video" / "refs"
+    refs.mkdir(parents=True)
+    names = ["mr_tam-0123abcd.png", "mister_tam-0123abcd.png", "mister_tam-89abcdef.png", "mr_tam_grey_cloak-0123abcd.png",
+             "mrs_tam-0123abcd.png", "the_hall-0123abcd.png"]
+    for n in names:
+        (refs / n).write_text("x")
+    gone = BC._drop_sheets(book, "Mr. Tam")
+    check("a person's sheets go under every spelling of their name, nobody else's and no outfit sheet",
+          sorted(f.name for f in refs.iterdir()) == ["mr_tam_grey_cloak-0123abcd.png", "mrs_tam-0123abcd.png", "the_hall-0123abcd.png"]
+          and len(gone) == 3, sorted(f.name for f in refs.iterdir()))
+
 print("all passed" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)
