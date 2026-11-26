@@ -652,6 +652,22 @@ def make(req: dict, library: Path, seed: int = 11, run=subprocess.run) -> dict:
     return out
 
 
+PIECE_JOBS = max(1, int(os.environ.get("ASSETS_PIECE_JOBS", "2")))
+
+
+def make_all(todo: list, library: Path, seed: int = 11, make_=None, jobs: int | None = None) -> dict:
+    """{asset id: make()'s result} for the pieces to make, each asset once (many pieces of one look are one asset),
+    PIECE_JOBS at a time: a piece is drawn on one card and shaped on the other, so two in step keep both at work
+    (one after another, a set's fifteen pieces took 57 minutes with a card idle through each step, 11-26). Every
+    step is a line job, queued by its device."""
+    from concurrent.futures import ThreadPoolExecutor
+    make_ = make_ or make
+    uniq = list({p["request"]["asset_id"]: p for p in todo}.values())
+    with ThreadPoolExecutor(max_workers=jobs or PIECE_JOBS) as ex:
+        res = list(ex.map(lambda p: make_(p["request"], library, seed), uniq))
+    return {p["request"]["asset_id"]: r for p, r in zip(uniq, res)}
+
+
 def main():
     a = sys.argv[1:]
     spec = json.loads(Path(a[0]).read_text())
@@ -680,8 +696,9 @@ def main():
     for p in res["pieces"]:                              # a cabin shell found in the library, of an older build
         if p["status"] == "library" and P.kinds()[p["kind"]].get("made_as") == "shell":
             out.append(dict(reshape_shell(p["asset_id"], library, subprocess.run), kind=p["kind"]))
+    made = make_all(todo, library, seed)
     for p in todo:
-        o = dict(make(p["request"], library, seed), kind=p["kind"])
+        o = dict(made[p["request"]["asset_id"]], kind=p["kind"])
         out.append(o)
         old = p.get("_old")
         if o["ok"] and old and old != o["asset_id"] and record(old, library):     # (the tiered one serves no longer)
