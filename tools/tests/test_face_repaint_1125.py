@@ -87,4 +87,29 @@ o2 = np.asarray(R.face_paste(base, far, c0, fb), np.int32)
 check("a very different repaint is not flattened to the drawing", (o2[70, 200] - b[70, 200]).min() >= 100)
 
 print("all passed" if ok else "FAILED")
+# --- a repaint made by another method is undone, so it runs again
+with tempfile.TemporaryDirectory() as td:
+    def folder(name, files, stamp=None):
+        d = Path(td) / name
+        d.mkdir()
+        for f, c in files.items():
+            (d / f).write_text(c)
+        if stamp:
+            R.face_stamp(d).write_text(stamp)
+        return d
+    held = folder("held", {"key.png": "held", "key_draw.png": "faced", "key_preface.png": "drawn", "key_bg.png": "b",
+                           "key_comp.png": "c", "key_mask.png": "m", "face.json": "[]"}, "an older method")
+    nofc = folder("nofc", {"key.png": "held", "key_draw.png": "drawn", "key_bg.png": "b"})
+    cur = folder("cur", {"key.png": "held", "key_draw.png": "faced", "key_preface.png": "drawn"}, R.FACE_RECIPE)
+    new = folder("new", {"key.png": "drawn"})
+    back = R.face_rollback([held, nofc, cur, new, Path(td) / "none"])
+    check("keys of another method go back, current and undrawn ones do not", back == [held, nofc])
+    check("... to the drawing from before the repaint", (held / "key.png").read_text() == "drawn")
+    check("... else to the drawing from before the hold", (nofc / "key.png").read_text() == "drawn")
+    check("... with nothing of the repaint or the hold left",
+          sorted(f.name for f in held.iterdir()) == ["key.png", "key_face.ver"] and not (nofc / "key_draw.png").exists())
+    check("a key of the current method is untouched", (cur / "key.png").read_text() == "held" and (cur / "key_preface.png").exists())
+    check("a second look rolls nothing back once stamped",
+          [R.face_stamp(d).write_text(R.FACE_RECIPE) for d in (held, nofc)] and R.face_rollback([held, nofc, cur, new]) == [])
+
 sys.exit(0 if ok else 1)
