@@ -36,3 +36,11 @@ def test_the_shots_step_is_done_only_with_the_plans_own_list():
         assert s.done("the Hall", "shots") and s.done("the Hall", "set")
         s._ids = ["s1", "s2", "s3", "s4"]
         assert not s.done("the Hall", "shots") and s.done("the Hall", "set")
+
+
+def test_a_place_that_stopped_before_its_keys_has_none():
+    import story_keys as SK
+    rows = [{"shot": "s1", "key": True, "why": ""}, {"shot": "s2", "key": True, "why": ""}]
+    assert SK.current_keys(rows, True, ["s1", "s2"]) == rows
+    got = SK.current_keys(rows, False, ["s1", "s2"])
+    assert [r["shot"] for r in got] == ["s1", "s2"] and not any(r["key"] for r in got)
