@@ -336,6 +336,27 @@ def looks_on(p: dict, people: list) -> bool:
                 and face.get(to) in face and face.get(face[to]) == to and face[to] != me)
 
 
+TALK_M = (1.1, 1.6)       # two on the open floor who are turned to each other stand this far apart (PERSON_GAP_M up)
+
+
+def turned_to(name: str, faces: dict, others: list) -> bool:
+    """Whether the staging pass has this person facing one of the shot's other people, or one of them facing this
+    person: the two are with each other, not merely in the same place. (Two who spoke in a ballroom were stood by the
+    open floor's rule for someone a few steps off, 2 m and more apart, and the picture of them both had one at each
+    edge of the frame, 11-26.)"""
+    faces = faces or {}
+    return bool(name) and (faces.get(name) in others or any(faces.get(o) == name for o in others))
+
+
+def floor_near(thing: dict) -> tuple:
+    """How far from the others (or from the middle) someone on the open floor stands."""
+    if thing.get("apart"):
+        return ONLOOK_M
+    if thing.get("with"):
+        return TALK_M if thing.get("turned") else (2.0, 5.0)
+    return (0.0, 1.6)
+
+
 AT_THING = "the thing they are at"     # the pass's answer for someone facing what they work at (staging_pass)
 TALL_THING_M = 1.5        # a thing whose top is above a standing person's eyes: a wall of it, nothing to work on top of
 WALL_NEAR_M = 1.2         # standing this near its footprint, turned to it, a person's face is a hand from its face
@@ -1156,6 +1177,9 @@ def main():
                 c_ = [sum(o[0] for o in oth) / len(oth), sum(o[1] for o in oth) / len(oth)] if oth else [0.0, 0.0]
                 thing = {"name": "floor", "kind": "floor", "center": c_, "half": [0.0, 0.0], "with": bool(oth),
                          "apart": bool(oth) and looks_on(p, sh.get("people") or []),
+                         "turned": bool(oth) and turned_to(p.get("name"), (sp or {}).get("face", {}).get(sid) or {},
+                                                           [q_.get("name") for q_ in sh.get("people") or []
+                                                            if q_.get("name") != p.get("name")]),
                          "line": [o for i_, o in enumerate(oth) if all(math.dist(o, q_) > 0.3 for q_ in oth[:i_])][:2]}
                 f["defaults"].append(f"{k}: on the open floor ({'near the others' if oth else 'the middle of the room'})")
             elif stated:
@@ -1206,8 +1230,7 @@ def main():
                     near = (0.5, 0.9)
                 else:
                     tgt = (thing or {}).get("center") or [0, 0]
-                    near = (ONLOOK_M if thing.get("apart") else (2.0, 5.0) if thing.get("with") else (0.0, 1.6)) \
-                        if (thing or {}).get("kind") == "floor" else (0.6, 1.6)
+                    near = floor_near(thing) if (thing or {}).get("kind") == "floor" else (0.6, 1.6)
                 others = ring(k, placed_now)
                 own_r = (crt.get(k) or {}).get("radius_m", 0.0)
                 # (a creature keeps its reach from people; from fixtures its body's half breadth: a rock or a cave

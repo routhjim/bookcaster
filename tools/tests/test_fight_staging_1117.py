@@ -604,6 +604,16 @@ def test_someone_looking_on_at_two_who_face_each_other_stands_apart():
     assert FP.ONLOOK_M[0] > 3 * FP.PERSON_GAP_M
 
 
+def test_two_on_the_open_floor_who_face_each_other_stand_at_talking_distance():
+    assert FP.turned_to("Orla", {"Tam": "Orla"}, ["Tam"]) and FP.turned_to("Tam", {"Tam": "Orla"}, ["Orla"])
+    assert not FP.turned_to("Orla", {"Tam": "the thing they are at"}, ["Tam"]) and not FP.turned_to("Orla", {}, ["Tam"])
+    assert not FP.turned_to("Orla", {"Orla": "Dr. Marsh"}, ["Tam"])           # faces someone not in the shot
+    assert FP.floor_near({"with": True, "turned": True}) == FP.TALK_M and FP.TALK_M[0] >= FP.PERSON_GAP_M
+    assert FP.TALK_M[1] < 2.0 <= FP.floor_near({"with": True})[0]             # merely in the same place: a few steps off
+    assert FP.floor_near({"with": True, "turned": True, "apart": True}) == FP.ONLOOK_M
+    assert FP.floor_near({}) == (0.0, 1.6)
+
+
 def test_bystander_steps_to_the_side_of_the_work():
     """Someone standing across a piece from the one who works at it stands where the work is seen from: they step
     to the piece's side, and a camera then has its place on the work."""
