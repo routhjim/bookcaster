@@ -1291,7 +1291,7 @@ def crowd_line(spec: dict) -> str:
     director's set sheet adds, each group once. (A ball's sheet named its musicians and servants and left out the
     guests: the room was drawn all but empty, 11-26.)"""
     out = []
-    for src in (spec.get("crowd"), spec.get("_director_crowd")):
+    for src in (spec.get("_crowd_who"), spec.get("crowd"), spec.get("_director_crowd")):
         for t in re.split(r";", str(src or "")):
             t = t.strip().rstrip(".")
             if t and t.lower() not in [o.lower() for o in out]:
@@ -1324,7 +1324,9 @@ def with_crowd(spec: dict) -> dict:
         # (two looks of each group; a fuller crowd stands the same figures again elsewhere on the floor)
         who = "one of them" if (i // len(terms)) % 2 == 0 else "another of them, unlike the first"
         sp.setdefault("pieces", []).append({
-            "id": f"x{i + 1}", "kind": "bystander", "against": "free", "phrases": [],
+            # (a full place's figures stand round its walls, the floor's middle left to the story's people:
+            # stood free, four of a ball's crowd were set between the two who danced and the camera)
+            "id": f"x{i + 1}", "kind": "bystander", "against": "wall" if full else "free", "phrases": [],
             "look": f"{t[0].lower() + t[1:]} ({period}), {who}: a single person standing at ease, the whole figure "
                     "from head to feet"})
     return sp

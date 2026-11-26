@@ -452,3 +452,13 @@ class SettleCapsule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_figure_guessed_too_deep_is_squeezed_to_its_clothed_body():
+    ns = {}
+    exec(functions(COMBO, ["_depth_squeeze"]), ns)
+    f = ns["_depth_squeeze"]
+    assert abs(f(0.24, 0.36, 1.15) - 0.24 * 1.15 / 0.36) < 1e-9       # half again too deep: down to body x allowance
+    assert f(0.24, 0.28, 1.15) == 1.0 and f(0.24, 0.20, 1.15) == 1.0  # within the slack, or thinner: left as it is
+    assert f(0.24, 0.31, 1.35) == 1.0 and f(0.24, 0.31, 1.15) < 1.0   # an outer layer is allowed more
+    assert f(0.0, 0.3, 1.15) == 1.0 and f(0.24, 0.0, 1.15) == 1.0

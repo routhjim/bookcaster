@@ -267,6 +267,17 @@ if LAB_GROUP is not None:
     skin = (skin & ~np.isin(LAB_GROUP, (1, 4))) | (LAB_GROUP == 2)
 HAIRY = (LAB_GROUP == 1) if LAB_GROUP is not None else np.zeros(len(co), bool)
 
+def _depth_squeeze(body_m, figure_m, allow, slack=1.05):
+    """The factor for a figure's front-to-back size. A shape made from one front picture has its depth guessed, and
+    guessed thick: a slim man drawn slim came out 0.37 m deep through the chest on a body of 0.235 m, and stood heavy
+    in every view from the side (11-26). The body's chest depth times ALLOW (the clothes over it) is the most a
+    figure is deep; within SLACK of that it is left as it is; never widened."""
+    want = float(body_m) * float(allow)
+    if figure_m <= 0 or body_m <= 0 or figure_m <= want * slack:
+        return 1.0
+    return want / float(figure_m)
+
+
 # ------------------------------------------------------------------ 1. scale and place
 t = time.time()
 zmin, zmax = co[:, 2].min(), co[:, 2].max()
@@ -320,6 +331,10 @@ bf, bb = chest(bco0)
 ff, fb = chest(co)
 co[:, 1] += (bf + bb) / 2 - (ff + fb) / 2
 REP["chest_depth_m"] = {"body": round(float(bb - bf), 3), "figure": round(float(fb - ff), 3)}
+_k = _depth_squeeze(bb - bf, fb - ff, JOB.get("clothed_depth", 1.15))
+if _k < 1.0:                    # the whole figure, about the middle of the chest (its head is as much too deep)
+    co[:, 1] = (bf + bb) / 2 + (co[:, 1] - (bf + bb) / 2) * _k
+    REP["chest_depth_m"].update(squeezed_by=round(float(_k), 3), figure_after=round(float((fb - ff) * _k), 3))
 REP["scale"] = round(float(s), 4)
 REP["height_m"] = round(float(top_z), 3)
 

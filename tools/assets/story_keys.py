@@ -58,7 +58,7 @@ import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 # a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
-STEP_RULE = {"spec": 3}
+STEP_RULE = {"spec": 4}
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
@@ -944,7 +944,7 @@ class Story:
             out[r["variant"]] = (vid if ok else None, r)
         return out
 
-    FITS = ("hands_again", "head_again")     # the fittings a whole figure has had since its first build, by marker
+    FITS = ("hands_again", "head_again", "depth_again")     # the fittings a whole figure has had since its first build, by marker
 
     def _hands_again(self, who, w, cmd) -> None:
         """A whole figure built before a fitting rule changed is made again from its fitting, once per rule (FITS):
@@ -955,7 +955,7 @@ class Story:
         if not getattr(self, "whole", True) or not ch.exists() or all((w / f).exists() for f in self.FITS):
             return
         self._fit_mark(w)
-        log(f"{who}: its figure is fitted again (jointed hands, the head on the head joint)")
+        log(f"{who}: its figure is fitted again (jointed hands, the head on the head joint, its depth the body's)")
         if sh(cmd + ["--from", "combo", "--until", "seats"], w / "run.log"):
             log(f"{who}: the fitting again FAILED; see {w / 'run.log'}")
 
