@@ -325,6 +325,8 @@ QUIET_SEEDS: tuple = ()  # a quiet shot's takes' seeds when given (supplied_keys
 HOLD_FIRST = os.environ.get("BOOKCASTER_HOLD_FIRST", "off") == "on"
 
 
+GIVEN_WORDS: dict = {}   # shot id -> the lines its clips are made of, given by the user and used as they are (supplied_keys(words=...))
+NO_KEY: set = set()      # shots whose given words are rendered from the words alone, no start picture
 KEY_NAMES: dict = {}     # shot id -> {a person's description: its plain form} (supplied_keys: the key carries the look)
 NO_ARTICLE = {"armour", "armor", "mail", "plate", "leather", "rags", "furs", "fur", "silk", "wool", "linen", "clothes",
               "clothing", "black", "white", "red", "blue", "green", "grey", "gray", "brown"}
@@ -421,7 +423,10 @@ def quiet_take_seeds(retake: bool) -> tuple:
 
 def _chain_words(st: dict, text: str) -> str:
     """A chain line as its clips are made of it (with_facts on the chain's line; with DROP_ABSENT, without the clauses
-    naming anyone its key does not show)."""
+    naming anyone its key does not show). Words the user gave for the shot are the clip's words as they are (11-22
+    user: "just give ltx the following prompts")."""
+    if st.get("id") in GIVEN_WORDS:
+        return text
     if DROP_ABSENT and st.get("id") in AUDIT:
         cx, s = AUDIT[st["id"]]
         text = drop_absent(text, absent_words(cx, s)) or text
@@ -2265,8 +2270,18 @@ def room_layouts(book: Path, stem: str, log=print) -> dict:
     return out
 
 
+def narration_len(book: Path, stem: str) -> float | None:
+    """The chapter's narration audio, in seconds (None when it cannot be read)."""
+    a = book / "work" / f"{stem}.mp3"
+    try:
+        return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                     str(a)], capture_output=True, text=True).stdout.strip())
+    except (OSError, ValueError):
+        return None
+
+
 def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = None, keep_llm: bool = False,
-           layouts: dict | None = None) -> tuple:
+           layouts: dict | None = None, end: float | None = None) -> tuple:
     """The director makes the film's shots itself, a PASSAGE at a time (10-27 user: "the whole point of the director
     is to break up the story into individual shots"): narration and spoken lines together, every sentence timed with
     who says it, the story before and after, where the people are, how things stand (carried passage to passage) and
@@ -2283,6 +2298,12 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
     sheets = sheets or {}
     span = _spans(es)
     t_a, t_b = float(es[0]["t"]), float(es[-1]["t"]) + span[es[-1]["id"]]
+    # the passages run to the end of the stretch asked for (as far as the narration goes), not to the end of the
+    # planner's last moment: that moment's own length (a few seconds) left the last 88 s of a chapter, its closing
+    # conversation and ending, without a shot (11-16)
+    if end is not None:
+        n_ = narration_len(book, stem)
+        t_b = max(t_b, min(float(end), n_) if n_ else float(end))
     plan = json.loads((MF.paths(book, stem)[0] / "plan.json").read_text())
     chars = list(dict.fromkeys(p_ for p_ in (RGB.person(x) for x in ((plan.get("look") or {}).get("characters") or {}))
                                if p_)) or RGB.people()
@@ -4718,6 +4739,8 @@ def _chain_state(L: Path, s: dict, key: Path) -> dict:
     words = [_chain_words({"id": s["id"]}, x) for x in lines]
     if words != lines or s["id"] in KEY_PEOPLE:
         sig += [words, KEY_PEOPLE.get(s["id"])]
+    if s["id"] in NO_KEY:
+        sig += ["no key"]
     sig = MF._h(json.dumps(sig))
     st = json.loads(f.read_text()) if f.exists() else {}
     if st.get("sig") != sig:
@@ -4753,7 +4776,7 @@ def _chain_jobs(st: dict, k: int) -> list:
              "neg_extra": MF.FIGHT_NEG, "route": "ti2v", "steps": STEPS, "guider": GUIDER, "aguider": GUIDER,
              "people": st.get("people"), "priority": 1}
         if k == 1:
-            j["images"] = [{"path": st["key"], "frame": 0, "strength": 1.0}]
+            j["images"] = [] if sid in NO_KEY else [{"path": st["key"], "frame": 0, "strength": 1.0}]
         else:
             j.update(chain_from=st["picks"][k - 2], chain_frame=CHAIN_FRAMES - 1, overlap=1, seam_tries=0,
                      chain_strength=1.0, images=[])
@@ -6040,6 +6063,21 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
     span = _spans(es)
     edge = [round((float(e["t"]) - t0) * FPS) for e in es] + [round((float(es[-1]["t"]) + span[es[-1]["id"]] - t0) * FPS)]
     segs, hits, f_at, spans = [], [], 0, []
+    # a shot with neither clip nor key holds the key of the nearest shot of the same place that has one (the one
+    # before it first): never black (11-16: eight shots of two people in one bunk had no key, 30 s of black)
+    order = [(e, s) for e in es for s in (shots_by.get(e["id"]) or [])]
+    key_of = {s["id"]: sd / e["id"] / s["id"] / "key.png" for e, s in order}
+    stand_in = {}
+    for j, (e, s) in enumerate(order):
+        if (L / "out" / f"{s['id']}.mp4").exists() or key_of[s["id"]].exists():
+            continue
+        near = sorted((k for k in range(len(order)) if k != j and order[k][0].get("where") == e.get("where")
+                       and key_of[order[k][1]["id"]].exists()), key=lambda k: (abs(k - j), k > j))
+        if not near:                   # (no keyed shot of that place at all: the nearest of any place, 11-17)
+            near = sorted((k for k in range(len(order)) if k != j and key_of[order[k][1]["id"]].exists()),
+                          key=lambda k: (abs(k - j), k > j))
+        if near:
+            stand_in[s["id"]] = key_of[order[near[0]][1]["id"]]
     for i, e in enumerate(es):
         n_all = max(edge[i + 1] - edge[i], 1)
         shots = shots_by.get(e["id"]) or []
@@ -6052,6 +6090,8 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
             prev_end = end
             c = L / "out" / f"{s['id']}.mp4"
             key = sd / e["id"] / s["id"] / "key.png"
+            if not key.exists() and s["id"] in stand_in:
+                key = stand_in[s["id"]]
             sg = L / f"seg_{s['id']}.mp4"
             spans.append((t0 + f_at / FPS, t0 + (f_at + nf) / FPS, str(c) if c.exists() else "", s.get("kind")))
             if c.exists():
@@ -6066,7 +6106,8 @@ def assemble(book: Path, stem: str, es: list, shots_by: dict, mix: Path, out: Pa
                 elif st_ < 0:           # (a clip from before the lead-in, lips early: its first frame held)
                     vf = f"tpad=start_mode=clone:start_duration={-st_ / FPS:.4f}," + vf
             else:
-                log(f"!!! {s['id']}: no clip: " + ("its key held" if key.exists() else "black"))
+                log(f"!!! {s['id']}: no clip: " + (f"{key.parent.name}'s key held" if s["id"] in stand_in else
+                                                    "its key held" if key.exists() else "black"))
                 src = ["-loop", "1", "-i", str(key)] if key.exists() else \
                     ["-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r=24"]
                 vf = f"scale={W}:{H}"
@@ -6155,7 +6196,7 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     _step(book, "wardrobe and the director")
     wardrobe(book, stem, log)
     loras = loras_beside(book, stem, log, es)                 # the cast's LoRAs on both cards while the director runs
-    es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays)    # the director's shots are the moments
+    es, by, _ = direct(book, stem, es, log, keep_llm=True, layouts=lays, end=t1)   # the director's shots are the moments
     song = song_of(book)
     if not song:                                              # (a song is its own whole sound: no effects)
         sfx_plan(book, stem, log)                             # (its language model is still up)
@@ -6700,7 +6741,7 @@ def work_book(book: Path, stem: str, root: Path, ids: list, log=print) -> Path:
 def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=print,
                   review: str = "agent", facts: Path | None = None, hold: bool = False,
                   quiet_seeds: tuple = (), key_people_: bool = False, work_root: Path | None = None,
-                  in_place: bool = False, drop_absent_: bool = False) -> list:
+                  in_place: bool = False, drop_absent_: bool = False, words: Path | None = None) -> list:
     """Clips for chosen shots of a planned stretch from SUPPLIED keys (11-11: keys staged in a 3D engine and redrawn
     by the image model): `plan` is a saved plan (plan_*.json, as run() writes it), used as it is - nothing planned,
     drawn or judged before the render; `keys` a folder of <shot id>.png at the clip size. Everything is checked
@@ -6717,9 +6758,20 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
     <shot id>.shot_facts.json says who is in the picture: {"visible": [{"name": <cast name>, "box": [left, top,
     right, bottom]}, ...]} left to right, box optional, each 0-1 of the picture; they are the shot's people (head
     count, judge, lip-sync zone, side words), and a talk shot whose speaker is not among them is not rendered
-    (STOPPED). -> the shots' clips."""
+    (STOPPED). words: a file {shot id: a line, or its lines} of clip words given for action shots: the shot is
+    rendered as a chain of exactly those lines (97 frames each), nothing added to them and nothing reworded;
+    {shot id: {"lines": ..., "key": false}} renders them from the words alone, the key not given to the video model.
+    -> the shots' clips."""
     global REVIEW, SCENE_FACTS, HOLD_CAMERA, QUIET_SEEDS, KEY_PEOPLE, KEY_BOXES, KEY_SIDES, STOPPED, NO_STATUS
     KEY_NAMES.clear()
+    GIVEN_WORDS.clear()
+    NO_KEY.clear()
+    given = json.loads(Path(words).read_text()) if words else {}
+    NO_KEY.update(k for k, v in given.items() if isinstance(v, dict) and v.get("key") is False)
+    given = {k: v.get("lines") or [] if isinstance(v, dict) else v for k, v in given.items()}
+    given = {k: [v] if isinstance(v, str) else list(v) for k, v in given.items()}
+    if bad := [k for k, v in given.items() if k not in ids or not v or not all(isinstance(x, str) and x.strip() for x in v)]:
+        raise RuntimeError(f"--words: not among the shots asked for, or without words: {bad}")
     global DROP_ABSENT, AUDIT
     if review not in ("off", "agent", "user"):
         raise ValueError(f"review {review!r}: off, agent or user")
@@ -6794,6 +6846,13 @@ def supplied_keys(book: Path, stem: str, plan: Path, keys: Path, ids: list, log=
                 if s.get("chain") and s["chain"].get("lines"):
                     s["chain"]["lines"] = [reside(Rb, cx, s, x) for x in s["chain"]["lines"]]
                 KEY_NAMES[s["id"]] = key_names(Rb, cx, s)
+    for s in shots:                     # (after the side words: given words are not reworded)
+        if s["id"] in given:
+            if s["kind"] != "action":
+                raise RuntimeError(f"--words: {s['id']} is a {s['kind']} shot; words are given for action shots")
+            s["chain"] = dict(s.get("chain") or {}, lines=[" ".join(x.split()) for x in given[s["id"]]])
+            GIVEN_WORDS[s["id"]] = s["chain"]["lines"]
+            log(f"{s['id']}: its words as given: " + " | ".join(s["chain"]["lines"]))
     sd = shot_dir(book, stem)
     for s in shots:
         src = Path(keys) / f"{s['id']}.png"
@@ -6862,6 +6921,10 @@ if __name__ == "__main__":
                          "there and the book is only read (with --assemble: cut the stretch from the clips there)")
     ap.add_argument("--drop-absent", action="store_true",
                     help="leave out of the words every clause naming someone the key does not show (not reworded)")
+    ap.add_argument("--words", type=Path, default=None,
+                    help="a file {shot id: a line, or a list of lines}: these action shots' clips are made of exactly "
+                         "these words, a 97-frame clip per line, nothing added; {\"lines\": ..., \"key\": false} for a shot "
+                         "rendered from its words alone, no start picture")
     ap.add_argument("--in-place", action="store_true",
                     help="replace the book's own keys and clips for these shots (refused otherwise when it has clips "
                          "from other keys and no --work-root is given)")
@@ -6875,5 +6938,5 @@ if __name__ == "__main__":
     for c in supplied_keys(a.book, a.stem, a.plan, a.keys, [x for x in a.shots.split(",") if x], review=a.review,
                            facts=a.facts, hold=a.hold, quiet_seeds=tuple(x for x in a.quiet_seeds.split(",") if x),
                            key_people_=a.key_people, work_root=a.work_root, in_place=a.in_place,
-                           drop_absent_=a.drop_absent):
+                           drop_absent_=a.drop_absent, words=a.words):
         print("clip:", c, "" if c.exists() else f"(not made{': ' + STOPPED[c.stem] if c.stem in STOPPED else ''})")

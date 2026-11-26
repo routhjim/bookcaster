@@ -365,6 +365,17 @@ check("an action shot's words name him plainly, the sentence's capital kept",
       S.with_facts("The man in the old grey wool coat turns. He sees the man in the old grey wool coat's hat.",
                    {"id": "a", "kind": "action"}) == "The man in the coat turns. He sees the man in the coat's hat.")
 check("a chain line too", S._chain_words({"id": "a"}, "the man in the old grey wool coat sits.") == "the man in the coat sits.")
+# 11-22: words the user gave for a shot are its clip's words as they are: no plain names, no held pose, no option's sentence
+S.GIVEN_WORDS["a"] = ["the man in the old grey wool coat sits."]
+S.CHAIN_HOLD["a"] = " He stays standing throughout."
+check("given words go as they are", S._chain_words({"id": "a"}, "the man in the old grey wool coat sits.") ==
+      "the man in the old grey wool coat sits.")
+S.GIVEN_WORDS.clear(); S.CHAIN_HOLD.pop("a")
+stg = {"id": "a", "ver": [0], "lines": ["x sits."], "key": "k.png", "people": 1}
+check("a chain's first line starts from its key", S._chain_jobs(stg, 1)[0]["images"][0]["path"] == "k.png")
+S.NO_KEY.add("a")
+check("... from the words alone when the key is not to be given", S._chain_jobs(stg, 1)[0]["images"] == [])
+S.NO_KEY.clear()
 check("talk words keep their own description", "old grey wool coat" in
       S.with_facts("the man in the old grey wool coat speaks.", {"id": "a", "kind": "talk"}))
 check("a shot without key names is unchanged", "old grey" in S.with_facts("the man in the old grey wool coat sits.", {"id": "b", "kind": "action"}))
