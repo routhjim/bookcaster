@@ -6164,7 +6164,8 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
         review: str | None = None) -> Path:
     """The whole stretch: shots (director) -> keys (both cards) -> pick (+3 seeds where none passed) -> [until=keys:
     the review sheet] -> LTX (pipelined) -> takes judged -> the takes sheet -> assembled. review: off | agent | user
-    (each action chain line's pick waits on a review card, REVIEW_TIMEOUT)."""
+    (each action chain line's pick waits on a review card, REVIEW_TIMEOUT). until="plan": the director's shots saved as
+    the plan and nothing drawn -> the plan's file."""
     global REVIEW
     if review:
         if review not in ("off", "agent", "user"):
@@ -6181,6 +6182,9 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     if until != "keys" and fz.exists() and json.loads(fz.read_text()).get("_sig") != sig:   # (no sig: older code)
         log(f"the saved plan is from other looks or LoRAs: planning again")
         fz.unlink()
+    if until == "plan" and fz.exists():       # the plan alone is asked for (the 3D flow keys it in the engine)
+        log(f"the saved plan is current: {fz}")
+        return fz
     if until != "keys" and fz.exists():
         by = json.loads(fz.read_text())
         by.pop("_sig", None)
@@ -6228,6 +6232,12 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     if pauses:                                           # (before the keys, so the plan saved has them)
         apply_pauses(es, by, pauses)
         shots = [s for e in es for s in by.get(e["id"], [])]
+    if until == "plan":                       # the shots as directed, and the LoRAs they are keyed with; no key drawn
+        log(f"{len(es)} moments -> {len(shots)} shots (the plan only)")
+        if loras:
+            loras()
+        _save_plan(fz, _plan_sig(book, stem), es, pauses, shots)
+        return fz
     _step(book, f"keyframes ({len(shots)} shots)")
     log(f"{len(es)} moments -> {len(shots)} shots ({sum(s['kind'] == 'action' for s in shots)} action, "
         f"{sum(s['kind'] == 'quiet' for s in shots)} quiet, {sum(s['kind'] == 'talk' for s in shots)} talk)")
@@ -6243,9 +6253,15 @@ def run(book: Path, stem: str, t0: float, t1: float, hero: Path | None, mix: Pat
     log(f"key sheet: {ks}")
     if until == "keys":
         return ks
-    fz.write_text(json.dumps({"_sig": sig, "_es": es, **({"_pauses": pauses} if pauses else {}), **{s_["id"].rsplit("_s", 1)[0]: [x for x in shots if x["id"].rsplit("_s", 1)[0] ==
-                                                                        s_["id"].rsplit("_s", 1)[0]] for s_ in shots}}))
+    _save_plan(fz, sig, es, pauses, shots)
     return _render(book, stem, es, by, shots, mix, op, fz, log, pauses)
+
+
+def _save_plan(fz: Path, sig, es: list, pauses, shots: list) -> None:
+    """The plan a stopped render resumes on, and the one the 3D flow keys in the engine: {moment id: its shots}."""
+    mom = lambda s_: s_["id"].rsplit("_s", 1)[0]  # noqa: E731
+    fz.write_text(json.dumps({"_sig": sig, "_es": es, **({"_pauses": pauses} if pauses else {}),
+                              **{mom(s_): [x for x in shots if mom(x) == mom(s_)] for s_ in shots}}))
 
 
 def loras_beside(book: Path, stem: str, log=print, es: list | None = None):

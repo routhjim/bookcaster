@@ -183,10 +183,16 @@ The other flows, chosen with `--flow`:
 | Flow | What it is |
 |------|------------|
 | `2d` | The picture video, with animated moments at `--level moments`. The default below `animated`. |
-| `3d` | Every moment rendered from a staged 3D scene. Needs `plan`, `assets`, `stage` and `review` first. |
-| `mannequin` | The 3D staging used only as pose and depth maps for the keyframes, which are then animated. |
+| `3d` | The same director's shots, each staged in a 3D engine and its still redrawn into the opening picture, then the same render as `shots`. |
 
-`3d` and `mannequin` came first and are kept, but new work goes into `shots`.
+`--flow 3d` is one job (`tools/engine_flow.py`): the shot plan, a figure per person made from their
+sheet (picture to 3D), a set per place, every shot staged in the engine, the keys, the video.
+`--keys-only` stops at a sheet of the keys. The figures and sets are the book's
+(`work/video/engine/`), made once and used by every chapter. Its engine work runs through the asset
+line (`tools/assets/README.md`).
+
+The 3D flow of October (`assets`, `stage`, `review`, `approve`, and `--flow mannequin`) is retired:
+those commands say so and start nothing.
 
 ### Music videos
 
