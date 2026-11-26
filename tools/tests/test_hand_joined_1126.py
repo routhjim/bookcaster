@@ -162,3 +162,17 @@ def test_a_scene_that_opens_on_shots_listing_nobody_takes_the_first_listing():
     assert "people" not in plan["s4"][0] and "people" not in plan["s5"][0]     # carried from before, as ever
     plan2 = {"s1": [{"kind": "talk"}], "s2": [{"kind": "talk"}]}
     assert FP.open_with_people(plan2, ["s1", "s2"], [0, 0]) == {} and "people" not in plan2["s1"][0]
+
+
+def test_the_one_they_are_with_reaches_the_engine_job():
+    """The staged spec's partner is handed on to the engine job (without it each of a pair aims at a copy of
+    itself)."""
+    import ast
+    src = (Path(__file__).resolve().parents[2] / "tools/assets/scenes/scene.py").read_text()
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "carried")
+    ns = {}
+    exec(compile(ast.Module([fn], []), "carried", "exec"), ns)
+    got = ns["carried"]({"id": "x", "near_to": "tam", "near_how": "dancing together", "scale": "0.8"})
+    assert got == {"near_to": "tam", "near_how": "dancing together", "scale": 0.8}
+    assert ns["carried"]({"id": "x"}) == {}
+    assert "chars[key].update(carried(c))" in src
