@@ -482,6 +482,25 @@ def look_person(look: str) -> str:
     return head.strip().rstrip(",")
 
 
+def crowd_facts(keys: Path, shots: list, set_dir: Path) -> int:
+    """Each key's facts say when its place has a crowd ("crowd": true): the people of the place who stand behind the
+    story's people are in the picture and in every clip made from it. Counted against the one person the key
+    lists, a ballroom's every take was faulted "5 people, not 1" and made four times over (11-26). -> keys marked."""
+    try:
+        crowd = str(json.loads((Path(set_dir) / "spec.json").read_text()).get("crowd") or "").strip()
+    except (OSError, ValueError):
+        crowd = ""
+    n = 0
+    for sid in shots if crowd else []:
+        ff = Path(keys) / f"{sid}.shot_facts.json"
+        if ff.exists():
+            f = json.loads(ff.read_text())
+            f["crowd"] = crowd
+            ff.write_text(json.dumps(f, indent=1))
+            n += 1
+    return n
+
+
 def chapter_timeline(book: Path, plan_p: Path):
     """The narration timeline of the chapter the plan is of: the plan lies in <book>/work/video/<chapter>/shots/, the
     timeline is <book>/work/<chapter>.timeline.json. A book of one chapter has only one; in a book of several the
@@ -1446,6 +1465,7 @@ class Story:
             if not r["key"]:                 # in the folder is of another staging (eleven such went into a cut and
                 (self.keys / f"{r['shot']}_s0.png").unlink(missing_ok=True)      # the count called them keys, 11-14)
         (d / "keys.json").write_text(json.dumps(rows, indent=1))
+        crowd_facts(self.keys, [r["shot"] for r in rows if r["key"]], self.set_dir(place))
         log(f"{place}: {sum(r['key'] for r in rows)} of {len(self.shots_of(place))} shots have a key")
         return True
 
