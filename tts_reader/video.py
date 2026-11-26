@@ -1067,7 +1067,8 @@ def younger_dir(R, name: str) -> Path | None:
         return None
     d = R.vd / "faces" / slug(R.person(name) or name)
     age, read = look_age(R.look(name) or ""), photo_ages(d)
-    if not age or not read or min(read.values()) - age <= PHOTO_AGE_GAP:
+    # the middle reading: one blurred photograph read ten years under the other three (11-25) and kept them all as taken
+    if not age or not read or sorted(read.values())[len(read) // 2] - age <= PHOTO_AGE_GAP:
         return None
     return d / f"age{int(age)}"
 
