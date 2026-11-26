@@ -250,6 +250,15 @@ def q_face(sh: dict, nm: str, people: list, looks: dict, at_thing: bool = True) 
 NEARS = ["dancing together", "touching", "close", "conversing", "apart"]
 
 
+DANCE = re.compile(r"\bdanc(?:e|es|ed|ing)\b|\bwaltz|\breel\b|\bquadrille|\bminuet", re.I)
+
+
+def in_a_dance(sh: dict, a: str, b: str) -> bool:
+    """Whether the plan has both of these two in a dance: each one's own place or pose in the shot names it."""
+    rows = {q.get("name"): f"{q.get('pose') or ''} {q.get('at') or ''}" for q in sh.get("people") or []}
+    return all(DANCE.search(rows.get(n, "")) for n in (a, b))
+
+
 def q_near(psg: str, sh: dict, a: str, b: str) -> str:
     """How near two people of a shot who are turned to each other stand as it starts: what they are to each other
     and what they are doing sets it, never one distance for every pair (two who danced as partners at a ball were
@@ -425,7 +434,9 @@ def main():
             b_ = fc_.get(a_)
             if b_ in listed and a_ not in crt and b_ not in crt and (fc_.get(b_) == a_ or b_ not in fc_) and \
                     not any(a_ in pr_[:2] for pr_ in (res.get("near") or {}).get(sid) or []):
-                how = ask.choose(q_near(psg, sh, a_, b_), NEARS)
+                # (the plan has them both in a dance: partners, whatever the lines of that moment speak of. Asked,
+                # two in "the dance set" who talked of other things were "conversing" every time, 11-26)
+                how = NEARS[0] if in_a_dance(sh, a_, b_) else ask.choose(q_near(psg, sh, a_, b_), NEARS)
                 if how in NEARS:
                     res.setdefault("near", {}).setdefault(sid, []).append([a_, b_, how])
         # the eyes as the shot opens: a figure's eyes are open in every engine still, and the redraw drew a child

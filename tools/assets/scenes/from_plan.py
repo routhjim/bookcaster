@@ -342,10 +342,14 @@ JOIN_REACH_M = 0.62       # how far ahead of the body a joined hand is held at m
 NEAR_GAP_M = {"dancing together": 0.45, "touching": 0.7, "close": 0.8}
 
 
-def near_of(name: str, shot_ids: list, sp: dict) -> tuple:
-    """(whom this person is near in any of these shots, how), from the staging pass's "near"; (None, None)."""
-    for sid in shot_ids:
-        for row in ((sp or {}).get("near") or {}).get(sid) or []:
+def near_of(name: str, shot_ids: list, sp: dict, order: list | None = None) -> tuple:
+    """(whom this person is near in any of these shots, how), from the staging pass's "near"; with none of their own,
+    the latest earlier shot's (ORDER: every shot in story order): two who dance go on dancing through the shots
+    that do not say. (None, None) when nothing was ever said."""
+    near = (sp or {}).get("near") or {}
+    first = min((order.index(x) for x in shot_ids if x in order), default=0) if order else 0
+    for sid in list(shot_ids) + (order[:first][::-1] if order else []):
+        for row in near.get(sid) or []:
             a, b, how = (list(row) + [None, None, None])[:3]
             if name in (a, b):
                 return (b if a == name else a), how
@@ -1682,7 +1686,7 @@ def main():
                 c = {"id": vid, "position": v["position"], "facing": v["facing"], "facing_to": v.get("facing_to"),
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
                 rev_ = {kk_: nn_ for nn_, kk_ in names.items()}
-                nw_, how_ = near_of(rev_.get(k, ""), [c_["plan_id"] for c_, _ in g], sp)
+                nw_, how_ = near_of(rev_.get(k, ""), [c_["plan_id"] for c_, _ in g], sp, ids)
                 jw_ = names.get(nw_ or "")
                 if jw_ and how_ in NEAR_GAP_M and jw_ in st and st[jw_].get("position") and \
                         st[jw_].get("pose") != "sitting" and k not in crt and jw_ not in crt:
