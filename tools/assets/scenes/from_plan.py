@@ -342,29 +342,80 @@ JOIN_REACH_M = 0.62       # how far ahead of the body a joined hand is held at m
 NEAR_GAP_M = {"dancing together": 0.38, "touching": 0.7, "close": 0.8}
 
 
+NEAR_GOES_ON = ("dancing together",)     # what two go on doing through the shots that do not say (a dance); the
+                                         # other bands are of the shots that say them (someone who steps up to a
+                                         # pair to speak was kept at their elbow for the rest of the dance, 11-26)
+NEAR_CLEAR_M = 0.6                       # one who comes near a person stays this clear of everyone else
+
+
+def open_with_people(plan: dict, ids: list, visit: list) -> dict:
+    """A scene that opens on shots which list nobody (a spoken line: its people are carried from the shot before, and
+    there is none): those shots take the people, with their places, of the first shot of the same visit that lists
+    them - where they are first described is where they already stood. Written into the plan's records here.
+    -> {shot id: the shot its people came from}. (11-26: a stretch that began on a line had an empty room, the
+    speaker was framed as nobody and the place's whole staging stopped.)"""
+    out = {}
+    for v in dict.fromkeys(visit):
+        mine = [s for s, vv in zip(ids, visit) if vv == v]
+        src = next((s for s in mine if plan[s][0].get("people")), None)
+        if src is None or (v and any(plan[s][0].get("people") for s, vv in zip(ids, visit) if vv < v)):
+            continue                      # (a later visit to the place has the people it had before)
+        for s in mine[:mine.index(src)]:
+            plan[s][0] = dict(plan[s][0], people=json.loads(json.dumps(plan[src][0]["people"])))
+            out[s] = src
+    return out
+
+
+def _near_rows(name: str, rows: list) -> tuple:
+    """The nearest band this person is in among one shot's pairs (a dancer whom a third steps up to is still in the
+    dance). -> (whom, how) or (None, None)"""
+    band = list(NEAR_GAP_M)
+    best = None
+    for row in rows or []:
+        a, b, how = (list(row) + [None, None, None])[:3]
+        if name in (a, b) and a != b:
+            rank = band.index(how) if how in band else len(band)
+            if best is None or rank < best[0]:
+                best = (rank, b if a == name else a, how)
+    return (best[1], best[2]) if best else (None, None)
+
+
 def near_of(name: str, shot_ids: list, sp: dict, order: list | None = None) -> tuple:
-    """(whom this person is near in any of these shots, how), from the staging pass's "near"; with none of their own,
-    the latest earlier shot's (ORDER: every shot in story order): two who dance go on dancing through the shots
-    that do not say. (None, None) when nothing was ever said."""
+    """(whom this person is near in any of these shots, how), from the staging pass's "near": the nearest band the
+    shots give them. With none of their own, what the latest earlier shot (ORDER: every shot in story order) has
+    them going on doing with someone (NEAR_GOES_ON), unless a shot since has those two in another band: two who
+    dance go on dancing through the shots that do not say. (None, None) otherwise."""
     near = (sp or {}).get("near") or {}
+    own = _near_rows(name, [r for sid in shot_ids for r in near.get(sid) or []])
+    if own[0]:
+        return own
     first = min((order.index(x) for x in shot_ids if x in order), default=0) if order else 0
-    for sid in list(shot_ids) + (order[:first][::-1] if order else []):
+    since = set()                        # whom a later shot has them with in another band (that ended it with them;
+    for sid in (order[:first][::-1] if order else []):       # a third who stepped up ended nothing)
         for row in near.get(sid) or []:
-            a, b, how = (list(row) + [None, None, None])[:3]
-            if name in (a, b):
-                return (b if a == name else a), how
+            a_, b_, how = (list(row) + [None, None, None])[:3]
+            if name in (a_, b_) and a_ != b_:
+                who = b_ if a_ == name else a_
+                if how in NEAR_GOES_ON:
+                    return (None, None) if who in since else (who, how)
+                since.add(who)
     return None, None
 
 
-def near_position(pos: list, partner_pos: list, how: str) -> list:
-    """Where the one of a near pair who is moved stands: on the line from the partner to where they stood, at the
-    band's distance (nearer or farther than they were placed)."""
+def near_position(pos: list, partner_pos: list, how: str, others: list | None = None) -> list:
+    """Where the one of a near pair who is moved stands: at the band's distance from the partner, on the line to
+    where they stood (nearer or farther than they were placed); when that is within NEAR_CLEAR_M of someone else
+    (OTHERS: positions), round the partner to the nearest side that is clear."""
     gap = NEAR_GAP_M.get(how)
     d = math.dist(pos[:2], partner_pos[:2])
     if not gap or d < 1e-6:
         return list(pos)
-    return [round(partner_pos[0] + (pos[0] - partner_pos[0]) * gap / d, 3),
-            round(partner_pos[1] + (pos[1] - partner_pos[1]) * gap / d, 3)] + list(pos[2:])
+    a0 = math.atan2(pos[1] - partner_pos[1], pos[0] - partner_pos[0])
+    at = lambda a: [partner_pos[0] + math.cos(a) * gap, partner_pos[1] + math.sin(a) * gap]   # noqa: E731
+    clear = lambda q: all(math.dist(q, o[:2]) >= NEAR_CLEAR_M for o in others or [])        # noqa: E731
+    turns = [0.0] + [s * math.radians(k) for k in range(15, 181, 15) for s in (1, -1)]
+    q = next((at(a0 + t_) for t_ in turns if clear(at(a0 + t_))), at(a0))
+    return [round(q[0], 3), round(q[1], 3)] + list(pos[2:])
 
 
 def near_pose(how: str, leads: bool) -> dict | None:
@@ -1090,6 +1141,10 @@ def main():
                 for j_ in range(pos_[ids[i_ - 1]] + 1, pos_[sid_])):
             v_ += 1
         visit.append(v_)
+    opened = open_with_people(plan, ids, visit)
+    for s_, src_ in opened.items():      # (and how near they are to each other there)
+        if isinstance(sp, dict) and (sp.get("near") or {}).get(src_) and s_ not in sp["near"]:
+            sp["near"][s_] = sp["near"][src_]
     named_in = {}
     for i_, sid_ in enumerate(ids):
         named_in.setdefault(visit[i_], set()).update(
@@ -1124,7 +1179,9 @@ def main():
         f = {"id": sid, "kind": sh.get("kind"), "framing": sh.get("framing"), "speaker": sh.get("speaker"),
              "listener": sh.get("listener"), "people_listed": [p["name"] for p in sh.get("people") or []],
              "tight": sh.get("tight"), "defaults": [], "missing": []}
-        if not sh.get("people"):
+        if sid in opened:
+            f["missing"].append(f"people and places (the scene opens on this shot: as shot {opened[sid]} first has them)")
+        elif not sh.get("people"):
             f["missing"].append("people and places (carried from the shot before)")
         questions.append(q_present(f"present:{sid}", (sh.get("action") or sh.get("picture") or ""), list(state)))
         if sh.get("kind") == "action":
@@ -1418,6 +1475,11 @@ def main():
                 if nd > 1e-6:
                     v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
         listed = [names[p["name"]] for p in sh.get("people") or [] if p["name"] in names]
+        # (who is in the room now: someone the plan lists or has speaking who has left it, or whom the staging never
+        # brought in, is not in the picture; with nobody at all in the room the shot is an insert too. 11-26: a
+        # speaker the plan named with the room empty left no one to frame, and the whole place's staging stopped)
+        if not state:
+            spk, listed = None, []
         if not (spk or listed or state):
             # nobody of the cast is in this shot (a place or a thing seen alone, someone the book has no figure
             # for): an insert of the set, its camera on the set's thing the shot's words name, staged with nobody
@@ -1690,8 +1752,14 @@ def main():
                 jw_ = names.get(nw_ or "")
                 if jw_ and how_ in NEAR_GAP_M and jw_ in st and st[jw_].get("position") and \
                         st[jw_].get("pose") != "sitting" and k not in crt and jw_ not in crt:
-                    if k > jw_:                  # (the later of the two comes to the other; both then stay put)
-                        v["position"] = near_position(v["position"], st[jw_]["position"], how_)
+                    # (a hold or a joined hand takes two: only when the other is with this one too)
+                    back_ = names.get(near_of(nw_, [c_["plan_id"] for c_, _ in g], sp, ids)[0] or "")
+                    if back_ != k and how_ in ("dancing together", "touching"):
+                        how_ = "close"
+                    if k > jw_ or back_ != k:    # (the later of the two comes to the other; both then stay put)
+                        v["position"] = near_position(v["position"], st[jw_]["position"], how_,
+                                                      [x_["position"] for kk_, x_ in st.items()
+                                                       if kk_ not in (k, jw_) and x_.get("position")])
                         c["position"] = v["position"]
                     for x_ in (v, st[jw_]):
                         x_.pop("marks", None)
