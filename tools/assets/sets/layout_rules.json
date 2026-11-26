@@ -292,7 +292,7 @@
  "dressing": {
   "about": "The place's dressing (scenes/place_dress.py: the things its picture is drawn furnished with) checked against what the set holds (place_build.with_dressing). An item a piece of the set already is (its name's nouns among the piece's) is that piece; one said to stand on a found piece is drawn on it (its picture); one said to hang, or to be on or across the walls, floor or roof, or a part of the room itself (room_own), or a thing that hangs (hangs, or a kind placed on a wall) stays in the pictures the room's faces carry; any other is made from its words as a piece of its kind (a floor or table kind its last noun names, else a work piece called by it) and placed by the layout's rules, as many as its plural asks (picture.repeat_default).",
   "hangs": ["tapestry", "banner", "flag", "pennant", "chandelier", "hanging", "shield", "garland", "wreath"],
-  "room_own": ["pillar", "column", "panel", "panelling", "paneling", "beam", "rafter", "arch", "step", "stair", "wall", "floor", "ceiling", "roof", "window", "door", "doorway", "alcove", "niche"],
+  "room_own": ["pillar", "column", "panel", "panelling", "paneling", "beam", "rafter", "arch", "step", "stair", "wall", "floor", "ceiling", "roof", "window", "door", "doorway", "alcove", "niche", "flooring", "parquet", "fireplace", "mantel", "mantelpiece", "chimneypiece", "chimney", "cornice", "moulding", "molding", "plasterwork", "wainscot", "skirting"],
   "stands_tall_m": 1.2
  },
  "fire": {
