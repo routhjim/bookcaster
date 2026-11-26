@@ -41,3 +41,14 @@ def test_the_pass_pairs_give_both_the_stance():
     jp = FP.joined_pose([0.0, 0.0], [1.0, 0.0])
     assert jp["pose"] == "hand_joined" and jp["params"]["reach_m"] == 0.5
     assert FP.joined_pose([0.0, 0.0], [3.0, 0.0])["params"]["reach_m"] == FP.JOIN_REACH_M
+
+
+def test_the_question_tells_where_the_shot_has_the_two():
+    sys.path.insert(0, str(HERE.parents[0] / "assets" / "scenes"))
+    import staging_pass as SPS
+    sh = {"action": "Orla looks up.", "people": [{"name": "Orla", "pose": "standing", "at": "in the reel"},
+                                                   {"name": "Tam", "pose": "standing", "at": "in the reel"},
+                                                   {"name": "Dr. Marsh", "pose": "sitting", "at": "by the wall"}]}
+    q = SPS.q_joined("They spoke.", sh, "Orla", "Tam")
+    assert "- Orla: standing, in the reel" in q and "- Tam: standing, in the reel" in q and "Dr. Marsh" not in q
+    assert "still going on" in q and q.rstrip().endswith(f"{SPS.JOINED}; {SPS.APART}")

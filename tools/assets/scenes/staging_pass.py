@@ -254,10 +254,14 @@ def q_joined(psg: str, sh: dict, a: str, b: str) -> str:
     """Whether two people of a shot who are turned to each other hold each other's hand as it starts."""
     return ("You help stage a shot of a film.\nThe story there:\n<<<\n" + psg + "\n>>>\nThe shot's own words: "
             + " ".join(str(sh.get(k) or "") for k in ("keyshot", "action", "setting") if sh.get(k)).strip()
+            + "\nWhere the shot has them:\n"
+            + "\n".join(f"- {q.get('name')}: {q.get('pose') or ''}, {q.get('at') or ''}" for q in sh.get("people") or []
+                        if q.get("name") in (a, b))
             + f"\nQuestion: as this shot starts, are {a} and {b} holding each other by the hand (as partners in a "
-            "dance do while they dance, or as one who leads, greets or steadies another does), or do they stand "
-            "apart without touching? Two who are dancing together as partners have their hands joined. Answer with "
-            f"exactly one of these, nothing else: {JOINED}; {APART}")
+            "dance do, or as one who leads, greets or steadies another does), or do they stand apart without "
+            "touching? Two who are partners in a dance that is still going on (they stand in the dance, in its set "
+            "or on its floor, and nothing says they have left it or that it has ended) have their hands joined, also "
+            f"while they talk. Answer with exactly one of these, nothing else: {JOINED}; {APART}")
 
 
 def main():
