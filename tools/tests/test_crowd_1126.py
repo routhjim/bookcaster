@@ -50,3 +50,17 @@ def test_pieces_of_another_period_are_not_found_for_this_place():
             {"asset_id": "c", "tags": ["bystander"], "description": "a plain figure"}]
     assert [r["asset_id"] for r in P.period_records({"period": "georgian"}, recs)] == ["b", "c"]
     assert P.period_records({"period": "not stated"}, recs) == recs
+
+
+def test_the_story_read_is_the_plans_own_chapter(tmp_path):
+    import story_keys as SK
+    b = tmp_path / "book"
+    (b / "work" / "video" / "02_two" / "shots").mkdir(parents=True)
+    for n in ("01_one", "02_two"):
+        (b / "work" / f"{n}.timeline.json").write_text("[]")
+        (b / "work" / f"{n}.raw.timeline.json").write_text("[]")
+    plan = b / "work" / "video" / "02_two" / "shots" / "plan_x.json"
+    assert SK.chapter_timeline(b, plan).name == "02_two.timeline.json"
+    assert SK.chapter_timeline(b, tmp_path / "elsewhere" / "plan.json") is None      # several chapters, none told
+    (b / "work" / "02_two.timeline.json").unlink()
+    assert SK.chapter_timeline(b, tmp_path / "elsewhere" / "plan.json").name == "01_one.timeline.json"
