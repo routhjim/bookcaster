@@ -858,7 +858,10 @@ def run_job(d: Drawer, j: dict) -> dict:
 
 
 SERVE_JOB_S = float(os.environ.get("QWEN_SERVE_JOB_S", "300"))   # one picture takes well under a minute
-SERVE_STUCK_RC = 75
+# (not 75: the asset line reads 75 as "a resource was busy, run me again" and started the server anew on a feed
+# already half read; the new server died on the broken row, and the pictures waited seven minutes for a card that
+# was to be given up at once, 11-26)
+SERVE_STUCK_RC = 70
 
 
 def serve(device: str) -> int:
@@ -880,7 +883,11 @@ def serve(device: str) -> int:
     for line in sys.stdin:
         if not line.strip():
             continue
-        j = json.loads(line)
+        try:
+            j = json.loads(line)
+        except ValueError:                    # (a row cut short on the feed: said, never the server's end)
+            print(json.dumps({"id": None, "error": f"unreadable job row ({len(line)} characters)"}), flush=True)
+            continue
         at.update(id=j.get("id") or "?", t=time.time())
         try:
             print(json.dumps(run_job(d, j)), flush=True)
