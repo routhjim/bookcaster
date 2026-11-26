@@ -169,10 +169,14 @@ def test_the_one_they_are_with_reaches_the_engine_job():
     itself)."""
     import ast
     src = (Path(__file__).resolve().parents[2] / "tools/assets/scenes/scene.py").read_text()
-    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "carried")
+    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "handed_on")
     ns = {}
-    exec(compile(ast.Module([fn], []), "carried", "exec"), ns)
-    got = ns["carried"]({"id": "x", "near_to": "tam", "near_how": "dancing together", "scale": "0.8"})
+    exec(compile(ast.Module([fn], []), "handed_on", "exec"), ns)
+    got = ns["handed_on"]({"id": "x", "near_to": "tam", "near_how": "dancing together", "scale": "0.8"})
     assert got == {"near_to": "tam", "near_how": "dancing together", "scale": 0.8}
-    assert ns["carried"]({"id": "x"}) == {}
-    assert "chars[key].update(carried(c))" in src
+    assert ns["handed_on"]({"id": "x"}) == {}
+    assert "chars[key].update(handed_on(c))" in src
+    # (the function's name is no local of the job builder: a local of the same name hid it and every staging failed)
+    res = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "resolve")
+    assert not [n for n in ast.walk(res) if isinstance(n, ast.Name) and n.id == "handed_on"
+                and isinstance(n.ctx, ast.Store)]
