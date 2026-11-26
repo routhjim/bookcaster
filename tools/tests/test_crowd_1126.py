@@ -97,3 +97,19 @@ def test_the_story_read_is_the_plans_own_chapter(tmp_path):
     assert SK.chapter_timeline(b, tmp_path / "elsewhere" / "plan.json") is None      # several chapters, none told
     (b / "work" / "02_two.timeline.json").unlink()
     assert SK.chapter_timeline(b, tmp_path / "elsewhere" / "plan.json").name == "01_one.timeline.json"
+
+
+def test_a_key_of_a_place_with_a_crowd_says_so(tmp_path):
+    import json
+    import story_keys as SK
+    keys, sd = tmp_path / "keys", tmp_path / "set"
+    keys.mkdir()
+    sd.mkdir()
+    for i in ("s1", "s2"):
+        (keys / f"{i}.shot_facts.json").write_text(json.dumps({"visible": [{"name": "Orla"}], "count": 1}))
+    (sd / "spec.json").write_text(json.dumps({"crowd": "fair-goers"}))
+    assert SK.crowd_facts(keys, ["s1", "s3"], sd) == 1
+    assert json.loads((keys / "s1.shot_facts.json").read_text())["crowd"] is True
+    assert "crowd" not in json.loads((keys / "s2.shot_facts.json").read_text())
+    (sd / "spec.json").write_text(json.dumps({"crowd": ""}))
+    assert SK.crowd_facts(keys, ["s2"], sd) == 0 and SK.crowd_facts(keys, ["s2"], tmp_path / "none") == 0

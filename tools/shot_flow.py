@@ -6545,6 +6545,8 @@ def check_supplied(book: Path, shots: list, keys: Path, facts: Path | None, quie
             bad.append(f"{f}: no \"visible\" people, and the plan lists {(s.get('who') or []) + (s.get('others') or [])}")
             continue
         ppl[s["id"]] = (vis, bx)
+        if fj.get("crowd"):                  # (the key's place has a crowd behind its people: no head count of takes)
+            s["crowd"] = True
     return bad, ppl, seeds
 
 
