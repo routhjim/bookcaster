@@ -1253,6 +1253,14 @@ def _store_photos(d: Path, files: list[str], first: int, log=print) -> None:
             views[f.name] = video.photo_view(video._look_at(LLM_URL, LLM_MODEL, f, video.VIEW_ASK))
             log(f"{f.name}: {views[f.name]}")
     (d / "views.json").write_text(json.dumps(views, indent=1))
+    ages = video.photo_ages(d)                   # ... and the age each one reads (a look younger than the photographs
+    for f in sorted(d.glob("*.png")):            # is drawn from them shown at the look's age: video.younger_dir)
+        if f.name not in ages:
+            m = re.search(r"\d+", video._look_at(LLM_URL, LLM_MODEL, f, video.PHOTO_AGE_ASK) or "")
+            if m:
+                ages[f.name] = int(m.group())
+                log(f"{f.name}: reads {ages[f.name]}")
+    (d / "ages.json").write_text(json.dumps(ages, indent=1))
 
 
 def set_photo(book: Path, name: str, files: list[str], log=print) -> tuple[str, str]:
@@ -1300,6 +1308,9 @@ def add_photos(book: Path, name: str, files: list[str], log=print) -> tuple[str,
     before = video.face_photos(R, key)
     _store_photos(d, files, len(have) + 1, log)
     redraw = video.face_photos(R, key) != before
+    yd = video.younger_dir(R, key)               # the look is younger than the photographs read, and they are not
+    if yd is not None and not all((yd / f.name).exists() for f in sorted(d.glob("*.png"))):  # yet shown at its age
+        redraw = True
     if redraw:
         for old_sheet in (book / "work" / "video" / "refs").glob(f"{video.slug(key)}-????????.png"):
             old_sheet.unlink()
@@ -2685,7 +2696,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="draw a character from photographs of a real person (yourself, or someone who agreed): up to 8, "
                         "facing the camera and from the sides")
     s.add_argument("--photo-add", nargs="+", metavar=("NAME", "FILE"),
-                   help="more photographs of someone already drawn from photographs, e.g. their face from each side")
+                   help="more photographs of someone already drawn from photographs, e.g. their face from each side "
+                        "(NAME alone: the stored ones are read again, their view and the age they show)")
     s = sub.add_parser("redraw", help="redraw video pictures you don't like, then rebuild the video")
     s.add_argument("book")
     s.add_argument("which", nargs="+", help="when it's on screen (12:30) or its number (p021)")
@@ -3057,8 +3069,6 @@ def main(argv: list[str] | None = None) -> int:
             swap_looks(d, *a.swap)
             return 0
         if a.photo_add:
-            if len(a.photo_add) < 2:
-                sys.exit("use --photo-add NAME FILE [FILE ...]")
             with _llm_lent():
                 who, redraw = add_photos(d, a.photo_add[0], a.photo_add[1:])
             print(f"{who}: photographs added. " + ("Their sheet is drawn again from them" if redraw else
