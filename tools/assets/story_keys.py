@@ -58,7 +58,7 @@ import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 # a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
-STEP_RULE = {"spec": 2}
+STEP_RULE = {"spec": 3}
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]

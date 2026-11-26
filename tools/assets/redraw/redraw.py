@@ -332,11 +332,19 @@ def lora_by_head(lw: float, run: dict, hh: float | None, n: int) -> float:
     return round(lw + (one - lw) * t, 3)
 
 
-def crowd_words(crowd: str | None, kind: str) -> str:
+def crowd_words(crowd: str | None, kind: str, size: str = "") -> str:
     """The place's crowd, as the director's set sheet names it: nobody builds or stages them, the picture fills
-    them in behind the people of the shot (never in a close shot, where there is no background to hold them)."""
+    them in behind the people of the shot (never in a close shot, where there is no background to hold them). A
+    place the story has full of people (size "many") is drawn full: a ball came out as two people in an empty room
+    with a servant far off (11-26)."""
     if not crowd or kind == "close":
         return ""
+    if size == "many":
+        return (f" The place is crowded. Behind the people named above and to both sides of them, at every distance "
+                f"back to the far wall, it is full of other people, dozens of them, standing in groups, talking and "
+                f"moving, in the dress of the place and time: {crowd.strip().rstrip('.')}. All of them are farther from "
+                "the camera than the people named above and smaller in the picture, the nearest softly out of focus; "
+                "none stands between the camera and the people named above and none has the face of anyone named above.")
     return (f" Far behind them, small and out of focus, the place's other people go about their business: {crowd.strip().rstrip('.')}."
             " None of them is near the camera and none has the face of anyone named above.")
 
@@ -982,6 +990,7 @@ def main():
         run.setdefault("set_words", ssp.get("words") or ssp.get("description") or "")
         run.setdefault("room_surfaces", ssp.get("surfaces_words") or "")
         run.setdefault("crowd", ssp.get("crowd") or "")
+        run.setdefault("crowd_size", ssp.get("crowd_size") or "")
         run.setdefault("outdoors", bool(ssp.get("world")))
     if run.get("outdoors"):
         run["room_surfaces"] = open_air_words(run.get("room_surfaces") or "")
@@ -1105,7 +1114,7 @@ def main():
                          # (a close shot of a person has their face and nothing of the place: told of the thing
                          # they look at, the drawing put it on their head, a shimmering stone as a glow in the hair)
                          + setting_words(sd, cam, face_only=kind == "close" and bool(ppl))
-                         + crowd_words(run.get("crowd"), kind)
+                         + crowd_words(run.get("crowd"), kind, run.get("crowd_size") or "")
                          + facing_to_words(sd, ppl, cast) + wears_words(sd, cam, ppl, cast) + laid_words(sd, cam, ppl)
                          + holds_words(sd, cam, ppl, cast, kind),
                          "seed": seed, "path": str(out / f"{sd.name}__{cam}{tag}.png"),

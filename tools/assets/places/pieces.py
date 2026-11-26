@@ -666,3 +666,23 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def period_records(spec: dict, recs: list) -> list:
+    """The library's records that may furnish this place: a piece made for another period does not (a ship's cabin
+    was offered mahogany); a record whose tags or description name a period other than the place's is left out, one
+    that names none serves any. The set builder and the generation both look pieces up in these: looked up in all of
+    them, a ballroom's bystander was found (another period's) and so never made, and the builder, which left that one
+    out, built the room with no bystander at all (11-26)."""
+    import json as _json
+    import re as _re
+    periods = set(_json.loads((Path(__file__).resolve().parent.parent / "scenes" / "place_kinds.json").read_text())["PERIODS"])
+    own = spec.get("period")
+    if own not in periods:
+        return recs
+
+    def named(r):
+        words = {str(t).lower() for t in r.get("tags") or []} | set(
+            _re.findall(r"[a-z_]+", (r.get("description") or "").lower().replace("far future", "far_future")))
+        return periods & words
+    return [r for r in recs if not named(r) or own in named(r)]
