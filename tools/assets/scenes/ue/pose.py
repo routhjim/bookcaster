@@ -442,7 +442,37 @@ def pose_hand_joined(s, p):
     _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", 0.0))
 
 
-POSES = {"hand_joined": pose_hand_joined, "stand": pose_stand, "stand_relaxed": pose_stand_relaxed, "stand_hand_on_mantel": pose_stand_hand_on_mantel,
+def pose_dance_hold(s, p):
+    """A dance's closed hold, facing the partner gap_m ahead. role "lead": the right hand at the partner's back
+    below their shoulder blade, the left hand out to the side holding the partner's right. role "follow": the left
+    hand on the leader's right shoulder, the right hand out to the side in the leader's left. The joined hands meet
+    half way between the two bodies at one height for both (join_z_m); elbows down and out, never a straight arm."""
+    lead = p.get("role", "lead") == "lead"
+    gap = p.get("gap_m", 0.45) * 100
+    _weight_on(s, p.get("weight_on", "l"), p.get("shift_cm", 1.5), p.get("knee_cm", 3.0))
+    _turn(s, p.get("chest_deg", 0.0), 0.0)
+    px, py = s.pos["pelvis"][0], s.pos["pelvis"][1]
+    jz = p.get("join_z_m", 1.36) * 100
+    side = p.get("join_out_cm", 36.0)
+    if lead:
+        # (the partner faces us: their left shoulder blade is on our right, a little past their middle)
+        tg = {"r": [px - 13.0, py + gap + p.get("back_past_cm", 7.0), p.get("back_z_m", 1.20) * 100],
+              "l": [px + side, py + gap / 2, jz]}
+        aim = {"r": [0.8, 0.55, 0.05], "l": [0.1, 0.55, 0.8]}
+    else:
+        tg = {"l": [px + 17.0, py + gap - 3.0, p.get("shoulder_z_m", s.pos["clavicle_l"][2] / 100 + 0.04) * 100],
+              "r": [px - side, py + gap / 2, jz]}
+        aim = {"l": [-0.1, 0.9, -0.3], "r": [-0.1, 0.55, 0.8]}
+    for hand in ("l", "r"):
+        sx = 1.0 if hand == "l" else -1.0
+        _ik(s, f"upperarm_{hand}", f"lowerarm_{hand}", f"hand_{hand}", tg[hand],
+            add(s.pos[f"lowerarm_{hand}"], [sx * 30.0, -5.0, -22.0]))
+        s.aim(f"hand_{hand}", f"middle_01_{hand}", aim[hand])
+        _curl(s, hand, 18, 10)
+    _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", 0.0))
+
+
+POSES = {"dance_hold": pose_dance_hold, "hand_joined": pose_hand_joined, "stand": pose_stand, "stand_relaxed": pose_stand_relaxed, "stand_hand_on_mantel": pose_stand_hand_on_mantel,
          "gesture_point": pose_gesture_point, "seated": pose_seated, "sit_armchair_relaxed": pose_sit_armchair_relaxed}
 
 

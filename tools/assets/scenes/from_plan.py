@@ -337,21 +337,41 @@ def looks_on(p: dict, people: list) -> bool:
 
 
 JOIN_REACH_M = 0.62       # how far ahead of the body a joined hand is held at most (an arm not quite straight)
+# how far apart two stand by how near the staging pass has them (m, between their middles); the others keep the
+# distance their placing gave them
+NEAR_GAP_M = {"dancing together": 0.45, "touching": 0.7, "close": 0.8}
 
 
-def joined_with(name: str, shot_ids: list, sp: dict) -> str | None:
-    """Whom this person holds by the hand in any of these shots (the staging pass's "joined"), by name."""
+def near_of(name: str, shot_ids: list, sp: dict) -> tuple:
+    """(whom this person is near in any of these shots, how), from the staging pass's "near"; (None, None)."""
     for sid in shot_ids:
-        for a, b in ((sp or {}).get("joined") or {}).get(sid) or []:
+        for row in ((sp or {}).get("near") or {}).get(sid) or []:
+            a, b, how = (list(row) + [None, None, None])[:3]
             if name in (a, b):
-                return b if a == name else a
+                return (b if a == name else a), how
+    return None, None
+
+
+def near_position(pos: list, partner_pos: list, how: str) -> list:
+    """Where the one of a near pair who is moved stands: on the line from the partner to where they stood, at the
+    band's distance (nearer or farther than they were placed)."""
+    gap = NEAR_GAP_M.get(how)
+    d = math.dist(pos[:2], partner_pos[:2])
+    if not gap or d < 1e-6:
+        return list(pos)
+    return [round(partner_pos[0] + (pos[0] - partner_pos[0]) * gap / d, 3),
+            round(partner_pos[1] + (pos[1] - partner_pos[1]) * gap / d, 3)] + list(pos[2:])
+
+
+def near_pose(how: str, leads: bool) -> dict | None:
+    """The stance of a band: a dance's closed hold (one leads), a joined hand, else none of its own."""
+    if how == "dancing together":
+        return {"pose": "dance_hold", "params": {"role": "lead" if leads else "follow",
+                                                  "gap_m": NEAR_GAP_M[how], "weight_on": "l"}}
+    if how == "touching":
+        return {"pose": "hand_joined", "params": {"hand": "r", "weight_on": "l",
+                                                   "reach_m": round(min(JOIN_REACH_M, NEAR_GAP_M[how] / 2), 3)}}
     return None
-
-
-def joined_pose(pos: list, partner_pos: list) -> dict:
-    """The stance of someone who holds a partner's hand: the hands meet half way between the two."""
-    gap = math.dist(pos[:2], partner_pos[:2])
-    return {"pose": "hand_joined", "params": {"hand": "r", "weight_on": "l", "reach_m": round(min(JOIN_REACH_M, gap / 2), 3)}}
 
 
 TALK_M = (1.1, 1.6)       # two on the open floor who are turned to each other stand this far apart (PERSON_GAP_M up)
@@ -1662,10 +1682,20 @@ def main():
                 c = {"id": vid, "position": v["position"], "facing": v["facing"], "facing_to": v.get("facing_to"),
                      "body_pose": json.loads(json.dumps(STAND_POSE))}
                 rev_ = {kk_: nn_ for nn_, kk_ in names.items()}
-                jw_ = names.get(joined_with(rev_.get(k, ""), [c_["plan_id"] for c_, _ in g], sp) or "")
-                if jw_ and jw_ in st and st[jw_].get("position") and st[jw_].get("pose") != "sitting" and k not in crt:
-                    c["body_pose"] = joined_pose(v["position"], st[jw_]["position"])
-                    c["joined_to"] = jw_
+                nw_, how_ = near_of(rev_.get(k, ""), [c_["plan_id"] for c_, _ in g], sp)
+                jw_ = names.get(nw_ or "")
+                if jw_ and how_ in NEAR_GAP_M and jw_ in st and st[jw_].get("position") and \
+                        st[jw_].get("pose") != "sitting" and k not in crt and jw_ not in crt:
+                    if k > jw_:                  # (the later of the two comes to the other; both then stay put)
+                        v["position"] = near_position(v["position"], st[jw_]["position"], how_)
+                        c["position"] = v["position"]
+                    for x_ in (v, st[jw_]):
+                        x_.pop("marks", None)
+                    man_ = lambda kk_: str((cast.get(rev_.get(kk_, "")) or {}).get("id") or "").split("_")[0] not in ("woman", "girl")  # noqa: E731
+                    np_ = near_pose(how_, leads=(man_(k) and not man_(jw_)) or (man_(k) == man_(jw_) and k < jw_))
+                    if np_:
+                        c["body_pose"] = np_
+                    c["near_to"], c["near_how"] = jw_, how_
                 if v.get("marks"):
                     # the previous shot's mark first: it is kept whenever it still passes (no unmotivated move)
                     prev = (groups[gi - 2][-1][1].get(k) or {}).get("position") if gi > 1 else None
