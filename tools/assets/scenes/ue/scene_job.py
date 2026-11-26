@@ -161,6 +161,23 @@ def attach_check(body, face, tol_cm):
     return {"dist_cm": d, "worst_cm": worst, "ok": worst is not None and worst <= tol_cm}
 
 
+FILL_OF_KEY = 0.5         # the camera's light on what a still is of, as a share of a full exposure's light
+FILL_EV100 = 5.4          # ... for a job that names no exposure
+FILL_UP_M = 0.4           # ... from just above the lens
+FILL_REACH_M = (1.5, 25.0)
+
+
+def camera_fill(pos, target, ev100=None):
+    """The light from the camera for one still -> (where it stands, m; its lumens). A point light just above the
+    lens, without shadows, sized to the distance to what the still is of so that it gets FILL_OF_KEY of the light a
+    mid grey needs at the job's exposure, near or far. (Lit only by the place, a face turned from the window and a
+    creature against the sky were drawn as black shapes.)"""
+    d = min(max(math.dist(pos, target), FILL_REACH_M[0]), FILL_REACH_M[1])
+    ev = FILL_EV100 if ev100 is None else float(ev100)
+    lux = FILL_OF_KEY * math.pi * (0.125 * 2.0 ** ev) / 0.18
+    return [pos[0], pos[1], pos[2] + FILL_UP_M], round(4 * math.pi * lux * d * d, 1)
+
+
 def cine(name, pos, target, focal, aperture, focus_m, res):
     loc, tgt = to_ue(pos), to_ue(target)
     cam = act.spawn_actor_from_class(unreal.CineCameraActor, loc, unreal.MathLibrary.find_look_at_rotation(loc, tgt))
@@ -822,6 +839,7 @@ def run(job):
             else:
                 r["notes"].append("key_light: the level has no Sun")
         # stills
+        fill_a = None                    # the light from the camera (one, moved for each still)
         glow_lights = {}                 # (person, library prop) -> the light of a worked thing that glows
         worn_actors = {}                 # (person, library prop) -> its actor: what people wear on the head or carry
         on_top_, resolves_ = {}, {}      # this still's worked things' tops by person; re-solves so far by person
@@ -1054,6 +1072,20 @@ def run(job):
                 k_ = framing.key_toward(cs["position"], eye_, kl["toward_sun"], flip=bool(c.get("key_flip")))
                 # (UE: y flipped; a directional light points along its x, away from the light)
                 sun_a.set_actor_rotation(unreal.MathLibrary.make_rot_from_x(V([-k_[0], k_[1], -k_[2]])), False)
+            # a light from the camera on every still (camera_fill): faces and things read whatever the place's own
+            # light does (a beast against the sky and a man in a doorway were black shapes in the keys, 11-20)
+            try:
+                if fill_a is None:
+                    SBf_ = _load("scene_set_build", os.path.join(job["set_tools"], "set_build.py"))
+                    fill_a = SBf_.spawn_light({"type": "point", "c": [0, 0, 0], "lumens": 1.0, "radius_m": 200,
+                                               "kelvin": 5000, "shadows": False, "source_radius_m": 0.3,
+                                               "f": "Scene/lights"})
+                    temp.append(fill_a)
+                fp_, lm_ = camera_fill(cs["position"], cs["target"], job.get("exposure_ev100"))
+                fill_a.set_actor_location(to_ue(fp_), False, False)
+                fill_a.get_component_by_class(unreal.PointLightComponent).set_editor_property("intensity", lm_)
+            except Exception as e_f:
+                r["notes"].append(f"camera fill: {e_f}")
             les.pilot_level_actor(cam)
             yield from frames(10)
             pose_all()

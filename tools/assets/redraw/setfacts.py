@@ -87,6 +87,8 @@ def things(set_dir) -> list:
                  "look": f.get("look") or _look(lib, f["asset"]), "called": f.get("called"),
                  "center": [f["position"][0], f["position"][1], z0 + sz[2] / 2], "half": [hx, hy, sz[2] / 2],
                  "on": f.get("on"), "lit": False, "fire": False}
+            if f.get("base"):                # the low base it stands on (sets/place_build.py base_boxes)
+                t["base"] = f["base"]
             out.append(t)
             by_name[f["name"]] = t
     for mk in spec.get("marks", []):         # a thing of the land itself (a place in the open): a place on the ground

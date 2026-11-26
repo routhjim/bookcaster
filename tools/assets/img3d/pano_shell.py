@@ -293,7 +293,7 @@ SKY_R_M = 150.0             # the sky's dome: this far from the eye, the land in
 LAND_MAX_K = 0.9            # ... no land farther out than this share of the dome
 OUT_STEEP_DEG = 89.0        # far ground is seen nearly edge on from the eye: kept (at 78 degrees it was all dropped)
 SKY_SURE = 0.5              # the segmenter's least sureness for sky
-WORLD_BUILD = 6             # the outdoor shell's build (a library world of an older build is made again)
+WORLD_BUILD = 7             # the outdoor shell's build (a library world of an older build is made again)
 #                             4: the land's own things the plan sends people to are found in it (marks_m)
 #                             6: the ground map's disk in merged blocks and the whole world under the chain's budget,
 #                             its water from the edit model's key (a world of 5 was thinned: streaked ground, 11-18)
@@ -440,6 +440,27 @@ def backdrop(d: np.ndarray, sky: np.ndarray, eye: float = EYE_STAND_M) -> np.nda
     out = np.where(stands, np.minimum(FLAT_R_M / hz, LAND_MAX_K * SKY_R_M), d)
     under = near & ~stands & (dz < -1e-3)
     return np.where(under, (eye + GROUND_UNDER_M) / np.maximum(-dz, 1e-3), out)
+
+
+def surround(d: np.ndarray, sky: np.ndarray, eye: float, front_deg: float) -> np.ndarray:
+    """The land's distances of a panorama made from the place's own picture (the picture ahead, at +y): what stands
+    round the eye is left where the panorama has it, on every side but ahead; ahead, within front_deg of the
+    picture's middle, the land is the picture's own (img3d/concept_depth.py land, built from the picture itself)
+    and the panorama's is moved out along its rays to the far edge, behind it. The panorama's ground near the eye
+    lies just under the set's real ground, as backdrop() has it.
+
+    Why: with everything nearer than the real ground's edge moved out to it (backdrop), and a panorama of bare
+    ground drawn from words, every place in the open was a flat disc to the horizon on every side (11-19)."""
+    h, w = d.shape
+    dirs = pano_dirs(h, w)
+    dz = dirs[..., 2]
+    hz = np.sqrt(np.maximum(1 - dz * dz, 1e-6))
+    rr, over = d * hz, d * dz + eye
+    ahead = np.abs(np.degrees(np.arctan2(dirs[..., 0], dirs[..., 1]))) < front_deg
+    near = ~sky & (rr < FLAT_R_M)
+    ground = near & (over <= 0.02) & (dz < -1e-3)
+    out = np.where(~sky & ahead & ~ground, np.maximum(d, LAND_MAX_K * SKY_R_M), d)
+    return np.where(ground, (eye + GROUND_UNDER_M) / np.maximum(-dz, 1e-3), out)
 
 
 def ground_tile(rgb: np.ndarray, d: np.ndarray, sky: np.ndarray, eye: float = EYE_STAND_M) -> np.ndarray:
@@ -717,8 +738,12 @@ def mark_of(prob: np.ndarray, d: np.ndarray, sky: np.ndarray) -> dict | None:
 
 
 def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", marks: dict | None = None,
-            map_pic: str = "", map_facts: str = "") -> int:
-    """The outdoor place's shell: OUT.glb and OUT.json (the eye, where people stand, the sky's light)."""
+            map_pic: str = "", map_facts: str = "", eye_h: float = EYE_STAND_M, eye_at: tuple = (0.0, 0.0),
+            front_deg: float = 0.0) -> int:
+    """The outdoor place's shell: OUT.glb and OUT.json (the eye, where people stand, the sky's light).
+    front_deg > 0: the panorama was made from the place's own picture (its middle at +y), from that picture's eye,
+    eye_h over the ground and at eye_at from the set's middle (set frame, metres): the land stays where the
+    panorama has it (surround), and the set's real ground lies round the set's middle, not under the eye."""
     import trimesh
     from PIL import Image
     im = Image.open(picture).convert("RGB")
@@ -727,7 +752,7 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     # (a dark painted sky is "a night sky" to the segmenter, and not "the sky": both are asked)
     sky = sky_mask(seg_prob(im, device, ["the sky", "a night sky", "the ground", "a building", "a tree"], first=2),
                    valid, rgb)
-    d, info = land(depth, sky)
+    d, info = land(depth, sky, eye_h)
     sp = spot_of(seg_prob(im, device, [spot, "the sky", "the ground"]), d, sky) if spot else None
     found = {}
     for mid, words in (marks or {}).items():
@@ -736,46 +761,50 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
             found[mid] = dict(mk, words=words)
     # the set's real ground (a flat round FLAT_R_M out, in the panorama's own ground seen from above) with the
     # panorama as what lies beyond it: nothing of the picture is built nearer than the ground's edge
-    tile = ground_tile(rgb, d, sky)
+    tile = ground_tile(rgb, d, sky, eye_h)
     mf = json.loads(Path(map_facts).read_text()) if map_facts and Path(map_facts).exists() else {}
     water = mf.get("water") if mf.get("water") and float(mf.get("half_m") or 0) == FLAT_R_M else None
     with_map = bool(map_pic and Path(map_pic).exists())
     # the shell's grid is chosen so the whole world, ground included, stays under the asset chain's budget
     limit = tier_limit()
     n_ground = len((map_disk([0.0, 0.0, 0.0], 0, water) if with_map else ground_disk([0.0, 0.0, 0.0], 0))[1])
-    bd = backdrop(d, sky)
+    bd = surround(d, sky, eye_h, front_deg) if front_deg > 0 else backdrop(d, sky, eye_h)
     (vtx, faces, uv, eye), grid = fit_shell(lambda g: shell(bd, np.zeros(d.shape, bool), g, steep_deg=OUT_STEEP_DEG,
                                                             lowest=True), grid, int(BUDGET_SHARE * limit) - n_ground)
     uv = np.stack([uv[:, 0], 0.5 + uv[:, 1] / 2], -1)                 # (the panorama: the upper half of the picture)
+    pano_eye = list(eye)
+    eye = [eye[0] - float(eye_at[0]), eye[1] - float(eye_at[1]), eye[2]]   # (over the set's middle: its real ground)
+    disc_eye = [eye[0], eye[1], eye[2] - eye_h + EYE_STAND_M]             # (the disks stand EYE_STAND_M under theirs)
     n_wet = 0
     if with_map:
         # the place's own ground drawn from above, over the whole disk (and its water a little under it)
-        gv, gf, guv, n_wet = map_disk(eye, len(vtx), water)
+        gv, gf, guv, n_wet = map_disk(disc_eye, len(vtx), water)
         mt = map_texture(np.asarray(Image.open(map_pic).convert("RGB")), rgb, d, sky)
         low = np.concatenate([mt, mt], 1)
     else:
         # (no map: the panorama's own ground near the eye and its bare tile repeated, as before)
-        gv, gf, guv = ground_disk(eye, len(vtx))
-        gm = ground_map(rgb, d, sky, tile)
+        gv, gf, guv = ground_disk(disc_eye, len(vtx))
+        gm = ground_map(rgb, d, sky, tile, eye_h)
         t4 = np.concatenate([np.concatenate([tile, tile], 1)] * 2, 0)
         low = np.concatenate([np.asarray(Image.fromarray(gm).resize((1024, 1024), Image.LANCZOS)),
                               np.asarray(Image.fromarray(t4).resize((1024, 1024), Image.LANCZOS))], 1)
     vtx, faces, uv = np.concatenate([vtx, gv]), np.concatenate([faces, gf]), np.concatenate([uv, guv])
     im = Image.fromarray(np.concatenate([np.asarray(im.resize((2048, 1024), Image.LANCZOS)), low], 0))
     for mk in found.values():                # (asset frame, as stand_m and spot_m are)
-        mk["stand"] = [round(eye[0] + mk["stand"][0], 3), round(eye[1] + mk["stand"][1], 3), round(eye[2] - EYE_STAND_M, 3)]
+        mk["stand"] = [round(pano_eye[0] + mk["stand"][0], 3), round(pano_eye[1] + mk["stand"][1], 3), round(eye[2] - eye_h, 3)]
     lo, hi = vtx.min(0), vtx.max(0)
     o = Path(out)
     o.parent.mkdir(parents=True, exist_ok=True)
     yup = np.stack([vtx[:, 0], vtx[:, 2], -vtx[:, 1]], -1)
     trimesh.Trimesh(yup, faces, visual=trimesh.visual.TextureVisuals(uv=uv, image=im), process=False).export(o)
     Image.fromarray((sky * 255).astype(np.uint8)).save(o.with_name(o.stem + "_sky.png"))
-    facts = {"eye_m": [round(v, 3) for v in eye], "stand_m": [round(eye[0], 3), round(eye[1], 3),
-                                                               round(eye[2] - EYE_STAND_M, 3)],
+    facts = {"eye_m": [round(v, 3) for v in pano_eye], "stand_m": [round(eye[0], 3), round(eye[1], 3),
+                                                                    round(eye[2] - eye_h, 3)],
+             "eye_h_m": round(float(eye_h), 3), "from_picture": bool(front_deg > 0), "front_deg": round(float(front_deg), 1),
              "bounds_m": [lo.round(3).tolist(), hi.round(3).tolist()], "size_m": (hi - lo).round(3).tolist(),
              "faces": int(len(faces)), "faces_limit": limit, "under_budget": bool(len(faces) <= BUDGET_SHARE * limit),
              "shell_grid": int(grid), "ground_faces": int(len(gf)), "flat_r_m": FLAT_R_M, "sky_r_m": SKY_R_M, "land": info, "spot": spot or None,
-             "spot_m": [round(eye[0] + sp[0], 3), round(eye[1] + sp[1], 3), round(eye[2] - EYE_STAND_M, 3)] if sp else None,
+             "spot_m": [round(pano_eye[0] + sp[0], 3), round(pano_eye[1] + sp[1], 3), round(eye[2] - eye_h, 3)] if sp else None,
              "marks_m": found, "sun": sun_of(rgb, sky), "world_build": WORLD_BUILD,
              # the ground's map, its water and its land places: in the set's frame (the point under the eye at 0, 0)
              "ground_map": {"picture": str(map_pic), "half_m": FLAT_R_M, "fade_m": MAP_FADE_M} if map_pic and Path(map_pic).exists() else None,
@@ -801,10 +830,15 @@ def main():
     ap.add_argument("--mark", action="append", default=[], help="outdoors: ID=WORDS, a thing of the land to find")
     ap.add_argument("--map", default="", help="outdoors: the place's ground drawn from straight above (ground_map)")
     ap.add_argument("--map-facts", default="", help="outdoors: the vision judge's reading of that map (map.json)")
+    ap.add_argument("--eye-h", type=float, default=EYE_STAND_M, help="outdoors: the panorama's eye over the ground, m")
+    ap.add_argument("--eye-at", type=float, nargs=2, default=[0.0, 0.0], help="outdoors: its eye from the set's middle")
+    ap.add_argument("--front-deg", type=float, default=0.0, help="outdoors: made from the place's picture, which "
+                    "stands for this many degrees either side of straight ahead (surround)")
     a = ap.parse_args()
     if a.outdoor:
         return outdoor(a.picture, a.out, a.grid or OUT_GRID, a.device, a.spot,
-                       dict(m.split("=", 1) for m in a.mark if "=" in m), a.map, a.map_facts)
+                       dict(m.split("=", 1) for m in a.mark if "=" in m), a.map, a.map_facts, a.eye_h, a.eye_at,
+                       a.front_deg)
     a.grid = a.grid or 512
     import trimesh
     from PIL import Image

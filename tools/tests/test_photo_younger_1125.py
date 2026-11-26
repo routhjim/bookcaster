@@ -133,5 +133,28 @@ with tempfile.TemporaryDirectory() as td:
           sorted(f.name for f in refs.iterdir()) == ["mr_tam_grey_cloak-0123abcd.png", "mrs_tam-0123abcd.png", "the_hall-0123abcd.png"]
           and len(gone) == 3, sorted(f.name for f in refs.iterdir()))
 
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    (td / "have.png").write_text("x")
+    a_ = {"id": "a", "path": str(td / "a.png"), "refs": [str(td / "have.png")]}
+    b_ = {"id": "b", "path": str(td / "b.png"), "refs": [str(td / "a.png")]}
+    c_ = {"id": "c", "path": str(td / "c.png")}
+    check("a picture drawn from another of the batch waits for it", V.draw_waves([b_, a_, c_]) == ([a_, c_], [b_]))
+    check("nothing waits when every reference is there", V.draw_waves([a_, c_]) == ([a_, c_], []))
+    x_ = {"id": "x", "path": str(td / "x.png"), "refs": [str(td / "y.png")]}
+    y_ = {"id": "y", "path": str(td / "y.png"), "refs": [str(td / "x.png")]}
+    check("two that wait on each other are drawn together, as before", V.draw_waves([x_, y_]) == ([x_, y_], []))
+    drawn = []
+    class Sess:
+        broken = False
+        def draw(self, jobs, log, on_done):
+            drawn.append([j["id"] for j in jobs])
+            for j in jobs:
+                Path(j["path"]).write_text("p")
+    V._SESSION = Sess()
+    V.draw_jobs([b_, a_, c_], td, log=lambda m: None)
+    V._SESSION = None
+    check("the batch is drawn in two goes, the waiting picture second", drawn == [["a", "c"], ["b"]], drawn)
+
 print("all passed" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)

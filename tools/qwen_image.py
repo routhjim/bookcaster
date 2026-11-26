@@ -857,14 +857,31 @@ def run_job(d: Drawer, j: dict) -> dict:
             "rss_peak_gb": round(st.get("VmHWM", 0) / 2**20, 2)}          # pages (page cache) touched at load
 
 
+SERVE_JOB_S = float(os.environ.get("QWEN_SERVE_JOB_S", "300"))   # one picture takes well under a minute
+SERVE_STUCK_RC = 75
+
+
 def serve(device: str) -> int:
     t = time.time()
     d = Drawer(device)
     print(json.dumps({"phase": "load drawing model (kept)", "seconds": round(time.time() - t, 1)}), flush=True)
+    # a card that stops answering in the middle of a picture would hold the whole drawing phase: the server ends
+    # itself, saying which picture, so whoever feeds it can give its pictures to another card
+    import threading
+    at = {"id": None, "t": 0.0}
+
+    def watch() -> None:
+        while True:
+            time.sleep(5)
+            if at["id"] and time.time() - at["t"] > SERVE_JOB_S:
+                print(json.dumps({"id": at["id"], "error": f"stuck: no picture in {SERVE_JOB_S:.0f} s"}), flush=True)
+                os._exit(SERVE_STUCK_RC)
+    threading.Thread(target=watch, daemon=True).start()
     for line in sys.stdin:
         if not line.strip():
             continue
         j = json.loads(line)
+        at.update(id=j.get("id") or "?", t=time.time())
         try:
             print(json.dumps(run_job(d, j)), flush=True)
         except Exception as exc:              # a bad job (an unreadable reference): report, keep serving
@@ -876,6 +893,8 @@ def serve(device: str) -> int:
             d.kv = None
             gc.collect()
             torch.cuda.empty_cache()
+        finally:
+            at["id"] = None
     return 0
 
 

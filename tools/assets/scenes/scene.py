@@ -35,6 +35,7 @@ import layout  # noqa: E402
 CHAR_TOOLS = Path(os.environ.get("SCENES_CHAR_TOOLS", str(HERE.parent / "characters")))
 SET_TOOLS = HERE.parent / "sets" / "ue"
 WORK_POSE_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")    # ue/pose.py WORK_ACTIONS (whole-body stance)
+READY_POSE_ACTIONS = ("weapon_ready",)    # ue/pose.py READY_ACTIONS (a fighter's guard: the same stance, no work top)
 RT_KEYS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.HardwareRayTracing": "True",
            "r.SkinCache.CompileShaders": "True"}
 
@@ -105,6 +106,13 @@ def fixture_params(c: dict, pr: dict) -> dict:
     return pr
 
 
+def aim_params(pr: dict) -> dict:
+    """A guard's aim (from_plan's "aim_at_m": the foe's head to middle, plan metres) as pose.py takes it: UE cm."""
+    if pr.get("action") in READY_POSE_ACTIONS and pr.get("aim_at_m") and "aim_target_ue" not in pr:
+        return dict(pr, aim_target_ue=layout.ue_pt(pr["aim_at_m"]))
+    return pr
+
+
 def resolve(spec, cams_wanted=None):
     lib = Path(C.LIBRARY)
     sp = lib / "set" / spec["set"] / "asset.json"
@@ -144,7 +152,8 @@ def resolve(spec, cams_wanted=None):
                 and not (bpose.get("params") or {}).get("hand_at_lapel", bpose.get("pose") == "stand_relaxed")
                 and not (bpose.get("params") or {}).get("lie")         # (lying, the arms rest along the body)
                 # (an action that places the arms itself keeps them: the steps turned them again afterwards)
-                and (bpose.get("params") or {}).get("action") not in WORK_POSE_ACTIONS + ("veil_lift",)):
+                and (bpose.get("params") or {}).get("action") not in WORK_POSE_ACTIONS + READY_POSE_ACTIONS
+                + ("veil_lift",)):
             # the character's own arm clearance (its builder measured it against its clothes) in place of the default
             pr = dict(bpose.get("params") or {})
             pr.setdefault("arm_clear_deg", 0.0)
@@ -218,11 +227,11 @@ def resolve(spec, cams_wanted=None):
             on = next((t for t in ts if t.get("at") == "on" and t.get("xyz") and t["asset"] in carried), None)
             if held:
                 pr["held"] = held
-            if pr.get("action") in WORK_POSE_ACTIONS:
+            if pr.get("action") in WORK_POSE_ACTIONS + READY_POSE_ACTIONS:
                 tool = next((h for h in held if h["hand"] == pr.get("hand", "r")), held[0] if held else None)
                 if tool and "tool_size_m" not in pr:
                     pr.update(tool_size_m=tool["size_m"], tool_asset=tool["asset"])
-                if on and "work_target_ue" not in pr:
+                if on and "work_target_ue" not in pr and pr.get("action") in WORK_POSE_ACTIONS:
                     x, y, z = on["xyz"]
                     pr["work_target_ue"] = layout.ue_pt([x, y, z + min(carried[on["asset"]]["size_m"])])
                     # (the recorded size is not the model the engine lays down: scene_job re-aims at the top of the
@@ -235,7 +244,7 @@ def resolve(spec, cams_wanted=None):
     for key, c in spec["characters"].items():
         bp = (chars.get(key) or {}).get("body_pose") or {}
         if bp.get("pose"):
-            chars[key]["body_pose"] = dict(bp, params=fixture_params(c, bp.get("params") or {}))
+            chars[key]["body_pose"] = dict(bp, params=aim_params(fixture_params(c, bp.get("params") or {})))
     kl = key_light(lib / "set" / spec["set"] / "spec.json", spec.get("exposure_ev100"))
     return proj, {**({"key_light": kl} if kl else {}), "carried": carried, "id": spec["id"], "level": st["level"], "res": spec.get("res", [1152, 640]),
                   "char_tools": str(CHAR_TOOLS), "set_tools": str(SET_TOOLS), "bp_deps": bp_deps,

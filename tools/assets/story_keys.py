@@ -21,6 +21,10 @@ in WORK_DIR/<place>/ when it is done, so a second run takes up where the first s
   keys      the accepted keys and their people facts into KEYS_DIR          (scenes/shot_people.py)
   drawn     (off unless --until drawn; 11-17: engine keys for everything) shots left keyless, drawn from the plan
 
+--approve [PLACE ...] keeps a place as it stands and marks it approved: no step of it runs again until --unlock
+PLACE names it; --drift tells what the rules as they now are would move in each approved place (the planner alone, no
+card); --restore PLACE [--tag T] puts a kept state back; every place made again is kept first (place_keep.py).
+
 --jobs N works N places at once (their GPU work queues on the line by device; the steps that write the shared
 library run one place at a time). --redo takes a step for every place or PLACE_SLUG:STEP for one. After the pass
 step the place's scenes are checked before any GPU work (scenes/preflight.py; told in the log, nothing stopped); a
@@ -47,6 +51,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import config as C  # noqa: E402
+import place_keep as PK  # noqa: E402
 sys.path.insert(0, str(HERE / "scenes"))
 import creature as CRE  # noqa: E402
 import wardrobe as WD  # noqa: E402
@@ -70,7 +75,7 @@ IMAGE_PY = Path(os.environ.get("STORY_IMAGE_PY", Path.home() / "tts-ab" / ".venv
 # check); "cards" = on the drawing cards after each round of drawing
 CHECK_ON = os.environ.get("STORY_CHECK_ON", "igpu")
 IGPU_PY = Path(os.environ.get("STORY_IGPU_PY", Path.home() / "tts-ab" / ".venv-charlora-igpu" / "bin" / "python"))
-FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "600"))    # a picture not landed this long after the last: not drawn
+FOLLOW_S = float(os.environ.get("STORY_FOLLOW_S", "120"))    # a picture not landed this long after the last: not drawn
 DRAW_CARDS = [c for c in os.environ.get("STORY_DRAW_CARDS", "05,65").split(",") if c.strip()]
 CARD_LINE = {os.environ.get("ASSETS_BLENDER_CARD", "05"): ("image", "refs"),
              os.environ.get("ASSETS_UE_CARD", "65"): ("engine", "refs")}
@@ -92,7 +97,11 @@ VENV_PY = _venv_py()
 LLM_UP = ("import sys; sys.path.insert(0, '.'); from tts_reader import animate; animate.igpu('strata')")
 REDRAW = {"seed": 7, "method": "image", "strengths": [0.8], "control": {"type": "depth", "scale": 0.8, "end": 1.0},
           "set_facts": True, "mask_people": "tiered", "strength_bg": 0.5, "body_words": True, "light_words": True,
-          "facts": True, "regions": True, "seeds": [7], "max_piece_refs": 2}
+          "facts": True, "regions": True, "seeds": [7], "max_piece_refs": 2,
+          # each person's usual sheet as a reference beside their LoRA (the user's call, 11-19: the sheets hold the
+          # characters; drawn from her LoRA alone a woman of seventy came out fifty). STORY_SHEETS=0: only where a
+          # face is large in the frame or the outfit is one the LoRA never saw (redraw.sheet_ref), twice as fast
+          "sheet_with_lora": os.environ.get("STORY_SHEETS", "1") != "0"}
 
 
 STYLE_CONTENT = re.compile(r"\b(cathedral|church|chapel|temple|castle|spire|arch\w*|stone|iron|window|sky|skies|"
@@ -280,6 +289,11 @@ class Drawers:
         import threading
         root = HERE.parents[1]
         self.cards, self.q, self.dead, self.rc, self.ths = list(DRAW_CARDS), {}, {}, {}, []
+        self.fed, self.closing = {c: [] for c in DRAW_CARDS}, False
+        # (stands while every drawer is at work or waiting for its card: the check beside them gives no picture up
+        # as not drawn while it does)
+        self.alive = logd / f"{tag}.alive"
+        self.alive.write_text(time.strftime("%F %T"))
         for card in self.cards:
             ff = logd / f"{tag}_{card}.fifo"
             ff.unlink(missing_ok=True)
@@ -295,6 +309,18 @@ class Drawers:
                                      ["bash", "-c", f"cd {root} && bash {CARD_SH} {card} {IMAGE_PY} -I "
                                                     f"tools/qwen_image.py --serve < {ff}"])
                 self.dead[card].set()
+                # a drawer that ended before it was told to (a card that stopped answering): what it was fed and
+                # did not draw goes to a card still drawing
+                left = [] if self.closing else undrawn(self.fed[card], logd / f"{tag}_{card}.log")
+                live = [c for c in self.cards if not self.dead[c].is_set()]
+                if left and live:
+                    log(f"drawing: the drawer on card {card} ended early; {len(left)} picture(s) go to card {live[0]}")
+                    self.fed[card] = []
+                    self._give(live[0], left)
+                    return
+                if left:
+                    log(f"drawing: the drawer on card {card} ended early; {len(left)} picture(s) NOT drawn")
+                self.alive.unlink(missing_ok=True)
 
             def write(card=card, fd=fd, ff=ff):
                 while True:
@@ -313,12 +339,18 @@ class Drawers:
         for t in self.ths:
             t.start()
 
+    def _give(self, card: str, rows: list) -> None:
+        self.fed[card] += rows
+        for row in rows:
+            self.q[card].put(row)
+
     def feed(self, rows: list) -> None:
-        for card, part in zip(self.cards, split_even(rows, len(self.cards))):
-            for row in part:
-                self.q[card].put(row)
+        live = [c for c in self.cards if not self.dead[c].is_set()]
+        for card, part in zip(live, split_even(rows, len(live))):
+            self._give(card, part)
 
     def close(self) -> bool:
+        self.closing = True
         for card in self.cards:
             self.q[card].put(None)
         for t in self.ths:
@@ -326,11 +358,26 @@ class Drawers:
         return all(self.rc.get(c) == 0 for c in self.cards)
 
 
+def undrawn(rows: list, card_log: Path) -> list:
+    """The job rows a drawer was fed that its log does not report as drawn (a row it reports an error for counts as
+    not drawn)."""
+    done = set()
+    for x in (card_log.read_text(errors="replace").splitlines() if card_log.exists() else []):
+        if x.startswith('{"id"'):
+            try:
+                j = json.loads(x)
+            except ValueError:
+                continue
+            if "error" not in j:
+                done.add(j.get("id"))
+    return [r for r in rows if json.loads(r).get("id") not in done]
+
+
 def rows_of(files: list) -> list:
     return [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
 
 
-def check_beside(files: list, tag: str, logd: Path) -> bool:
+def check_beside(files: list, tag: str, logd: Path, alive: Path | None = None) -> bool:
     """The key checks of these check files on the iGPU while the cards draw: each picture checked when it lands
     (keycheck.py KEYCHECK_FOLLOW_S), the models loaded once for every list."""
     files = [str(f_) for f_ in files if Path(f_).exists()]
@@ -338,6 +385,7 @@ def check_beside(files: list, tag: str, logd: Path) -> bool:
         return True
     root = HERE.parents[1]
     inner = (f"env HSA_CU_MASK=$HIP_VISIBLE_DEVICES:0-38 DETECT_DEVICE=cuda KEYCHECK_FOLLOW_S={FOLLOW_S:.0f} "
+             f"KEYCHECK_ALIVE={alive or ''} "
              f"{IGPU_PY} -I tools/assets/redraw/keycheck.py {' '.join(files)}")
     return line("igpu", "check", tag, logd / f"{tag}.log",
                 ["bash", "-c", f"cd {root} && bash {CARD_SH} igpu bash -c {inner!r}"]) == 0
@@ -404,6 +452,12 @@ KEY_DARK = 10.0              # a key's mean brightness (of 255) under this: near
 CONCEPT_TRIES = 3
 SEATS_WORDS = ("{room} {inside} Seen from just behind and above the seats, looking forward over the instrument panel "
                "and out through the canopy. It has {seats}, and no other seat anywhere. Empty: no people. {style}")
+
+# a place of wealth or rule: its picture drawn anew from its own picture, furnished to its station (place_dress.py)
+DRESS_WORDS = ("The same room as the reference picture, seen from the same place: its walls, its windows, its doors "
+               "and its furniture where they are. Now furnished and adorned as the {station} {use} it is, richly and "
+               "in fine detail: {dressing}. {room} Interior view, wide shot of the whole room, eye level. {period} "
+               "Empty: no people. {style}")
 
 # a place in the open whose picture is a close view of one part of it: drawn anew as the whole place
 OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: open ground in "
@@ -535,15 +589,19 @@ class Story:
         # what the variant's figure was drawn and built in (cast_char.spread_look: no headwear, nothing held): a hat
         # or helm reaches the key as a worn thing of the shot (place_spec's things), made with the face in view
         sys.path.insert(0, str(HERE / "img3d"))
-        from cast_char import spread_look
-        dress = spread_look("x, wearing " + dress).partition("wearing ")[2] or dress
+        from cast_char import head_worn, spread_look
+        # (a whole figure is shaped from its own drawing, so it is made in the outfit's headwear too: the outfit
+        # with the thing off is another row of the wardrobe)
+        whole = bool(getattr(self, "whole", True))
+        head_on = whole and head_worn(dress)
+        dress = spread_look("x, wearing " + dress, headwear=whole).partition("wearing ")[2] or dress
         dress = re.sub(r"\b(his|her|their)\s+usual\s+", r"\1 ", dress, flags=re.I)   # (the wardrobe's word)
         pos = "her" if pr["noun"] in ("woman", "girl") else "his"
         dress = dress[:1].lower() + dress[1:]
         short = WD.outer_garment(dress) or dress.split(",")[0]
         sheet = WD.sheet_for(pr["words"].get("worn_sheets") or {}, r["id"]) or pr["sheet"]
         return {"wear": dress, "sheet": sheet, "wear_back": f"the back of {pos} {short} and the back of {pos} head",
-                "back_detail": f"the back of {pos} {short}"}
+                "back_detail": f"the back of {pos} {short}", "head_on": head_on}
 
     def figure_id(self, name: str) -> str:
         if name not in self.cast:
@@ -573,6 +631,42 @@ class Story:
         (d / "place_spec.json").write_text(json.dumps(sp, indent=1))
         return True
 
+    def dressed(self, place, hero: Path) -> Path | None:
+        """The place's picture drawn anew from its own picture, furnished to its owner's station (scenes/
+        place_dress.py): only a rich or royal place; any other keeps the picture it has. The director's words
+        furnish nothing: the hall of a ruler was drawn, and so built, as bare stone and trestle tables (11-20)."""
+        d = self.d(place)
+        slug = self.places[place]["slug"]
+        if not (d / "place_spec.json").exists():
+            return None
+        llm(f"dress_{slug}", d / "dress.log", [[PY, HERE / "scenes" / "place_dress.py", d / "place_spec.json",
+                                                d / "dress.json", "--cache", d / "cache"]])
+        rec = json.loads((d / "dress.json").read_text()) if (d / "dress.json").exists() else {}
+        if not rec.get("dressing"):
+            return None
+        from PIL import Image
+        spec = json.loads((d / "place_spec.json").read_text())
+        style = self.book / "art_style.txt"
+        per = str(spec.get("period") or "").replace("_", " ").strip()
+        words = DRESS_WORDS.format(
+            station=rec["station"], use=rec.get("use") or "place", dressing="; ".join(rec["dressing"]),
+            room=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
+                        flags=re.I).strip(),
+            period=f"Set in the {per} period: every object as it was then, nothing from a later time."
+            if per and per != "not stated" else "",
+            style=key_style(style.read_text()) if style.exists() else "")
+        pid = f"concept_{self.prefix}_{slug}_d_{hashlib.sha1(words.encode()).hexdigest()[:6]}"
+        pic = C.LIBRARY / "_refs" / pid / "picture.png"
+        if not pic.exists():
+            size = Image.open(hero).size
+            line(C.IMAGE_STATION, "refs", f"draw_{pid}", d / "concept_draw.log",
+                 [PY, HERE / "refs" / "ref_draw.py", "picture", pid, "--desc", words,
+                  "--size", size[0], size[1], "--seed", 11, "--sources", hero])
+        if pic.exists():
+            log(f"{place}: its picture drawn dressed as a {rec['station']} place ({len(rec['dressing'])} things)")
+            return pic
+        return None
+
     def step_concept(self, place):
         d = self.d(place)
         hero = self.video / "heroes" / f"{slug_of(place)}.png"
@@ -581,6 +675,9 @@ class Story:
             return True
         shutil.copy2(hero, d / "concept.png")
         slug = self.places[place]["slug"]
+        dressed = self.dressed(place, hero)       # (a place of wealth or rule: its picture drawn anew, dressed)
+        if dressed:
+            shutil.copy2(dressed, d / "concept.png")
         read = lambda n: line("igpu", "choose", f"concept_{slug}{n}", d / "concept.log",          # noqa: E731
                               [VENV_PY, HERE / "scenes" / "concept.py", d / "concept.png", d / "place_spec.json",
                                d / "concept.json"])
@@ -686,12 +783,40 @@ class Story:
         else:
             log(f"{place}: the concept could not be measured (concept_depth.log)")
 
+    def place_time(self, place) -> str:
+        """The place's time of day ("day", "dusk", "night", or "" when the story does not say), asked of the
+        directing model once (scenes/place_spec.py time_of_day) and kept in the place's place_time.json."""
+        d = self.d(place)
+        # (the book's own word first: BOOK/place_times.json {place: day | dusk | night}, written by whoever knows
+        # the story; the model read a night scene's shed as no time at all, 11-19)
+        said = self.book / "place_times.json"
+        if said.exists():
+            try:
+                t = str(json.loads(said.read_text()).get(place) or "").strip().lower()
+                if t in ("day", "dusk", "night"):
+                    return t
+            except ValueError:
+                log(f"{said} cannot be read; the model's answers are used")
+        tp = d / "place_time.json"
+        if not tp.exists():
+            llm(f"time_{self.places[place]['slug']}", d / "time.log", [[
+                PY, HERE / "scenes" / "place_spec.py", self.plan_p, d / "shots.txt", self.timeline, place, tp,
+                "--cache", d / "cache", "--time-only"]])
+        try:
+            return str(json.loads(tp.read_text()).get("time") or "")
+        except (OSError, ValueError):
+            return ""
+
     def _build(self, place, *extra) -> int:
         d = self.d(place)
         con = ["--concept", d / "concept.json"] if (d / "concept.json").exists() else []
+        tod = self.place_time(place) if "--time" in extra else ""
+        extra = tuple(x for x in extra if x != "--time") + (("--time", tod) if tod else ())
         sty = ["--style", self.book / "art_style.txt"] if (self.book / "art_style.txt").exists() else []
+        # (the things the place's picture was drawn dressed with: each one placed in the set or said where it is)
+        drs = ["--dress", d / "dress.json"] if con and (d / "dress.json").exists() else []
         return sh([PY, HERE / "sets" / "place_build.py", d / "place_spec.json", self.places[place]["set"]] + con
-                  + sty + list(extra), d / "place_build.log")
+                  + drs + sty + list(extra), d / "place_build.log")
 
     def step_pieces(self, place):
         d = self.d(place)
@@ -703,7 +828,7 @@ class Story:
 
     def step_set(self, place):
         d = self.d(place)
-        if self._build(place, "--write"):
+        if self._build(place, "--write", "--time"):
             return False
         rep = json.loads((self.set_dir(place) / "place_build_report.json").read_text())
         gone = [ph for ph, at in (rep.get("named_places") or {}).items() if not at]
@@ -752,7 +877,7 @@ class Story:
                         "--look", WD.variant_look(pr["look"], ow["wear"]), "--lora", pr["lora"], "--trigger",
                         pr["trigger"], "--work", w / "w", "--scene-tool", HERE / "scenes", "--mh", mh, "--mh-fbx", fbx,
                         "--mh-blueprint", bp, "--variant-of", base] + (
-                            ["--whole"] if getattr(self, "whole", True) else ["--metahuman"])
+                            ["--whole", "--headwear"] if getattr(self, "whole", True) else ["--metahuman"])
 
     def _cast_variants(self, place, name) -> dict:
         """The person's wardrobe variants worn in this place's shots (each built once for the book):
@@ -781,6 +906,15 @@ class Story:
                 if not ok:
                     log(f"{place}: no figure for {name} in {r['id']} ({vid}); see {w / 'run.log'}")
                     (w / "FAILED").write_text(time.strftime("%F %T"))
+            if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_drawn").exists():
+                # a figure built before an outfit's headwear was part of it: drawn and shaped again, once
+                log(f"{place}: {name} in {r['id']}: made again wearing its headwear")
+                if sh(cmd + ["--from", "draw", "--until", "seats"], w / "run.log") == 0:
+                    self._fit_mark(w)
+                    (w / "headwear_drawn").write_text(time.strftime("%F %T"))
+                else:
+                    # (the figure made before stays, bare-headed, and so does the thing set on its head)
+                    log(f"{place}: {name} in {r['id']}: NOT made with its headwear; see {w / 'run.log'}")
             if ok:
                 self._hands_again(f"{name} in {r['id']}", w, cmd)
             out[r["variant"]] = (vid if ok else None, r)
@@ -906,7 +1040,10 @@ class Story:
             worn = {}
             for v, (vid, r) in vs.items():
                 ow = self.outfit_words(n, r)
-                worn[v] = {"wear_set": ow["wear"], "wear_back_set": ow["wear_back"], "worn_sheet": ow["sheet"]}
+                worn[v] = {"wear_set": ow["wear"], "wear_back_set": ow["wear_back"], "worn_sheet": ow["sheet"],
+                           # (only a figure really made wearing it: else the thing is still set on its head)
+                           **({"head_on": True} if ow.get("head_on") and (
+                               self.work / "cast" / self.person(n)["slug"] / r["variant"] / "headwear_drawn").exists() else {})}
                 if not vid:
                     continue
                 ps = {str(p.get("pose") or "") for i in self.shots_of(place) if (self.outfit(n, i) or {}).get("variant") == v
@@ -957,6 +1094,8 @@ class Story:
                         if t.get("look"):
                             said.setdefault(t["what"], str(t["look"]).strip().rstrip("."))
         props = self.look.get("props") or {}
+        sys.path.insert(0, str(HERE / "sets"))
+        from place_build import no_likeness
         def look_of(what):
             w = set(re.findall(r"[a-z]+", what.lower()))
             # the book's look of this very thing: every word of the thing's name is in the prop's (a "bellows handle"
@@ -967,7 +1106,10 @@ class Story:
         pcs = [{"id": f"h{n + 1}", "kind": "hand_thing", "longest_m": round(cm / 100.0, 3),
                 # (where the book says how it looks, that is what is drawn: a story's own name for a thing draws its
                 # words, a "star-iron" bar came out a star)
-                "look": (said.get(what) or look_of(what) or what) + ALONE + (HEAD_OPEN if on in ("head", "face") else "")}
+                # (and never what it is likened to: its size is its own number - sets/place_build.no_likeness, which
+                # the set's pieces had and these did not: the stone on the anvil was made a sleeping animal, 11-20)
+                "look": (no_likeness(said.get(what) or look_of(what) or "") or what) + ALONE
+                + (HEAD_OPEN if on in ("head", "face") else "")}
                for n, (what, (cm, on)) in enumerate(things.items())]
         out = d / "carried.json"
         out.write_text("{}")
@@ -1120,13 +1262,13 @@ class Story:
         if beside:
             dr = Drawers(f"draw_{tag}", logd)
             dr.feed(first)
-            if check_beside([c["out"] / "check.json" for c in cs], f"check_{tag}", logd):
+            if check_beside([c["out"] / "check.json" for c in cs], f"check_{tag}", logd, dr.alive):
                 again = retries()
                 if again:
                     rows = rows_of([c["out"] / "retry_jobs.jsonl" for c in again])
                     log(f"drawing: {len(rows)} picture(s) drawn again")
                     dr.feed(rows)
-                    check_beside([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd)
+                    check_beside([c["out"] / "check_x.json" for c in again], f"checkx_{tag}", logd, dr.alive)
                 if not dr.close():
                     log("drawing: a card's drawer ended badly")
             else:
@@ -1257,6 +1399,17 @@ class Story:
     # (a kept least-bad staging with these misses shows nobody readable; the last two: speakers.still_why and
     # creature_view_why, a camera against or under a creature's head)
 
+    def shows_nobody(self, sid) -> bool:
+        """Whether a shot whose plan lists people has a key the engine measured nobody in (each of them under a
+        hundredth of the frame, or out of it): the shot flow refuses such a key, and its shot kept an old clip while
+        the rest of the story was rendered anew (11-21)."""
+        try:
+            ff = self.keys / f"{sid}.shot_facts.json"
+            return ff.exists() and not json.loads(ff.read_text()).get("visible") and \
+                bool((self.plan.get(sid) or [{}])[0].get("people"))
+        except (AttributeError, OSError, ValueError):       # (no keys folder or plan at hand: nothing is known)
+            return False
+
     def keyless(self, place) -> list:
         """The shots without a key, and those whose key is a least-bad staging that left its people unreadable (the
         subject or a named person out of the picture, the camera inside something): both are staged again."""
@@ -1265,7 +1418,10 @@ class Story:
         for r in json.loads(kp.read_text()) if kp.exists() else []:
             miss = " ".join(map(str, r.get("staging_miss") or []))
             walled = any(int(x) >= 50 for x in re.findall(r"foreground covers (\d+)%", miss))
-            if not r["key"] or walled or any(w in miss for w in self.UNREADABLE):
+            # (and one where another's head is twice the head of whom the shot is about: it reads as theirs)
+            lost = any(float(o) >= 2.0 * float(m_) > 0 for o, m_ in
+                       re.findall(r"head \(([\d.]+)\) is bigger than the person the shot is about's \(([\d.]+)\)", miss))
+            if not r["key"] or walled or lost or any(w in miss for w in self.UNREADABLE) or self.shows_nobody(r["shot"]):
                 out.append(r["shot"])
         return out
 
@@ -1440,6 +1596,10 @@ class Story:
         import contextlib
         sl = self.places[place]["slug"]
         redo = {x for x in redo if ":" not in x} | {x.split(":", 1)[1] for x in redo if x.split(":", 1)[0] == sl}
+        if any(st in redo and self.done(place, st) for st in todo):
+            # (what is about to be made again is kept first: the way back, place_keep.restore)
+            snap = PK.snapshot(self.d(place), self.keys, self.shots_of(place), self.set_dir(place))
+            log(f"{place}: kept as it stood in {snap}")
         for st in todo:
             if self.done(place, st) and st not in redo:
                 continue
@@ -1515,7 +1675,31 @@ class Story:
                 else:
                     log(f"{p}: the restage's drawing FAILED")
 
-    def run(self, only=None, first="shots", last="keys", redo=(), jobs=1):
+    def kept(self, what: str, names: set, tag: str | None = None) -> None:
+        """--approve / --unapprove / --restore / --drift for the places named (all when none is)."""
+        for place in [p for p in self.places if not names or p in names or self.places[p]["slug"] in names]:
+            d = self.d(place)
+            if what == "approve":
+                log(f"{place}: approved, kept in {PK.approve(d, self.keys, self.shots_of(place), self.set_dir(place))}")
+            elif what == "unapprove":
+                PK.unapprove(d)
+                log(f"{place}: no longer approved")
+            elif what == "restore":
+                log(f"{place}: put back from {PK.restore(d, self.keys, self.set_dir(place), tag)}")
+            elif what == "drift" and PK.approved(d):
+                # the planner alone, on the approved state's own inputs, as the rules now stand: no engine, no card
+                snap = d / "history" / PK.approved(d)["snapshot"]
+                now = d / "drift_specs"
+                shutil.rmtree(now, ignore_errors=True)
+                sh([PY, HERE / "scenes" / "from_plan.py", self.plan_p, snap / "shots.txt", snap / "cast.json", now,
+                    "--pass", snap / "pass.json", "--looks", self.look_p, "--carried", snap / "carried.json"],
+                   d / "drift.log")
+                moved = PK.drift(snap / "specs", now)
+                (d / "drift.json").write_text(json.dumps(moved, indent=1))
+                log(f"{place}: " + (f"{len(moved)} thing(s) would change: " + "; ".join(moved[:12])
+                                    + (" ..." if len(moved) > 12 else "") if moved else "nothing would change"))
+
+    def run(self, only=None, first="shots", last="keys", redo=(), jobs=1, unlock=()):
         """jobs: how many places are worked at once. Each place's steps stay in order; their GPU work queues on the
         line by device, so with two places one draws on one card while the other stages or shapes on the other
         (one place at a time left the second card idle through a night's run, 11-19)."""
@@ -1524,6 +1708,11 @@ class Story:
         self._shared = {k: threading.Lock() for k in set(self.SHARED_STEPS.values())}
         todo = STEPS[STEPS.index(first):STEPS.index(last) + 1]
         places = [p for p in self.places if not only or p in only or self.places[p]["slug"] in only]
+        # an approved place is left as it is: no step of it runs until it is named to --unlock (place_keep)
+        for p in [p for p in places if PK.approved(self.d(p)) and p not in unlock and self.places[p]["slug"] not in unlock]:
+            log(f"{p}: approved ({PK.approved(self.d(p))['snapshot']}): left as it is; --unlock {self.places[p]['slug']} "
+                f"to make it again")
+            places.remove(p)
         # two phases for the whole batch: every place staged in 3D first (the engine's card and the shaping card),
         # then every place's keys drawn together on both cards (draw_all). A place's own steps up to its staging:
         after = [x for x in todo if x in DRAW_STEPS]
@@ -1569,8 +1758,11 @@ def main():
     s = Story(Path(a[0]), Path(a[1]), Path(a[2]), Path(a[3]), opt("--prefix", "st"))
     s.whole = "--metahuman" not in a           # figures as whole generated meshes on the skeleton (cast_char.py --whole),
     #                                      the default since 11-15; --metahuman casts MetaHuman bodies wearing generated outfits
+    for what in ("approve", "unapprove", "restore", "drift"):
+        if f"--{what}" in a:
+            return s.kept(what, set(many(f"--{what}")), opt("--tag"))
     s.run(set(many("--only")), opt("--from", "shots"), opt("--until", "keys"), set(many("--redo")),
-          jobs=int(opt("--jobs", "1")))
+          jobs=int(opt("--jobs", "1")), unlock=set(many("--unlock")))
 
 
 if __name__ == "__main__":

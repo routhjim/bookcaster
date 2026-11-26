@@ -233,23 +233,20 @@ BC.mark_nomusic(b4, "01_one", False)
 check("video guard: a real mix of the voices' length passes", BC.mix_matches_voices(b4, "01_one"))
 BC.run_job = real_run_job
 
-# --- assets lists unless --do; refused for a shots-flow book --------------------------------------------------------
+# --- the October 3D flow's commands are retired (11-25): they start nothing; the 3D flow is a video job ------------
 b5 = book("assets")
 started = []
 real_start = BC.start_job
 BC.start_job = lambda b, **k: started.append(k)
-listed = []
-sys.modules["flow3d"] = types.SimpleNamespace(assets=lambda b, c, plan_only=False, **k: listed.append(plan_only) or
-                                              {"pending": [], "rc": {}})
-BC.main(["assets", str(b5)])
-check("assets: no --do = the listing (plan_only), no job", listed == [True] and started == [], (listed, started))
-try:
-    BC.main(["assets", str(b5), "--do"])
-    check("assets --do: refused for a shots-flow book", False)
-except SystemExit as exc:
-    check("assets --do: refused for a shots-flow book, saying why", "shots flow" in str(exc) and started == [], exc)
-BC.main(["assets", str(b5), "--do", "--flow", "3d"])
-check("assets --do --flow 3d: the job starts", started and started[-1].get("flow3d") == "assets", started)
+for argv in (["assets", str(b5)], ["assets", str(b5), "--do", "--flow", "3d"], ["stage", str(b5), "--chapter", "1", "--do"]):
+    try:
+        BC.main(argv)
+        check(f"{argv[0]}: retired", False)
+    except SystemExit as exc:
+        check(f"{' '.join(argv[:1] + argv[2:])}: retired, nothing started", "retired" in str(exc) and started == [], exc)
+BC.main(["video", str(b5), "--flow", "3d", "--chapter", "1", "--from", "10", "--to", "20", "--keys-only"])
+check("video --flow 3d: one job, the 3D flow, of the stretch",
+      started and started[-1].get("flow3d") == "3d" and started[-1].get("keys_only") is True and started[-1].get("span"), started)
 active.add(BC.unit_name(b5))
 try:
     BC.main(["keyframes", str(b5)])

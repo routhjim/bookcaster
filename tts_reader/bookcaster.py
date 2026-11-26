@@ -2034,6 +2034,9 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
     import mannequin_flow as MF
     if flow == "shots":                                       # the shot-list flow (tools/shot_flow.py, 10-23)
         import shot_flow as MF                                # noqa: F811 - same run() contract
+    elif flow == "3d":                                        # the same plan, keyed in the 3D engine (11-25)
+        import engine_flow as MF                              # noqa: F811 - same run() contract
+    planned = flow in ("shots", "3d")                         # the director's shot plan is theirs both
     from . import animate
     log = _logger(book)
     stem = flow3d.chapter_stem(book, chapter or "1")
@@ -2052,10 +2055,10 @@ def run_mannequin_job(book: Path, chapter: str | None, span: str | None, keys_on
     resume = animate._servers("down", log)                   # keys + LTX use both cards
     try:
         mix = book / "work" / "final" / f"{stem}.mp3"
-        if flow == "shots":
+        if planned:
             shots_ready(book, stem, log, lambda **k: _set_status(book, **k))
-        kw = {"render": tuple(float(x) for x in render.split(":"))} if render and flow == "shots" else {}
-        if review and flow == "shots":                        # 11-05: the action chains' review cards
+        kw = {"render": tuple(float(x) for x in render.split(":"))} if render and planned else {}
+        if review and planned:                                # 11-05: the action chains' review cards
             kw["review"] = review
         out = MF.run(book, stem, t0, t1, None, mix, log, until="keys" if keys_only else None, guide=guide, **kw)
         if not keys_only and not render and (span is None or covers_chapter(book, stem, out)):  # a whole chapter is the chapter's video
@@ -2546,6 +2549,13 @@ def set_book_flow(book: Path, flow: str | None) -> None:
         (book / "flow.txt").write_text(flow + "\n")
 
 
+# The 3D flow of October (figures shaped and staged outside the engine: `assets`, `stage`, `review`, `approve`, and
+# `video --flow mannequin`) is retired (11-25): the 3D flow is `video --flow 3d`, which plans, builds, stages and
+# keys in one job (tools/engine_flow.py). Its commands say so and start nothing.
+RETIRED_CMDS = ("assets", "stage", "review", "approve")
+RETIRED = ("{what} belongs to the 3D flow retired on 11-25 and starts nothing. The 3D flow is one command now: "
+           "bookcaster video <book> --flow 3d [--chapter N] [--from T --to T] [--keys-only]")
+
 # --- CLI ------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -2616,11 +2626,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--level", choices=LEVELS[2:], default="pictures",
                    help="pictures (stills, default) | moments (+ animated key moments) | animated")
     s.add_argument("--flow", choices=["2d", "3d", "mannequin", "shots"], default=None,
-                   help="3d: every moment from the staged 3D scene (bookcaster assets + stage + review first); "
-                        "mannequin: the 3D staging as control maps only (pose + set depth) -> keyframes drawn with "
-                        "ControlNet + the character LoRAs + the place's hero image -> LTX (IC-LoRA for physical action); "
-                        "shots: the director splits the narration into 2-5 s shots of one action each -> one opening "
-                        "picture per shot (LoRAs + the place, no 3D) -> LTX two-stage for action (two takes), pipelined")
+                   help="shots: the director splits the narration into 2-5 s shots of one action each -> one opening "
+                        "picture per shot (LoRAs + the place, no 3D) -> LTX two-stage for action (two takes), pipelined; "
+                        "3d: the same shots, each staged in the 3D engine (a figure per person made from their sheet, "
+                        "a set per place) and its still redrawn into the opening picture -> the same LTX render; "
+                        "mannequin: retired")
     s.add_argument("--from", dest="t_from", help="mannequin, shots, 3d: the stretch's start (seconds or m:ss; default 0)")
     s.add_argument("--to", dest="t_to", help="mannequin, shots, 3d: the stretch's end (seconds or m:ss; default the "
                    "chapter's end)")
@@ -2750,7 +2760,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--storyboard", action="store_true")
     s.add_argument("--sfx", action="store_true")
     s.add_argument("--sfx-only", action="store_true")
-    s.add_argument("--flow3d", choices=["plan", "assets", "stage", "video", "mannequin", "shots"], help="a full-3D stage (tools/flow3d.py)")
+    s.add_argument("--flow3d", choices=["plan", "assets", "stage", "video", "mannequin", "shots", "3d"], help="a full-3D stage (tools/flow3d.py)")
     s.add_argument("--chapter")
     s.add_argument("--plan-only", action="store_true")
     s.add_argument("--auto-approve", action="store_true")
@@ -2758,6 +2768,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--keys-only", action="store_true")
     s.add_argument("--guide")
     a = ap.parse_args(argv)
+    if a.cmd in RETIRED_CMDS or (a.cmd == "video" and a.flow == "mannequin"):
+        sys.exit(RETIRED.format(what=f"`bookcaster {a.cmd}`" + (" --flow mannequin" if a.cmd == "video" else "")))
     if a.cmd == "video" and a.flow is None:          # animated = the shot flow (10-24); stills keep the 2D path
         a.flow = "shots" if a.level == "animated" else "2d"
 
@@ -2846,7 +2858,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.sample:
             with foreground(d, "art --sample"):
                 print(art_sample(d))
-    elif a.cmd == "video" and a.flow in ("mannequin", "shots"):
+    elif a.cmd == "video" and a.flow in ("shots", "3d"):
         d = book_dir(a.book)
         secs = _secs
         # no --from/--to is the whole chapter: no span, so the finished video is the chapter's and goes to Jellyfin
@@ -2866,15 +2878,6 @@ def main(argv: list[str] | None = None) -> int:
                   render=render, review=getattr(a, "review", None))
         print(f"making the {a.flow}-flow {'keyframes (stops before the video; review sheet in out/)' if a.keys_only else 'video'} "
               f"of {d.name} ({a.t_from or '0'}-{a.t_to or 'end'}) in the background — `bookcaster status {d.name}`")
-    elif a.cmd == "video" and a.flow == "3d":
-        d = book_dir(a.book)
-        set_book_flow(d, "3d")
-        span = _span(a)                  # (11-24) a stretch of one chapter: its moments only, never sent to Jellyfin
-        start_job(d, flow3d="video", chapter=(a.chapter or "1") if span else a.chapter, auto_approve=a.auto_approve,
-                  jellyfin=a.jellyfin and not span, keys_only=a.keys_only, span=span)
-        print(f"making the 3D video of {d.name}" + (f" ({a.t_from or '0'}-{a.t_to or 'end'})" if span else "")
-              + f" in the background — `bookcaster status {d.name}`"
-              + ("" if a.auto_approve else f"; it stops for review when assets wait (`bookcaster review {d.name}`)"))
     elif a.cmd == "song":
         from . import song
         title, tags = a.title, a.tags
@@ -3023,7 +3026,7 @@ def main(argv: list[str] | None = None) -> int:
         return subprocess.run(["bash", str(STACK), "status"]).returncode
     elif a.cmd == "_job":
         def job():
-            if a.flow3d in ("mannequin", "shots"):
+            if a.flow3d in ("shots", "3d"):
                 return run_mannequin_job(Path(a.book), a.chapter, a.span, keys_only=a.keys_only, guide=a.guide,
                                          flow=a.flow3d, render=getattr(a, "render", None),
                                          review=getattr(a, "review", None))

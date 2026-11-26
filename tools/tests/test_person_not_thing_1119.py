@@ -15,3 +15,55 @@ def test_a_named_person_is_no_thing():
 
 def test_things_stay_things():
     assert not PS.is_person("lamp", NAMES) and not PS.is_person("Tom's coat", NAMES) and not PS.is_person("", NAMES)
+
+
+def test_an_outfit_with_headwear_is_made_wearing_it_and_takes_no_separate_thing_on_the_head():
+    import sys
+    from pathlib import Path
+    A = Path(__file__).resolve().parents[1] / "assets"
+    sys.path[:0] = [str(A / "img3d"), str(A / "scenes")]
+    import cast_char as CC
+    import from_plan as FP
+    look = "a man, wearing a mail coat, a steel helm with a nose guard and leather boots, carrying a spear"
+    assert "helm" not in CC.spread_look(look) and "spear" not in CC.spread_look(look)
+    kept = CC.spread_look(look, headwear=True)
+    assert "steel helm" in kept and "mail coat" in kept and "spear" not in kept
+    cam = {"carried": {"d": [{"asset": "x", "at": "head", "name": "helm"}, {"asset": "y", "at": "hand", "hand": "r"}],
+                       "b": [{"asset": "z", "at": "head", "name": "hood"}]}}
+    FP.not_on_head(cam, "d")
+    assert cam["carried"] == {"d": [{"asset": "y", "at": "hand", "hand": "r"}], "b": [{"asset": "z", "at": "head", "name": "hood"}]}
+    FP.not_on_head(cam, "b")
+    assert "b" not in cam["carried"]
+
+
+def test_headwear_taken_off_is_not_worn():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "img3d"))
+    import cast_char as CC
+    assert CC.head_worn("a mail coat, a steel cap and boots")
+    assert not CC.head_worn("a mail coat, with the cap removed, and boots")
+    assert not CC.head_worn("a mail coat and boots")
+    assert "cap" not in CC.spread_look("a man, wearing a mail coat, with the cap removed, boots", headwear=True)
+
+
+def test_a_person_drawn_by_their_lora_in_their_usual_look_takes_no_sheet():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "redraw"))
+    import redraw as RD
+    usual = {"lora": "x.safetensors", "sheet": "usual.png"}
+    assert RD.sheet_ref(usual, None) is None
+    assert RD.sheet_ref(usual, None, with_lora=True) == "usual.png"
+    assert RD.sheet_ref(usual, "in_a_hat.png") == "in_a_hat.png"                     # what the LoRA never saw
+    assert RD.sheet_ref(dict(usual, sheet="outfit.png", _outfit_sheet=True), None) == "outfit.png"
+    assert RD.sheet_ref({"sheet": "only.png"}, None) == "only.png"                   # nobody's LoRA: their sheet
+
+
+def test_the_head_gate_reads_a_plain_yes_or_no():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "assets" / "img3d"))
+    import head_gate as HG
+    assert HG.worn("Yes") and HG.worn(" yes.") and not HG.worn("No") and not HG.worn("")
+    assert "{what}" in HG.ASK

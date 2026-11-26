@@ -26,6 +26,7 @@ import config as C  # noqa: E402
 import pieces as P  # noqa: E402
 
 REFS = C.LIBRARY / "_refs"
+SEAT_FIT_W_M = 0.48                     # a seat between arms narrower than this takes nobody: made again larger
 SEAT_W_M = 0.56                         # the width between a seat's sides that an adult takes
 CHAIN_WAIT_S = 2400                     # the bake and import chain is detached: the record is waited for this long
 MEASURE = {"sit": [sys.executable, str(HERE.parent / "scenes" / "seatbox.py")],
@@ -232,8 +233,10 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
     steps = {s["step"]: s for s in plan["steps"]}
     did = plan["draw_id"]
     # (a world's panorama keeps its own id, ref_id: a world made again for new map words takes the panorama drawn)
-    pic = REFS / steps["draw"].get("ref_id", did) / steps["draw"].get("picture", "three_quarter.png")
-    if not pic.exists():
+    relief = steps["spec"]["spec"].get("made_as") == "relief"     # (shaped already, from its place's picture)
+    pic = Path(steps["spec"]["spec"]["relief_glb"]) if relief else \
+        REFS / steps["draw"].get("ref_id", did) / steps["draw"].get("picture", "three_quarter.png")
+    if not pic.exists() and not relief:
         dv = list(steps["draw"]["argv"])
         if unsourced and "--sources" in dv:              # (drawn from its look and its needs alone this time)
             dv = dv[:dv.index("--sources")]
@@ -297,11 +300,14 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
     # out with a seat 0.3 m wide, the pilot taller than the whole cockpit): made again at the scale that gives the
     # measured seat a person's width, once
     seat = json.loads(record(aid, library).read_text()).get("seat") or {}
-    if seat.get("inside") and seat.get("width_m") and steps["spec"]["spec"].get("made_as") != "shell":
+    # (and any seat between arms too narrow for a person: a chair made to its kind's box had 0.3 m between its
+    # arms, and the man named to it was sat on a bench across the room, 11-20)
+    tight = bool(seat.get("arm_z_m")) and float(seat.get("width_m") or 9) < SEAT_FIT_W_M
+    if (seat.get("inside") or tight) and seat.get("width_m") and steps["spec"]["spec"].get("made_as") != "shell":
         k = max(1.0, min(2.5, SEAT_W_M / float(seat["width_m"])))
         k = k if k > 1.1 else 1.0
         spec = dict(steps["spec"]["spec"], size_m=[round(v * k, 3) for v in steps["spec"]["spec"]["size_m"]],
-                    sight_cut_m=sight_cut(seat, k))
+                    **({"sight_cut_m": sight_cut(seat, k)} if seat.get("inside") else {}))
         sp.write_text(json.dumps(spec, indent=1))
         import shutil
         shutil.rmtree(library / "prop" / aid, ignore_errors=True)
@@ -318,7 +324,9 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         rp1.write_text(json.dumps(rec1, indent=1))
         for need in req.get("needs") or []:
             if need in MEASURE:
-                run(MEASURE[need] + [str(library / "prop" / aid), "--write"])
+                # (a second making whose measure failed left a seat with no seat box: nobody could be sat on it)
+                if run(MEASURE[need] + [str(library / "prop" / aid), "--write"]).returncode:
+                    return {"asset_id": aid, "ok": False, "why": f"no {need} box could be measured on its second making"}
     # a bed is asked for with one open tier (people sit up on it, and a camera must see them): one that came out with
     # a tier above its mattress is not the piece asked for (seated on a concept's lower bunk a woman's head was up
     # inside the top one, and no camera saw a face)
@@ -443,6 +451,117 @@ def make_face(spec: dict, library: Path, seed: int = 11, run=subprocess.run) -> 
     sp.write_text(json.dumps({k: v for k, v in spec.items() if k != "wall_words"}, indent=1))
     r = run(ra + [str(sp), str(HERE.parent / "models" / "backdrop_view" / "backdrop_view.py"), "--detach"])
     log(f"{aid}: chain rc={r.returncode}")
+    t_end = time.time() + CHAIN_WAIT_S
+    while not record(aid, library) and time.time() < t_end:
+        time.sleep(10)
+    return {"asset_id": aid, "ok": bool(record(aid, library)), "why": "made" if record(aid, library) else "no library record"}
+
+
+def face_fill(tex, px_per_m: float, tile=None, colour=None):
+    """A wall's own picture (RGBA, alpha 0 where its concept picture does not see the wall) made whole: what is
+    unknown is the bare wall's tile picture (tile: RGB, one FACE_M square, laid from the picture's top left at the
+    picture's own texels a metre, toned to the known part's mean colour), else one colour (colour: "#rrggbb"; else the mean of what is known) -> RGB."""
+    import numpy as np
+    from PIL import Image
+    sys.path.insert(0, str(HERE.parent / "sets"))
+    import place_build as PB
+    tex = np.asarray(tex)
+    h, w = tex.shape[:2]
+    known = tex[..., 3:4].astype(np.float32) / 255.0
+    if tile is not None:
+        n = max(1, int(round(PB.FACE_M * float(px_per_m))))
+        t = np.asarray(Image.fromarray(np.asarray(tile)[..., :3]).resize((n, n), Image.LANCZOS)).astype(np.float32)
+        back = np.tile(t, (h // n + 1, w // n + 1, 1))[:h, :w]
+        k = tex[..., 3] > 0
+        if k.any():                          # (as dark as the picture's own wall: the tile is drawn evenly lit)
+            back = back * np.clip(tex[..., :3][k].mean(0) / np.maximum(back.reshape(-1, 3).mean(0), 1.0), 0.2, 1.5)
+    else:
+        if colour:
+            c = [int(colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
+        else:
+            k = tex[..., 3] > 0
+            c = tex[..., :3][k].mean(0) if k.any() else [128, 128, 128]
+        back = np.broadcast_to(np.asarray(c, np.float32), (h, w, 3))
+    out = tex[..., :3].astype(np.float32) * known + back * (1.0 - known)
+    return np.clip(np.round(out), 0, 255).astype(np.uint8)
+
+
+FLAT_PANEL_SCRIPT = """\"\"\"Model script (written by places/generate.py make_face_picture): a room's floor or ceiling as one
+flat picture, lying in XY (the picture's top toward +Y, so the set's back wall), the middle of its underside at the
+origin; seen from below (a ceiling) it shows the same picture. Spec: "backdrop": {"w", "h": metres along X, Y};
+"keep_uvs": the picture laid over the whole texture (period_kit.picture_uvs).\"\"\"
+import os
+import sys
+
+sys.path.insert(0, os.environ.get("ASSETS_MODELS_DIR") or %r)
+import period_kit as K  # noqa: E402
+
+B = SPEC["backdrop"]  # noqa: F821
+LIB = os.environ.get("ASSETS_LIBRARY") or os.path.join(os.path.expanduser("~"), "ue", "library")
+w, h = float(B["w"]), float(B["h"])
+K.picture_uvs(K.box(f"{SPEC['id']}_pic", (w, h, 0.02), (0, 0, 0.01), bev=0.0,  # noqa: F821
+                    mat=K.image_material(os.path.join(LIB, "_refs", SPEC["id"], "picture.png"),  # noqa: F821
+                                         f"{SPEC['id']}_print", emit=0.0)))  # noqa: F821
+"""
+_WHOLE = {}                              # (the room's whole faces, made once for all its panels)
+
+
+def face_picture_of(spec: dict, tile=None, colour=None):
+    """A face panel's picture (sets/place_build.py face_pictures) -> (RGB array, how it was made) or (None, why).
+    "face_whole": the room's face made whole from what its concept picture sees (img3d/concept_depth.py
+    whole_faces), less the panel's inset at its ends; "face_picture": one face's own picture as it is. What is
+    still unknown: the bare wall's tile, else the colour (face_fill)."""
+    import numpy as np
+    from PIL import Image
+    fw = spec.get("face_whole")
+    if fw:
+        sys.path.insert(0, str(HERE.parent / "img3d"))
+        import concept_depth as CD
+        key = json.dumps([fw["faces"], fw["room_m"]], sort_keys=True)
+        if key not in _WHOLE:
+            _WHOLE.clear()
+            _WHOLE[key] = CD.whole_faces(fw["faces"], fw["room_m"])
+        got = _WHOLE[key].get(fw["face"])
+        if got is None:
+            return None, "nothing of the room's picture to make it from"
+        tex, ppm, how = got
+        iu, iv = (int(round(float(x) * ppm)) for x in (fw.get("inset_m") or [0, 0]))
+        h, w = tex.shape[:2]
+        if w > 2 * iu and h > 2 * iv:
+            tex = tex[iv:h - iv, iu:w - iu]
+        return face_fill(np.asarray(tex), ppm, tile, colour), how
+    src = Path(spec.get("face_picture") or "")
+    if not spec.get("face_picture") or not src.exists():
+        return None, "no picture of the wall"
+    return face_fill(Image.open(src).convert("RGBA"), spec.get("face_px_per_m") or 128.0, tile, colour), "its picture"
+
+
+def make_face_picture(spec: dict, library: Path, run=subprocess.run, colour=None) -> dict:
+    """A room's own wall, floor or ceiling as a face panel (sets/place_build.py face_pictures): its picture from the
+    concept picture (face_picture_of), then the scripted panel's asset chain as for the tile (make_face): standing
+    (models/backdrop_view), or lying flat (FLAT_PANEL_SCRIPT, "face_flat"). Nothing is drawn."""
+    from PIL import Image
+    aid = spec["id"]
+    if record(aid, library):
+        return {"asset_id": aid, "ok": True, "why": "already in the library"}
+    tp = REFS / spec["face_fill"] / "picture.png" if spec.get("face_fill") else None
+    tile = Image.open(tp).convert("RGB") if tp and tp.exists() else None
+    rgb, how = face_picture_of(spec, tile, spec.get("face_colour") or colour)
+    if rgb is None:
+        return {"asset_id": aid, "ok": False, "why": how}
+    pic = REFS / aid / "picture.png"
+    pic.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(rgb).save(pic)
+    model = HERE.parent / "models" / "backdrop_view" / "backdrop_view.py"
+    if spec.get("face_flat"):
+        model = REFS / aid / "flat_panel.py"
+        model.write_text(FLAT_PANEL_SCRIPT % str(HERE.parent / "models"))
+    sp = library / "prop" / aid / "source" / "spec.json"
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps({k: v for k, v in spec.items() if not k.startswith("face_")}, indent=1))
+    r = run([sys.executable, str(HERE.parent / "run_asset.py"), str(sp), str(model), "--detach"])
+    log(f"{aid}: room face picture ({how}; {'tile' if tile is not None else 'colour'} under what is still unknown), "
+        f"chain rc={r.returncode}")
     t_end = time.time() + CHAIN_WAIT_S
     while not record(aid, library) and time.time() < t_end:
         time.sleep(10)
@@ -575,6 +694,12 @@ def main():
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         out.append(dict(make_face(PB.face_spec(ww), library, seed), kind="wall_face"))
+    if spec.get("kind") != "outdoors" and not only:      # the room's walls as its concept picture shows them
+        sys.path.insert(0, str(HERE.parent / "sets"))
+        import place_build as PB
+        col = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("colour")
+        for fs, _ in PB.face_pictures(spec):
+            out.append(dict(make_face_picture(fs, library, colour=col), kind="wall_face"))
     if spec.get("outside") and not only:                 # what lies outside the place: its view's backdrop
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB

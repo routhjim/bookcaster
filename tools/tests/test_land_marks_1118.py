@@ -122,7 +122,9 @@ def test_a_work_piece_keeps_its_own_words():
                                          "p2": {"in_picture": True, "look": "wood, pale"}}}
     got = {p["id"]: p for p in PB.with_concept(spec, concept)["pieces"]}
     assert got["p1"]["look"] == "A kiln, a brick oven with a round door; brick, red" and got["p1"]["source"] == "/c/p1.png"
-    assert got["p2"]["look"] == "wood, pale"                 # (a kind that names its thing takes the picture's look)
+    # (any kind keeps the director's words and takes the picture's material and colour: given the picture's alone, a
+    # seat said to be ornate and upholstered was "wooden, brown", 11-20)
+    assert got["p2"]["look"] == "A bench of planks; wood, pale"
 
 
 def test_a_creature_at_the_edge_is_said_as_itself():

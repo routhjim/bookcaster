@@ -261,3 +261,53 @@ def test_the_deeper_of_two_things_on_one_stretch_of_wall_stands_before_the_flatt
     CD.stand_before(t)
     assert t["b"]["xy"] == [0.1, 4.8] and t["c"]["xy"] == [3.5, 4.6]
     assert abs(t["a"]["xy"][1] - (4.8 - 0.15 - 0.45 - 0.05)) < 1e-6
+
+
+def test_a_room_takes_every_thing_its_picture_shows():
+    c = concept_with_depth()
+    c["seen"] = [
+        {"name": "barrel", "look": "wood", "kind": "work_piece", "box": [0.75, 0.6, 0.85, 0.8], "crop": "b1.png", "words": "A round cask with iron hoops"},
+        {"name": "barrel", "look": "wood", "kind": "work_piece", "box": [0.86, 0.6, 0.96, 0.8], "crop": "b2.png"},
+        {"name": "barrel again", "look": "wood", "kind": "work_piece", "box": [0.86, 0.61, 0.96, 0.8], "crop": "b3.png"},
+        {"name": "rack of tools", "look": "iron", "kind": "work_piece", "box": [0.1, 0.1, 0.5, 0.3], "crop": "r.png"},
+        {"name": "small thing", "look": "", "kind": None, "box": [0.5, 0.5, 0.52, 0.52]}]
+    c["depth"]["things"].update({"seen:0": {"xy": [1.8, 0.5], "facing": [0.0, -1.0], "against": None, "size_m": [0.6, 0.6, 0.9]},
+                                 "seen:1": {"xy": [2.1, 1.4], "facing": [0.0, -1.0], "against": None, "size_m": [0.6, 0.6, 0.9]}})
+    c["depth"]["off_floor"] = {"seen:3": {"kind": "work_piece", "at_m": 2.9, "hangs_m": 1.4, "wall": "north",
+                                          "xy": [-1.0, 2.9], "size_m": [1.8, 0.15, 0.6]}}
+    sp = PB.with_concept(place_spec(), c)
+    by = {p["id"]: p for p in sp["pieces"]}
+    assert {"c1", "c2"} <= set(by) and "c3" not in by and "c5" not in by             # each once; nothing unkinded
+    assert by["c1"]["at_xy"] == [1.8, 0.5] and by["c1"]["longest_m"] == 0.9 and by["c1"]["called"] == "round cask"
+    assert "c4" not in by                         # (a thing on a wall is not built while ROOM_HUNG is off)
+    PB.ROOM_HUNG = True
+    try:
+        by = {p["id"]: p for p in PB.with_concept(place_spec(), c)["pieces"]}
+        assert by["c4"]["hangs_m"] == 1.4 and by["c4"]["against"] == "wall" and "at_xy" not in by["c4"]
+    finally:
+        PB.ROOM_HUNG = False
+
+
+def test_a_thing_hung_on_a_wall_is_measured_where_it_hangs():
+    pts, mask, intr, box = _thing_off_floor(5.9, 1.2, 0.8, 0.25)
+    r = CD.room_from(pts, mask, intr, {"seen:0": (box, "rack")}, {})
+    h = r["off_floor"]["seen:0"]
+    assert abs(h["hangs_m"] - 1.2) < 0.15 and h["wall"] == "north"
+    assert abs(h["size_m"][0] - 0.8) < 0.2 and abs(h["size_m"][2] - 0.25) < 0.12
+
+
+def test_a_room_with_the_sun_at_its_window_is_lit_inside_all_the_same():
+    out = {"size_m": [8.0, 10.0, 4.0], "structure": [{"kind": "ceiling"}],
+           "lights": [{"type": "sun", "lux": 16000}, {"type": "sky", "intensity": 1.0}, {"type": "rect", "lumens": 1300}]}
+    assert PB.room_light(out, {})
+    added = [l for l in out["lights"] if l["type"] == "point"]
+    assert sum(l["lumens"] for l in added) >= PB.ROOM_LM_M2 * 80 - 1300 - 1
+    assert any(l["type"] == "sun" for l in out["lights"])            # the light from outside is kept
+
+
+def test_a_fire_the_picture_shows_is_not_made_the_kinds_fireplace():
+    c = concept_with_depth()
+    c["seen"] = [{"name": "hearth", "look": "stone", "kind": "fireplace", "box": [0.3, 0.3, 0.6, 0.7]},
+                 {"name": "door", "look": "wood", "kind": "door", "box": [0.8, 0.2, 0.95, 0.8]}]
+    sp = PB.with_concept(dict(place_spec(), openings=[]), c)
+    assert [o["kind"] for o in sp["openings"]] == ["door"]

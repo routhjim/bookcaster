@@ -55,6 +55,29 @@ def glb_points(path: Path) -> np.ndarray:
     return np.stack([g[:, 0], -g[:, 2], g[:, 1]], 1)
 
 
+PLINTH_MOST_M = 0.4          # a slab under a seat higher than this is not a plinth (it is the seat's own body)
+PLINTH_OUT_M = 0.04          # ... and it reaches at least this far past what stands on it, on three sides or more
+
+
+def above_plinth(P: np.ndarray) -> np.ndarray:
+    """The points of a seat without the slab it was made standing on: a seat drawn on its own plinth has the slab's
+    edges as its front and back ends, both the same height, so its front could not be told and its seat was
+    measured from behind (0.26 m wide; made again, the measure then failed and the piece had no seat at all:
+    the one named to it was sat across the room, 11-20). The slab is what lies below PLINTH_MOST_M and reaches
+    out past everything above it."""
+    z = P[:, 2]
+    up = P[z > PLINTH_MOST_M]
+    if len(up) < 100:
+        return P
+    lo, hi = up[:, :2].min(0), up[:, :2].max(0)
+    out = ((P[:, 0] < lo[0] - PLINTH_OUT_M), (P[:, 0] > hi[0] + PLINTH_OUT_M),
+           (P[:, 1] < lo[1] - PLINTH_OUT_M), (P[:, 1] > hi[1] + PLINTH_OUT_M))
+    if sum(int(m.sum() > 20) for m in out) < 3:
+        return P
+    top = float(np.percentile(z[out[0] | out[1] | out[2] | out[3]], 98))
+    return P[z > top + 0.02] if top < PLINTH_MOST_M else P
+
+
 def seat_box(P: np.ndarray) -> dict:
     x, y, z = P[:, 0], P[:, 1], P[:, 2]
     y0, y1 = float(y.min()), float(y.max())
@@ -80,6 +103,8 @@ def seat_box(P: np.ndarray) -> dict:
     xl = x[sl & (x < -0.05)]
     xr = x[sl & (x > 0.05)]
     xs_all = x[(np.abs(y - ym) < 0.12) & (z > seat_z - 0.05)]
+    if not len(xs_all):                      # nothing at the seat's level there: the seat is as wide as the piece
+        xs_all = x
     inner_l = float(xl.max()) if len(xl) else float(xs_all.min())
     inner_r = float(xr.min()) if len(xr) else float(xs_all.max())
     arms = len(xl) > 50 and len(xr) > 50
@@ -190,6 +215,7 @@ def for_asset(asset_dir: Path) -> dict:
     P = glb_points(asset_dir / aj["export"]["glb"])
     if aj.get("piece_kind") == "vehicle_cabin" or "vehicle_cabin" in (aj.get("tags") or []):
         return cabin_seat_box(P, int(aj.get("seats_abreast") or 1))
+    P = above_plinth(P)
     f = front_of(P)
     # turn the points so the front is -y, measure there, keep the mesh's own front with the box
     yaw = np.arctan2(f[1], f[0]) - np.arctan2(-1.0, 0.0)

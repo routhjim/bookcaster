@@ -16,6 +16,7 @@ Geometry (metres, front -Y, base on Z = 0; every builder returns a linked object
   fielded_panel(...) raised and fielded panel; frame_panel() a door/carcass panel with stiles and rails
   cabriole(...)     a cabriole leg (knee, ankle, pad foot)
   place(), shade(), bevel(), set_color() (per-part colour attribute "pcol" read by the materials)
+  picture_uvs()     UVs over the whole texture for a flat picture part (image_material; spec "keep_uvs")
 
 Materials (procedural Principled; the harness bakes them). Wood grain follows the part's OBJECT axis given by
 `axis` (build turned parts along local Z and rotate the object; boxes take the axis of their long side):
@@ -87,6 +88,25 @@ def shade(ob, angle=35):
         me.set_sharp_from_angle(angle=math.radians(angle))
     except AttributeError:
         pass
+    return ob
+
+
+def picture_uvs(ob):
+    """UVs that lay the part's Generated X / Y over the whole 0-1 square (image_material's own mapping): a flat
+    picture part bakes to the whole texture, its face and its back on the same texels, its thin rims on its edges.
+    The harness keeps them when the spec says "keep_uvs" (its own unwrap packed a 21.6 x 8 m picture into a strip
+    38 texels high, 11-20)."""
+    me = ob.data
+    xs = [v.co.x for v in me.vertices]
+    ys = [v.co.y for v in me.vertices]
+    x0, y0 = min(xs), min(ys)
+    sx, sy = max(max(xs) - x0, 1e-9), max(max(ys) - y0, 1e-9)
+    while me.uv_layers:
+        me.uv_layers.remove(me.uv_layers[0])
+    lay = me.uv_layers.new(name="UVMap")
+    for lp in me.loops:
+        co = me.vertices[lp.vertex_index].co
+        lay.data[lp.index].uv = ((co.x - x0) / sx, (co.y - y0) / sy)
     return ob
 
 

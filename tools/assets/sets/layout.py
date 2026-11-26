@@ -241,12 +241,12 @@ def window_band(S, w, o, folder):
     nb = max(1, round((u1 - u0) / bay))
     bw = (u1 - u0) / nb
     mw, md = o.get("mullion_m", [0.2, t + 0.1])
-    fmat, gmat = o["frame_material"], o["glass_material"]
+    fmat, gmat = o["frame_material"], o.get("glass_material")
     cols, rows = o.get("panes", [2, 4])
     bar = o.get("bar_m", 0.05)
     go = t * o.get("glass_at", 0.5)
     # glass, one pane per bay
-    for i in range(nb):
+    for i in range(nb if gmat else 0):          # (no glass material: an open, unglazed window)
         a = u0 + i * bw
         S.box(w.p(a + bw / 2, (z0 + z1) / 2, go), w.size(bw, z1 - z0, 0.02), gmat, folder, tile=False, yaw=w.yaw)
     # mullions (full depth, slightly proud of the inner face)
