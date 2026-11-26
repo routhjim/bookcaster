@@ -514,6 +514,49 @@ def loose(spec: dict, acts: list, url: str, cache: Path) -> list:
     return out
 
 
+# (a ballroom's "dance floor" was listed as a solid thing ten metres long that filled the room, and the direction
+# "forward" was answered with a chair: no set could be laid out, 11-26. What a place phrase names, asked on its own)
+PHRASE_ASK = ("A film's shot list says where a person stands or looks with the words: \"{phrase}\"\n"
+              "The scene: {acts}\nWhat do these words name? Answer with exactly one word:\n"
+              "thing: one solid object, a piece of furniture or an opening (door, window, fire) that stands in the place\n"
+              "floor: a part of the floor or of the ground itself, an open space that people stand or move on\n"
+              "people: a group, a row or a formation of people\n"
+              "direction: only a direction, a side or a movement, and no thing at all")
+ANY_KINDS = ("work_piece", "landmark")       # the kinds that hold any thing: made up for a phrase, never usual furnishing
+
+
+def open_floor(spec: dict, phr: list, acts: list, url: str, cache: Path) -> list:
+    """The place phrases that name no thing of the place (a part of the floor, a group of people, a direction) get
+    the named_places value "floor"; a piece made up only to stand for one (a work piece or landmark with no other
+    phrase) leaves the pieces and relations, any other piece only loses the phrase. Changes spec; -> those phrases."""
+    np = spec.get("named_places") or {}
+    out = []
+    for ph in phr:
+        if np.get(ph) in (None, "floor"):
+            continue
+        ans = ask(url, PHRASE_ASK.format(phrase=ph, acts=" ".join(dict.fromkeys(acts)) or "not told"), cache).lower()
+        said = re.findall(r"\b(thing|floor|people|direction)\b", ans)
+        if said and said[-1] != "thing" and "thing" not in said:
+            out.append(ph)
+    if not out:
+        return out
+    gone = set()
+    for p in spec.get("pieces") or []:
+        if not isinstance(p, dict):
+            continue
+        had = [x for x in p.get("phrases") or [] if x in out]
+        if not had:
+            continue
+        p["phrases"] = [x for x in p.get("phrases") or [] if x not in out]
+        if p.get("kind") in ANY_KINDS and not p["phrases"]:
+            gone.add(p.get("id"))
+    spec["pieces"] = [p for p in spec.get("pieces") or [] if not (isinstance(p, dict) and p.get("id") in gone)]
+    spec["relations"] = [r for r in spec.get("relations") or []
+                         if not (isinstance(r, dict) and {r.get("a"), r.get("b"), r.get("c")} & gone)]
+    spec["named_places"] = {ph: ("floor" if ph in out or v in gone else v) for ph, v in np.items()}
+    return out
+
+
 # (a place in the open whose set sheet names one part of it, a door in a wall: its picture was that part, and the set
 # made from it one arch on bare ground, 11-18. The whole place, said once, for its picture)
 WHOLE_ASK = """A story has a place in the open air named "{place}". A painter who knows nothing else of the story paints one
@@ -602,6 +645,10 @@ def write(plan: dict, all_ids: list, timeline: list, place: str, url: str, cache
             advised = True
             text += ("A room of this kind usually also has: " + ", ".join(usual) + ". Add those that suit this place "
                      "(as pieces with a look and against, no phrases needed) and write the whole JSON again.\n")
+    if isinstance(spec, dict) and not faults:
+        fl = open_floor(spec, phr, acts, url, cache)
+        if fl:
+            spec["_floor_phrases"] = fl
     out = dict(spec or {}, _prompt_sha=hashlib.sha256(base.encode()).hexdigest()[:16], _asks=asks,
                _phrases=phr, _shots=ids)
     # the director's own set-sheet line for the place, as the plan carries it (what lies outside a vehicle's cabin

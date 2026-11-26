@@ -613,7 +613,10 @@ def with_dressing(spec: dict, dress: dict, rules: dict | None = None) -> dict:
         if stems & hangs or (kd and (L.PK.get(kd) or {}).get("placement") == "wall") or DRESS_HANGS.search(it):
             report.append({"item": it, "where": "hangs: in the pictures the room's walls and roof carry", "piece": None})
             continue
-        if DRESS_ON_FACE.search(it) or stems & room_own:
+        # (a part of the room named first and told about after, "walls painted pale": any word of a head that names
+        # no floor or table-top kind)
+        own = stems & room_own or (not kd and {L.noun_stem(t) for t in L._words(head)} & room_own)
+        if DRESS_ON_FACE.search(it) or own:
             report.append({"item": it, "where": "the room's own walls, floor or roof: in the pictures they carry",
                            "piece": None})
             continue

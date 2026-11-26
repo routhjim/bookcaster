@@ -57,6 +57,8 @@ import creature as CRE  # noqa: E402
 import wardrobe as WD  # noqa: E402
 
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
+# a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
+STEP_RULE = {"spec": 2}
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
@@ -494,10 +496,19 @@ class Story:
         return p
 
     def done(self, place: str, step: str) -> bool:
-        return (self.d(place) / f".done_{step}").exists()
+        fp = self.d(place) / f".done_{step}"
+        if not fp.exists():
+            return False
+        # a step whose rule changed since it ran is run again, in a place still being made (a place whose keys are
+        # made stays as it is: its set failed on a spec written under the old rule, and every restart kept that spec)
+        n = STEP_RULE.get(step)
+        if n and f"rule {n}" not in fp.read_text() and not (self.d(place) / ".done_keys").exists():
+            return False
+        return True
 
     def mark(self, place: str, step: str) -> None:
-        (self.d(place) / f".done_{step}").write_text(time.strftime("%F %T"))
+        n = STEP_RULE.get(step)
+        (self.d(place) / f".done_{step}").write_text(time.strftime("%F %T") + (f" rule {n}" if n else ""))
 
     def shots_of(self, place: str) -> list:
         return [i for i in self.ids if self.plan[i][0].get("place") == place]      # (with or without people)
