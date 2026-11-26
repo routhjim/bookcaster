@@ -258,5 +258,15 @@ check("speaker_key: a 'Driver' with a look is that person (no hard-coded 'driver
       AN.speaker_key("Driver", {"The Driver": "a man of about 50"}) == "The Driver")
 check("speaker_key: a label with no look is no one", AN.speaker_key("Driver", {"Arthur Penhale": B_MAN}) is None)
 
+# 11-25: two chapters' plans spell the person differently; the sheet is drawn under one spelling only
+with tempfile.TemporaryDirectory() as d:
+    pl = lambda n: {"look": {"characters": {n: "a copy"}}, "pictures": [{"id": "p001", "who": [n], "where": "", "prompt": "x", "start": 0}]}  # noqa: E731
+    b = make_book(Path(d), {"Doctor Marsh": A_MAN}, plans={"01_one": pl("Doctor Marsh"), "02_two": pl("Dr. Marsh")})
+    c = CL.Char(str(b), "Doctor Marsh")
+    check("charlora: no sheet under either spelling is no sheet", c.sheet(None) is None, c.sheet(None))
+    want = V.ref_path(b / "work/video/refs", "Dr. Marsh", V.sheet_prompt(A_MAN, "ink wash"))
+    want.write_bytes(b"x")
+    check("charlora: the sheet drawn under the second plan's spelling is found", c.sheet(None) == want, c.sheet(None))
+
 print(json.dumps({"fails": fails}))
 sys.exit(1 if fails else 0)

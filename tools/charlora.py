@@ -232,7 +232,9 @@ class Char:
                                      self.outfits[oid], R)
             except Exception:                                # noqa: BLE001 - fall back to the newest sheet
                 p = None
-            if p is not None:
+            # the sheet as a plan that HAS it names it (11-25: one chapter's plan wrote the title as it is spoken,
+            # another abbreviated it; the sheet drawn under the one spelling was "no reference sheet" under the other)
+            if p is not None and p.exists():
                 break
         if p and p.exists():
             return p
