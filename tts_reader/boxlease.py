@@ -46,8 +46,13 @@ def held() -> bool:
 
 
 def mine_or_free() -> bool:
-    """May this process start or stop the box's servers: it holds the lease, or nobody does."""
-    return held() or not holder()
+    """May this process start or stop the box's servers: it holds the lease, nobody does, or it is a process of the
+    job that holds it (its BOOKCASTER_JOB tag is the holder's unit; 11-25: the 3D flow's engine steps run as the
+    asset line's jobs, and the first to need the language model was refused by its own job's lease)."""
+    if held():
+        return True
+    h = holder()
+    return not h or bool(h.get("unit")) and h.get("unit") == os.environ.get("BOOKCASTER_JOB")
 
 
 def who(h: dict) -> str:
