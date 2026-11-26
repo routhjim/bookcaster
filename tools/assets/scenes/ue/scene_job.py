@@ -601,6 +601,10 @@ def run(job):
                 bp["_anim"] = anim
                 bp["_ref"] = keep_.get("ref")          # the reference skeleton, for a re-solve on the posed body
                 r["subjects"][key]["pose_build"] = info
+                if (info.get("hold") or {}).get("partner") == "like self":
+                    # (a failure, not silence: a pose held on another person was aimed with nobody there)
+                    r["subjects"][key].setdefault("contact_missing", []).append(
+                        f"the {bp['pose']} was aimed at nobody: the job names no one this person is with")
                 fx_ = (bp.get("params") or {}).get("fixture")
                 if fx_ and "pts_ue" in fx_:
                     fx_["points_read"] = len(fx_.pop("pts_ue"))

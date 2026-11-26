@@ -113,6 +113,21 @@ def aim_params(pr: dict) -> dict:
     return pr
 
 
+def carried(c: dict) -> dict:
+    """What a staged person's spec hands on to the engine job besides the body itself: a child's scale (stature.py:
+    scaled, and lifted onto what they sit or lie on), a seat inside a cabin (seating.py), a bed's head and foot
+    points for the cameras (lying.py), and the one they are with (from_plan: a pose that rests on another person is
+    aimed at that person's own body in the engine; left out of the job, each of a pair aimed at a copy of itself
+    and the hands of the two never met, 11-26)."""
+    out = {}
+    if c.get("scale"):
+        out["scale"] = float(c["scale"])
+    for k in ("_inside", "_lie", "near_to", "near_how"):
+        if c.get(k):
+            out[k] = c[k]
+    return out
+
+
 def resolve(spec, cams_wanted=None):
     lib = Path(C.LIBRARY)
     sp = lib / "set" / spec["set"] / "asset.json"
@@ -177,12 +192,7 @@ def resolve(spec, cams_wanted=None):
                       "loc_cm": layout.ue_pt(pos), "yaw": round(layout.yaw_from_facing(f), 3),
                       "facing": [f[0] / n, f[1] / n], "position": pos,
                       "body_pose": bpose, "face_pose": c.get("face_pose")}
-        if c.get("scale"):              # a child (stature.py): scaled, and lifted onto what they sit or lie on
-            chars[key]["scale"] = float(c["scale"])
-        if c.get("_inside"):            # seated inside a cabin (seating.py)
-            chars[key]["_inside"] = c["_inside"]
-        if c.get("_lie"):               # lying in a bed (lying.py): the bed's head and foot points, for the cameras
-            chars[key]["_lie"] = c["_lie"]
+        chars[key].update(carried(c))
         bp_deps = cj.get("bp_deps", [])
     set_proj = project_path(st.get("project", C.UE_PROJECT)).resolve()
     proj = proj or set_proj
