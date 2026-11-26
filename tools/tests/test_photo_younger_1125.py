@@ -78,5 +78,33 @@ with tempfile.TemporaryDirectory() as td:
     facts = {f["name"]: f["age"] for j, f in F._sheet_facts(plan, st, refs)}
     check("the sheet check holds them to the look's age, and nobody drawn as photographed", facts.get("Orla") == 25 and facts.get("Tam") is None, facts)
 
+# --- the age is read when photographs are stored, and for ones stored before -----------------------------------------
+from tts_reader import bookcaster as BC
+with tempfile.TemporaryDirectory() as td:
+    book = Path(td) / "book"
+    vd = book / "work" / "video"
+    (vd / "refs").mkdir(parents=True)
+    (vd / "look.json").write_text(json.dumps({"characters": {"Orla": "a slim woman of 25, dark hair, wearing a green gown"}}))
+    d = vd / "faces" / "orla"
+    d.mkdir(parents=True)
+    Image.new("RGB", (300, 400), "grey").save(d / "photo1.png")
+    sheet = vd / "refs" / "orla-0123abcd.png"
+    Image.new("RGB", (8, 8)).save(sheet)
+    asked = []
+    def look_at(url, model, png, q):
+        asked.append(q)
+        return "front" if q is V.VIEW_ASK else "She looks about 46." if q is V.PHOTO_AGE_ASK else "no box"
+    V._look_at = look_at
+    who, redraw = BC.add_photos(book, "Orla", [], log=lambda m: None)
+    check("stored photographs are read again with no new one: the view and the age",
+          V.photo_ages(d) == {"photo1.png": 46} and V.photo_views(d) == {"photo1.png": "front"}, (V.photo_ages(d), asked))
+    check("the look is younger than they read: the sheet is drawn again", redraw and not sheet.exists())
+    n = len(asked)
+    Image.new("RGB", (8, 8)).save(sheet)
+    (d / "age25").mkdir()
+    Image.new("RGB", (8, 8)).save(d / "age25" / "photo1.png")
+    who, redraw = BC.add_photos(book, "Orla", [], log=lambda m: None)
+    check("once they are shown at the look's age nothing is asked or drawn again", not redraw and sheet.exists() and len(asked) == n, (redraw, len(asked), n))
+
 print("all passed" if not fails else f"FAILED: {fails}")
 sys.exit(1 if fails else 0)
