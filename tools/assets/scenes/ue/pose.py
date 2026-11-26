@@ -442,33 +442,77 @@ def pose_hand_joined(s, p):
     _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", 0.0))
 
 
+PARTNER_BONES = ("pelvis", "spine_03", "upperarm_l", "upperarm_r", "neck_01", "head")
+
+
+def partner_points(actor, partner_body):
+    """The partner's own bones as they stand (their reference pose, where the scene has put them), in this actor's
+    frame: what a pose that rests on another person aims at (their real shoulder, back and middle, not a guess from
+    this body's size)."""
+    sk = Skel(actor, partner_body)
+    return {b: [round(c, 2) for c in sk.pos[b]] for b in PARTNER_BONES if b in sk.pos}
+
+
+def _partner(s, p, gap):
+    """The partner's bones in this body's frame: the scene's (params "partner"), else a body like this one turned
+    about and gap ahead."""
+    got = p.get("partner")
+    if got and all(b in got for b in PARTNER_BONES[:4]):
+        return {b: list(v) for b, v in got.items()}
+    me = s.ref_pos["pelvis"]
+    flip = {"upperarm_l": "upperarm_l", "upperarm_r": "upperarm_r"}
+    return {b: [me[0] - (s.ref_pos[flip.get(b, b)][0] - me[0]), me[1] + gap - (s.ref_pos[b][1] - me[1]),
+                s.ref_pos[b][2]] for b in PARTNER_BONES if b in s.ref_pos}
+
+
 def pose_dance_hold(s, p):
-    """A dance's closed hold, facing the partner gap_m ahead. role "lead": the right hand at the partner's back
-    below their shoulder blade, the left hand out to the side holding the partner's right. role "follow": the left
-    hand on the leader's right shoulder, the right hand out to the side in the leader's left. The joined hands meet
-    half way between the two bodies at one height for both (join_z_m); elbows down and out, never a straight arm."""
+    """A dance's closed hold, facing the partner gap_m ahead. role "lead": the right hand round the partner's left side onto their
+    back below the shoulder blade, the left hand out to the side holding the partner's right. role "follow": the
+    left hand on top of the leader's right shoulder, the right hand out to the side in the leader's left. Every
+    target is taken from the two bodies as they stand (the partner's bones, params "partner"), and the joined hands'
+    point is one point of the room for both: beside the middle of the two, at the follower's shoulder height, each
+    wrist a palm short of it on its own side so the palms meet and the fingers close over the other hand (each
+    aiming from its own hips and its own height, the two hands ended a forearm apart and the follower's hand hung in
+    the air past the leader's shoulder, 11-26). Elbows down and out, never a straight arm."""
     lead = p.get("role", "lead") == "lead"
-    gap = p.get("gap_m", 0.45) * 100
+    gap = p.get("gap_m", 0.38) * 100
+    pt = _partner(s, p, gap)
+    me = {b: list(s.ref_pos[b]) for b in PARTNER_BONES if b in s.ref_pos}
     _weight_on(s, p.get("weight_on", "l"), p.get("shift_cm", 1.5), p.get("knee_cm", 3.0))
     _turn(s, p.get("chest_deg", 0.0), 0.0)
-    px, py = s.pos["pelvis"][0], s.pos["pelvis"][1]
-    jz = p.get("join_z_m", 1.36) * 100
-    side = p.get("join_out_cm", 36.0)
+    ld, fo = (me, pt) if lead else (pt, me)
+    d = [fo["pelvis"][0] - ld["pelvis"][0], fo["pelvis"][1] - ld["pelvis"][1]]
+    n = math.hypot(*d) or 1.0
+    u = [d[0] / n, d[1] / n, 0.0]                       # from the leader to the follower, level
+    left = [u[1], -u[0], 0.0]                           # the leader's left
+    mid = [(ld["pelvis"][0] + fo["pelvis"][0]) / 2, (ld["pelvis"][1] + fo["pelvis"][1]) / 2]
+    fo_sh = (fo["upperarm_l"][2] + fo["upperarm_r"][2]) / 2
+    jz = p["join_z_m"] * 100 if "join_z_m" in p else fo_sh + p.get("join_up_cm", 6.0)
+    side, palm = p.get("join_out_cm", 34.0), p.get("palm_cm", 4.0)
+    join = [mid[0] + left[0] * side, mid[1] + left[1] * side, jz]
     if lead:
-        # (the partner faces us: their left shoulder blade is on our right, a little past their middle)
-        tg = {"r": [px - 13.0, py + gap + p.get("back_past_cm", 7.0), p.get("back_z_m", 1.20) * 100],
-              "l": [px + side, py + gap / 2, jz]}
-        aim = {"r": [0.8, 0.55, 0.05], "l": [0.1, 0.55, 0.8]}
+        sp_, sh_ = fo["spine_03"], fo["upperarm_l"]
+        tg = {"l": [join[0] - u[0] * palm, join[1] - u[1] * palm, jz],
+              "r": [sp_[0] + u[0] * p.get("back_cm", 3.0) - left[0] * p.get("back_side_cm", 13.0),
+                    sp_[1] + u[1] * p.get("back_cm", 3.0) - left[1] * p.get("back_side_cm", 13.0),
+                    sh_[2] - p.get("back_down_cm", 17.0)]}
+        aim = {"l": [u[0] * 0.35, u[1] * 0.35, 0.9], "r": [left[0] * 0.7 + u[0] * 0.7, left[1] * 0.7 + u[1] * 0.7, 0.05]}
     else:
-        tg = {"l": [px + 17.0, py + gap - 3.0, p.get("shoulder_z_m", s.pos["clavicle_l"][2] / 100 + 0.04) * 100],
-              "r": [px - side, py + gap / 2, jz]}
-        aim = {"l": [-0.1, 0.9, -0.3], "r": [-0.1, 0.55, 0.8]}
+        sh_ = ld["upperarm_r"]
+        tg = {"r": [join[0] + u[0] * palm, join[1] + u[1] * palm, jz],
+              "l": [sh_[0] + u[0] * p.get("shoulder_short_cm", 12.0), sh_[1] + u[1] * p.get("shoulder_short_cm", 12.0),
+                    sh_[2] + p.get("shoulder_up_cm", 9.0)]}
+        aim = {"r": [-u[0] * 0.35, -u[1] * 0.35, 0.9], "l": [-u[0], -u[1], -0.2]}
     for hand in ("l", "r"):
         sx = 1.0 if hand == "l" else -1.0
         _ik(s, f"upperarm_{hand}", f"lowerarm_{hand}", f"hand_{hand}", tg[hand],
             add(s.pos[f"lowerarm_{hand}"], [sx * 30.0, -5.0, -22.0]))
         s.aim(f"hand_{hand}", f"middle_01_{hand}", aim[hand])
-        _curl(s, hand, 18, 10)
+    joined = "l" if lead else "r"
+    _curl(s, joined, p.get("clasp_deg", 38), 22)
+    _curl(s, "r" if lead else "l", 12, 8)
+    s.info["hold"] = {"join": [round(c, 1) for c in join], "role": "lead" if lead else "follow",
+                      "partner": "scene" if p.get("partner") else "like self"}
     _turn(s, 0.0, p.get("head_deg", 0.0), p.get("head_tilt", 0.0))
 
 

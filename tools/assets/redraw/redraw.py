@@ -594,7 +594,7 @@ def facing_to_words(sd: Path, ppl: list, cast: dict | None) -> str:
                 if how == "dancing together":
                     out.append(f"{who} and {tgt} dance together in a closed hold, close to each other: one's hand at "
                                "the other's back, the other's hand on the first one's shoulder, their other two "
-                               "hands joined and held out to the side at shoulder height.")
+                               "hands joined palm in palm and held out to the side at shoulder height; both arms of each are in the hold.")
                 elif how == "touching":
                     out.append(f"{who} and {tgt} hold each other by the hand, their joined hands between them at "
                                "waist height.")

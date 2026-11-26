@@ -593,6 +593,9 @@ def run(job):
             if bp and bp.get("pose"):
                 a, body, face = comps(key)
                 keep_ = {}
+                if spec.get("near_to") in job["characters"] and spec["near_to"] != key:
+                    # a pose that rests on the one they are with aims at that person's own body as it stands
+                    bp.setdefault("params", {})["partner"] = PO.partner_points(a, comps(spec["near_to"])[1])
                 anim, info = PO.build(a, body, bp["pose"], bp.get("params"), f"/Game/Scene/Poses/AS_{job['id']}_{key}",
                                       keep=keep_)
                 bp["_anim"] = anim

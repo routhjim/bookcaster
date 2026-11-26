@@ -339,7 +339,7 @@ def looks_on(p: dict, people: list) -> bool:
 JOIN_REACH_M = 0.62       # how far ahead of the body a joined hand is held at most (an arm not quite straight)
 # how far apart two stand by how near the staging pass has them (m, between their middles); the others keep the
 # distance their placing gave them
-NEAR_GAP_M = {"dancing together": 0.45, "touching": 0.7, "close": 0.8}
+NEAR_GAP_M = {"dancing together": 0.38, "touching": 0.7, "close": 0.8}
 
 
 def near_of(name: str, shot_ids: list, sp: dict, order: list | None = None) -> tuple:
