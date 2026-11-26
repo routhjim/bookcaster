@@ -445,6 +445,15 @@ def settle(fed: dict, logs: dict, again: set) -> tuple:
     return move, left
 
 
+def current_keys(rows: list, keys_done: bool, shots: list) -> list:
+    """A place's key table as it counts in the report: its own while the place's keys step stands; a place that
+    stopped before it has no key (its table and pictures are an earlier run's, of another staging: a place whose
+    staging failed at once was counted 5 of 5 and the job called done, 11-26)."""
+    if keys_done:
+        return rows
+    return [{"shot": i, "key": False, "why": "the place stopped before its keys were made"} for i in shots]
+
+
 def rows_of(files: list) -> list:
     return [x for f_ in files if Path(f_).exists() for x in Path(f_).read_text().splitlines() if x.strip()]
 
@@ -1883,6 +1892,7 @@ class Story:
         for place in self.places:
             kp = self.d(place) / "keys.json"
             rows = json.loads(kp.read_text()) if kp.exists() else []
+            rows = current_keys(rows, self.done(place, "keys") or self.done(place, "drawn"), self.shots_of(place))
             have = sum(bool(r["key"]) and (self.keys / f"{r['shot']}_s0.png").exists() for r in rows)
             # (a key kept from a least-bad staging that shows nobody readable is a picture, not a good key: the
             # count said 34 of 34 with five such among them, 11-18)
