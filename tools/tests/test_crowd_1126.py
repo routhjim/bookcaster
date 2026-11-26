@@ -25,15 +25,19 @@ def test_a_full_place_stands_more_figures_of_the_same_few_looks():
     many = [p for p in PB.with_crowd(dict(base, _crowd_size="many"))["pieces"] if p["kind"] == "bystander"]
     assert len(few) == 4 and len(many) == PB.CROWD_MANY_MAX            # 96 m2: one to 20 m2, one to 8 m2 (capped)
     assert len({p["look"] for p in many}) == 4                         # two groups, two looks of each, stood again
+    assert {p["against"] for p in many} == {"wall"} and {p["against"] for p in few} == {"free"}
+    who = PB.crowd_line(dict(base, _crowd_who="fair-goers in Sunday clothes"))
+    assert who.startswith("fair-goers in Sunday clothes; townsfolk")
     assert PB.with_crowd(dict(base, crowd=""))["pieces"] == []
 
 
 def test_how_full_a_place_is_is_asked(tmp_path, monkeypatch):
-    for ans, want in (("many", "many"), ("Few.", "few"), ("none", "none"), ("I cannot say", "few")):
+    for ans, want in (("many: fair-goers in their Sunday clothes.", ("many", "fair-goers in their sunday clothes")),
+                      ("Few", ("few", "")), ("none: nobody", ("none", "")), ("I cannot say", ("few", ""))):
         monkeypatch.setattr(PS, "ask", lambda url, text, cache, a=ans: a)
         assert PS.crowd_size("The Hall", {"crowd": "townsfolk"}, "Orla crossed the hall.", "u", tmp_path) == want
     monkeypatch.setattr(PS, "ask", lambda url, text, cache: "?")
-    assert PS.crowd_size("The Hall", {}, "Orla crossed the hall.", "u", tmp_path) == "none"
+    assert PS.crowd_size("The Hall", {}, "Orla crossed the hall.", "u", tmp_path) == ("none", "")
 
 
 def test_a_full_place_is_drawn_full():

@@ -872,6 +872,8 @@ def main():
             # the drawing's arm angle: the fit finds the hands along it and poses the body's arms to them (binding in
             # the drawing's own pose, whatever the angle)
             job["draw_deg"] = drawing_deg(drawing)
+            # (a coat or cloak worn over the clothes is itself thick: more depth allowed over the body's chest)
+            job["clothed_depth"] = 1.35 if (ch.get("garment") or {}).get("outer_layer") else 1.15
             # the drawn figure's hair hangs below its neck (long, or worn down): the fit removes hair left standing
             # off the shoulders after the cut
             va_ = (ch.get("scores") or {}).get("vlm_answers") or {}
@@ -882,7 +884,7 @@ def main():
                 # coat skirt and no collar lift on a figure whose accepted fit had both); the skin rules stay
                 base_j = json.loads(Path(a.fit_base).read_text())
                 keep = {k: job[k] for k in ("body_fbx", "head_fbx", "figure_glb", "out", "head_push_r_m", "skin_mask",
-                                            "liner", "neckline", "hair_hangs", "draw_deg")}
+                                            "liner", "neckline", "hair_hangs", "draw_deg", "clothed_depth")}
                 job.clear()
                 job.update(base_j)
                 job.update(keep)
