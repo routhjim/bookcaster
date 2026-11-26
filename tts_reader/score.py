@@ -40,6 +40,21 @@ def _chat(url: str, model: str, prompt: str, max_tokens: int = 3000) -> str:
         return json.loads(resp.read())["choices"][0]["message"]["content"]
 
 
+# Music the story's people hear is the scene's music, not a mood laid over it (11-26: a dance at a ball was scored as
+# a low drone, then pizzicato, then a solo wind, a new mood piece per exchange, and never as the music danced to).
+HEARD_RULE = (
+    "\nMusic that is played IN the scene comes first. While the people of the "
+    "story hear music, the cue's music is THAT music: what would be played "
+    "there, in the instruments and the dance or song form of the story's own "
+    "time and place, at the tempo it is danced or sung to. It goes on for as "
+    "long as it is played in the story: score that whole stretch without a "
+    "gap, and when the stretch takes more than one cue each is the same kind "
+    "of music by the same players. The mood of what is said there only "
+    "shades how it is played (lighter, heavier, a darker key); it never "
+    "replaces the music with an underscore of another kind.\n"
+)
+
+
 def plan_scenes(paras: list[str], llm_url: str, model: str = "default",
                 max_cues: int = 9, style: str = "") -> list[dict]:
     numbered = "\n\n".join(f"[P{i}] {p}" for i, p in enumerate(paras))
@@ -65,10 +80,13 @@ def plan_scenes(paras: list[str], llm_url: str, model: str = "default",
         "- bpm: tempo (40-140)\n"
         "- key: e.g. 'D minor'\n"
         "- intensity: 0.0-1.0 (how present the music should be)\n"
-        + direction + "\n"
+        "- heard: true when the people in the scene hear music themselves "
+        "(musicians, a player or a singer are playing where they are, or "
+        "they are dancing to it), else false\n"
+        + HEARD_RULE + direction + "\n"
         'Reply with ONLY JSON: {"cues": [{"start": 0, "end": 3, "scene": "...", '
         '"mood": "...", "music": "...", "bpm": 70, "key": "D minor", '
-        '"intensity": 0.4}]}\n\n'
+        '"intensity": 0.4, "heard": false}]}\n\n'
         f"Chapter:\n{numbered}"
     )
     reply = _chat(llm_url, model, prompt)
@@ -83,7 +101,7 @@ def plan_scenes(paras: list[str], llm_url: str, model: str = "default",
         s, e = max(s, last + 1), min(e, len(paras) - 1)
         if s > e:
             continue
-        clean.append({**c, "start": s, "end": e})
+        clean.append({**c, "start": s, "end": e, "heard": c.get("heard") is True})
         last = e
     return clean
 
