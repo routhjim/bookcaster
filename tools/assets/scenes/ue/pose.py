@@ -500,9 +500,11 @@ def pose_dance_hold(s, p):
     else:
         sh_ = ld["upperarm_r"]
         tg = {"r": [join[0] + u[0] * palm, join[1] + u[1] * palm, jz],
-              "l": [sh_[0] + u[0] * p.get("shoulder_short_cm", 12.0), sh_[1] + u[1] * p.get("shoulder_short_cm", 12.0),
-                    sh_[2] + p.get("shoulder_up_cm", 9.0)]}
-        aim = {"r": [-u[0] * 0.35, -u[1] * 0.35, 0.9], "l": [-u[0], -u[1], -0.2]}
+              # the wrist a hand's thickness over the shoulder joint and barely short of it, the fingers lying down
+              # over the shoulder (12 cm short and 9 up, the hand hung in the air before her own face, 11-26)
+              "l": [sh_[0] + u[0] * p.get("shoulder_short_cm", 5.0), sh_[1] + u[1] * p.get("shoulder_short_cm", 5.0),
+                    sh_[2] + p.get("shoulder_up_cm", 4.0)]}
+        aim = {"r": [-u[0] * 0.35, -u[1] * 0.35, 0.9], "l": [-u[0], -u[1], -0.55]}
     for hand in ("l", "r"):
         sx = 1.0 if hand == "l" else -1.0
         _ik(s, f"upperarm_{hand}", f"lowerarm_{hand}", f"hand_{hand}", tg[hand],
