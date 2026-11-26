@@ -23,6 +23,7 @@ into a cast, scored audiobook. Built for an agent (or a person) to drive:
     bookcaster look <book> [--do "N = desc"]   show / change how a character looks
     bookcaster redraw <book> 12:30 [p021]      redraw pictures you don't like
                     [--music-only]             redo just the music, keep the voices
+                    [--music-only --chapter N] new music for one chapter (planned afresh)
     bookcaster jellyfin [<book>]               copy finished videos to the Jellyfin server
     bookcaster status [<book>]                 what's running / done
     bookcaster stop <book>                     cancel a job
@@ -1833,7 +1834,29 @@ def run_sfx_job(book: Path) -> int:
 
 
 @_runner
-def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: bool = False) -> int:
+def chapter_named(files: list, chapter) -> list:
+    """The chapter files a number ("4", "04") or a file stem names."""
+    c = str(chapter).strip()
+    return [f for f in files if f.stem == c or f.stem.startswith(c.zfill(2) + "_")]
+
+
+def had_sfx(book: Path, f: Path) -> bool:
+    """Whether the chapter's mix carries sound effects (they were planned for it)."""
+    return (book / "work" / "sfx" / f.stem / "plan.json").exists()
+
+
+def drop_score(book: Path, f: Path) -> list:
+    """The chapter's music plan and composed cues removed: its next score run plans the music afresh, under the
+    planner's rules as they are now (a plan is otherwise kept for good). -> what was removed"""
+    d = book / "work" / "score" / f.stem
+    gone = [q for q in [d / "plan.json", *sorted(d.glob("cue*.wav"))] if q.exists()]
+    for q in gone:
+        q.unlink()
+    return gone
+
+
+def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: bool = False,
+            chapter: str | None = None) -> int:
     """Everything after casting, in order: delivery cues and the scene plan
     (LLM), then the voices (Fish) while the music composes (ACE), then the
     mix. Finished files go to out/. *music_only* keeps the existing voice
@@ -1847,6 +1870,13 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
     if not files:
         _set_status(book, state="failed", step="nothing picked (bookcaster pick)")
         return 1
+    if music_only and chapter:          # one chapter's music made new: planned again, the other chapters untouched
+        files = chapter_named(files, chapter)
+        if not files:
+            _set_status(book, state="failed", step=f"no chapter {chapter} to redo the music of")
+            return 1
+        for f in files:
+            _logger(book)(f"  {f.stem}: new music asked for, {len(drop_score(book, f))} planned / composed file(s) dropped")
     if music and not http_ok(f"{ACE_URL}/health"):   # 10-27: the music job brings up what it needs
         subprocess.run(["bash", str(STACK), "up", "--music"], capture_output=True)
         for _ in range(60):
@@ -1973,7 +2003,8 @@ def run_job(book: Path, level: str = "music", music_only: bool = False, sfx: boo
                         f"`bookcaster make {book.name} --music-only` retries)")
             else:
                 mark_nomusic(book, f.stem, False)
-            if sfx and not video:            # a video's effects come after its animation (below)
+            # (redoing the music writes the mix anew: a chapter that had effects gets them back, 11-26)
+            if (sfx or (music_only and had_sfx(book, f))) and not video:   # a video's effects come after its animation (below)
                 _set_status(book, step=f"sound effects {n}/{len(files)}: {f.stem}")
                 try:
                     sfx_for(book, f, final, _logger(book))
@@ -2435,6 +2466,8 @@ def start_job(book: Path, level: str = "music", music_only: bool = False,
         cmd.append("--sfx-only")
     if music_only:
         cmd.append("--music-only")
+        if chapter and not flow3d:
+            cmd += ["--chapter", str(chapter)]
     if video_only:
         cmd.append("--video-only")
     if flow3d:
@@ -2737,6 +2770,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-music", action="store_true", help="same as --level audio")
     s.add_argument("--music-only", action="store_true",
                    help="keep the recorded voices, redo only the music (after `music` changes the style)")
+    s.add_argument("--chapter", default=None,
+                   help="with --music-only: plan and compose this chapter's music afresh, the others untouched")
     s.add_argument("--video", action="store_true", help="same as --level pictures")
     s.add_argument("--sfx", action="store_true",
                    help="add sound effects (ambience + spot effects); on by default for the video levels")
@@ -2967,7 +3002,11 @@ def main(argv: list[str] | None = None) -> int:
         # videos get sound effects unless told not to (user 10-18: "why didn't the sound effects go in
         # by default?"); audio-only levels keep them opt-in
         sfx = (a.sfx or at_least(level, "pictures")) and not a.no_sfx
-        start_job(d, level=level, music_only=a.music_only, sfx=sfx)
+        if a.chapter and not a.music_only:
+            sys.exit("--chapter goes with --music-only (new music for one chapter)")
+        if a.chapter and not chapter_named(chapter_files(d), a.chapter):
+            sys.exit(f"no chapter {a.chapter} in {d.name}")
+        start_job(d, level=level, music_only=a.music_only, sfx=sfx, chapter=a.chapter)
         if at_least(level, "moments"):
             print(estimate_text(d, only=level))
         print(f"recording {d.name} in the background — `bookcaster status {d.name}`; "
@@ -3045,7 +3084,8 @@ def main(argv: list[str] | None = None) -> int:
                 return run_sfx_job(Path(a.book))
             if a.video_only:
                 return run_video_job(Path(a.book), a.level)
-            return run_job(Path(a.book), a.level, music_only=a.music_only, sfx=a.sfx)
+            return run_job(Path(a.book), a.level, music_only=a.music_only, sfx=a.sfx,
+                           chapter=a.chapter if a.music_only else None)
         return run_held(Path(a.book), job)
     elif a.cmd == "estimate":
         print(estimate_text(book_dir(a.book)))
