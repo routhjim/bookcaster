@@ -857,7 +857,9 @@ def run_job(d: Drawer, j: dict) -> dict:
             "rss_peak_gb": round(st.get("VmHWM", 0) / 2**20, 2)}          # pages (page cache) touched at load
 
 
-SERVE_JOB_S = float(os.environ.get("QWEN_SERVE_JOB_S", "300"))   # one picture takes well under a minute
+# (a card that hung on its first picture held three of six drawing phases for 300 s each, 11-26; the slowest
+# picture seen, the first after a load, took 33 s)
+SERVE_JOB_S = float(os.environ.get("QWEN_SERVE_JOB_S", "120"))   # one picture takes well under a minute
 # (not 75: the asset line reads 75 as "a resource was busy, run me again" and started the server anew on a feed
 # already half read; the new server died on the broken row, and the pictures waited seven minutes for a card that
 # was to be given up at once, 11-26)
