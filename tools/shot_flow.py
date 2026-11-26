@@ -6232,9 +6232,22 @@ def loras_beside(book: Path, stem: str, log=print, es: list | None = None):
     if not todo:
         return None
     rank = lora_rank(book, stem, es or [], todo)
+    todo, later = stretch_todo(todo, rank)
+    if later:
+        log(f"LoRAs: {len(later)} of the chapter's cast are in none of this stretch's moments or lines and wait for "
+            f"a stretch they are in: {later}")
     animate.igpu("strata", log)
     return _Loras(book, RG.Book(book), {n: w for n, w in todo.items() if w != flow3d.FAILED_BEFORE}, rank,
-                  lambda landed: flow3d.ensure_loras(book, log, only=cast, rank=rank, landed=landed), log)
+                  lambda landed: flow3d.ensure_loras(book, log, only=set(todo), rank=rank, landed=landed), log)
+
+
+def stretch_todo(todo: dict, rank: dict) -> tuple:
+    """The LoRAs to build for this stretch: those of the people in its moments or lines (11-25: five shots of two
+    people waited on the builds of a chapter's cast of nineteen). When the moments name nobody at all (rank all
+    zero) nothing can be told apart and everyone's is built, as before. -> (to build now, the names left for later)"""
+    if not any(rank.get(n) for n in todo):
+        return todo, []
+    return {n: w for n, w in todo.items() if rank.get(n)}, sorted(n for n in todo if not rank.get(n))
 
 
 def lora_rank(book: Path, stem: str, es: list, names) -> dict:

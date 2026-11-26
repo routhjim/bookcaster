@@ -98,6 +98,11 @@ with tempfile.TemporaryDirectory() as td:
                 "m1": [{"id": "m1_s1"}, {"id": "m1_s2"}], "m2": [{"id": "m2_s1"}]}, d)
     check("... and reads back as the engine flow's shots", [s["id"] for s in E.plan_shots(fz)] == ["m1_s1", "m1_s2", "m2_s1"])
 
+# --- only the stretch's people's LoRAs are built ---------------------------------------------------------------------
+td_ = {"Orla": "stale", "Tam": "stale", "Wren": "picked again"}
+check("the LoRAs of people in none of the stretch's moments wait", SF2.stretch_todo(td_, {"Orla": 3, "Tam": 0, "Wren": 1}) == ({"Orla": "stale", "Wren": "picked again"}, ["Tam"]))
+check("moments that name nobody: everyone's is built, as before", SF2.stretch_todo(td_, {"Orla": 0, "Tam": 0}) == (td_, []))
+
 # --- the retired commands --------------------------------------------------------------------------------------------
 from tts_reader import bookcaster as BC
 for argv in (["assets", "orla", "--do"], ["stage", "orla", "--chapter", "1", "--do"], ["review", "orla"],

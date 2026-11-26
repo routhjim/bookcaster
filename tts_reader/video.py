@@ -1572,6 +1572,15 @@ def draw(pics: list[dict], img_dir: Path, log=print, plan: dict | None = None,
     draw_jobs(jobs, img_dir, log)
 
 
+def draw_waves(jobs: list[dict]) -> tuple:
+    """(the jobs that can be drawn now, the ones whose reference is a picture another job of the batch has yet to
+    draw). Nothing waits when none does, or when every job waits on another (drawn together, as before)."""
+    todo = {j["path"] for j in jobs}
+    waits = lambda j: any(r in todo and r != j["path"] and not Path(r).exists() for r in j.get("refs") or [])  # noqa: E731
+    first = [j for j in jobs if not waits(j)]
+    return (first, [j for j in jobs if waits(j)]) if first and len(first) < len(jobs) else (jobs, [])
+
+
 def draw_jobs(jobs: list[dict], img_dir: Path, log=print, on_done=None) -> None:
     """Run ready-made drawing jobs ({id, prompt, seed, path, refs?, size?}) in
     one model load, in order (a job may use an earlier job's picture as a
@@ -1582,6 +1591,10 @@ def draw_jobs(jobs: list[dict], img_dir: Path, log=print, on_done=None) -> None:
     jobs = [j for j in jobs if not Path(j["path"]).exists()]
     if not jobs:
         return
+    first, then = draw_waves(jobs)
+    if then:                             # a picture drawn from another of the batch waits for it (11-25: a sheet in
+        draw_jobs(first, img_dir, log, on_done)   # one batch with the photographs it is drawn from was not drawn:
+        return draw_jobs(then, img_dir, log, on_done)   # "prompt not encoded before the encoder was freed")
     img_dir.mkdir(parents=True, exist_ok=True)
     log(f"  drawing {len(jobs)} picture(s)...")
     t = time.time()
