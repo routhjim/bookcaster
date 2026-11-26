@@ -80,7 +80,7 @@ def test_the_hold_is_aimed_at_the_partners_own_body_whatever_their_size_and_plac
         assert 6.0 < spine[0] - back[0] < 20.0                                   # (their left: the leader's right)
         assert lead.pos["middle_01_r"][1] > back[1] and lead.pos["middle_01_r"][0] > back[0]   # the hand goes on round the back
         top, sh = to_lead(fol.pos["hand_l"]), P["upperarm_r"]
-        assert math.dist(top[:2], sh[:2]) < 16.0 and 4.0 < top[2] - sh[2] < 14.0, (small, off, top, sh)
+        assert math.dist(top[:2], sh[:2]) < 9.0 and 2.0 < top[2] - sh[2] < 8.0, (small, off, top, sh)   # resting on it
         tip = to_lead(fol.pos["middle_01_l"])
         assert math.dist(tip[:2], sh[:2]) < math.dist(top[:2], sh[:2]) + 1.0      # the hand lies toward the shoulder
         assert lead.info["hold"]["partner"] == "scene"
