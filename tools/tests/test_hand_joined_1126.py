@@ -127,6 +127,38 @@ def test_two_who_dance_go_on_dancing_through_shots_that_do_not_say():
     sp = {"near": {"s2": [["Orla", "Tam", "dancing together"]], "s5": [["Orla", "Tam", "apart"]]}}
     order = ["s1", "s2", "s3", "s4", "s5", "s6"]
     assert FP.near_of("Orla", ["s3", "s4"], sp, order) == ("Tam", "dancing together")
-    assert FP.near_of("Orla", ["s6"], sp, order) == ("Tam", "apart")              # the latest said
+    assert FP.near_of("Orla", ["s6"], sp, order) == (None, None)                  # the latest said ends it
     assert FP.near_of("Orla", ["s1"], sp, order) == (None, None)                   # nothing before it
     assert FP.near_of("Orla", ["s3"], sp) == (None, None)
+
+
+def test_only_what_two_go_on_doing_is_carried_and_the_nearest_band_is_theirs():
+    sp = {"near": {"s2": [["Dr. Marsh", "Tam", "close"], ["Orla", "Tam", "dancing together"]],
+                   "s3": [["Dr. Marsh", "Orla", "close"]]}}
+    order = ["s1", "s2", "s3", "s4"]
+    assert FP.near_of("Tam", ["s2"], sp, order) == ("Orla", "dancing together")      # not the one who stepped up
+    assert FP.near_of("Dr. Marsh", ["s2"], sp, order) == ("Tam", "close")
+    assert FP.near_of("Dr. Marsh", ["s4"], sp, order) == (None, None)                # stepping up is of its shot
+    assert FP.near_of("Tam", ["s4"], sp, order) == ("Orla", "dancing together")      # the dance goes on
+    assert FP.near_of("Orla", ["s4"], sp, order) == ("Tam", "dancing together")      # a third ended nothing
+
+
+def test_one_who_comes_near_keeps_clear_of_the_others():
+    partner, third = [0.38, 0.0], [0.0, 0.0]
+    q = FP.near_position([-1.2, 0.3], partner, "close", [third])
+    assert abs(math.dist(q, partner) - FP.NEAR_GAP_M["close"]) < 0.01 and math.dist(q, third) >= FP.NEAR_CLEAR_M
+    assert FP.near_position([-1.2, 0.3], partner, "close") != q                      # (the straight line was not clear)
+    assert FP.near_position([2.0, 0.0], [0.0, 0.0], "close", [[5.0, 5.0]]) == [0.8, 0.0]
+
+
+def test_a_scene_that_opens_on_shots_listing_nobody_takes_the_first_listing():
+    who = [{"name": "Orla", "at": "in the reel"}, {"name": "Tam", "at": "in the reel"}]
+    plan = {"s1": [{"kind": "talk", "speaker": "Orla"}], "s2": [{"kind": "talk", "speaker": "Tam"}],
+            "s3": [{"kind": "action", "people": who}], "s4": [{"kind": "talk", "speaker": "Orla"}],
+            "s5": [{"kind": "talk", "speaker": "Tam"}], "s6": [{"kind": "action", "people": who[:1]}]}
+    got = FP.open_with_people(plan, list(plan), [0, 0, 0, 0, 1, 1])
+    assert got == {"s1": "s3", "s2": "s3"}
+    assert plan["s1"][0]["people"] == who and plan["s1"][0]["people"] is not who and plan["s1"][0]["speaker"] == "Orla"
+    assert "people" not in plan["s4"][0] and "people" not in plan["s5"][0]     # carried from before, as ever
+    plan2 = {"s1": [{"kind": "talk"}], "s2": [{"kind": "talk"}]}
+    assert FP.open_with_people(plan2, ["s1", "s2"], [0, 0]) == {} and "people" not in plan2["s1"][0]
