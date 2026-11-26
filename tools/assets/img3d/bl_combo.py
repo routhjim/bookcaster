@@ -278,6 +278,29 @@ def _depth_squeeze(body_m, figure_m, allow, slack=1.05):
     return want / float(figure_m)
 
 
+def _narrow_x(x, z, cx, xs, k, z_full, z_none):
+    """The figure's sideways coordinates with its trunk and legs made narrower by K about the middle line CX: inside
+    the shoulders' line (XS each side of the middle) a point comes K times as far from the middle; outside it (the
+    arms, held out to the sides) a point moves in by what the shoulder moved and keeps its distance from it, so no
+    arm is made shorter. Below Z_FULL in full, above Z_NONE (the head) not at all, blended between. numpy arrays in,
+    the new x out."""
+    import numpy as _np
+    d = x - cx
+    a = _np.abs(d)
+    moved = _np.where(a <= xs, d * k, _np.sign(d) * (xs * k + (a - xs)))
+    w = _np.clip((z_none - z) / max(z_none - z_full, 1e-6), 0.0, 1.0)
+    return cx + d + (moved - d) * w
+
+
+def _trunk_width(P, cx, xs, z0, z1):
+    """The breadth of a body or figure between two heights, inside the shoulders' line (the arms left out)."""
+    import numpy as _np
+    m = (P[:, 2] > z0) & (P[:, 2] < z1) & (_np.abs(P[:, 0] - cx) < xs)
+    if int(m.sum()) < 20:
+        return 0.0
+    return float(_np.quantile(P[m, 0], 0.99) - _np.quantile(P[m, 0], 0.01))
+
+
 # ------------------------------------------------------------------ 1. scale and place
 t = time.time()
 zmin, zmax = co[:, 2].min(), co[:, 2].max()
@@ -335,6 +358,19 @@ _k = _depth_squeeze(bb - bf, fb - ff, JOB.get("clothed_depth", 1.15))
 if _k < 1.0:                    # the whole figure, about the middle of the chest (its head is as much too deep)
     co[:, 1] = (bf + bb) / 2 + (co[:, 1] - (bf + bb) / 2) * _k
     REP["chest_depth_m"].update(squeezed_by=round(float(_k), 3), figure_after=round(float((fb - ff) * _k), 3))
+# the breadth too: a figure is as broad through the waist as its drawing, and a drawing of a slim man in a coat came
+# out 0.47 m through the waist on a body of 0.27 m (11-26, after its words and its depth were put right: he still
+# stood heavy in every key). The trunk and legs inside the shoulders' line are narrowed to the body's own breadth
+# there times an allowance for clothes; the arms come in with the shoulders, the head is left alone
+_xs = abs(J("upperarm_l").x - cx) + float(JOB.get("trunk_past_shoulder_m", 0.10))
+_z0, _z1 = J("spine_01").z, J("spine_03").z           # (the waist: below it a coat's skirts and a gown flare)
+_bw, _fw = _trunk_width(bco0, cx, _xs, _z0, _z1), _trunk_width(co, cx, _xs, _z0, _z1)
+REP["waist_width_m"] = {"body": round(_bw, 3), "figure": round(_fw, 3)}
+_kw = _depth_squeeze(_bw, _fw, JOB.get("clothed_width", JOB.get("clothed_depth", 1.15) + 0.10))
+_kw = max(_kw, float(JOB.get("narrow_least", 0.7)))     # (never by more than this: a measure gone wrong ruins no figure)
+if _kw < 1.0:
+    co[:, 0] = _narrow_x(co[:, 0], co[:, 2], cx, _xs, _kw, J("spine_05").z, J("neck_01").z)
+    REP["waist_width_m"].update(narrowed_by=round(float(_kw), 3), figure_after=round(float(_fw * _kw), 3))
 REP["scale"] = round(float(s), 4)
 REP["height_m"] = round(float(top_z), 3)
 
