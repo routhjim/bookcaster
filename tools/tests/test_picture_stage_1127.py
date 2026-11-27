@@ -383,3 +383,33 @@ def test_a_cockpit_is_not_touched(tmp_path):
     a = PB.with_concept(spec_of(kind="cockpit"), concept_of(tmp_path, space="cockpit"))
     assert a["kind"] == "cockpit" and "_picture_stage" not in a and [p["kind"] for p in a["pieces"]] == ["vehicle_cabin"]
 
+
+
+def test_a_side_of_the_land_is_one_point_of_the_picture_from_front_to_back():
+    """No face of the solid runs from the picture's left half to its right: a side is its edge's point all through."""
+    U, V = np.meshgrid(np.linspace(0.1, 0.9, 4), np.linspace(0.1, 0.9, 3))
+    F = np.stack([U * 4, np.zeros_like(U), (1 - V) * 3], -1).reshape(-1, 3)
+    B = F + [0.0, 1.0, 0.0]
+    front_f, _ = CD._front(np.ones((2, 3), bool))
+    vtx, faces, uv = CD._closed(F, B, front_f, U, V)
+    left = uv[faces][..., 0] <= 0.5
+    assert not (left.any(1) & ~left.all(1)).any()
+    assert len(faces) == 2 * len(front_f) + 2 * 10            # front, back, and two faces to each of its 10 rim edges
+    side = faces[2 * len(front_f):]
+    assert np.ptp(vtx[side][..., 1], axis=1).max() == pytest.approx(1.0)        # each runs front to back
+    # the front's points are still the only ones on the left half (tops_of reads the land's height from them)
+    assert (uv[:, 0] <= 0.5).sum() == len(F)
+
+
+def test_what_hangs_over_seen_ground_shuts_none_of_it():
+    """A line of lamps over a floor is overhead; a wall on the floor, and a far house whose foot is hidden, stand."""
+    def col(x, y, zs):
+        return [[x, y, z] for z in zs]
+    pts = (col(0.5, 0.5, [0.0, 3.0, 3.2])                     # ground seen, lamps over it
+           + col(1.5, 0.5, [0.0, 0.5, 1.5, 3.0])              # a wall from the ground up
+           + col(2.5, 0.5, [3.0, 4.0])                        # a far house's top, its foot behind something
+           + col(3.5, 0.5, [0.0, 2.0, 3.0]))                  # a low bough: not clear
+    vtx = np.array(pts, float)
+    uv = np.full((len(vtx), 2), 0.25)
+    z = CD.tops_of(vtx, uv)["z"][0]
+    assert z == [0.0, 3.0, 4.0, 3.0]

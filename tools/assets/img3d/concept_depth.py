@@ -289,7 +289,13 @@ def _front(q) -> tuple:
 def _closed(F, B, front_f, U, V) -> tuple:
     """One solid of a front (points F, faces front_f) and its back (the same points at B): the back's faces turned
     away, every edge of the front that only one face has joined to the back. -> (points, faces, uv: the front on
-    the left half of a picture twice as wide, the back on its right)."""
+    the left half of a picture twice as wide, the back on its right). A side, from its front edge to the back, is
+    all of the picture's one point at that edge: its front edge's points are its own (the same places again, with
+    the back's uv), not the front's.
+
+    Why its own points: a side that ran from the front's point (the picture's left half) to the back's (its right
+    half) had half the width of the doubled picture drawn across it, and every edge of every thing in a picture's
+    land, seen from a side, was a band of the whole picture smeared lengthways (11-27)."""
     n0 = len(F)
     back_f = front_f[:, ::-1] + n0
     ed = np.concatenate([front_f[:, [0, 1]], front_f[:, [1, 2]], front_f[:, [2, 0]]])
@@ -297,11 +303,12 @@ def _closed(F, B, front_f, U, V) -> tuple:
     _, inv, cnt = np.unique(key[:, 0] * (2 * n0) + key[:, 1], return_inverse=True, return_counts=True)
     rim = ed[cnt[inv] == 1]
     u_, v_ = rim[:, 0], rim[:, 1]
-    side_f = np.concatenate([np.stack([u_, u_ + n0, v_ + n0], -1), np.stack([u_, v_ + n0, v_], -1)])
-    vtx = np.concatenate([F, B])
+    side_f = np.concatenate([np.stack([u_ + 2 * n0, u_ + n0, v_ + n0], -1),
+                             np.stack([u_ + 2 * n0, v_ + n0, v_ + 2 * n0], -1)])
+    vtx = np.concatenate([F, B, F])
     faces = np.concatenate([front_f, back_f, side_f])
     uv = np.stack([U.reshape(-1) / 2, 1.0 - V.reshape(-1)], -1)
-    uv = np.concatenate([uv, uv + [0.5, 0.0]])
+    uv = np.concatenate([uv, uv + [0.5, 0.0], uv + [0.5, 0.0]])
     keep = np.unique(faces)
     re_ = np.full(len(vtx), -1)
     re_[keep] = np.arange(len(keep))
@@ -521,17 +528,31 @@ def stage_land(pts, mask, fr: dict, things: dict, boxes: dict, image: np.ndarray
 
 
 TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wide
+TOPS_CLEAR_M = 2.5          # what the land has over a cell of seen ground no lower than this is overhead, not on it
 
 
 def tops_of(vtx, uv) -> dict:
     """How high the land's front stands over each cell of the ground (the set's frame): {"cell_m", "x0", "y0",
-    "z": rows from y0 up, each from x0 right}; the staging keeps people off what rises and cameras out of it."""
+    "z": rows from y0 up, each from x0 right}; the staging keeps people off what rises and cameras out of it.
+    A cell whose ground the picture shows, with nothing of the land over it lower than TOPS_CLEAR_M, stands at 0:
+    what is there hangs or spans overhead (a line of lamps, rigging, a bough, an arch's top), and people walk and
+    cameras stand under it.
+
+    Why: the highest point over a cell was how high the land stood there, so under every string of lamps and every
+    rope the picture showed over a floor nobody was stood and no camera placed: most of the floor was shut (11-27)."""
     f = vtx[uv[:, 0] <= 0.5]
     x0, y0 = float(np.floor(f[:, 0].min())), float(np.floor(f[:, 1].min()))
     j = ((f[:, 0] - x0) / TOPS_CELL_M).astype(int)
     i = ((f[:, 1] - y0) / TOPS_CELL_M).astype(int)
     z = np.zeros((i.max() + 1, j.max() + 1))
-    np.maximum.at(z, (i, j), np.maximum(f[:, 2], 0.0))
+    zf = np.maximum(f[:, 2], 0.0)
+    np.maximum.at(z, (i, j), zf)
+    low = np.full(z.shape, np.inf)                     # the lowest of what rises over the cell
+    up = zf > RELIEF_RISE_M
+    np.minimum.at(low, (i[up], j[up]), zf[up])
+    ground = np.zeros(z.shape, bool)                   # the picture shows the cell's own ground
+    ground[i[~up], j[~up]] = True
+    z[ground & (low >= TOPS_CLEAR_M)] = 0.0
     return {"cell_m": TOPS_CELL_M, "x0": x0, "y0": y0, "z": np.round(z, 1).tolist()}
 
 
