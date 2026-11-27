@@ -1770,7 +1770,10 @@ class Story:
         style = self.book / "art_style.txt"
         look = (style.read_text().strip().rstrip(".") + ".") if style.exists() else ""
         room = self._room_picture(place, rows) if rows else []
-        manner = [] if rows else self._look_picture(place)
+        # (no picture of another place as a reference for the manner: given a built place's key and told to take
+        # nothing shown in it, every drawing was that place with its people standing in it, and both shots of a
+        # place nobody stands in had no key at all, 11-27)
+        manner = []
         jobs, facts, vis_of = [], {}, {}
         for i in todo:
             s = self.plan[i][0]
@@ -1858,7 +1861,10 @@ class Story:
         if self.only_drawn(place):
             # (a place built again from its spec, `--rebuild`: a place only drawn is drawn again with it; kept, its
             # two pictures stayed as an older rule had drawn them through every rebuild of the place they cut from)
-            if not self.done(place, "drawn") or "drawn" in redo or "spec" in redo:
+            # ... and one whose drawing left a shot without a key is drawn again, not done)
+            kp_ = self.d(place) / "keys.json"
+            keyless = kp_.exists() and any(not r.get("key") for r in json.loads(kp_.read_text()))
+            if not self.done(place, "drawn") or "drawn" in redo or "spec" in redo or keyless:
                 log(f"{place}: drawn")
                 llm_down()
                 if self.step_drawn(place):

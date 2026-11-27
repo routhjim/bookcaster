@@ -113,8 +113,8 @@ def test_a_place_only_drawn_takes_its_manner_from_the_nearest_built_places_key()
         (s.keys / "m3_s0.png").write_bytes(b"x")
         assert s._look_picture("the Quay") in ([str(s.keys / "m1_s0.png")], [str(s.keys / "m3_s0.png")])
     src = Path(SK.__file__).read_text()
-    assert '"refs": sheets + room + manner' in src and "DRAWN_MANNER if manner" in src
-    assert "Nothing shown in that picture is taken over" in SK.DRAWN_MANNER
+    # (found, but not given to the drawing: the drawer copied the reference whole, place and people, 11-27)
+    assert "        manner = []\n" in src and "or keyless:" in src
     assert src.index("self.draw_all(places, after, redo)") < src.index("for place in late:")    # (after the keys)
     assert '"drawn" in redo or "spec" in redo' in src                 # (a rebuild draws such a place again)
 
