@@ -563,7 +563,11 @@ TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wid
 TOPS_CLEAR_M = 2.5          # what the land has over a cell of seen ground no lower than this is overhead, not on it
 
 
-def tops_of(vtx, uv) -> dict:
+SIGHT_CELL_M = 0.25         # ... and, for what stands in a camera's line of sight, in cells this wide (in metre
+#                             cells a mast was a wall a metre thick, and nobody near it could be seen)
+
+
+def tops_of(vtx, uv, cell: float | None = None) -> dict:
     """How high the land's front stands over each cell of the ground (the set's frame): {"cell_m", "x0", "y0",
     "z": rows from y0 up, each from x0 right}; the staging keeps people off what rises and cameras out of it.
     A cell whose ground the picture shows, with nothing of the land over it lower than TOPS_CLEAR_M, stands at 0:
@@ -572,10 +576,11 @@ def tops_of(vtx, uv) -> dict:
 
     Why: the highest point over a cell was how high the land stood there, so under every string of lamps and every
     rope the picture showed over a floor nobody was stood and no camera placed: most of the floor was shut (11-27)."""
+    cell = cell or TOPS_CELL_M
     f = vtx[uv[:, 0] <= 0.5]
     x0, y0 = float(np.floor(f[:, 0].min())), float(np.floor(f[:, 1].min()))
-    j = ((f[:, 0] - x0) / TOPS_CELL_M).astype(int)
-    i = ((f[:, 1] - y0) / TOPS_CELL_M).astype(int)
+    j = ((f[:, 0] - x0) / cell).astype(int)
+    i = ((f[:, 1] - y0) / cell).astype(int)
     z = np.zeros((i.max() + 1, j.max() + 1))
     zf = np.maximum(f[:, 2], 0.0)
     np.maximum.at(z, (i, j), zf)
@@ -585,7 +590,13 @@ def tops_of(vtx, uv) -> dict:
     ground = np.zeros(z.shape, bool)                   # the picture shows the cell's own ground
     ground[i[~up], j[~up]] = True
     z[ground & (low >= TOPS_CLEAR_M)] = 0.0
-    return {"cell_m": TOPS_CELL_M, "x0": x0, "y0": y0, "z": np.round(z, 1).tolist()}
+    out = {"cell_m": cell, "x0": x0, "y0": y0, "z": np.round(z, 1).tolist()}
+    if cell != TOPS_CELL_M:
+        # (the fine cells, for a line of sight: from how low what rises there begins too: under a line of lamps or
+        # a bough a camera sees whoever stands beyond it)
+        # (what begins within a step of where the land starts to count as risen stands on the ground)
+        out["lo"] = np.round(np.where(np.isfinite(low) & (z > 0) & (low > RELIEF_RISE_M + 0.3), low, 0.0), 1).tolist()
+    return out
 
 
 def write_relief(out: Path, vtx, faces, uv, image: np.ndarray) -> dict:
@@ -1225,7 +1236,7 @@ def main():
         if got:
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
-            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
+            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]), sight=tops_of(got[0], got[2], SIGHT_CELL_M))
     if made and fr:
         # a made floor: what its picture shows standing on and round the floor, in the room's own frame ("stage":
         # the set builder keeps the floor and sets this round it, sets/place_build.py picture_stage)
@@ -1236,7 +1247,7 @@ def main():
             print(f"no land: {e}", file=sys.stderr)
         if got:
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
-            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]), stage=True)
+            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]), sight=tops_of(got[0], got[2], SIGHT_CELL_M), stage=True)
     if not open_land and fr:
         # the picture on the room's own walls, floor and roof, where it sees them (room_faces)
         res["faces"] = write_faces(out_p, room_faces(pts, mask, intr, image, fr))
