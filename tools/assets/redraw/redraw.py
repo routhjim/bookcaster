@@ -479,8 +479,8 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
             # hung at the side in the right hand (the working hand's place, measured for a plain carry): in the
             # wide shots a fiddle at a man's shoulder was drawn as a cup at his lips, 11-27
             out.append(f"{who[0].upper() + who[1:]} is playing {held[k]}: {play_place((c.get('carried') or {}).get(k))}; "
-                       "it is drawn as that instrument and nothing else, never a cup, a pipe or anything he drinks "
-                       "or eats from.")
+                       "both hands are on the instrument and what plays it, and hold nothing else.")
+            # (said as what it is: "never a cup" beside another person's cup drew a cup in the player's hand)
             continue
         where = ready_place(ch, k, subj.get(k) or {}, nm, cast or {}, {p[0] for p in ppl}) if ready else \
             hand_place((subj.get(k) or {}).get("measured") or {})
