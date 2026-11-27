@@ -116,3 +116,4 @@ def test_a_place_only_drawn_takes_its_manner_from_the_nearest_built_places_key()
     assert '"refs": sheets + room + manner' in src and "DRAWN_MANNER if manner" in src
     assert "Nothing shown in that picture is taken over" in SK.DRAWN_MANNER
     assert src.index("self.draw_all(places, after, redo)") < src.index("for place in late:")    # (after the keys)
+    assert '"drawn" in redo or "spec" in redo' in src                 # (a rebuild draws such a place again)
