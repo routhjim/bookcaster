@@ -165,6 +165,15 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     for lp in layout.get("pieces") or []:
         if lp.get("id") in lit and lp.get("position"):
             top = float((lp.get("size_m") or [0, 0, 0.9])[2])
+            if lp.get("hang"):
+                # (one that hangs burns where it hangs, hang(): at its own middle, HUNG_LIGHT_OUT_M before its face.
+                # Lit from "its top" as if it stood on the floor, a lantern hung at 2 m gave its light at knee height)
+                fx, fy = lp.get("facing") or [0.0, 0.0]
+                out_ = float((lp.get("size_m") or [0, 0.3, 0])[1]) / 2 + HUNG_LIGHT_OUT_M
+                lights.append(dict(kit["lights"]["fire"], position=[
+                    round(lp["position"][0] + fx * out_, 3), round(lp["position"][1] + fy * out_, 3),
+                    round(float(lp.get("z_m") or 0.0) + top / 2, 3)]))
+                continue
             lights.append(dict(kit["lights"]["fire"], position=[round(lp["position"][0], 3), round(lp["position"][1], 3),
                                                               round(top + 0.15, 3)]))
     # a piece people sit inside (a cabin) is lit inside: the room's light does not reach under its roof (the pilot
@@ -238,12 +247,26 @@ ROOM_HUNG = False
 ROOM_SEEN_MOST = 14              # the things of a room's picture built besides the plan's own, at most
 ANY_KINDS = ("work_piece", "landmark")   # the kinds that hold any thing (its look says what it is)
 SURFACE_STANDS_M = 1.2           # a thing of a table-top kind the picture stands on the floor this tall is a floor thing
+OPEN_POST_M = 0.14               # ... and what hangs higher than its edge hangs on a plain post this thick (hang())
+HUNG_LIGHT_OUT_M = 0.1           # a hung piece that gives light gives it this far before its own face
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
 NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
 NIGHT_SKY = 0.08                 # the sky's own light at night, of the day's
 NIGHT_SUN = 0.06                 # the moon's light over open land, of the sun's the place's picture shows
 DUSK_SUN = 0.35                  # ... and the low sun's at dusk
+# ... and never so little that the set cannot be seen. A mid grey is fully lit at pi x 0.125 x 2^EV100 / 0.18 lux
+# (full_lux; 70 lux at the kit's EV100 5.0). The moon over a dark sky gave 0.06 x 120 x 0.08 = 0.6 lux: under a
+# hundredth of that, 5 of 255 on the screen, and with no light found in the sky at all, nothing (11-27). At a quarter
+# (two stops under: a mid grey about 60 of 255) the night still reads as night and the floor and the people on it
+# are seen; at dusk a half (one stop under, about 85 of 255)
+OPEN_KEY_LEAST = {"night": 0.25, "dusk": 0.5}
+# where the light of a place in the open comes from when its sky shows none (img3d/pano_shell.py sun_of finds no sky
+# in a dark panorama): from over the left shoulder of the place's picture's eye (the eye stands on the set's -y side
+# and looks along +y), 38 degrees up: what faces the picture's eye is lit, with shape. Every place in the open has
+# this light at any hour, so every shot of it has its key (scenes/scene.py key_light turns it to the camera's side)
+OPEN_SUN_TOWARD = (-0.5, -0.6, 0.62)
+OPEN_SUN_LEVEL = 0.3             # ... and how bright that sky is taken to be (world_stage: as a sky that gives none)
 SEEN_OPENINGS = ("window", "door")   # the kinds of opening a room takes from its picture
 SEEN_OPENING = "oc"              # the id of an opening taken from the place's concept picture begins with this
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
@@ -1430,6 +1453,12 @@ def kelvin_of(hex_colour: str) -> int:
     return int(min(12000, max(2500, round(6500 * (max(b, 1) / max(r, 1)) ** 1.2, -2))))
 
 
+def full_lux(ev100: float) -> float:
+    """The light (lux) that shows a mid grey (0.18) as a mid grey at an exposure: pi x 0.125 x 2^EV100 / 0.18 (the
+    camera's own light is sized by the same measure, scenes/ue/scene_job.py camera_fill)."""
+    return math.pi * 0.125 * 2.0 ** float(ev100) / 0.18
+
+
 def world_stage(out: dict, spec: dict, library) -> dict:
     """A place in the open (with_concept: outdoors): no structure; the place's world (its terrain piece, made from
     its panorama) set so the point under the panorama's eye is the set's origin, the ground people stand on at
@@ -1465,18 +1494,20 @@ def world_stage(out: dict, spec: dict, library) -> dict:
                                        "world": True})
             if ln.get("high"):
                 out["high_land"] = ln["high"]
-    sun = w.get("sun")
+    # (a world whose sky shows no light still has one, from OPEN_SUN_TOWARD: said in the set's "world" "sun_from")
+    sun = w.get("sun") or {"dir": list(OPEN_SUN_TOWARD), "level": OPEN_SUN_LEVEL}
     lights = [{"type": "sky", "intensity": round(WORLD_SKY * (NIGHT_SKY * 2 if spec.get("_time") in DARK_TIMES else 1.0), 4),
                "atmosphere": False}]
     tod = spec.get("_time")
-    if sun:
-        # the place's own time of day (the picture it was made from is drawn by day whatever the story says): at
-        # night its one light from the sky is the moon's, low and cold; at dusk a low sun
-        k_ = NIGHT_SUN if tod in DARK_TIMES else DUSK_SUN if tod == "dusk" else 1.0
-        lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
-                          "lux": round(k_ * WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or 0.3))), 1),
-                          "kelvin": NIGHT_KELVIN if tod in DARK_TIMES else kelvin_of(sun.get("color") or "#ffffff"),
-                          "volumetric": 0.0})
+    # the place's own time of day (the picture it was made from is drawn by day whatever the story says): at
+    # night its one light from the sky is the moon's, low and cold; at dusk a low sun; neither under its share
+    # (OPEN_KEY_LEAST) of the light the set's own exposure needs
+    k_ = NIGHT_SUN if tod in DARK_TIMES else DUSK_SUN if tod == "dusk" else 1.0
+    least = OPEN_KEY_LEAST.get(tod, 0.0) * full_lux(out.get("exposure_ev100") or 5.0)
+    lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
+                      "lux": round(max(least, k_ * WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or OPEN_SUN_LEVEL)))), 1),
+                      "kelvin": NIGHT_KELVIN if tod in DARK_TIMES else kelvin_of(sun.get("color") or "#ffffff"),
+                      "volumetric": 0.0})
     out["lights"] = lights
     # what the redraw is told of the place: the open land and what stands on it, its ground, sky and light (a
     # room's "walls" and "ceiling" are not said of it)
@@ -1488,6 +1519,7 @@ def world_stage(out: dict, spec: dict, library) -> dict:
         sw = str(t["surface_words"])
         out["surfaces_words"] = sw[0].upper() + sw[1:] + "."
     out["world"] = {"asset": aid, "flat_r_m": w.get("flat_r_m"), "sun": sun, "spot": t.get("spot"),
+                    "sun_from": "its sky" if w.get("sun") else "no light in its sky: the set's own",
                     "at_spot": bool(w.get("spot_m")), "ground_map": bool(w.get("ground_map")),
                     "water_region": w.get("water_region")}
     if (w.get("water") or {}).get("runs"):
@@ -1663,9 +1695,11 @@ def hang(lay: dict, hung: list, rec: dict, top: float | None = None) -> None:
     """The hung pieces put on their walls, into the layout's pieces: over the opening they are against (above its
     head), else on the first stretch of wall clear of the openings and of the pieces standing against it; the back
     on the wall, the front into the room, the lowest point "hangs_m" above the floor. top: the walls' own height
-    where they are lower than the room (a made floor's edge, open_floor): nothing hangs above them in the air."""
+    where they are lower than the room (a made floor's edge, open_floor): a thing that hangs higher than they stand
+    keeps its own height (a lantern forced down onto a waist-high edge lit nobody's face, 11-27) and hangs there
+    on a post rising from the edge ("post_m": the post's height, to the thing's top; built by hung_posts): nothing
+    hangs in the air."""
     W, D, H = lay["size_m"]
-    H = min(H, top) if top else H
     ops = {o["id"]: o for o in lay.get("openings") or []}
     for p in hung:
         r = rec.get(p["id"])
@@ -1693,13 +1727,30 @@ def hang(lay: dict, hung: list, rec: dict, top: float | None = None) -> None:
             if not n:
                 continue
         z = min(z, max(0.0, H - sz))
+        post = {"post_m": round(z + sz, 3), "post_at": [round(pt[0] - n[0] * (OPEN_POST_M / 2 + 0.01), 3),
+                                                       round(pt[1] - n[1] * (OPEN_POST_M / 2 + 0.01), 3)]} \
+            if top and z + sz > top + 1e-6 else {}
         c = [round(pt[0] + n[0] * (sy / 2 + 0.01), 3), round(pt[1] + n[1] * (sy / 2 + 0.01), 3)]
         hx, hy = (sx / 2, sy / 2) if abs(n[1]) > abs(n[0]) else (sy / 2, sx / 2)
         lay["pieces"].append({"id": p["id"], "name": f"{p['kind']}_{p['id']}", "kind": p["kind"], "asset": r["asset"],
                               "position": c, "facing": [n[0], n[1]], "size_m": [sx, sy, sz], "flat": False,
                               "seat": False, "rect": [round(c[0] - hx, 3), round(c[1] - hy, 3), round(c[0] + hx, 3),
                                                       round(c[1] + hy, 3)],
-                              "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3)})
+                              "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3), **post})
+
+
+def hung_posts(out: dict, lay: dict) -> list:
+    """The posts of a made floor's hung things (hang "post_m") built: each a plain square post in the edge wall's
+    own material (structure "box", built by sets/layout.py), standing in the wall's thickness behind the thing,
+    from the floor to the thing's top. -> their names."""
+    mat = next((w.get("material") for w in out.get("structure") or [] if w.get("kind") == "wall"), None)
+    done = []
+    for q in lay.get("pieces") or []:
+        if q.get("post_m") and mat:
+            out["structure"].append({"kind": "box", "name": f"post_{q['id']}", "base": [*q["post_at"], 0.0],
+                                     "size_m": [OPEN_POST_M, OPEN_POST_M, q["post_m"]], "material": mat})
+            done.append(f"post_{q['id']}")
+    return done
 
 
 def base_boxes(out: dict, lay: dict) -> list:
@@ -1830,6 +1881,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     elif not world:                           # (a place in the open has no walls to face: a ring of wall panels
         wall_faces(out, lay, spec, library)   # stood round the forge yard's stage, 11-18)
     cabin_stage(out, spec, library)
+    hung_posts(out, lay)
     based = base_boxes(out, lay)
     for b in lay["bases"]:                   # (what else stands where a base is: reported, it is laid out first)
         on_ = [q["name"] for q in lay["pieces"] if b.get("rect") and q["name"] not in b["of"] and not q.get("hang")

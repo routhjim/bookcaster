@@ -275,9 +275,10 @@ def test_its_world_lies_round_it_and_lights_it(terrace):
     assert types.count("sun") == 1 and types.count("sky") == 1          # (the world's own: no light of a sealed room)
     assert not any(l.get("type") == "point" and l["position"][2] > 3.0 for l in out["lights"])
     assert "room_light" not in report
-    # the lantern of the place still burns, hung no higher than the edge it hangs on
+    # the lantern of the place still burns, hung as high as the place has it (11-27: on a post rising from the
+    # edge, not forced down onto the edge itself: tests/test_open_floor_size_night_1127.py)
     lan = next(f for f in out["fixtures"] + out["props"] if f["name"].startswith("lantern"))
-    assert lan["hang"] and lan["position"][2] + 0.95 <= PB.OPEN_EDGE_M + 1e-6
+    assert lan["hang"] and lan["position"][2] == 2.0
     assert any(l["type"] == "point" for l in out["lights"])
     assert named["by the chair"] and named["at the rail"] == "floor"
 
