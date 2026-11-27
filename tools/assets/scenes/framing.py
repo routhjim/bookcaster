@@ -170,21 +170,43 @@ def key_toward(cam_pos, eye, sun_toward, side_deg=KEY_SIDE_DEG, el_deg=KEY_EL_DE
     return [round(math.cos(a) * math.cos(e), 5), round(math.sin(a) * math.cos(e), 5), round(math.sin(e), 5)]
 
 
+_BASIS: dict = {}             # a camera's view axes by its place and aim (project): the search for one camera
+#                               projects some hundred thousand points through each of a few thousand cameras
+
+
+def _basis(cam):
+    """A camera's unit axes (forward, right, up) from its place and aim; None on its own aim point (no view)."""
+    c, t = cam["position"], cam["target"]
+    key = (c[0], c[1], c[2], t[0], t[1], t[2])
+    b = _BASIS.get(key, 0)
+    if b == 0:
+        d0 = [t[i] - c[i] for i in range(3)]
+        if not any(abs(x) > 1e-9 for x in d0):
+            b = None
+        else:
+            f = _unit(d0)
+            up0 = [0.0, 0.0, 1.0] if abs(f[2]) < 0.999 else [0.0, 1.0, 0.0]     # straight up or down: another up
+            r = _unit([f[1] * up0[2] - f[2] * up0[1], f[2] * up0[0] - f[0] * up0[2], f[0] * up0[1] - f[1] * up0[0]])
+            b = (f, r, [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]])
+        if len(_BASIS) > 512:
+            _BASIS.clear()
+        _BASIS[key] = b
+    return b
+
+
 def project(cam, p, res=(1152, 640)):
     """Set-frame point -> (u, v, depth): u, v in 0..1 from the frame's top-left; depth along the view (m)."""
-    d0 = [cam["target"][i] - cam["position"][i] for i in range(3)]
-    if not any(abs(x) > 1e-9 for x in d0):
+    b = _basis(cam)
+    if b is None:
         return None                          # a camera on its own aim point: no view
-    f = _unit(d0)
-    up0 = [0.0, 0.0, 1.0] if abs(f[2]) < 0.999 else [0.0, 1.0, 0.0]     # straight up or down: another up
-    r = _unit([f[1] * up0[2] - f[2] * up0[1], f[2] * up0[0] - f[0] * up0[2], f[0] * up0[1] - f[1] * up0[0]])
-    u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]]
-    v = [p[i] - cam["position"][i] for i in range(3)]
-    z = sum(v[i] * f[i] for i in range(3))
+    f, r, u = b
+    c = cam["position"]
+    v0, v1, v2 = p[0] - c[0], p[1] - c[1], p[2] - c[2]
+    z = sum((v0 * f[0], v1 * f[1], v2 * f[2]))         # (sum(): its own careful adding, the same number as before)
     if z <= 1e-6:
         return None
-    x = sum(v[i] * r[i] for i in range(3))
-    y = sum(v[i] * u[i] for i in range(3))
+    x = sum((v0 * r[0], v1 * r[1], v2 * r[2]))
+    y = sum((v0 * u[0], v1 * u[1], v2 * u[2]))
     sw, sh = SENSOR_W, sensor_h(res)
     fx = cam["focal_mm"] * x / z
     fy = cam["focal_mm"] * y / z

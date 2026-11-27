@@ -1331,12 +1331,16 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     continue
                 if est_side and kind not in ("wide", "full") and side(line, p) not in (0, est_side):
                     continue
+                walled = None                # (a thing between this standpoint and one of them: asked once)
                 for mode, aim in aims.items():
                     others = [v["measured"] for k, v in subjects.items() if k != spk and not (mode == "ots" and k == lis)]
                     if spk and blocked(p, [m0["eye_xy"][0], m0["eye_xy"][1], m0["eye_z"]], others):
                         continue
-                    if any(solid_between(p, [subjects[k]["measured"]["eye_xy"][0], subjects[k]["measured"]["eye_xy"][1],
-                                             subjects[k]["measured"]["eye_z"]]) for k in keys if k in subjects):
+                    if walled is None:
+                        walled = any(solid_between(p, [subjects[k]["measured"]["eye_xy"][0],
+                                                       subjects[k]["measured"]["eye_xy"][1],
+                                                       subjects[k]["measured"]["eye_z"]]) for k in keys if k in subjects)
+                    if walled:
                         continue
                     if opts.get("_lens"):
                         lens = opts["_lens"]
@@ -1697,12 +1701,19 @@ def solid_between(p, q, n=24) -> bool:
     neck q is in: a creature's own eye is seen on its head)."""
     heads =[h for h in HEADS if math.dist(q, h[:3]) > h[3]]
     necks = [nk for nk in NECKS if seg_point_dist(q, nk[0], nk[1]) > nk[2]]
+    # (only the boxes the line can be in: under one's top somewhere, and within its corner's reach in plan. A
+    # place of two dozen things had every one asked of every point of every line, 11-27)
+    zlo = min(p[2], q[2])
+    solids = [b for b in SOLIDS if zlo < b[4] and
+              seg_point_dist([b[0], b[1], 0.0], [p[0], p[1], 0.0], [q[0], q[1], 0.0]) < math.hypot(b[2], b[3]) + 1e-6]
+    if not (solids or heads or necks):
+        return False
     for i in range(1, n):
         t = i / n
         if t > 0.85:
             break
         pt = [p[j] + (q[j] - p[j]) * t for j in range(3)]
-        if any(_in_box(pt, b) for b in SOLIDS) or any(math.dist(pt, h[:3]) < h[3] for h in heads) or \
+        if any(_in_box(pt, b) for b in solids) or any(math.dist(pt, h[:3]) < h[3] for h in heads) or \
                 any(seg_point_dist(pt, nk[0], nk[1]) < nk[2] for nk in necks):
             return True
     return False
