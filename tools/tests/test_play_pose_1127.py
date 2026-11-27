@@ -79,3 +79,34 @@ def test_someone_who_plays_goes_on_playing_and_keeps_both_things():
     assert FP.held_on(held, {"c": [other]}, {"c"}, {"c"}) == {"c": [other]}      # (another thing: the hands changed)
     assert FP.action_misfit(P, "c", {"pose": "standing"}, {}, None, [], []) and \
         FP.action_misfit(P, "c", {"pose": "standing"}, {}, None, [], [lute]) is None
+
+
+def test_a_thing_the_story_does_not_describe_is_described_plainly_with_what_it_goes_with(monkeypatch):
+    """Its look was the answer "the story does not contain ...": made from that, the prop was nothing like it."""
+    for sub in ("scenes", ""):
+        sys.path.insert(0, str(HERE.parent / "assets" / sub))
+    import json
+    import place_spec as PS
+    asked = []
+
+    def ask(url, prompt, cache):
+        asked.append(prompt)
+        if prompt.startswith("A story is told below, whole.\n\nThe story:"):          # (LOOK_ASK)
+            return "The story does not contain a stick." if ": a stick\n" in prompt else "A lute of pale wood with six strings."
+        if "what the shot's plan has each person holding" in prompt:
+            return json.dumps({"m1": {"Orla": [{"what": "a lute", "on": "held", "goes_on": "none", "size_cm": 60},
+                                               {"what": "a stick", "on": "held", "goes_on": "none", "size_cm": 70}]}})
+        if "given this sentence: " in prompt:                                      # (LOOK_IS_ASK)
+            return "no" if "does not contain" in prompt else "yes"
+        if "The story does not say how it looks" in prompt:                         # (LOOK_PLAIN_ASK)
+            assert "a lute; a stick" in prompt and "this one of them as an object on its own: a stick" in prompt
+            return "A thin straight rod of dark wood, strung end to end with pale hair."
+        if "whole or part" in prompt:
+            return "whole"
+        return "no"
+    monkeypatch.setattr(PS, "ask", ask)
+    plan = {"m1": [{"place": "the Hall", "action": "Orla plays.", "people": [{"name": "Orla"}]}]}
+    got = PS.things(plan, ["m1"], "the Hall", [], "url", Path("."))
+    looks = {t["what"]: t.get("look") for t in got["m1"]["Orla"]}
+    assert looks["a lute"] == "A lute of pale wood with six strings."
+    assert looks["a stick"].startswith("A thin straight rod")

@@ -2073,7 +2073,7 @@ def act_weapon_ready(s, p):
     _work_pose(s, p, "weapon_ready")
 
 
-PLAY_REST_CM = 3.0           # an instrument played at the shoulder rests this far over the left collar
+PLAY_REST_CM = -4.0          # an instrument played at the shoulder rests this far over the left collar
 PLAY_REACH = (0.25, 0.8)     # its hand: no nearer the collar than this (m), no further than this share of the arm
 
 
@@ -2095,7 +2095,9 @@ def act_play_at_shoulder(s, p):
     # (the hand as far from the collar as the instrument is long past its grip, within the arm's bend)
     span = 100.0 * (float(g.get("len_m") or 0.55) - float(g.get("grip_from_end_m") or 0.12)) - 6.0
     span = max(100.0 * PLAY_REACH[0], min(PLAY_REACH[1] * arm, span))
-    out = unit(add(add(scale(left, 0.5), scale(fwd, 0.85)), scale(up, -0.08)))
+    # (out to the left and down a little: level with the collar, the instrument lay across the player's face from
+    # every camera before him, 11-27)
+    out = unit(add(add(scale(left, 0.75), scale(fwd, 0.62)), scale(up, -0.22)))
     hand_l = add(rest, scale(out, span))
     _ik(s, "upperarm_l", "lowerarm_l", "hand_l", hand_l, add(hand_l, add(scale(left, -8.0), [0.0, 0.0, -60.0])))
     t_l = unit(sub(rest, s.pos["hand_l"]))
