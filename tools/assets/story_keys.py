@@ -1048,7 +1048,25 @@ class Story:
         if lums and max(lums) < KEY_DARK:
             log(f"{place}: the set's own stills are nearly black (brightest {max(lums):.1f} of 255)")
             return False
+        self.wide_check(place)
         return True
+
+    def wide_check(self, place) -> dict:
+        """The set's wide pictures looked at (sets/wide_check.py: too dark, nearly empty), the measures and the
+        verdict kept in its place_build_report.json, a failed set said loudly. It stops nothing: sets that
+        rendered nearly black or as bare ground were recorded "ok" and staged in unseen (11-27)."""
+        try:
+            sys.path.insert(0, str(HERE / "sets"))
+            import wide_check as WC
+            res = WC.check_set(self.set_dir(place) / "ue")
+            rp = self.set_dir(place) / "place_build_report.json"
+            rp.write_text(json.dumps({**json.loads(rp.read_text()), "wide_check": res}, indent=1))
+        except Exception as exc:         # (a check that cannot run is no reason to lose the set)
+            log(f"{place}: the set's wide pictures were not checked ({type(exc).__name__}: {str(exc)[:120]})")
+            return {}
+        if WC.fault_line(place, res):
+            log(WC.fault_line(place, res))
+        return res
 
     def _cast_cmd(self, name):
         fid, pr = self.figure_id(name), self.person(name)
