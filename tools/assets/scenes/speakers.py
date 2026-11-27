@@ -757,7 +757,7 @@ ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # a
                                                                              # near the chin (both / either), measured
 
 
-PLAY_HANDS = ("play_at_shoulder",)       # an instrument played: its arms are the action's own (ue/pose.py), no start to measure
+PLAY_HANDS = ("play_at_shoulder", "raise_in_hand")       # an instrument played: its arms are the action's own (ue/pose.py), no start to measure
 WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work",     # the work start poses (ue/pose.py), measured
               "weapon_ready")                                       # (and a fighter's guard: READY_ACTIONS)
 

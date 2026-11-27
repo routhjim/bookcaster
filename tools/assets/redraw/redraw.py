@@ -531,6 +531,8 @@ def hand_place(m: dict) -> str:
     fwd = ((j[0] - m["pelvis_xy"][0]) * f[0] + (j[1] - m["pelvis_xy"][1]) * f[1]) / n
     if j[2] >= m["head_top_z"] - 0.05:
         return "in the right hand raised above the head"
+    if fwd >= 0.2 and j[2] >= m.get("chin_z", 9e9) - 0.1:      # (lifted before the face: a thing held up)
+        return "in the right hand lifted up in front of the body, at the height of the face"
     if fwd >= 0.2:
         return "in the right hand held out in front of the body at " + ("chest" if j[2] > m.get("waist_z", 1.0) + 0.25
                                                                          else "waist") + " height"

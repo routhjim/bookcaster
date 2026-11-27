@@ -36,6 +36,7 @@ CHAR_TOOLS = Path(os.environ.get("SCENES_CHAR_TOOLS", str(HERE.parent / "charact
 SET_TOOLS = HERE.parent / "sets" / "ue"
 WORK_POSE_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")    # ue/pose.py WORK_ACTIONS (whole-body stance)
 PLAY_POSE_ACTIONS = ("play_at_shoulder",)   # ue/pose.py: an instrument played (both arms placed by the action)
+RAISE_POSE_ACTIONS = ("raise_in_hand",)   # ue/pose.py: what is in the hand lifted up in front (its arm placed by the action)
 READY_POSE_ACTIONS = ("weapon_ready",)    # ue/pose.py READY_ACTIONS (a fighter's guard: the same stance, no work top)
 RT_KEYS = {"r.RayTracing": "True", "r.RayTracing.Shadows": "False", "r.Lumen.HardwareRayTracing": "True",
            "r.SkinCache.CompileShaders": "True"}
@@ -169,7 +170,7 @@ def resolve(spec, cams_wanted=None):
                 and not (bpose.get("params") or {}).get("lie")         # (lying, the arms rest along the body)
                 # (an action that places the arms itself keeps them: the steps turned them again afterwards)
                 and (bpose.get("params") or {}).get("action") not in WORK_POSE_ACTIONS + READY_POSE_ACTIONS
-                + PLAY_POSE_ACTIONS + ("veil_lift",)):
+                + PLAY_POSE_ACTIONS + RAISE_POSE_ACTIONS + ("veil_lift",)):
             # the character's own arm clearance (its builder measured it against its clothes) in place of the default
             pr = dict(bpose.get("params") or {})
             pr.setdefault("arm_clear_deg", 0.0)
