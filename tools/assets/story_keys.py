@@ -1209,6 +1209,7 @@ class Story:
                 if p["name"] in poses:
                     poses[p["name"]].add(str(p.get("pose") or ""))
         creat = {n for n in people if self.person(n).get("creature")}
+        sys.path.insert(0, str(HERE / "img3d")) if str(HERE / "img3d") not in sys.path else None
         import cast_char as CC
         shared = CC.shared_assets(C.LIBRARY, [self.cast[n] for n in people if n in self.cast and n not in creat])
         for name in people:                                   # the figures
