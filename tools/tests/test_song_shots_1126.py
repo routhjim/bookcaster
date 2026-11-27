@@ -59,6 +59,21 @@ def test_a_place_with_nobody_in_it_is_drawn_not_built():
     assert s.only_drawn("the Quay") and not s.only_drawn("the Hall") and not s.only_drawn("the Loft")
 
 
+def test_a_failed_figure_is_tried_again_when_its_own_gates_change():
+    sys.path.insert(0, str(ROOT / "tools" / "assets" / "img3d"))
+    import cast_char as CC
+    child, grown = "a girl of about 12, brown hair", "a man of about 40, grey hair"
+    assert CC.child_armpit(grown) == 0.70 and CC.child_armpit("a tall woman") == 0.70
+    assert CC.child_armpit(child) <= 0.67 < CC.child_armpit("a boy of about 16")     # (measured: 0.67 to 0.70 at 12)
+    with tempfile.TemporaryDirectory() as td:
+        w = Path(td)
+        assert not SK.failed_before(w, child)
+        (w / "FAILED").write_text("2026-11-01 10:00:00")            # a mark from before the measures were kept
+        assert SK.failed_before(w, grown) and not SK.failed_before(w, child)
+        SK.fail_mark(w, child)
+        assert SK.failed_before(w, child)
+
+
 if __name__ == "__main__":
     for k, v in list(globals().items()):
         if k.startswith("test_"):
