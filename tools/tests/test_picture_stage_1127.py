@@ -559,3 +559,49 @@ def test_what_someone_holds_stays_in_their_hand_through_the_shots_that_do_not_na
     assert FP.held_on(mem, {}, set(), {"a", "b", "c"}) == {}
     FP.held_on(mem, {"c": [fid]}, {"c"}, {"a", "c"})
     assert FP.held_on(mem, {}, set(), {"a"}) == {} and mem == {"a": []} or mem == {}   # (gone from the place)
+
+
+# ------------------------------------------------------------------ the picture's land in a camera's line of sight
+def test_the_land_is_measured_in_fine_cells_from_where_it_begins_to_where_it_ends():
+    """A post on the ground and a line of lamps over open ground: the post's cells run from the ground up, the
+    lamps' from where they hang; and they reach the set's record in its own frame."""
+    import place_build as PB
+    post = [[2.1, 5.1, z] for z in np.arange(0.0, 3.01, 0.1)]
+    lamps = [[x, 8.1, 3.0] for x in np.arange(-2.0, 2.01, 0.1)] + [[x, 8.1, 3.2] for x in np.arange(-2.0, 2.01, 0.1)]
+    ground = [[x, y, 0.0] for x in np.arange(-3.0, 3.01, 0.2) for y in np.arange(0.0, 10.01, 0.2)]
+    vtx = np.array(post + lamps + ground, float)
+    uv = np.zeros((len(vtx), 2))
+    coarse, fine = CD.tops_of(vtx, uv), CD.tops_of(vtx, uv, CD.SIGHT_CELL_M)
+    assert coarse["cell_m"] == CD.TOPS_CELL_M and "lo" not in coarse and fine["cell_m"] == CD.SIGHT_CELL_M
+    cells = PB.sight_cells(fine, [0.0, 0.0], 1.0, 0.0, 0.0)
+    import ground_map as GM
+    k_post = GM.cell_of(2.1, 5.1, PB.HIGH_HALF_M, PB.SIGHT_CELL_M)
+    assert k_post in cells and cells[k_post][0] <= 0.3 and cells[k_post][1] >= 2.9
+    assert len(cells) <= 3                              # (the lamps hang over ground the picture shows: no bar)
+    high = PB.land_high(coarse, [0.0, 0.0], 1.0, 0.0, 0.0, fine)
+    assert high["tops"]["cell_m"] == PB.SIGHT_CELL_M and [k_post[0], k_post[1]] in [c[:2] for c in high["tops"]["cells"]]
+    assert "tops" not in (PB.land_high(coarse, [0.0, 0.0], 1.0, 0.0, 0.0) or {})      # (a concept measured before)
+
+
+def test_a_camera_does_not_look_at_someone_through_the_pictures_land(monkeypatch):
+    import ground_map as GM
+    import speakers as S
+    cell, half = 0.25, 40.0
+    wall = {GM.cell_of(x, 2.0, half, cell): (0.0, 1.3) for x in np.arange(-1.0, 1.01, 0.25)}     # a rail 1.3 m high
+    bough = {GM.cell_of(x, 4.0, half, cell): (2.6, 3.4) for x in np.arange(-1.0, 1.01, 0.25)}    # a span overhead
+    monkeypatch.setattr(S, "LAND_TOPS", {"cell_m": cell, "half_m": half, "z": {**wall, **bough}})
+    monkeypatch.setattr(S, "SOLIDS", [])
+    monkeypatch.setattr(S, "HEADS", [])
+    monkeypatch.setattr(S, "NECKS", [])
+    cam = [0.0, 0.0, 1.6]
+    assert not S.land_between(cam, [0.0, 2.8, 1.6]) and not S.land_between(cam, [0.0, 6.0, 1.6])   # (their eyes)
+    assert S.land_between(cam, [0.0, 2.8, 1.0])                   # (their middle: behind the rail's top)
+    assert S.solid_between(cam, [0.0, 2.8, 1.0]) and not S.solid_between(cam, [0.0, 2.8, 1.6])
+    assert not S.land_between(cam, [3.0, 2.8, 1.0])               # (past the rail's end)
+    assert not S.land_between(cam, [0.0, 1.95, 1.0])              # (they stand at the rail itself: its last stretch)
+    assert S.land_between([0.0, 0.0, 3.0], [0.0, 8.0, 3.0])       # (a high camera: the span is in its way)
+    monkeypatch.setattr(S, "LAND_TOPS", {})
+    assert not S.land_between(cam, [0.0, 2.8, 1.0])               # (a room, an older set: nothing known, no bar)
+    assert S.land_tops({}) == {} and S.land_tops({"tops": {"cell_m": 0.25, "half_m": 40.0, "cells": [[1, 2, 0.0, 1.5]]}}) == \
+        {"cell_m": 0.25, "half_m": 40.0, "z": {(1, 2): (0.0, 1.5)}}
+    assert S.body_middle({"pelvis_xy": [1.0, 2.0], "eye_xy": [1.0, 2.1], "waist_z": 0.95}) == [1.0, 2.0, 0.95]

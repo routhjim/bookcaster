@@ -776,7 +776,7 @@ HIGH_CELL_M, HIGH_HALF_M = 0.5, 40.0
 HIGH_NEAR_M, HIGH_MOST = 10.0, 0.5
 
 
-def land_high(tops: dict, eye: list, sc: float, ox: float, oy: float) -> dict | None:
+def land_high(tops: dict, eye: list, sc: float, ox: float, oy: float, sight: dict | None = None) -> dict | None:
     """Where the picture's land rises (img3d/concept_depth.py tops_of), as cells of the set's ground in the form
     of its water (places/ground_map.py: {"cell_m", "half_m", "runs"}): "runs" where nobody is stood, "tall_runs"
     where no camera stands. The staged people of a river bank stood inside the bank's own rise, and cameras looked
@@ -788,6 +788,7 @@ def land_high(tops: dict, eye: list, sc: float, ox: float, oy: float) -> dict | 
     c, x0, y0 = float(tops["cell_m"]), float(tops["x0"]), float(tops["y0"])
     n = GM.cells(HIGH_HALF_M, HIGH_CELL_M)
     out = {"cell_m": HIGH_CELL_M, "half_m": HIGH_HALF_M}
+    shut = False
     for name, least in (("runs", HIGH_M[0]), ("tall_runs", HIGH_M[1])):
         m = []
         for i in range(n):
@@ -804,8 +805,44 @@ def land_high(tops: dict, eye: list, sc: float, ox: float, oy: float) -> dict | 
         mid = [row[n // 2 - k:n // 2 + k] for row in m[n // 2 - k:n // 2 + k]]
         if sum(map(sum, mid)) > HIGH_MOST * max(1, sum(map(len, mid))):
             m = [[False] * n for _ in range(n)]
+            shut = True
         out[name] = GM.runs_of(m)
+    cells_ = {} if shut else sight_cells(sight, eye, sc, ox, oy)
+    if cells_:
+        # how high it stands, in fine cells of the set's ground: what a camera's line of sight to someone passes
+        # over or is stopped by (scenes/speakers.py land_between). (The search knew where no camera stands, not
+        # what stands between a camera and a person: a rail's top lay across half of a close shot, 11-27)
+        out["tops"] = {"cell_m": SIGHT_CELL_M, "half_m": HIGH_HALF_M,
+                       "cells": [[i, j, zz[0], zz[1]] for (i, j), zz in sorted(cells_.items())]}
     return out if out["runs"] or out["tall_runs"] else None
+
+
+SIGHT_CELL_M = 0.25          # the cells a line of sight is asked of (img3d/concept_depth.py SIGHT_CELL_M)
+
+
+def sight_cells(sight: dict | None, eye: list, sc: float, ox: float, oy: float) -> dict:
+    """The picture's fine height cells (concept_depth.tops_of at SIGHT_CELL_M) that rise HIGH_M[0] or more, in the
+    set's frame: {(row, column): [from, to] metres} of a SIGHT_CELL_M grid over HIGH_HALF_M (from: how low
+    what rises there begins: 0.0 for a thing standing on the ground, higher for one that hangs or spans)."""
+    import ground_map as GM
+    z = (sight or {}).get("z")
+    if not z:
+        return {}
+    c, x0, y0 = float(sight["cell_m"]), float(sight["x0"]), float(sight["y0"])
+    out = {}
+    for a, row in enumerate(z):
+        for b, v in enumerate(row):
+            if v * sc < HIGH_M[0]:
+                continue
+            # (the measured picture's frame -> the set's: land_high's own mapping the other way)
+            x, y = (x0 + (b + 0.5) * c - eye[0]) * sc - ox, (y0 + (a + 0.5) * c - eye[1]) * sc - oy
+            if abs(x) >= HIGH_HALF_M or abs(y) >= HIGH_HALF_M:
+                continue
+            k = GM.cell_of(x, y, HIGH_HALF_M, SIGHT_CELL_M)
+            lo = round(float(((sight.get("lo") or [])[a:a + 1] or [[]])[0][b:b + 1] and sight["lo"][a][b] or 0.0) * sc, 1)
+            was = out.get(k)
+            out[k] = [min(was[0], lo), max(was[1], round(v * sc, 1))] if was else [lo, round(v * sc, 1)]
+    return out
 
 
 def open_places(pcs: list, concept: dict) -> tuple:
@@ -859,7 +896,7 @@ def open_places(pcs: list, concept: dict) -> tuple:
                     "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
                     "at_xy": [round((ld["xy"][0] - eye[0]) * sc - ox, 3), round((ld["xy"][1] - eye[1]) * sc - oy, 3)],
                     "under_m": round(float(ld.get("under_m") or 0.0) * sc, 4), "_seen_size_m": [round(v, 3) for v in g],
-                    "high": land_high(ld.get("tops"), eye, sc, ox, oy),
+                    "high": land_high(ld.get("tops"), eye, sc, ox, oy, ld.get("sight")),
                     # (the picture's eye in the set's frame, how high and how wide it sees: the place's panorama is
                     # made from the picture, from there, places/pieces.py "view")
                     "view": {"eye_at": [round(-ox, 2), round(-oy, 2)],
@@ -1071,7 +1108,7 @@ def stage_pieces(pcs: list, concept: dict, land: str, said: str, tech: str) -> t
                "under_m": round(float(ld.get("under_m") or 0.0), 4),
                "_seen_size_m": [round(float(v), 3) for v in ld["size_m"]],
                # (the land's frame is the set's own: no eye to move it by, no scale)
-               "high": land_high(ld.get("tops"), [0.0, 0.0], 1.0, 0.0, 0.0), "view": view}
+               "high": land_high(ld.get("tops"), [0.0, 0.0], 1.0, 0.0, 0.0, ld.get("sight")), "view": view}
     world = {"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
              "look": "; ".join(x for x in (land, said, tech) if x)
              + (f"; round it, behind and to both sides: {ROUND_LOOK[rnd]}" if rnd != "land" else ""),

@@ -1290,6 +1290,12 @@ def side_first(c: dict, characters: dict, room) -> str | None:
     return f"{c['name']}: {abs(turn):.0f} deg from the picture's view, turned round {c['subject']} to {SIDE_ARC_DEG:.0f}"
 
 
+def body_middle(m: dict) -> list:
+    """A measured person's middle: over their hips, at the waist."""
+    px = m.get("pelvis_xy") or m["eye_xy"]
+    return [px[0], px[1], m.get("waist_z", m.get("feet_z", 0.0) + 1.0)]
+
+
 def sure_refused(qs: list, kind, spk, lis, show, subjects, res, opts):
     """Per camera of qs, whether one of three plain rules of the frame surely refuses it (search_fast.sure_fail);
     None where that cannot be worked out here (no numpy; a still's own masks would be asked: never in a search)."""
@@ -1366,6 +1372,9 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                         walled = any(solid_between(p, [subjects[k]["measured"]["eye_xy"][0],
                                                        subjects[k]["measured"]["eye_xy"][1],
                                                        subjects[k]["measured"]["eye_z"]]) for k in keys if k in subjects)
+                        # (and, in a shot that shows more than a face, the land between the camera and their middle)
+                        walled = walled or (kind != "close" and any(land_between(p, body_middle(subjects[k]["measured"]))
+                                                                  for k in keys if k in subjects))
                     if walled:
                         continue
                     if opts.get("_lens"):
@@ -1739,6 +1748,8 @@ def solid_between(p, q, n=24) -> bool:
     # (only the boxes the line can be in: under one's top somewhere, and within its corner's reach in plan. A
     # place of two dozen things had every one asked of every point of every line, 11-27)
     zlo = min(p[2], q[2])
+    if land_between(p, q):                   # (the picture's own land between them)
+        return True
     solids = [b for b in SOLIDS if zlo < b[4] and
               seg_point_dist([b[0], b[1], 0.0], [p[0], p[1], 0.0], [q[0], q[1], 0.0]) < math.hypot(b[2], b[3]) + 1e-6]
     if not (solids or heads or necks):
@@ -1954,6 +1965,43 @@ TALL_LAND: dict = {}          # a place in the open: where its land rises too hi
 #                               "high_land", sets/place_build.py land_high; run_scene() fills it)
 
 
+LAND_TOPS: dict = {}          # the same land by fine cell: {"cell_m", "half_m", "z": {(row, column): (from, to) m}}
+#                               (the set's "high_land" "tops"; main() fills it)
+LAND_STEP_M = 0.1            # a line of sight is asked of the land this often along it
+LAND_CLEAR_M = 0.05          # ... and passes over it by at least this
+
+
+def land_tops(hl: dict) -> dict:
+    """A set's "high_land" as land_between reads it; {} where the set records no heights."""
+    t = (hl or {}).get("tops") or {}
+    if not t.get("cells"):
+        return {}
+    return {"cell_m": float(t["cell_m"]), "half_m": float(t["half_m"]),
+            "z": {(int(c[0]), int(c[1])): (float(c[2]), float(c[3])) for c in t["cells"]}}
+
+
+def land_between(p, q) -> bool:
+    """The picture's own land (what was made from its depth: a rail, a bench, a wall, a bank) standing in the
+    straight line from the camera p to the point q: somewhere along it, short of where q stands, the line runs
+    through the heights the land takes up there (under what hangs or spans overhead it passes). (The camera search knew the set's built things as boxes and nothing of this
+    land: a close shot of a man was taken from behind a rail, its top across half the frame, 11-27.)"""
+    zs = LAND_TOPS.get("z")
+    if not zs:
+        return False
+    half, cell = LAND_TOPS["half_m"], LAND_TOPS["cell_m"]
+    d = math.dist(p[:2], q[:2])
+    n = max(2, int(d / LAND_STEP_M))
+    for i in range(1, n):
+        t = i / n
+        if t > 0.85:
+            break
+        x, y, z = (p[k] + (q[k] - p[k]) * t for k in range(3))
+        top = zs.get((int(math.floor((half - y) / cell)), int(math.floor((x + half) / cell))))
+        if top is not None and top[0] - LAND_CLEAR_M < z < top[1] + LAND_CLEAR_M:
+            return True
+    return False
+
+
 def in_tall_land(p) -> bool:
     if not TALL_LAND.get("runs"):
         return False
@@ -2138,6 +2186,8 @@ def main():
     hl = set_spec.get("high_land") or {}
     TALL_LAND.clear()
     TALL_LAND.update({"cell_m": hl.get("cell_m"), "half_m": hl.get("half_m"), "runs": hl.get("tall_runs")} if hl.get("tall_runs") else {})
+    LAND_TOPS.clear()
+    LAND_TOPS.update(land_tops(hl))
     if OPEN_GROUND:                          # the camera search reaches over the whole flat ground
         r_ = OPEN_GROUND[2] + max(abs(OPEN_GROUND[0]), abs(OPEN_GROUND[1]))
         room = [max(room[0], 2 * r_), max(room[1], 2 * r_), max(room[2], OPEN_SKY_M)]
