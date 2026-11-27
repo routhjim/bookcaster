@@ -545,3 +545,17 @@ def test_a_wide_on_several_named_people_takes_one_of_them_a_little_nearer_than_i
     assert [w for w in why("full", ["a", "b", "c"], speaker="a") if w.startswith("b's head")]   # (a line: as before)
     subj["b"] = SY.person([0.6, 0.4])                                # (b far nearer: no picture of the group)
     assert [w for w in why("full", ["a", "b", "c"]) if w.startswith("b's head")]
+
+
+def test_what_someone_holds_stays_in_their_hand_through_the_shots_that_do_not_name_them():
+    FP = _fp()
+    mem = {}
+    fid = {"asset": "x1", "at": "hand", "hand": "r", "name": "a lute"}
+    assert FP.held_on(mem, {"c": [fid], "a": [{"asset": "h", "at": "head", "name": "a cap"}]}, {"a", "c"},
+                      {"a", "b", "c"}) == {"c": [fid], "a": [{"asset": "h", "at": "head", "name": "a cap"}]}
+    assert FP.held_on(mem, {}, set(), {"a", "b", "c"}) == {"c": [fid]}      # (another's line: still in the hand)
+    assert FP.held_on(mem, {"a": []}, {"a"}, {"a", "b", "c"}) == {"a": [], "c": [fid]}
+    assert FP.held_on(mem, {}, {"c"}, {"a", "b", "c"}) == {}                # (the pass has them hold nothing now)
+    assert FP.held_on(mem, {}, set(), {"a", "b", "c"}) == {}
+    FP.held_on(mem, {"c": [fid]}, {"c"}, {"a", "c"})
+    assert FP.held_on(mem, {}, set(), {"a"}) == {} and mem == {"a": []} or mem == {}   # (gone from the place)
