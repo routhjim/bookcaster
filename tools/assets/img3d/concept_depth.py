@@ -383,6 +383,26 @@ LAND_CUT_BIG_M = 30.0       # ... unless it is larger than this: those are cut o
 LAND_CUT_BEHIND_M = 0.5
 
 
+LAND_END_ON_DEG = 78.0      # a standing face turned further than this from facing the picture's eye is seen end on:
+LAND_STANDS = 0.5           # ... standing: its upward share under this (ground and slopes lie, and are seen so)
+
+
+def _end_on(P, eye) -> np.ndarray:
+    """The squares of the grid P that stand and are seen end on from the picture's eye (LAND_END_ON_DEG): the gap
+    between a thing and what is behind it, or a wall running straight away. One row of the picture is all such a
+    face has, drawn out along its whole depth.
+
+    Why: neighbours up to LAND_JUMP apart were joined, so at 10 m a face 3 m deep had one point of the picture
+    across it, and from any camera off the picture's own line every edge of every near thing was a band of
+    streaks metres long (11-27)."""
+    a, b, c, e = P[:-1, :-1], P[1:, :-1], P[:-1, 1:], P[1:, 1:]
+    n = np.cross(e - a, c - b)
+    ln = np.maximum(np.linalg.norm(n, axis=-1), 1e-12)
+    ray = (a + b + c + e) / 4 - eye
+    facing = np.abs((n * ray).sum(-1)) / (ln * np.maximum(np.linalg.norm(ray, axis=-1), 1e-9))
+    return (np.abs(n[..., 2]) / ln < LAND_STANDS) & (facing < math.cos(math.radians(LAND_END_ON_DEG)))
+
+
 LAND_LEVEL_M = (25.0, 50.0)  # the picture's ground is levelled this near its eye; left as it lies beyond the second
 LAND_LIES = 0.8             # a surface whose upward share is at least this lies (ground); less, it stands
 LAND_LEVEL_CELLS = (5.0, 20.0)
@@ -498,6 +518,7 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
     q = reg[:-1, :-1] & reg[1:, :-1] & reg[:-1, 1:] & reg[1:, 1:]
     four = np.stack([R[:-1, :-1], R[1:, :-1], R[:-1, 1:], R[1:, 1:]])
     q &= four.max(0) < LAND_JUMP * np.maximum(four.min(0), 1e-3)
+    q &= ~_end_on(P, eye)
     q = ndi.binary_opening(q, structure=np.ones((2, 2), bool))
     lab, n_ = ndi.label(q)
     if not n_:
