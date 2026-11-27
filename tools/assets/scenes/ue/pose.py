@@ -2073,7 +2073,53 @@ def act_weapon_ready(s, p):
     _work_pose(s, p, "weapon_ready")
 
 
+PLAY_REST_CM = 3.0           # an instrument played at the shoulder rests this far over the left collar
+PLAY_REACH = (0.25, 0.8)     # its hand: no nearer the collar than this (m), no further than this share of the arm
+
+
+def act_play_at_shoulder(s, p):
+    """An instrument played at the shoulder: its body on the left collar under the chin, its neck in the left hand out
+    in front and to the left at shoulder height, the elbow under it; the right hand before the chest holds what it is
+    played with, lying across the instrument (with nothing in it, the hand bows all the same). The first thing the
+    person holds is the instrument, in whichever hand the scene gave it: here it goes to the left. (A player's
+    instrument hung at his side in every shot, out of every frame closer than a full one, 11-27.)"""
+    items = _held_items(p)
+    left, fwd = _body_axes(s)
+    up = [0.0, 0.0, 1.0]
+    sh = s.pos["upperarm_l"]
+    arm = s.length("upperarm_l", "lowerarm_l") + s.length("lowerarm_l", "hand_l")
+    neck = s.pos.get("neck_01") or s.pos["head"]
+    rest = add(add(scale(sh, 0.6), scale([neck[0], neck[1], sh[2]], 0.4)), scale(up, PLAY_REST_CM))
+    inst = dict(items[0], hand="l") if items else None
+    g = (inst or {}).get("grip") or {}
+    # (the hand as far from the collar as the instrument is long past its grip, within the arm's bend)
+    span = 100.0 * (float(g.get("len_m") or 0.55) - float(g.get("grip_from_end_m") or 0.12)) - 6.0
+    span = max(100.0 * PLAY_REACH[0], min(PLAY_REACH[1] * arm, span))
+    out = unit(add(add(scale(left, 0.5), scale(fwd, 0.85)), scale(up, -0.08)))
+    hand_l = add(rest, scale(out, span))
+    _ik(s, "upperarm_l", "lowerarm_l", "hand_l", hand_l, add(hand_l, add(scale(left, -8.0), [0.0, 0.0, -60.0])))
+    t_l = unit(sub(rest, s.pos["hand_l"]))
+    t, h = _grip(s, "l", t_l)
+    _fingers_rest(s, "l")
+    _curl(s, "l", grip_curl(g) if g else 55, 30)
+    if inst:
+        _held_report(s, "l", inst, t, h, "play")
+    # the right hand over the instrument's middle, a forearm's breadth to the right and a little up
+    mid = add(s.pos["hand_l"], scale(sub(rest, s.pos["hand_l"]), 0.6))
+    hand_r = add(mid, add(add(scale(left, -30.0), scale(fwd, 8.0)), scale(up, 4.0)))
+    _ik(s, "upperarm_r", "lowerarm_r", "hand_r", hand_r, add(hand_r, add(scale(left, -30.0), [0.0, 0.0, -40.0])))
+    bow = dict(items[1], hand="r") if len(items) > 1 else None
+    t_r = unit(sub(add(mid, scale(up, 3.0)), add(s.pos["hand_r"], scale(left, -1.0))))
+    t, h = _grip(s, "r", t_r)
+    _fingers_rest(s, "r")
+    _curl(s, "r", grip_curl(bow["grip"]) if bow else 60, 30)
+    if bow:
+        _held_report(s, "r", bow, t, h, "play")
+    _turn(s, 0.0, p.get("play_head_deg", 14.0), p.get("play_head_tilt", 0.0))
+
+
 ACTIONS = {"veil_lift": act_veil_lift,     # what a person begins to do as the shot starts, over any posture
+           "play_at_shoulder": act_play_at_shoulder,
            "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work,
            "weapon_ready": act_weapon_ready}
 

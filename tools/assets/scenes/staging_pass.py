@@ -52,13 +52,16 @@ POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve",
 # the work a person does with a tool or with their hands at what is in front of them, whatever the task (11-17: a
 # smith stood arms down beside his anvil in every key); offered by these plain names, repeatable shot after shot
 WORK_POSES = ["tool_raised", "striking_down", "hands_at_work"]
+# ... and an instrument played, gone on with shot after shot as work is (from_plan.played_on)
+PLAY_POSES = ["play_at_shoulder"]
 # gaze is not a pose: the listener/speaker rule sets it. Plain words for each, for the owner question
 POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gesture_point": "points at something",
               "veil_lift": "lifts a veil", "look_at_sleeve": "looks down at a sleeve",
               "reach_to_forearm": "lays a hand on another person's forearm",
               "tool_raised": "holds a tool raised high, ready to bring it down on the work in front of them",
               "striking_down": "brings a tool down on the work in front of them",
-              "hands_at_work": "works with both hands on something in front of them at waist height"}
+              "hands_at_work": "works with both hands on something in front of them at waist height",
+              "play_at_shoulder": "plays a musical instrument that is held up at the shoulder, under the chin"}
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
 SEED = 7
@@ -481,7 +484,7 @@ def main():
                     now[nm] = w
                 # from the shot's OWN span only (as the worn state): a later shot's action is not claimed early
                 # (each choice offered with its plain words; the plan's own state of the person, when it gives one)
-                opts = ["none"] + [f"{x} ({POSE_WORDS[x]})" for x in POSES + WORK_POSES]
+                opts = ["none"] + [f"{x} ({POSE_WORDS[x]})" for x in POSES + WORK_POSES + PLAY_POSES]
                 sw = f" The plan says of {nm} as the shot starts: {p['state']}." if str(p.get("state") or "").strip() else ""
                 ps = ask.choose(q_choose(own, st, q + f"{nm} is {p.get('pose') or 'in the shot'}.{sw} Most shots "
                                                       f"begin with no special action. Which of these does {nm} begin "
