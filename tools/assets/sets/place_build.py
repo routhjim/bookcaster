@@ -55,9 +55,16 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     # a made floor in the open (open_floor): the floor ends at its edge, the walls are that edge, as high as the spec
     # says and bare, and nothing is overhead
     edge = float(spec.get("_edge_m") or OPEN_EDGE_M) if spec.get("_open_top") else None
+    # (a made floor that keeps its picture's own structure, picture_stage: its edge is the picture's, standing round
+    # the floor as the picture's land; no wall of the set's own is built there, and the floor reaches past its own
+    # size only as far as a hung thing's post stands.
+    # The set's size is still the floor's: people and cameras are kept on it as in any room)
+    stage = bool(spec.get("_picture_stage"))
     st = [dict(kit["floor"])] if edge is None else \
-        [dict(kit["floor"], extend_m=float(kit["wall"].get("thickness_m", 0.3)))]
+        [dict(kit["floor"], extend_m=OPEN_POST_M + 0.02 if stage else float(kit["wall"].get("thickness_m", 0.3)))]
     for w in ss["structure"]:
+        if w.get("kind") == "wall" and stage:
+            continue
         if w.get("kind") == "wall":
             w2 = dict(kit["wall"], **{k: v for k, v in w.items() if k != "openings"})
             w2["material"] = kit["wall_material_ns"] if w["side"] in ("north", "south") else kit["wall_material_ew"]
@@ -193,6 +200,11 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     for i, (sx, sy) in enumerate(((1, -1), (-1, -1), (1, 1), (-1, 1))):
         cams.append({"name": f"wide_{i}", "position": [round(sx * (W / 2 - 0.5), 2), round(sy * (D / 2 - 0.5), 2), 1.6],
                      "target": [round(-sx * 0.6, 2), round(-sy * 0.6, 2), 1.1], "focal_mm": 20})
+        if stage and sy > 0:
+            # (a picture stage is seen from its picture's side only, PICTURE_DIR: the two wide pictures that would
+            # look back out of it are taken from the eye's edge of the floor, straight along the picture's view)
+            x = round(sx * (W / 2 - 0.5) / 3, 2)
+            cams[-1].update(position=[x, round(-(D / 2 - 0.5), 2), 1.6], target=[x, round(D / 2, 2), 1.1])
     out["cameras"] = cams
     out["validation"] = {"figures": [{"position": [0.0, 0.0], "facing": [0, -1]}]}
     return out
@@ -248,6 +260,9 @@ ROOM_SEEN_MOST = 14              # the things of a room's picture built besides 
 ANY_KINDS = ("work_piece", "landmark")   # the kinds that hold any thing (its look says what it is)
 SURFACE_STANDS_M = 1.2           # a thing of a table-top kind the picture stands on the floor this tall is a floor thing
 OPEN_POST_M = 0.14               # ... and what hangs higher than its edge hangs on a plain post this thick (hang())
+STAGE_NO_EDGE_M = 0.01           # a picture stage's own edge wall: none (what hangs there hangs on a post, hang())
+STAGE_FRONT_DEG = 180.0          # a picture stage's world (picture_stage): nothing of its panorama stands near, on any
+#                                  side: all of it lies beyond the picture's own land (img3d/pano_shell.py surround)
 HUNG_LIGHT_OUT_M = 0.1           # a hung piece that gives light gives it this far before its own face
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
@@ -1015,6 +1030,52 @@ def made_floor(concept: dict) -> bool:
     return concept.get("space") == "outdoors" and concept.get("ground") == "built"
 
 
+def picture_stage(concept: dict) -> dict:
+    """The picture's own land of a made floor in the open (img3d/concept_depth.py stage_land: the depth's "land",
+    "stage": true), when its picture was measured with it; {} for every other place, and for a made floor measured
+    before there was one: that one is built as it was (open_floor's low walls and a world from words) until its
+    picture is measured again."""
+    dp = concept.get("depth") or {}
+    ld = dp.get("land") if isinstance(dp.get("land"), dict) else {}
+    return ld if made_floor(concept) and dp.get("room_m") and ld.get("stage") and ld.get("glb") else {}
+
+
+def stage_pieces(pcs: list, concept: dict, land: str, said: str, tech: str) -> tuple:
+    """A picture stage's own pieces: -> (the floor's pieces without those the picture's land has, the place's world,
+    the picture's land).
+
+    The land (LAND_ID, scenery) is the picture itself at its own depth, in the room's frame: everything the picture
+    shows standing on and round the floor that is no loose piece of the set. It stands where it was measured, its
+    own floor just under the real one ("under_m": the real floor, with the floor's own picture on it, is the one
+    people stand on and the one seen); where it rises nobody is stood and no camera stands ("high", land_high).
+    The world is the picture carried on all the way round from the picture's own eye ("view": places/pieces.py),
+    every part of it beyond the land (STAGE_FRONT_DEG: the place's structure is in that panorama again, and stood
+    near it stood twice); its flat ground is water for a floor that stands in water, else there is none ("ground":
+    "none"): under the floor's edge is what the land and the panorama show there."""
+    dp, ld = concept.get("depth") or {}, picture_stage(concept)
+    eye = [float(v) for v in (dp.get("eye") or [0.0, 0.0, 1.6])]
+    seen_key = {f"c{i + 1}": f"seen:{i}" for i in range(len(concept.get("seen") or []))}
+    has = set(ld.get("has") or [])
+    # (what the picture's land has is not built again: open_places)
+    pcs = [p for p in pcs if p.get("phrases") or seen_key.get(p["id"], f"spec:{p['id']}") not in has]
+    rnd = round_of(concept)
+    view = {"eye_at": [round(eye[0], 2), round(eye[1], 2)],
+            "eye_h": round(min(VIEW_EYE_M[1], max(VIEW_EYE_M[0], eye[2])), 2), "front_deg": STAGE_FRONT_DEG}
+    scenery = {"id": LAND_ID, "kind": "terrain", "against": "free", "phrases": [], "scenery": True,
+               "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
+               "at_xy": [round(float(ld["xy"][0]), 3), round(float(ld["xy"][1]), 3)],
+               "under_m": round(float(ld.get("under_m") or 0.0), 4),
+               "_seen_size_m": [round(float(v), 3) for v in ld["size_m"]],
+               # (the land's frame is the set's own: no eye to move it by, no scale)
+               "high": land_high(ld.get("tops"), [0.0, 0.0], 1.0, 0.0, 0.0), "view": view}
+    world = {"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
+             "look": "; ".join(x for x in (land, said, tech) if x)
+             + (f"; round it, behind and to both sides: {ROUND_LOOK[rnd]}" if rnd != "land" else ""),
+             "ground": "water" if rnd == "water" else "none", "land_words": land, "surface_words": said,
+             "view": view, "source": concept["concept"]}
+    return pcs, world, scenery
+
+
 def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
     """A place in the open whose ground is itself built (made_floor) is built as a room with no roof, not as open
     land: people stand on a flat floor of the picture's floor, a low wall of the picture's sides stands round its
@@ -1028,7 +1089,12 @@ def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
 
     The spec keeps the kind "outdoors" (no door or window of a room kind's own, none of its dressing) with the
     marks "_open_top" and "_edge_m"; "_room_m" is the floor as the picture measures it, its height the stage's (how
-    high a camera may stand), not the walls'."""
+    high a camera may stand), not the walls'.
+
+    (11-27: a made floor whose picture was measured with its own land, picture_stage, keeps that picture's
+    structure: the floor, its things and its stage as here; in place of the low walls the picture's land standing
+    round the floor, and in place of the world from words the picture carried on all the way round, stage_pieces.
+    Marked "_picture_stage". Built with the plain low walls, a floor's posts, house and railings were all lost.)"""
     sp = dict(sp, kind="outdoors", openings=[], outside="", _open_top=True, _edge_m=OPEN_EDGE_M)
     for k in ("_views", "_roof"):            # (no view through a window, no roof on timbers)
         sp.pop(k, None)
@@ -1041,8 +1107,9 @@ def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
     per = str(spec.get("period") or "").replace("_", " ")
     land = f"{per}: {land}".strip(": ") if per != "not stated" else land
     sf = concept.get("surfaces") or {}
+    stage = picture_stage(concept) if concept.get("concept") else {}
     said = "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the floor", sf.get("floor")),
-                                                                         ("the low wall round its edge", sf.get("walls")),
+                                                                         ("its edge" if stage else "the low wall round its edge", sf.get("walls")),
                                                                          ("overhead", sf.get("ceiling")),
                                                                          ("the light", concept.get("light"))) if v)
     # the world round the floor is what the picture shows far off and overhead, in words alone (drawn from the
@@ -1062,12 +1129,20 @@ def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
         far_look = round_look(rnd, per, far, str(sf.get("ceiling") or "").strip().rstrip("."), tech)
     if (concept.get("depth") or {}).get("room_m"):
         sp["_picture_dir"] = list(PICTURE_DIR)   # (measured from the one picture: the cameras keep to its side)
-    pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
-                "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
-                **({"around": rnd} if rnd != "land" else {}), **({"ground": "water"} if rnd == "water" else {}),
-                "land_words": land, "surface_words": said,
-                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
-    sp["pieces"] = pcs
+    scenery = []
+    if stage:
+        sp["_picture_stage"] = True
+        pcs, world, land_piece = stage_pieces(pcs, concept, land, said, tech)
+        ids = {p["id"] for p in pcs}
+        pcs.append(world)
+        scenery = [land_piece]
+    else:
+        pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
+                    "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
+                    **({"around": rnd} if rnd != "land" else {}), **({"ground": "water"} if rnd == "water" else {}),
+                    "land_words": land, "surface_words": said,
+                    **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
+    sp["pieces"] = pcs + scenery             # (after the world: the first terrain piece is the world)
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     # (a phrase that lands on no piece of the floor, a door of the spec's among them, is the open floor)
     sp["named_places"] = {ph: (v if v in ids else "floor") for ph, v in (sp.get("named_places") or {}).items()}
@@ -1588,12 +1663,16 @@ def open_floor_stage(out: dict, spec: dict, library) -> dict:
     land, their sky light and the key from where the sky is brightest, the time of day, the redraw's words), its
     ground OPEN_FLOOR_OVER_M under the floor; the lamps and fires of the floor's own pieces burn on. The set's
     "open_top" says what it is: its cameras stay on the floor (scenes/speakers.py open_ground) and its floor is
-    still called a floor (redraw/redraw.py). -> what was done, for the report."""
+    still called a floor (redraw/redraw.py). A picture stage (open_floor) has no walls of its own: the picture's
+    land stands round the floor where it was measured (world_stage places it, with where it rises: "high_land"),
+    and the set says "picture_stage". -> what was done, for the report."""
     structure = out.get("structure") or []
     own = [l for l in out.get("lights") or [] if l.get("type") not in ("sky", "sun")]
     done = world_stage(out, spec, library)
     out["structure"] = structure
     out["open_top"] = True
+    if spec.get("_picture_stage"):
+        out["picture_stage"] = True
     if done.get("world"):
         fx = next(f for f in out["fixtures"] if f.get("world"))
         fx["position"] = [fx["position"][0], fx["position"][1], round(fx["position"][2] - OPEN_FLOOR_OVER_M, 3)]
@@ -1795,7 +1874,8 @@ def hung_posts(out: dict, lay: dict) -> list:
     """The posts of a made floor's hung things (hang "post_m") built: each a plain square post in the edge wall's
     own material (structure "box", built by sets/layout.py), standing in the wall's thickness behind the thing,
     from the floor to the thing's top. -> their names."""
-    mat = next((w.get("material") for w in out.get("structure") or [] if w.get("kind") == "wall"), None)
+    # (a picture stage has no wall of its own, open_floor: its posts are of the floor's material)
+    mat = next((w.get("material") for k in ("wall", "floor") for w in out.get("structure") or [] if w.get("kind") == k), None)
     done = []
     for q in lay.get("pieces") or []:
         if q.get("post_m") and mat:
@@ -1881,7 +1961,9 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                    if not {r.get("a"), r.get("b"), r.get("c")} & {p["id"] for p in hung}],
         named_places={ph: v for ph, v in (spec.get("named_places") or {}).items() if v not in {p["id"] for p in hung}})
     lay = L.solve_recover(floor_spec, rec, data)    # solve, then the ladder (never drops a piece the plan names)
-    hang(lay, hung, rec, float(spec.get("_edge_m") or OPEN_EDGE_M) if open_top else None)
+    # (a picture stage has no wall to hang anything on: whatever hangs there hangs on a post, however low)
+    hang(lay, hung, rec, (STAGE_NO_EDGE_M if spec.get("_picture_stage") else float(spec.get("_edge_m") or OPEN_EDGE_M))
+         if open_top else None)
     lay["bases"] = L.lay_bases(lay, bases)
     ss = L.to_set_spec(spec, lay, data)
     kit = kit_for(spec.get("period"))
