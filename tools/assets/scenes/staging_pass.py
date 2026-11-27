@@ -54,6 +54,8 @@ POSES = ["stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve",
 WORK_POSES = ["tool_raised", "striking_down", "hands_at_work"]
 # ... and an instrument played, gone on with shot after shot as work is (from_plan.played_on)
 PLAY_POSES = ["play_at_shoulder"]
+# ... and a thing lifted in the hand (the only raised hand on offer was a tool's over its work)
+RAISE_POSES = ["raise_in_hand"]
 # gaze is not a pose: the listener/speaker rule sets it. Plain words for each, for the owner question
 POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gesture_point": "points at something",
               "veil_lift": "lifts a veil", "look_at_sleeve": "looks down at a sleeve",
@@ -61,7 +63,9 @@ POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gestur
               "tool_raised": "holds a tool raised high, ready to bring it down on the work in front of them",
               "striking_down": "brings a tool down on the work in front of them",
               "hands_at_work": "works with both hands on something in front of them at waist height",
-              "play_at_shoulder": "plays a musical instrument that is held up at the shoulder, under the chin"}
+              "play_at_shoulder": "plays a musical instrument that is held up at the shoulder, under the chin",
+              "raise_in_hand": "lifts what is in their hand up in front of them, at about the height of their eyes, "
+                               "with no work in front of them"}
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"
 SEED = 7
@@ -484,7 +488,7 @@ def main():
                     now[nm] = w
                 # from the shot's OWN span only (as the worn state): a later shot's action is not claimed early
                 # (each choice offered with its plain words; the plan's own state of the person, when it gives one)
-                opts = ["none"] + [f"{x} ({POSE_WORDS[x]})" for x in POSES + WORK_POSES + PLAY_POSES]
+                opts = ["none"] + [f"{x} ({POSE_WORDS[x]})" for x in POSES + WORK_POSES + PLAY_POSES + RAISE_POSES]
                 sw = f" The plan says of {nm} as the shot starts: {p['state']}." if str(p.get("state") or "").strip() else ""
                 ps = ask.choose(q_choose(own, st, q + f"{nm} is {p.get('pose') or 'in the shot'}.{sw} Most shots "
                                                       f"begin with no special action. Which of these does {nm} begin "

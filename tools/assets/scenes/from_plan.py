@@ -780,8 +780,9 @@ WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing
 READY_ACTIONS = ("weapon_ready",)     # a fighter's guard (pose.py): placed by the fight, not at a piece
 BLOW_POSES = ("tool_raised", "striking_down")    # a blow the pass may name for a fighter: the clip's, not its start
 PLAY_ACTIONS = ("play_at_shoulder",)  # an instrument played (pose.py): gone on with shot after shot (played_on)
+RAISE_ACTIONS = ("raise_in_hand",)    # what is in the hand lifted up in front (pose.py): no piece of work to stand at
 ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + \
-    WORK_ACTIONS + READY_ACTIONS + PLAY_ACTIONS
+    WORK_ACTIONS + READY_ACTIONS + PLAY_ACTIONS + RAISE_ACTIONS
 
 
 def played_on(playing: dict, poses: dict, present: set, holding: set) -> dict:
@@ -1018,7 +1019,7 @@ def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: 
     sitting = v.get("pose") == "sitting"
     if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") + WORK_ACTIONS + READY_ACTIONS and sitting:
         return f"{k} is sitting"
-    if pz in READY_ACTIONS + PLAY_ACTIONS and not any(r.get("at") == "hand" for r in carried or []):
+    if pz in READY_ACTIONS + PLAY_ACTIONS + RAISE_ACTIONS and not any(r.get("at") == "hand" for r in carried or []):
         return f"{k} has nothing in the hand"
     if pz == "stand_hand_on_mantel":
         fire = [t for t in things if t.get("fire")]

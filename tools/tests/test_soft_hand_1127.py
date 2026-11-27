@@ -77,6 +77,7 @@ def test_someone_playing_is_said_to_play_with_the_instrument_at_the_shoulder(tmp
     for kind in ("wide", "close"):                       # (at the shoulder it is in a close frame too)
         w = R.holds_words(tmp_path, "s", [("a", [0.2, 0.2, 0.4, 0.9]), ("b", [0.6, 0.2, 0.8, 0.9])], {}, kind)
         assert "is playing a lute" in w and "left shoulder" in w and "holds the stick across it" in w
+        assert "never" not in w and " not " not in w                # (nothing named that must not be drawn)
         assert "hanging down" not in w and "a mug" not in w      # (b's carrying hand was let out of the frame)
     assert R.PLAY_WORDS[0] in SP.PLAY_HANDS
     assert "stick" not in R.play_place([{"at": "hand", "hand": "l", "name": "lute"}])

@@ -2120,7 +2120,31 @@ def act_play_at_shoulder(s, p):
     _turn(s, 0.0, p.get("play_head_deg", 14.0), p.get("play_head_tilt", 0.0))
 
 
-ACTIONS = {"veil_lift": act_veil_lift,     # what a person begins to do as the shot starts, over any posture
+RAISE_FWD = 0.5              # a thing lifted in the hand: this share of the arm's length out in front of its shoulder,
+RAISE_OUT = 0.1              # ... this share out to its own side,
+RAISE_OVER_CM = 6.0          # ... and this far over the head joint (about the height of the eyes)
+
+
+def act_raise_in_hand(s, p):
+    """What is in the hand lifted up in front, at about the height of the eyes: the hand of the first thing held (the
+    right with nothing held) out before its shoulder and a little to its own side, the elbow bent under it; the
+    other arm as the posture left it. The grip is the last step's (pose_skel: a raised arm holds the working end
+    up). (The only raised hand there was to choose was a tool wound up over a piece of work: someone lifting a
+    cup was stood at the nearest bench and folded over it, 11-27.)"""
+    items = _held_items(p)
+    side = items[0]["hand"] if items else "r"
+    sx = 1.0 if side == "l" else -1.0
+    left, fwd = _body_axes(s)
+    sh = s.pos[f"upperarm_{side}"]
+    arm = s.length(f"upperarm_{side}", f"lowerarm_{side}") + s.length(f"lowerarm_{side}", f"hand_{side}")
+    hand = add(add(sh, scale(fwd, RAISE_FWD * arm)), scale(left, sx * RAISE_OUT * arm))
+    hand[2] = s.pos["head"][2] + RAISE_OVER_CM
+    _ik(s, f"upperarm_{side}", f"lowerarm_{side}", f"hand_{side}", hand,
+        add(hand, add(scale(left, sx * 25.0), [0.0, 0.0, -60.0])))
+
+
+ACTIONS = {"veil_lift": act_veil_lift,
+           "raise_in_hand": act_raise_in_hand,     # what a person begins to do as the shot starts, over any posture
            "play_at_shoulder": act_play_at_shoulder,
            "tool_raised": act_tool_raised, "striking_down": act_striking_down, "hands_at_work": act_hands_at_work,
            "weapon_ready": act_weapon_ready}
