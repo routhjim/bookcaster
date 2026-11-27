@@ -570,6 +570,19 @@ OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from w
               "around it and the sky above. Empty: no people. {style}")
 
 
+# ... of a place its picture's reader says has water or a town round it (scenes/concept.py "around"): that, where
+# OPEN_WORDS asks for land. (A made floor is never drawn anew here: step_concept. A concept read before the question
+# was asked has no "around": OPEN_WORDS, word for word)
+OPEN_ROUND_WORDS = {
+    "water": ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: everything "
+              "that stands there seen whole and small in the picture, open water around it out to the horizon and "
+              "the sky above. Empty: no people. {style}"),
+    "buildings": ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: open "
+                  "ground in front, everything that stands there seen whole from the ground up and small in the "
+                  "picture, the buildings of the town around it and the sky above. Empty: no people. {style}"),
+}
+
+
 def person_noun(look: str) -> str:
     """What a person is called in a picture's words: the look's own "man", "woman", "boy" or "girl" (its first), else
     the word after its article. (A look that began "a tall, slim young man" made its person "the tall": every key
@@ -915,7 +928,7 @@ class Story:
             # (the whole place in the spec's own words, when it has them: the set sheet's may name one part only)
             room = str(spec.get("whole") or spec.get("room") or "").strip()
             per = str(spec.get("period") or "").replace("_", " ").strip()
-            words = OPEN_WORDS.format(
+            words = OPEN_ROUND_WORDS.get(str(con.get("around") or ""), OPEN_WORDS).format(
                 room=(f"{per[0].upper() + per[1:]}: " if per and per != "not stated" else "") + room,
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
                 style=key_style(style.read_text(), open_air=True) if style.exists() else "")
@@ -1035,7 +1048,25 @@ class Story:
         if lums and max(lums) < KEY_DARK:
             log(f"{place}: the set's own stills are nearly black (brightest {max(lums):.1f} of 255)")
             return False
+        self.wide_check(place)
         return True
+
+    def wide_check(self, place) -> dict:
+        """The set's wide pictures looked at (sets/wide_check.py: too dark, nearly empty), the measures and the
+        verdict kept in its place_build_report.json, a failed set said loudly. It stops nothing: sets that
+        rendered nearly black or as bare ground were recorded "ok" and staged in unseen (11-27)."""
+        try:
+            sys.path.insert(0, str(HERE / "sets"))
+            import wide_check as WC
+            res = WC.check_set(self.set_dir(place) / "ue")
+            rp = self.set_dir(place) / "place_build_report.json"
+            rp.write_text(json.dumps({**json.loads(rp.read_text()), "wide_check": res}, indent=1))
+        except Exception as exc:         # (a check that cannot run is no reason to lose the set)
+            log(f"{place}: the set's wide pictures were not checked ({type(exc).__name__}: {str(exc)[:120]})")
+            return {}
+        if WC.fault_line(place, res):
+            log(WC.fault_line(place, res))
+        return res
 
     def _cast_cmd(self, name):
         fid, pr = self.figure_id(name), self.person(name)

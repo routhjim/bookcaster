@@ -16,6 +16,8 @@ lies on (fitted to it); the room's frame stands on it: x to the picture's right,
                    the wall it stands against when its back comes within AGAINST_M of one.
 Scaled so a door seen in the picture is DOOR_M high (the model's metres are near, not exact). Then the room is
 centred on its floor, the eye standing inside its front part.
+A made floor in the open (no walls: a deck, a pier, a rooftop) is measured by its own floor instead: its sides where
+the points lying on the floor plane end (floor_span), kept within reason (floor_bounds).
 
 OUT.json: {"room_m": [W, D, H], "eye": [x, y, z], "things": {"spec:<id>" | "seen:<i>": {"xy", "size_m", "against",
 "facing", "raised_m" (it stands on a raised part of the floor, this high)}}, "off_floor": {key: {"kind"}} (things the
@@ -42,6 +44,26 @@ OFF_FLOOR_M = 0.4            # a thing whose own points are this much nearer tha
 RAISED_MOST_M = 1.0          # ... unless its bottom is no higher than this: it stands on a raised part of the floor
 FRONT_M = 1.2                # the room reaches at least this far behind the eye (the picture's front wall is unseen)
 STAND = (0.3, 2.0)           # the height band (m) whose points mark where the walls are
+# A made floor in the open (a deck, a pier, a rooftop: scenes/concept.py "ground": "built") has no walls to end it:
+# it ends where the floor itself ends. Measured as a room is, by everything at standing height across the whole
+# picture, one came out 38 m wide and 15 m deep (what stood beyond its edge was taken for its walls) and the people
+# stood on a vast empty floor, 11-27
+FLOOR_ON_M = 0.15            # a point of the picture this near the fitted floor plane lies on the floor
+FLOOR_CELL_M = 0.5           # the floor's extent is read in cells of the plane this wide (each cell counts once: near
+FLOOR_CELL_LEAST = 4         # the eye a cell holds far more of the picture's points), each with this many points
+FLOOR_CELLS_LEAST = 12       # fewer cells than this: no floor to read; where the points at standing height end
+FLOOR_CELL_GAP = 2           # the floor is the cells joined to those before the eye, across gaps under this many cells
+#                              (another floor at the same height beyond a gap, the foot of a far wall: not this floor)
+OPEN_FLOOR_ROUND_M = 6.0     # a made floor reaches no farther than this beyond the things on it and the eye (as the
+#                              stage of open land does, sets/place_build.py OPEN_ROUND_M): what lies beyond is no
+#                              place anyone is staged, and the place's world is drawn round the floor's edge
+OPEN_FLOOR_M = (3.0, 24.0)   # a made floor's side, least and most, each side on its own (a pier is long and narrow:
+#                              no square is forced). Least: two people abreast and a camera beside them. Most: the camera's
+#                              own light reaches 25 m (scenes/ue/scene_job.py FILL_REACH_M) and a person farther off
+#                              than that is under a twentieth of a wide frame's height
+SCALE_BY_M = 1.5             # a made floor's scale is corrected by the judged real heights of its things (those this
+SCALE_VOICES = 3             # tall or taller, a door at DOOR_M among them) only when at least this many speak, by
+#                              the middle one: a single misjudged thing once shrank a whole place to 0.6 of itself
 
 
 def infer(image: np.ndarray, device: str):
@@ -116,6 +138,65 @@ def on_floor(rv: np.ndarray, n: np.ndarray, d: float) -> np.ndarray | None:
         return None
     t = -d / den
     return rv * t if t > 0 else None
+
+
+def floor_span(q: np.ndarray) -> tuple | None:
+    """How far the floor itself reaches (room frame, the picture's metres): the points lying on the fitted floor
+    plane before the eye, counted by cells of the plane; of those, the cells joined to the one that holds most of
+    the picture (the floor at the eye's feet); left and right from the 2nd to the 98th hundredth of their x, the
+    back at the 98th of their y (a ragged edge is not the floor's width).
+    -> (left, right, back), or None when too little of the floor is seen."""
+    on = q[(np.abs(q[:, 2]) <= FLOOR_ON_M) & (q[:, 1] > 0.0)]
+    if not len(on):
+        return None
+    ij, n = np.unique(np.floor(on[:, :2] / FLOOR_CELL_M).astype(int), axis=0, return_counts=True)
+    ij, n = ij[n >= FLOOR_CELL_LEAST], n[n >= FLOOR_CELL_LEAST]
+    if len(ij) < FLOOR_CELLS_LEAST:
+        return None
+    left_, todo, got = {(int(a), int(b)) for a, b in ij}, [tuple(int(v) for v in ij[int(np.argmax(n))])], []
+    left_.discard(todo[0])
+    near = [(a, b) for a in range(-FLOOR_CELL_GAP, FLOOR_CELL_GAP + 1) for b in range(-FLOOR_CELL_GAP, FLOOR_CELL_GAP + 1)]
+    while todo:
+        c = todo.pop()
+        got.append(c)
+        for a, b in near:
+            m = (c[0] + a, c[1] + b)
+            if m in left_:
+                left_.discard(m)
+                todo.append(m)
+    ij = np.array(got)
+    if len(ij) < FLOOR_CELLS_LEAST:
+        return None
+    return (float(np.percentile(ij[:, 0], 2)) * FLOOR_CELL_M, float(np.percentile(ij[:, 0], 98) + 1) * FLOOR_CELL_M,
+            float(np.percentile(ij[:, 1], 98) + 1) * FLOOR_CELL_M)
+
+
+def floor_bounds(left: float, right: float, back: float, feet: list, scale: float) -> tuple:
+    """A made floor's measured sides kept believable (room frame, the picture's metres; the eye at 0, 0): no farther
+    than OPEN_FLOOR_ROUND_M beyond the things standing on it (feet: each one's front foot) and the eye, each side
+    within OPEN_FLOOR_M, the eye on it. -> (left, right, front, back)."""
+    rnd, least, most = OPEN_FLOOR_ROUND_M / scale, OPEN_FLOOR_M[0] / scale, OPEN_FLOOR_M[1] / scale
+    xs, ys = [0.0] + [f[0] for f in feet], [0.0] + [f[1] for f in feet]
+    if feet:
+        left, right, back = max(left, min(xs) - rnd), min(right, max(xs) + rnd), min(back, max(ys) + rnd)
+    left, right = min(left, -least / 2), max(right, least / 2)
+    if right - left > most:                  # (the stretch about its things and the eye is the one kept)
+        mid = min(max((min(xs) + max(xs)) / 2, left + most / 2), right - most / 2)
+        left, right = mid - most / 2, mid + most / 2
+    front = -max(FRONT_M, 0.2 * back)
+    back = min(max(back, front + least), front + most)
+    return left, right, front, back
+
+
+def things_scale(things: dict, real_m: dict, door: float) -> float:
+    """A made floor's scale from how tall its things really are (real_m: {key: the judge's height in metres}; a
+    door stands DOOR_M): the middle one of their ratios, within SCALE_CLAMP, when at least SCALE_VOICES of them
+    speak; with fewer, the door's own (as a room's)."""
+    rs = [DOOR_M / t["height"] if t["kind"] == "door" else float(real_m[k]) / t["height"] for k, t in things.items()
+          if t["height"] > 0.2 and (t["kind"] == "door" or float(real_m.get(k) or 0.0) >= SCALE_BY_M)]
+    if len(rs) < SCALE_VOICES:
+        return door
+    return float(np.clip(np.median(rs), *SCALE_CLAMP))
 
 
 def stand_before(things: dict) -> None:
@@ -444,9 +525,12 @@ def write_relief(out: Path, vtx, faces, uv, image: np.ndarray) -> dict:
             "size_m": [round(float(x), 3) for x in hi - lo], "faces": int(len(faces)), "z0": round(float(lo[2]), 4)}
 
 
-def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None = None) -> dict:
+def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None = None, open_top: bool = False,
+              real_m: dict | None = None) -> dict:
     """The room and its things from the picture's points (see the module's words). boxes: {key: (box, kind)}.
-    keep: filled with the frame the room was measured in (for relief())."""
+    keep: filled with the frame the room was measured in (for relief()). open_top: a made floor in the open: its
+    sides are where the floor itself ends (floor_span), kept within reason (floor_bounds), its scale its things'
+    (things_scale; real_m: {key: how tall the judge says the thing really is})."""
     n, d, fit = fit_floor(pts, mask)
     axes = frame(n, d)
     q = to_room(pts[mask], axes, d)
@@ -511,6 +595,10 @@ def room_from(pts, mask, intr, boxes: dict, kinds_size: dict, keep: dict | None 
     doors = [t["height"] for t in things.values() if t["kind"] == "door"]
     scale = float(np.clip(DOOR_M / doors[0], *SCALE_CLAMP)) if doors else 1.0
     front = -max(FRONT_M, 0.2 * back)
+    if open_top:
+        scale = things_scale(things, real_m or {}, scale)
+        left, right, back = floor_span(q) or (left, right, back)
+        left, right, front, back = floor_bounds(left, right, back, [t["front"] for t in things.values()], scale)
     W, D, H = (right - left) * scale, (back - front) * scale, ceil * scale
     cx, cy = (left + right) / 2, (front + back) / 2
     out = {}
@@ -1014,7 +1102,13 @@ def main():
     fyi, cyi = np.linalg.lstsq(np.stack([yz, np.ones_like(yz)], 1), (v_[ok] + 0.5) / h, rcond=None)[0]
     intr = np.array([[fxi, 0, cxi], [0, fyi, cyi], [0, 0, 1]])
     fr = {}
-    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()}, fr)
+    # (a made floor in the open: measured by its own floor; its things' real heights, where the judge gave them)
+    real = {f"spec:{pid}": v["real_m"][1] for pid, v in (concept.get("spec") or {}).items()
+            if v.get("real_m") and not v.get("natural")}
+    real.update({f"seen:{i}": sn["real_m"][1] for i, sn in enumerate(concept.get("seen") or [])
+                 if sn.get("real_m") and not sn.get("natural")})
+    res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()}, fr,
+                    open_top=concept.get("space") == "outdoors" and concept.get("ground") == "built", real_m=real)
     # the land's own form of a place in the open (scenes/concept.py: a piece of the land itself), made from the
     # picture's depth where it stands
     # (11-26: a place in the open whose ground is a made floor, scenes/concept.py "ground": "built", is measured as

@@ -1160,6 +1160,124 @@ def listener_of(c, spec_line, speaker):
     return None
 
 
+# ------------------------------------------------------------------ the picture's side
+# A place in the open is built from ONE picture of it (sets/place_build.py: open land from the picture's depth, a made
+# floor measured in it): what the picture's eye saw is there; what it did not see is not. Seen from the side or from
+# behind, the picture's land is black shards, stripes and stretched paint, and behind the picture's eye there is
+# nothing of the place at all. So a camera there looks INTO the picture: its view, in plan, within SIDE_ARC_DEG of
+# the way the picture looks (the set's "picture_dir"). Rooms, cockpits and sets with no "picture_dir" are not
+# touched; a set whose world is a true panorama, good from every side, says "all_round" and is not either.
+PICTURE_SIDE: dict = {}       # {"dir": [x, y]}: the way the place's picture looks, set frame (main() fills it)
+SIDE_ARC_DEG = 75.0          # a camera's view lies within this of the picture's own, either side. The picture's land
+#                              is carried to about 42 degrees either side of its eye's view (half its width and
+#                              VIEW_SIDE_DEG, place_build.py), a face of it seen under 15 degrees from its own plane
+#                              is a smear, and the widest lens here sees 37 degrees either side of its axis: at 75
+#                              the lens axis still leans 15 degrees into the picture and a side-on two-shot (the
+#                              nearest thing to a reverse) is allowed; at 90 half the frame is behind the picture
+SIDE_WIDEN_DEG = 15.0        # no camera inside the arc: it is widened by this much at a time (and said), never no camera
+SIDE_WHY = "the camera looks out of the side its place's picture shows"
+
+
+def picture_side(set_spec: dict) -> dict:
+    """The way a set's one picture looks ({"dir"}), when its cameras are held to it: {} for a room, a cockpit, a set
+    that states none, and one whose world is a true panorama all round ("all_round")."""
+    d = set_spec.get("picture_dir")
+    if not d or set_spec.get("all_round") or math.hypot(d[0], d[1]) < 1e-6:
+        return {}
+    return {"dir": unit2(d)}
+
+
+def side_off(cam: dict) -> float:
+    """How far a camera's view is turned from the picture's, in plan (degrees, 0 to 180); 0 where no picture's side
+    is held to, for a camera looking straight down and for one whose aim is not yet a point."""
+    p, t = cam.get("position"), cam.get("target")
+    if not PICTURE_SIDE or not p or not isinstance(t, (list, tuple)) or math.hypot(t[0] - p[0], t[1] - p[1]) < 1e-6:
+        return 0.0
+    return plan_angle(PICTURE_SIDE["dir"], p, t)
+
+
+def side_arcs(first: float = SIDE_ARC_DEG) -> list:
+    """The arcs a camera is looked for in, in turn: SIDE_ARC_DEG, then wider by SIDE_WIDEN_DEG up to all the way
+    round; [180] where no picture's side is held to."""
+    if not PICTURE_SIDE:
+        return [180.0]
+    out = []
+    while first < 180.0:
+        out.append(first)
+        first += SIDE_WIDEN_DEG
+    return out + [180.0]
+
+
+def within_side(cands: list, cam=lambda q: q, what: str = "") -> list:
+    """Of the cameras found (in their order), those in the narrowest arc that holds any: SIDE_ARC_DEG when one looks
+    into the picture's side, else wider (said in the log), so a shot never loses its camera to this rule."""
+    if not PICTURE_SIDE or not cands:
+        return cands
+    offs = [side_off(cam(q)) for q in cands]
+    for arc in side_arcs():
+        keep = [q for q, o in zip(cands, offs) if o <= arc + 1e-6]
+        if keep:
+            if arc > SIDE_ARC_DEG:
+                log(f"picture side: no {what or 'camera'} within {SIDE_ARC_DEG:.0f} deg of the picture's view; "
+                    f"widened to {arc:.0f} ({len(keep)} of {len(cands)})")
+            return keep
+    return cands
+
+
+def side_turn(cam: dict, arc: float = SIDE_ARC_DEG) -> dict:
+    """A camera swung round its own aim, in plan, to the nearest angle inside the arc: as far from its aim and as
+    high as it was, the same lens. The camera itself when it is inside already."""
+    if side_off(cam) <= arc + 1e-6:
+        return cam
+    p, t = cam["position"], cam["target"]
+    pa = math.atan2(PICTURE_SIDE["dir"][1], PICTURE_SIDE["dir"][0])
+    turn = (math.atan2(t[1] - p[1], t[0] - p[0]) - pa + math.pi) % (2 * math.pi) - math.pi
+    a = pa + math.copysign(math.radians(arc), turn)
+    r = math.hypot(t[0] - p[0], t[1] - p[1])
+    return dict(cam, position=[round(t[0] - r * math.cos(a), 3), round(t[1] - r * math.sin(a), 3), p[2]])
+
+
+def side_turned(cam: dict, room, tried=()) -> dict:
+    """side_turn at the first arc (side_arcs) whose standpoint is in the place, clear of its things and not tried
+    before; the camera itself when no arc short of all the way round gives one."""
+    for arc in side_arcs():
+        q = side_turn(cam, arc)
+        if q is cam:
+            return cam
+        if in_room(q["position"], room) and not any(math.dist(q["position"], t) < 0.15 for t in tried):
+            if arc > SIDE_ARC_DEG:
+                log(f"picture side: no standpoint at {SIDE_ARC_DEG:.0f} deg from the picture's view; turned to {arc:.0f}")
+            return q
+    return cam
+
+
+def side_first(c: dict, characters: dict, room) -> str | None:
+    """A shot's first camera held to the picture's side before anything is rendered: a placed one (position and
+    aim) swung round its aim (side_turned); a computed one (framing.shot: round its subject by "az" from the way
+    they face) by its "az". Not an over-the-shoulder (its place is the listener's shoulder: the search's own
+    cameras follow if it fails). -> what was done, for the log."""
+    if not PICTURE_SIDE or c.get("ots"):
+        return None
+    if c.get("position") and isinstance(c.get("target"), (list, tuple)):
+        q = side_turned(c, room)
+        if q is c:
+            return None
+        was = side_off(c)
+        c["position"] = q["position"]
+        return f"{c['name']}: {was:.0f} deg from the picture's view, swung round its aim to {side_off(c):.0f}"
+    f = (characters.get(c.get("subject") or "") or {}).get("facing")
+    if c.get("position") or not f or math.hypot(f[0], f[1]) < 1e-6:
+        return None
+    # (the camera stands the way its subject faces, turned by az: it looks the other way)
+    az = float(c.get("az") or 0.0)
+    pa = math.atan2(PICTURE_SIDE["dir"][1], PICTURE_SIDE["dir"][0])
+    turn = math.degrees((math.atan2(f[1], f[0]) + math.radians(az) + math.pi - pa + math.pi) % (2 * math.pi) - math.pi)
+    if abs(turn) <= SIDE_ARC_DEG + 1e-6:
+        return None
+    c["az"] = round(az + math.copysign(SIDE_ARC_DEG, turn) - turn, 1)
+    return f"{c['name']}: {abs(turn):.0f} deg from the picture's view, turned round {c['subject']} to {SIDE_ARC_DEG:.0f}"
+
+
 def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried, opts=None):
     """Placed cameras that keep the speaker and the listener (or the named people) in view, each checked by the
     framing rules: a two-shot aimed between their faces nearer the speaker, or an over-the-shoulder from behind the
@@ -1261,6 +1379,7 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
         # of the speaker, the listener left to the cut
         return two_shot_candidates(dict(c, show=None), shot, spk, None, subjects, res, room, line, est_side, tried,
                                    dict(opts, _single=True))
+    out = within_side(out, lambda t: t[1], "two-shot")      # (a place built from one picture: into its side)
     return [(q, mode if not opts.get("_single") else "single") for _, q, mode in sorted(out, key=lambda t: t[0])]
 
 
@@ -1657,7 +1776,7 @@ def speck_wide(ms: list) -> bool:
     return 1.7 / (2.0 * r0 * framing.SENSOR_W / 2.0 / FALLBACK_MM * 9.0 / 16.0) < SPECK_H if r0 > 0 else False
 
 
-def depth_camera(ms: list, room, tried=()) -> dict | None:
+def depth_camera(ms: list, room, tried=(), arc: float = 180.0) -> dict | None:
     """The view in depth of a creature and people far from it (the first of them: whom the shot is about): from
     behind a person and to their side, aimed at the creature's head: that person large at one side of the frame, the
     creature and whoever stands between at their distance beyond. The person: the first one, or with the creature
@@ -1680,22 +1799,35 @@ def depth_camera(ms: list, room, tried=()) -> dict | None:
                  fore["eye_xy"][1] + back * u[1] + sg * DEPTH_SIDE_M * u[0], 1.7]
             if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or solid_between(p, le):
                 continue
+            if side_off({"position": p, "target": le}) > arc + 1e-6:       # (out of the picture's side)
+                continue
             return {"position": [round(x, 3) for x in p], "target": [round(x, 3) for x in le], "focal_mm": FALLBACK_MM}
     return None
 
 
-def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
+def fallback_camera(ms: list, room, tried=(), _fore=(), _arc: float | None = None) -> dict | None:
     """A wide on these measured people (the first: whom the shot is about) from the open floor: round them at a
     widening distance, from the nearest that holds them all in the lens, the first standpoint inside the place, clear
     of its things and of the cameras already tried, with a clear line to every one of their eyes, else to the
     first one's; aimed at their middle. None when there is no such standpoint. (Started at twice their spread plus
     2 m, a wide on two people 8 m apart began 10 m out, past the flat ground on every side the rocks left open, and a
-    shot that had rendered black was rendered black again, 11-18.)"""
+    shot that had rendered black was rendered black again, 11-18.)
+    In a place built from one picture (PICTURE_SIDE) the standpoint looks into the picture's side: the whole search
+    within SIDE_ARC_DEG of its view first, then in wider arcs (side_arcs, said in the log), the last all the way
+    round: the search as it is in a room."""
     if not ms:
         return None
+    if _arc is None:
+        for arc in side_arcs():
+            got = fallback_camera(ms, room, tried, _fore, arc)
+            if got:
+                if PICTURE_SIDE and arc > SIDE_ARC_DEG:
+                    log(f"picture side: no wide within {SIDE_ARC_DEG:.0f} deg of the picture's view; widened to {arc:.0f}")
+                return got
+        return None
     if not _fore and speck_wide(ms):         # too far apart for one wide: the creature in depth past a person, or
-        far = depth_camera(ms, room, tried) or fallback_camera(   # the first one alone, the others out of its foreground
-            ms[:1], room, tried, _fore=[[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms[1:]])
+        far = depth_camera(ms, room, tried, _arc) or fallback_camera(   # the first one alone, the others out of its foreground
+            ms[:1], room, tried, [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms[1:]], _arc)
         if far:
             return far
     eyes = [[m["eye_xy"][0], m["eye_xy"][1], m["eye_z"]] for m in ms]
@@ -1719,7 +1851,7 @@ def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
             # (no standpoint holds them all with the first the nearer: then the first alone, from before their face,
             # the others not in its foreground - a wide on a man at work in a corner and a woman across the room had
             # no such standpoint, and stood by her, 11-20)
-            alone = fallback_camera(ms[:1], room, tried, _fore=eyes[1:]) if len(ms) > 1 and not _fore else None
+            alone = fallback_camera(ms[:1], room, tried, eyes[1:], _arc) if len(ms) > 1 and not _fore else None
             if alone:
                 return alone
             continue
@@ -1729,6 +1861,8 @@ def fallback_camera(ms: list, room, tried=(), _fore=()) -> dict | None:
                     p = [mid[0] + r * math.cos(math.radians(a)), mid[1] + r * math.sin(math.radians(a)), z]
                     if not in_room(p, room) or any(math.dist(p, t) < 0.15 for t in tried) or \
                             any(solid_between(p, e) for e in need):
+                        continue
+                    if side_off({"position": p, "target": mid}) > _arc + 1e-6:   # (out of the picture's side)
                         continue
                     if lead_near and any(math.dist(p, e) < FALLBACK_LEAD_K * math.dist(p, eyes[0]) and not m.get("creature")
                                          for e, m in zip(eyes[1:], ms[1:])):
@@ -1915,7 +2049,7 @@ def candidates(c, shot, spk_key, subjects, res, room, line, est_side, tried):
         if blocked(p, eye, others) or solid_between(p, eye):
             continue
         keep.append(q)
-    return keep
+    return within_side(keep, what="camera of the shot's own kind")   # (a place built from one picture: into its side)
 
 
 # ------------------------------------------------------------------ driver
@@ -1948,6 +2082,8 @@ def main():
     set_spec = json.loads((Path(C.LIBRARY) / "set" / spec["set"] / "spec.json").read_text())
     room = set_spec["size_m"]
     OPEN_GROUND[:] = open_ground(set_spec, Path(C.LIBRARY))
+    PICTURE_SIDE.clear()
+    PICTURE_SIDE.update(picture_side(set_spec))      # (a place in the open built from one picture: its side)
     hl = set_spec.get("high_land") or {}
     TALL_LAND.clear()
     TALL_LAND.update({"cell_m": hl.get("cell_m"), "half_m": hl.get("half_m"), "runs": hl.get("tall_runs")} if hl.get("tall_runs") else {})
@@ -2043,6 +2179,14 @@ def main():
             c["kind"] = c.get("kind", "medium")
     report = {"scene": spec["id"], "line": keys, "established_side": est_side, "rounds": [], "shots": {},
               "seating": {}, "marks": {}, "walks": walks}
+    if PICTURE_SIDE:
+        # the first cameras (scenes/from_plan.py, framing.shot) are held to the picture's side before the first
+        # render, the shots with nobody in them too; one that still looks out of it as measured is a miss (SIDE_WHY)
+        report["picture_side"] = {"dir": PICTURE_SIDE["dir"], "arc_deg": SIDE_ARC_DEG,
+                                  "turned": [w for w in (side_first(c, spec["characters"], room)
+                                                         for c in spec["cameras"]) if w]}
+        for w in report["picture_side"]["turned"]:
+            log(f"picture side: {w}")
     if walks["moved"] or walks["blocked"]:
         log(f"walks: moved {walks['moved']} blocked {walks['blocked']}")
     todo = [c["name"] for c in spec["cameras"]]
@@ -2167,6 +2311,13 @@ def main():
             if fb:
                 cam_b = fb
                 shots[n_]["least_bad"]["fallback"] = True
+        if any(w.startswith(SIDE_WHY) for w in why) and side_off(cam_b) > SIDE_ARC_DEG:
+            # the least bad try looked out of the picture's side and nothing better was found: that camera swung
+            # round its aim to the nearest allowed angle, never the shards behind the picture
+            cam_s = side_turned(cam_b, room)
+            if cam_s is not cam_b:
+                cam_b = {k: cam_s[k] for k in ("position", "target", "focal_mm")}
+                shots[n_]["least_bad"]["side_turned"] = True
         flip_b = bool((best or {}).get(KEY_FLIP))      # (the key light's side that try was rendered with)
         if math.dist(cam_b["position"], shots[n_]["camera"]["position"]) > 1e-3 or flip_b != bool(c.get(KEY_FLIP)):
             c.update(position=cam_b["position"], target=cam_b["target"], focal_mm=cam_b["focal_mm"])
@@ -2229,6 +2380,12 @@ def main():
             pw = [w for w in placement_why(sh["camera"], subjects, room)
                   if not w.startswith("the camera is inside ") or
                   ((chk.get("frame_facts") or {}).get(w.rsplit(" ", 1)[1], {}).get("mask") or {}).get("area", 0) > 0.3]
+            if PICTURE_SIDE and not c.get("_side_seen"):
+                # (the shot's first camera as the engine placed it; the cameras the search gives it afterwards are
+                # held to the side where they are found, widened where they must be)
+                c["_side_seen"] = True
+                if side_off(sh["camera"]) > SIDE_ARC_DEG + 0.5:
+                    pw.append(f"{SIDE_WHY} ({side_off(sh['camera']):.0f} deg from its view)")
             # the subject of an action or quiet shot (whom the plan's line is about) has a face shown, as a speaker
             # (not in an action shot: there a fighter may face away from the camera, toward whom they act on; the
             # redraw paints their back from their sheet. The user's rule, 11-17: half the reason for staging in 3D)
@@ -2361,7 +2518,13 @@ def main():
                     todo.append(n_)
                     continue
             cands, stage = [], None
-            if t["same"] < (TRY_SAME if spk else TRY_SAME + 1):   # 1: another camera of the same kind
+            if chk["why"] and all(w.startswith(SIDE_WHY) for w in chk["why"]):
+                # its one miss is that it looks out of the picture's side: the same camera swung round its aim to
+                # the nearest allowed angle (side-on), before any other is looked for
+                q_ = side_turned(shots[n_]["camera"], room, tried[n_])
+                if q_ is not shots[n_]["camera"]:
+                    cands = [({k: q_[k] for k in ("position", "target", "focal_mm")}, "same")]
+            if not cands and t["same"] < (TRY_SAME if spk else TRY_SAME + 1):   # 1: another camera of the same kind
                 if (face_fail or c.get("ots")) and spk:
                     cc = candidates(c, shots[n_], spk, subjects, res, room, line, est_side, tried[n_])
                     good = [q for q in cc if not framing_why(q, c["kind"], spk, lis, bool(c.get("ots")),

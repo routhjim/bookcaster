@@ -355,6 +355,33 @@ WORLD_WORDS = (
     "horizon. Empty of life: no people, no figures, no animals anywhere.")
 
 
+# (11-27: a place in the open with water or a town round it, scenes/concept.py "around": its world is drawn as that.
+# WORLD_WORDS asks for bare level ground whatever the place is: a floor out on the water stood in sand to the horizon.
+# A piece with no "around" is drawn from WORLD_WORDS, word for word as before: its world keeps its id)
+WORLD_ROUND_WORDS = {
+    "water": (
+        "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join "
+        "seamlessly. The far surroundings of this place: {look}. Seen all the way round from eye height, low over "
+        "the middle of a wide stretch of open water: the horizon level straight across the middle of the picture, the "
+        "whole sky above it, and below it only that water, its surface straight down and far out on every side. "
+        "Nothing is built and nothing floats on this open water or near it: only what lies far off is seen, small, "
+        "along the horizon. Empty of life: no people, no figures, no animals anywhere."),
+    "buildings": (
+        "Equirectangular projection, a full 360 degree spherical panorama, 2:1, the left and right edges join "
+        "seamlessly. The far surroundings of this place: {look}. Seen all the way round from eye height in the "
+        "middle of a wide, open, bare, level square: the horizon level straight across the middle of the picture, the "
+        "whole sky above it, and below it only that bare square, straight down and far out on every side. Nothing is "
+        "built and nothing stands on this open square or near it: the buildings stand far off on every side, small, "
+        "their walls and roofs one unbroken line along the horizon. Empty of life: no people, no figures, no animals "
+        "anywhere."),
+}
+
+
+def world_words(piece: dict) -> str:
+    """The words a place's panorama is drawn from: by what lies round it (the piece's "around"), else WORLD_WORDS."""
+    return WORLD_ROUND_WORDS.get(str(piece.get("around") or ""), WORLD_WORDS)
+
+
 # a piece that burns or glows is drawn lit, and the parts of its made shape that are painted as fire (bright, strongly
 # coloured red to yellow) give light of their own (img3d/model_img3d.py's regions). A forge's hearth was a grey
 # block with dark coals under a warm lamp, and a key drew its fire only when a shot's words named it (11-18)
@@ -466,12 +493,17 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             pano = _asset_id(kind, f"{look} from the picture {hashlib.sha1(Path(str(piece['source'])).read_bytes()).hexdigest()[:10]}")
             spec["view"] = {k: view[k] for k in ("eye_h", "eye_at", "front_deg")}
         else:
-            pano = _asset_id(kind, look + " " + hashlib.sha1(WORLD_WORDS.encode()).hexdigest()[:8]
+            pano = _asset_id(kind, look + " " + hashlib.sha1(world_words(piece).encode()).hexdigest()[:8]
                              + (" " + piece["spot"] if piece.get("spot") else "")
                              + (" " + str(piece["source"]) if piece.get("source") else ""))
         aid = pano if not view else _asset_id(kind, f"{pano} view {json.dumps(spec['view'], sort_keys=True)}")
         if view:
             spec["panorama_id"] = pano
+        if piece.get("ground") == "water" and not piece.get("map_words"):
+            # the world's own flat ground is water (a made floor that stands in it, sets/place_build.py open_floor):
+            # img3d/pano_shell.py --ground water gives every face of it the water's material
+            aid = _asset_id(kind, f"{aid} ground water")
+            spec.update(panorama_id=pano, ground="water")
         mdesc = ""
         if piece.get("map_words"):
             # the place's own ground seen from straight above, laid over the set's real ground (places/ground_map.py):
@@ -494,7 +526,7 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
              "kind": "refs", "picture": "picture.png", "ref_id": pano,
              "argv": line + ["--line-cmd", C.IMAGE_STATION, "refs", "--id", f"gen_draw_{pano}", "--",
                              python, str(tools / "refs" / "ref_draw.py"), "picture", pano, "--desc",
-                             WORLD_WORDS.format(look=look.rstrip("."))
+                             world_words(piece).format(look=look.rstrip("."))
                              + (f" A few steps ahead, close by, part of the ground itself: {piece['spot']}." if piece.get("spot")
                                 else ""), "--size", "2048", "1024", "--seed", "{seed}"]
                      + (["--sources", str(piece["source"])] if piece.get("source") else []),

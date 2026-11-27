@@ -55,6 +55,7 @@ def world_spec_for(spec0: dict, facts: dict, glb: Path) -> dict:
                 seen_from_inside=True, eye_m=facts["eye_m"], stand_m=facts["stand_m"], flat_r_m=facts["flat_r_m"],
                 spot_m=facts.get("spot_m"), ground_map=facts.get("ground_map"), water=facts.get("water"),
                 places_m=facts.get("places_m"), water_region=facts.get("water_region"),
+                **({"ground": facts["ground"]} if facts.get("ground") else {}),
                 sun=facts.get("sun"), world_build=facts.get("world_build", 1), emit_texture=WORLD_EMIT,
                 tags=list(keep.get("tags", [])) + ["img3d", "panorama_world"], replaces=spec0["id"],
                 licence="internal: panorama drawn by the local image model; depth by MoGe-2 (MIT), sky by CLIPSeg (MIT)")
@@ -95,7 +96,8 @@ def main():
         r = subprocess.run([os.environ.get("ASSETS_SHELL_PY") or sys.executable, str(HERE / "pano_shell.py"), str(pic), str(glb)]
                            + (["--outdoor"] if world else []) + (["--spot", spec0["spot"]] if world and spec0.get("spot") else [])
                            + [x for k, v in ((spec0.get("marks") or {}).items() if world else []) for x in ("--mark", f"{k}={v}")]
-                           + map_args(spec0 if world else {}) + view_args(spec0 if world else {}))
+                           + map_args(spec0 if world else {}) + view_args(spec0 if world else {})
+                           + (["--ground", str(spec0["ground"])] if world and spec0.get("ground") else []))
         if r.returncode:
             glb.unlink(missing_ok=True)
             raise SystemExit(r.returncode)

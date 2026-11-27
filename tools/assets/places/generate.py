@@ -287,6 +287,8 @@ def _try(req: dict, library: Path, seed: int, run, unsourced: bool = False) -> d
         rec0["panorama_people"] = 0
         rec0["world"] = {k: fj.get(k) for k in ("eye_m", "stand_m", "spot_m", "spot", "marks_m", "flat_r_m", "sky_r_m", "sun",
                                                 "world_build", "land", "ground_map", "water", "places_m", "water_region")}
+        if fj.get("ground"):                        # (its whole flat ground is water: pano_shell.py --ground)
+            rec0["world"]["ground"] = fj["ground"]
     if steps["spec"]["spec"].get("seats_abreast"):
         rec0["seats_abreast"] = steps["spec"]["spec"]["seats_abreast"]
     rp0.write_text(json.dumps(rec0, indent=1))

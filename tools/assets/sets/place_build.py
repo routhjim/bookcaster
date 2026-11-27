@@ -165,6 +165,15 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     for lp in layout.get("pieces") or []:
         if lp.get("id") in lit and lp.get("position"):
             top = float((lp.get("size_m") or [0, 0, 0.9])[2])
+            if lp.get("hang"):
+                # (one that hangs burns where it hangs, hang(): at its own middle, HUNG_LIGHT_OUT_M before its face.
+                # Lit from "its top" as if it stood on the floor, a lantern hung at 2 m gave its light at knee height)
+                fx, fy = lp.get("facing") or [0.0, 0.0]
+                out_ = float((lp.get("size_m") or [0, 0.3, 0])[1]) / 2 + HUNG_LIGHT_OUT_M
+                lights.append(dict(kit["lights"]["fire"], position=[
+                    round(lp["position"][0] + fx * out_, 3), round(lp["position"][1] + fy * out_, 3),
+                    round(float(lp.get("z_m") or 0.0) + top / 2, 3)]))
+                continue
             lights.append(dict(kit["lights"]["fire"], position=[round(lp["position"][0], 3), round(lp["position"][1], 3),
                                                               round(top + 0.15, 3)]))
     # a piece people sit inside (a cabin) is lit inside: the room's light does not reach under its roof (the pilot
@@ -238,12 +247,26 @@ ROOM_HUNG = False
 ROOM_SEEN_MOST = 14              # the things of a room's picture built besides the plan's own, at most
 ANY_KINDS = ("work_piece", "landmark")   # the kinds that hold any thing (its look says what it is)
 SURFACE_STANDS_M = 1.2           # a thing of a table-top kind the picture stands on the floor this tall is a floor thing
+OPEN_POST_M = 0.14               # ... and what hangs higher than its edge hangs on a plain post this thick (hang())
+HUNG_LIGHT_OUT_M = 0.1           # a hung piece that gives light gives it this far before its own face
 DARK_TIMES = ("night",)          # the times of day with no sun: no daylight in a room, the moon over open land
 NIGHT_WINDOW = 0.04              # a window's light at night, of its daylight
 NIGHT_KELVIN = 9000              # ... and its colour; the moon's over open land
 NIGHT_SKY = 0.08                 # the sky's own light at night, of the day's
 NIGHT_SUN = 0.06                 # the moon's light over open land, of the sun's the place's picture shows
 DUSK_SUN = 0.35                  # ... and the low sun's at dusk
+# ... and never so little that the set cannot be seen. A mid grey is fully lit at pi x 0.125 x 2^EV100 / 0.18 lux
+# (full_lux; 70 lux at the kit's EV100 5.0). The moon over a dark sky gave 0.06 x 120 x 0.08 = 0.6 lux: under a
+# hundredth of that, 5 of 255 on the screen, and with no light found in the sky at all, nothing (11-27). At a quarter
+# (two stops under: a mid grey about 60 of 255) the night still reads as night and the floor and the people on it
+# are seen; at dusk a half (one stop under, about 85 of 255)
+OPEN_KEY_LEAST = {"night": 0.25, "dusk": 0.5}
+# where the light of a place in the open comes from when its sky shows none (img3d/pano_shell.py sun_of finds no sky
+# in a dark panorama): from over the left shoulder of the place's picture's eye (the eye stands on the set's -y side
+# and looks along +y), 38 degrees up: what faces the picture's eye is lit, with shape. Every place in the open has
+# this light at any hour, so every shot of it has its key (scenes/scene.py key_light turns it to the camera's side)
+OPEN_SUN_TOWARD = (-0.5, -0.6, 0.62)
+OPEN_SUN_LEVEL = 0.3             # ... and how bright that sky is taken to be (world_stage: as a sky that gives none)
 SEEN_OPENINGS = ("window", "door")   # the kinds of opening a room takes from its picture
 SEEN_OPENING = "oc"              # the id of an opening taken from the place's concept picture begins with this
 OPENING_KINDS = ("door", "window", "fireplace")      # (a place's openings are its walls', never a piece to stand in it)
@@ -862,6 +885,31 @@ def present_only(text: str) -> str:
     return " ".join(x for x in parts if x and not ABSENT.match(x)).strip()
 
 
+# what lies round a place in the open (the concept reader's "around", scenes/concept.py AROUND_ASK), as its world's
+# look begins. A place with water or a town round it has its world drawn as that (places/pieces.py
+# WORLD_ROUND_WORDS), from these words and what the picture shows far off: never from the place's own words or its
+# picture (drawn from those, a panorama had the place's own building in it again, close by). "land", and a concept
+# read before the question was asked: the words and the world it had before, untouched
+ROUND_LOOK = {"water": "open water on every side, out to a far level horizon",
+              "buildings": "the walls and roofs of a town far off on every side, along the horizon"}
+PICTURE_DIR = [0.0, 1.0]         # the way the place's picture looks, in the set's frame: its eye stands on the -y side
+#                                  and looks along +y (open_places; a made floor's room frame, img3d/concept_depth.py)
+
+
+def round_of(concept: dict) -> str:
+    """What lies round a place in the open: "water", "buildings", else "land" (as before the question was asked)."""
+    a = concept.get("around") if concept.get("space") == "outdoors" else None
+    return a if a in ROUND_LOOK else "land"
+
+
+def round_look(rnd: str, per: str, far: str, overhead: str, tech: str) -> str:
+    """The look of the world of a place with water or buildings round it: what lies round it, what the picture shows
+    far off, its sky, the way it is painted. Nothing of the place itself and no ground."""
+    lead = ROUND_LOOK[rnd] + (f"; far off: {far[0].lower() + far[1:]}" if far else "")
+    return "; ".join(x for x in (f"{per}: {lead}".strip(": ") if per != "not stated" else lead,
+                                 f"overhead: {overhead}" if overhead else "", f"painted as a {tech}" if tech else "") if x)
+
+
 def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     """A place in the open (its concept picture shows it outdoors, or its spec says so) is built as a world: the
     land round where its people stand, the sky, and a flat patch of ground under them, all one piece made from a
@@ -907,6 +955,10 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     if stage:
         sp["_room_m"] = stage
     scenery = [p for p in pcs if p.get("scenery")]
+    if stage or scenery:
+        # what stands there and the land round it are placed from the one picture, seen from its eye: the cameras
+        # keep to that side (world_stage "picture_dir", scenes/speakers.py picture_side)
+        sp["_picture_dir"] = list(PICTURE_DIR)
     pcs = [p for p in pcs if not p.get("scenery")]
     ids = {p["id"] for p in pcs}
     # the part of the land the plan sends people to (the director's land_places, the first the shots name): the
@@ -928,6 +980,10 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
         "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the ground", sf.get("floor")), ("overhead", sf.get("ceiling"))) if v),
         (f"painted as a {technique(str(spec.get('_style') or ''))}" if technique(str(spec.get("_style") or "")) else "")) if x) \
         if far else ""
+    rnd = round_of(concept)
+    if rnd != "land":                        # (water or a town round it: drawn as that, with no ground of the land's)
+        far_look = round_look(rnd, per, far, str(sf.get("ceiling") or "").strip().rstrip("."),
+                              technique(str(spec.get("_style") or "")))
     # the place's own ground seen from straight above (places/ground_map.py), drawn from the whole land's words and
     # its ground's, the parts of the land the plan sends people to on it, the concept picture as the land's look
     ground = "; ".join(x for x in (land, f"the ground: {str(sf['floor']).strip().rstrip('.')}" if sf.get("floor") else "") if x)
@@ -936,7 +992,10 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     view = next((p["view"] for p in scenery if p.get("view")), None) if concept.get("concept") else None
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
                 "look": ((not view and far_look) or "; ".join(x for x in (land, said, technique(str(spec.get("_style") or "")) if view
-                                                                      else str(spec.get("_style") or "")) if x)),
+                                                                      else str(spec.get("_style") or "")) if x))
+                # (the picture carried on all the way round: behind its eye, what lies round the place)
+                + (f"; round it, behind and to both sides: {ROUND_LOOK[rnd]}" if view and rnd != "land" else ""),
+                **({"around": rnd} if rnd != "land" and not view else {}),
                 **({"spot": spot} if spot and not view else {}), "land_words": land, "surface_words": said,
                 **({"view": view} if view else {}),
                 **({"source": concept["concept"]} if concept.get("concept") and (view or not far_look) else {}),
@@ -995,8 +1054,17 @@ def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
         f"{per}: {far}".strip(": ") if per != "not stated" else far,
         f"overhead: {str(sf['ceiling']).strip().rstrip('.')}" if sf.get("ceiling") else "",
         f"painted as a {tech}" if tech else "") if x) if far else ""
+    rnd = round_of(concept)
+    if rnd != "land":
+        # (water or a town round the floor: its world drawn as that, and never from the place's own words and
+        # picture, which the look falls back to when the picture shows nothing far off. In water, the world's own
+        # flat ground is water too: the floor stands in it, places/pieces.py "ground")
+        far_look = round_look(rnd, per, far, str(sf.get("ceiling") or "").strip().rstrip("."), tech)
+    if (concept.get("depth") or {}).get("room_m"):
+        sp["_picture_dir"] = list(PICTURE_DIR)   # (measured from the one picture: the cameras keep to its side)
     pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
                 "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
+                **({"around": rnd} if rnd != "land" else {}), **({"ground": "water"} if rnd == "water" else {}),
                 "land_words": land, "surface_words": said,
                 **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
     sp["pieces"] = pcs
@@ -1430,6 +1498,12 @@ def kelvin_of(hex_colour: str) -> int:
     return int(min(12000, max(2500, round(6500 * (max(b, 1) / max(r, 1)) ** 1.2, -2))))
 
 
+def full_lux(ev100: float) -> float:
+    """The light (lux) that shows a mid grey (0.18) as a mid grey at an exposure: pi x 0.125 x 2^EV100 / 0.18 (the
+    camera's own light is sized by the same measure, scenes/ue/scene_job.py camera_fill)."""
+    return math.pi * 0.125 * 2.0 ** float(ev100) / 0.18
+
+
 def world_stage(out: dict, spec: dict, library) -> dict:
     """A place in the open (with_concept: outdoors): no structure; the place's world (its terrain piece, made from
     its panorama) set so the point under the panorama's eye is the set's origin, the ground people stand on at
@@ -1441,6 +1515,12 @@ def world_stage(out: dict, spec: dict, library) -> dict:
     out["structure"] = []
     out["interior"] = False
     out["tags"] = ["outdoors"]
+    if spec.get("_picture_dir"):
+        # the place is built from one picture of it (with_concept): which way that picture looks, and whether the
+        # world round the set is a true panorama, good from every side ("all_round": no route makes one yet). The
+        # cameras look into the picture's side unless it is (scenes/speakers.py picture_side)
+        out["picture_dir"] = list(spec["_picture_dir"])
+        out["all_round"] = False
     if not t:
         return {"world": None, "why": "no terrain piece"}
     aid = P.generation_request(t)["asset_id"]
@@ -1465,18 +1545,20 @@ def world_stage(out: dict, spec: dict, library) -> dict:
                                        "world": True})
             if ln.get("high"):
                 out["high_land"] = ln["high"]
-    sun = w.get("sun")
+    # (a world whose sky shows no light still has one, from OPEN_SUN_TOWARD: said in the set's "world" "sun_from")
+    sun = w.get("sun") or {"dir": list(OPEN_SUN_TOWARD), "level": OPEN_SUN_LEVEL}
     lights = [{"type": "sky", "intensity": round(WORLD_SKY * (NIGHT_SKY * 2 if spec.get("_time") in DARK_TIMES else 1.0), 4),
                "atmosphere": False}]
     tod = spec.get("_time")
-    if sun:
-        # the place's own time of day (the picture it was made from is drawn by day whatever the story says): at
-        # night its one light from the sky is the moon's, low and cold; at dusk a low sun
-        k_ = NIGHT_SUN if tod in DARK_TIMES else DUSK_SUN if tod == "dusk" else 1.0
-        lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
-                          "lux": round(k_ * WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or 0.3))), 1),
-                          "kelvin": NIGHT_KELVIN if tod in DARK_TIMES else kelvin_of(sun.get("color") or "#ffffff"),
-                          "volumetric": 0.0})
+    # the place's own time of day (the picture it was made from is drawn by day whatever the story says): at
+    # night its one light from the sky is the moon's, low and cold; at dusk a low sun; neither under its share
+    # (OPEN_KEY_LEAST) of the light the set's own exposure needs
+    k_ = NIGHT_SUN if tod in DARK_TIMES else DUSK_SUN if tod == "dusk" else 1.0
+    least = OPEN_KEY_LEAST.get(tod, 0.0) * full_lux(out.get("exposure_ev100") or 5.0)
+    lights.insert(0, {"type": "sun", "toward_sun": [sun["dir"][0], sun["dir"][1], max(0.15, sun["dir"][2])],
+                      "lux": round(max(least, k_ * WORLD_SUN_LUX * max(0.08, min(1.0, 2.0 * float(sun.get("level") or OPEN_SUN_LEVEL)))), 1),
+                      "kelvin": NIGHT_KELVIN if tod in DARK_TIMES else kelvin_of(sun.get("color") or "#ffffff"),
+                      "volumetric": 0.0})
     out["lights"] = lights
     # what the redraw is told of the place: the open land and what stands on it, its ground, sky and light (a
     # room's "walls" and "ceiling" are not said of it)
@@ -1488,8 +1570,10 @@ def world_stage(out: dict, spec: dict, library) -> dict:
         sw = str(t["surface_words"])
         out["surfaces_words"] = sw[0].upper() + sw[1:] + "."
     out["world"] = {"asset": aid, "flat_r_m": w.get("flat_r_m"), "sun": sun, "spot": t.get("spot"),
+                    "sun_from": "its sky" if w.get("sun") else "no light in its sky: the set's own",
                     "at_spot": bool(w.get("spot_m")), "ground_map": bool(w.get("ground_map")),
-                    "water_region": w.get("water_region")}
+                    "water_region": w.get("water_region"),
+                    **({"ground": w["ground"]} if w.get("ground") else {})}     # ("water": all its flat ground is)
     if (w.get("water") or {}).get("runs"):
         # the map's water (set frame: the world is set with the point under its eye at the origin): nobody is stood
         # in it unless the plan's place is in the water (scenes/from_plan.py)
@@ -1663,9 +1747,11 @@ def hang(lay: dict, hung: list, rec: dict, top: float | None = None) -> None:
     """The hung pieces put on their walls, into the layout's pieces: over the opening they are against (above its
     head), else on the first stretch of wall clear of the openings and of the pieces standing against it; the back
     on the wall, the front into the room, the lowest point "hangs_m" above the floor. top: the walls' own height
-    where they are lower than the room (a made floor's edge, open_floor): nothing hangs above them in the air."""
+    where they are lower than the room (a made floor's edge, open_floor): a thing that hangs higher than they stand
+    keeps its own height (a lantern forced down onto a waist-high edge lit nobody's face, 11-27) and hangs there
+    on a post rising from the edge ("post_m": the post's height, to the thing's top; built by hung_posts): nothing
+    hangs in the air."""
     W, D, H = lay["size_m"]
-    H = min(H, top) if top else H
     ops = {o["id"]: o for o in lay.get("openings") or []}
     for p in hung:
         r = rec.get(p["id"])
@@ -1693,13 +1779,30 @@ def hang(lay: dict, hung: list, rec: dict, top: float | None = None) -> None:
             if not n:
                 continue
         z = min(z, max(0.0, H - sz))
+        post = {"post_m": round(z + sz, 3), "post_at": [round(pt[0] - n[0] * (OPEN_POST_M / 2 + 0.01), 3),
+                                                       round(pt[1] - n[1] * (OPEN_POST_M / 2 + 0.01), 3)]} \
+            if top and z + sz > top + 1e-6 else {}
         c = [round(pt[0] + n[0] * (sy / 2 + 0.01), 3), round(pt[1] + n[1] * (sy / 2 + 0.01), 3)]
         hx, hy = (sx / 2, sy / 2) if abs(n[1]) > abs(n[0]) else (sy / 2, sx / 2)
         lay["pieces"].append({"id": p["id"], "name": f"{p['kind']}_{p['id']}", "kind": p["kind"], "asset": r["asset"],
                               "position": c, "facing": [n[0], n[1]], "size_m": [sx, sy, sz], "flat": False,
                               "seat": False, "rect": [round(c[0] - hx, 3), round(c[1] - hy, 3), round(c[0] + hx, 3),
                                                       round(c[1] + hy, 3)],
-                              "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3)})
+                              "look": p.get("look"), "generate": False, "hang": True, "z_m": round(z, 3), **post})
+
+
+def hung_posts(out: dict, lay: dict) -> list:
+    """The posts of a made floor's hung things (hang "post_m") built: each a plain square post in the edge wall's
+    own material (structure "box", built by sets/layout.py), standing in the wall's thickness behind the thing,
+    from the floor to the thing's top. -> their names."""
+    mat = next((w.get("material") for w in out.get("structure") or [] if w.get("kind") == "wall"), None)
+    done = []
+    for q in lay.get("pieces") or []:
+        if q.get("post_m") and mat:
+            out["structure"].append({"kind": "box", "name": f"post_{q['id']}", "base": [*q["post_at"], 0.0],
+                                     "size_m": [OPEN_POST_M, OPEN_POST_M, q["post_m"]], "material": mat})
+            done.append(f"post_{q['id']}")
+    return done
 
 
 def base_boxes(out: dict, lay: dict) -> list:
@@ -1830,6 +1933,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     elif not world:                           # (a place in the open has no walls to face: a ring of wall panels
         wall_faces(out, lay, spec, library)   # stood round the forge yard's stage, 11-18)
     cabin_stage(out, spec, library)
+    hung_posts(out, lay)
     based = base_boxes(out, lay)
     for b in lay["bases"]:                   # (what else stands where a base is: reported, it is laid out first)
         on_ = [q["name"] for q in lay["pieces"] if b.get("rect") and q["name"] not in b["of"] and not q.get("hang")

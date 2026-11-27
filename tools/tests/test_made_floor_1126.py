@@ -63,7 +63,8 @@ def test_a_made_floor_in_the_open_is_read_as_a_room_is():
     res = CO.read(Path("/c/concept.png"), SPEC, judge("outdoors", "floor", calls))
     assert res["space"] == "outdoors" and res["ground"] == "built" and CO.made_floor(res)
     assert [s["name"] for s in res["seen"]] == ["chair", "railing", "lamp post"]      # (the room's list, not the land's)
-    assert calls[1] == ["ground"]                                                    # (asked once, after the space)
+    # (asked once, after the space; 11-27 with it, what lies round the place: tests/test_outdoor_round_side_1127.py)
+    assert calls[1] == ["ground", "around"]
 
 
 def test_open_land_is_read_as_before():
@@ -275,9 +276,10 @@ def test_its_world_lies_round_it_and_lights_it(terrace):
     assert types.count("sun") == 1 and types.count("sky") == 1          # (the world's own: no light of a sealed room)
     assert not any(l.get("type") == "point" and l["position"][2] > 3.0 for l in out["lights"])
     assert "room_light" not in report
-    # the lantern of the place still burns, hung no higher than the edge it hangs on
+    # the lantern of the place still burns, hung as high as the place has it (11-27: on a post rising from the
+    # edge, not forced down onto the edge itself: tests/test_open_floor_size_night_1127.py)
     lan = next(f for f in out["fixtures"] + out["props"] if f["name"].startswith("lantern"))
-    assert lan["hang"] and lan["position"][2] + 0.95 <= PB.OPEN_EDGE_M + 1e-6
+    assert lan["hang"] and lan["position"][2] == 2.0
     assert any(l["type"] == "point" for l in out["lights"])
     assert named["by the chair"] and named["at the rail"] == "floor"
 
