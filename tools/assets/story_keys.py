@@ -1209,11 +1209,20 @@ class Story:
                 if p["name"] in poses:
                     poses[p["name"]].add(str(p.get("pose") or ""))
         creat = {n for n in people if self.person(n).get("creature")}
+        import cast_char as CC
+        shared = CC.shared_assets(C.LIBRARY, [self.cast[n] for n in people if n in self.cast and n not in creat])
         for name in people:                                   # the figures
             if name in creat:                                 # (a creature: a library creature, not a figure)
                 self._cast_creature(place, name)
                 continue
             fid, w, base = self._cast_cmd(name)
+            if fid in shared:
+                # (two figures on one engine figure: whichever was built last is both of them)
+                log(f"{name}: its figure in the engine is also {shared[fid]}'s (one name for both); made again under its own")
+                self._fit_mark(w)
+                if sh(base + ["--own-assets", "--from", "choose", "--until", "seats"], w / "run.log"):
+                    log(f"{name}: the figure could not be made again; see {w / 'run.log'}")
+                continue
             if self._built(name) and self._sheet_newer(name):
                 # (a figure made from a sheet that has since been drawn again is not that person any more)
                 log(f"{name}: the sheet was drawn again after the figure was made; the figure is drawn and shaped again")

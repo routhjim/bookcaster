@@ -70,6 +70,52 @@ def child_armpit(look: str) -> float:
     return round(0.70 - 0.006 * max(0, GROWN_AGE - age), 3) if age else 0.70
 
 
+def own_tag(fid: str) -> str:
+    """A figure's own short name for its engine assets: its id's letters and digits; of a long id its start, four
+    letters of the whole id's hash and its end (a rebuild beside, _04, gets its own assets). (Cut to its first ten
+    letters and last two, two people of one book whose names began alike had ONE name: the second built over the
+    first's head, hair and clothes, and every shot of the first showed the second, 11-27.)"""
+    import hashlib
+    t = "".join(ch for ch in fid.upper() if ch.isalnum())
+    return t if len(t) <= 12 else t[:6] + hashlib.sha1(fid.encode()).hexdigest()[:4].upper() + t[-2:]
+
+
+def asset_tag(fid: str, library, own: bool = False) -> str:
+    """The short name a figure's engine assets go by: the one its library record already names (a figure built
+    before keeps its assets through a later fitting), else its own (own_tag); own=True: its own whatever the record."""
+    rec = Path(library) / "character" / fid / "character.json"
+    if not own and rec.exists():
+        try:
+            mh = str(json.loads(rec.read_text()).get("rebuild_from") or "").rsplit("/", 1)[-1]
+        except ValueError:
+            mh = ""
+        if mh.startswith("MHC_AUTO_") and mh[9:]:
+            return mh[9:]
+    return own_tag(fid)
+
+
+def shared_assets(library, ids: list) -> dict:
+    """Of these figures, those whose record names the engine figure another base figure's record names too:
+    {id: the other's id}. (A seated or wardrobe figure of the same person stands on that person's own.)"""
+    recs = {}
+    for d in sorted((Path(library) / "character").glob("*/character.json")):
+        try:
+            j = json.loads(d.read_text())
+        except ValueError:
+            continue
+        # (a figure put on another's by name, a wardrobe variant or a rebuild beside, shares it by intent)
+        if j.get("variant_of") or not str(j.get("rebuild_from") or "").rsplit("/", 1)[-1].startswith("MHC_AUTO_"):
+            continue
+        recs.setdefault(j["rebuild_from"], []).append(d.parent.name)
+    out = {}
+    for names in recs.values():
+        base = [n for n in names if not any(n != m and n.startswith(m + "_") for m in names)]
+        for n in base:
+            if n in ids and len(base) > 1:
+                out[n] = next(m for m in base if m != n)
+    return out
+
+
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
@@ -384,11 +430,13 @@ def main():
     ap.add_argument("--variant-of", default=None,
                     help="a wardrobe variant of this library figure (the same person in other clothes, usually on its "
                          "MetaHuman, --mh): the entry records it (\"variant_of\") and takes its look facts")
+    ap.add_argument("--own-assets", action="store_true",
+                    help="engine assets under this figure's own name (asset_tag), whatever its record names: for a "
+                         "figure whose record shares another figure's")
     a = ap.parse_args()
     W = Path(a.work)
     W.mkdir(parents=True, exist_ok=True)
-    tag = "".join(ch for ch in a.id.upper() if ch.isalnum())
-    tag = tag[:10] + tag[-2:] if len(tag) > 12 else tag     # the id's end kept: a rebuild beside (_04) gets its own assets
+    tag = asset_tag(a.id, C.LIBRARY, a.own_assets)
     choices_p, times_p = W / "choices.json", W / "times.json"
     # everything this command reads at run time, checked before any step (a missing folder failed a run at its first
     # step, 11-11): the sheet and LoRA, the preset portraits, the engine project, Blender, the Python environments
