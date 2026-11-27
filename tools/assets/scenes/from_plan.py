@@ -183,6 +183,42 @@ def too_near(p: list, others: list, own_r: float = 0.0) -> bool:
     return any(math.dist(p, o[:2]) < PERSON_GAP_M + own_r + (o[2] if len(o) > 2 else 0.0) for o in others)
 
 
+STAGE_DIR: list = []       # a place built from ONE picture, its cameras held to that picture's side (the set's
+#                            "picture_dir", not "all_round"; speakers.py picture_side): the way the picture looks, in
+#                            plan. main() fills it; empty in a room and in a place with a true panorama all round
+STAGE_ACROSS_DEG = 55.0    # there the line between two people of a group runs at least this far off the picture's view
+STAGE_GROUP_M = 4.0        # ... two people of a group: no further apart than this
+STAGE_REACH_M = 1.5        # a mark across the stage is looked for this far past the place's own reach, no further
+
+
+def stage_dir(set_spec: dict) -> list:
+    """The way a set's one picture looks when its cameras are held to it (speakers.py picture_side), else []."""
+    d = set_spec.get("picture_dir")
+    if not d or set_spec.get("all_round") or math.hypot(d[0], d[1]) < 1e-6:
+        return []
+    n = math.hypot(d[0], d[1])
+    return [d[0] / n, d[1] / n]
+
+
+def across(p: list, others: list) -> bool:
+    """Whether someone at p stands across the stage from the people near them, not before or behind them: every
+    camera of a place built from one picture looks one way, so of two people in a line along that way the nearer
+    hides the other and, turned to them, shows the camera their back. True in any other place, and of a creature
+    ([x, y, reach]: its own places are its reach's). (Four people placed in a ring on such a stage: one stood
+    straight between the camera's side and another, back to every camera; the group's wide had no key, 11-27.)"""
+    if not STAGE_DIR:
+        return True
+    lim = math.cos(math.radians(STAGE_ACROSS_DEG))
+    for o in others:
+        d = [o[0] - p[0], o[1] - p[1]]
+        n = math.hypot(*d)
+        if len(o) > 2 or n < 1e-6 or n > STAGE_GROUP_M:
+            continue
+        if abs(d[0] * STAGE_DIR[0] + d[1] * STAGE_DIR[1]) / n > lim:
+            return False
+    return True
+
+
 def bounds(room: list, own_r: float = 0.0, walls: bool = True) -> tuple:
     """How far from the middle a placed middle may go: inside the walls by 0.35 m and, with walls, by a creature's
     reach too. A place in the open has no walls: a creature's body may reach past the stage's edge onto the ground
@@ -258,6 +294,8 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
             if not clear_of_fixtures(p, things, fr) or not dry(p, things):
                 continue
             out.append((r + 0.3 * math.hypot(*p) / max(W, D), [round(p[0], 3), round(p[1], 3)]))
+    if not own_r and any(across(p, others) for _, p in out):   # (a stage of one picture: its marks across it,
+        out = [x for x in out if across(x[1], others)]         # where there are any)
     out.sort(key=lambda x: x[0])
     picked = []
     for _, p in out:                       # spread out: no two marks closer than 0.35 m
@@ -269,23 +307,31 @@ def free_marks(target: list, others: list, things: list, room: list, near=(0.6, 
 
 
 def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1.6), own_r: float = 0.0,
-              fix_r: float | None = None, walls: bool = True, front=None, front_off: float = 0.0) -> list:
+              fix_r: float | None = None, walls: bool = True, front=None, front_off: float = 0.0,
+              _stage: bool | None = True) -> list:
     """The nearest free floor point to the target thing's middle, between near[0] and near[1] m from it, clear of
     fixtures (their footprint + 0.25 m) and other people (too_near), inside the room, toward the room's middle; a
     creature (own_r: its reach round its middle) keeps that much more clear of walls and people, and fix_r (by
     default the same) more clear of fixtures."""
     W, D = bounds(room, own_r, walls)
     fr = own_r if fix_r is None else fix_r
+    if _stage and STAGE_DIR and not own_r and others:
+        # a stage of one picture: across it from the people already there (across()), within a little of the
+        # place's reach; where no such point is free, the place as anywhere else
+        got = free_mark(target, others, things, room, near, own_r, fix_r, walls, front, front_off, _stage=None)
+        if got:
+            return got
     best = None
     # widened until a point is free: as far as the room goes (a thing bigger than the old 3 m reach, a craft in a
     # hangar, left no free point and everyone sent to it was stood on one fallback spot, 11-13)
-    for r10 in range(int(near[0] * 10), int(max(near[1], 3.0, math.hypot(room[0], room[1])) * 10) + 1):
+    r_far = max(near[1], 3.0, math.hypot(room[0], room[1])) if _stage is not None else near[1] + STAGE_REACH_M
+    for r10 in range(int(near[0] * 10), int(r_far * 10) + 1):
         r = r10 / 10
         for a in range(0, 360, 10):
             p = [target[0] + r * math.cos(math.radians(a)), target[1] + r * math.sin(math.radians(a))]
             if abs(p[0]) > W or abs(p[1]) > D or not before(p, target, front, front_off):
                 continue
-            if too_near(p, others, own_r):
+            if too_near(p, others, own_r) or (_stage is None and not across(p, others)):
                 continue
             if not clear_of_fixtures(p, things, fr) or not dry(p, things):
                 continue
@@ -299,12 +345,14 @@ def free_mark(target: list, others: list, things: list, room: list, near=(0.6, 1
             break
     if best:
         return [round(best[1][0], 3), round(best[1][1], 3)]
+    if _stage is None:
+        return None
     # nowhere is free. The people's clearance is the last thing given up (a body standing in a body is no staging):
     # first a creature's wider berth from the set's things (its body's breadth; its footprint still kept), then
     # the point with the most room from the others. (The old fallback, 0.6 of the way to the target, stood a 10 m
     # beast in the middle of the two people it was placed near, its neck through one of them, 11-18)
     if fr > 0.0:
-        return free_mark(target, others, things, room, near, own_r, 0.0, walls)
+        return free_mark(target, others, things, room, near, own_r, 0.0, walls, _stage=False)
     best = None
     for r10 in range(int(near[0] * 10), int(max(near[1], 3.0, math.hypot(room[0], room[1])) * 10) + 1, 2):
         r = r10 / 10
@@ -1077,6 +1125,7 @@ def main():
     set_named = json.loads(np_path.read_text()) if np_path.exists() else {}
     set_spec_ = json.loads((set_dir / "spec.json").read_text())
     room = set_spec_["size_m"]
+    STAGE_DIR[:] = stage_dir(set_spec_)            # (a place built from one picture: its people stand across it)
     things += water_things(set_spec_)              # (a place in the open's water: nobody is stood in it)
     walled = bool(set_spec_.get("structure"))       # (a place in the open has none: no walls round its stage)
     views_ = set_spec_.get("views") or {}          # a cabin's backdrops, one for each thing the story sees outside

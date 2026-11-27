@@ -911,7 +911,11 @@ def aim_bodies(spec):
             # the other's head: measured on such a pair, 1 camera in 4 passed the framing; opened 30 degrees, 5 in 6)
             mid = [(ch[t]["position"][0] + c["position"][0]) / 2, (ch[t]["position"][1] + c["position"][1]) / 2]
             n = [-d[1], d[0]]
-            if n[0] * -mid[0] + n[1] * -mid[1] < 0 or (abs(mid[0]) + abs(mid[1]) < 1e-6 and k > t):
+            if PICTURE_SIDE and abs(n[0] * PICTURE_SIDE["dir"][0] + n[1] * PICTURE_SIDE["dir"][1]) > 0.2:
+                # (a place built from one picture: open to the side its cameras stand on, both of them)
+                if n[0] * PICTURE_SIDE["dir"][0] + n[1] * PICTURE_SIDE["dir"][1] > 0:
+                    n = [-n[0], -n[1]]
+            elif n[0] * -mid[0] + n[1] * -mid[1] < 0 or (abs(mid[0]) + abs(mid[1]) < 1e-6 and k > t):
                 n = [-n[0], -n[1]]
             a_ = math.radians(CHEAT_DEG)
             d = unit2([d[0] * math.cos(a_) + n[0] * math.sin(a_), d[1] * math.cos(a_) + n[1] * math.sin(a_)])
