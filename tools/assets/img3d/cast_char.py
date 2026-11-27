@@ -116,6 +116,20 @@ def shared_assets(library, ids: list) -> dict:
     return out
 
 
+SPREAD_WEB_STEP = 12        # degrees the arms are raised after a mesh whose arm is webbed to the body
+SPREAD_MAX_DEG = 84         # ... and no higher than this
+WEB_GAP = 0.025             # the air at the elbow, as a share of the height, under which an arm is webbed (half the
+#                             mesh gate's own least gap, mesh_gate.py --min-gap)
+
+
+def webbed(res: dict) -> bool:
+    """Whether a shaped figure's mesh-gate result shows an arm joined to the body: on either side, hardly any air at
+    the elbow. (A near miss, some air but too little or an armpit a little low, is another drawing's chance; a web
+    is the pose's.)"""
+    sides = [v for v in (res or {}).values() if isinstance(v, dict) and "gap_at_elbow" in v]
+    return bool(sides) and not res.get("pass") and min(float(v.get("gap_at_elbow") or 0.0) for v in sides) < WEB_GAP
+
+
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
@@ -492,7 +506,9 @@ def main():
     # drawn head and keeps the one with the most wins
     ch = json.loads((W / "choice.json").read_text())
     pool = (ch.get("scores") or {}).get("preset_pool") or []
-    if not a.mh and len(pool) > 1 and (not done("choose", W / "face_pick.json")):
+    # (not for a whole figure: its MetaHuman is the skeleton under a figure shaped whole, head and all, its own
+    # face hidden: the comparison chose, for over a minute a figure, a face nobody sees, 11-27)
+    if not a.mh and not a.whole and len(pool) > 1 and (not done("choose", W / "face_pick.json")):
         @timed("face")
         def _():
             os.environ.setdefault("MH_EXTRA_ARGS", "-NoMetaHumanAccountPortalLoginFallback")
@@ -757,10 +773,13 @@ def main():
             run_n = len([p_ for p_ in draw.iterdir() if p_.is_dir() and p_.name.startswith("run")])
             rdir = draw / f"run{run_n}"
             rdir.mkdir()
+            deg = deg0
             for rnd in range(a.rounds):
                 # a round that fails raises the arms 6 degrees and holds the pose map harder; the canvas is wide
-                # enough for the hands at any of these angles
-                deg = deg0 + 6 * rnd
+                # enough for the hands at any of these angles. A mesh whose arm is webbed to the body (webbed())
+                # raises them SPREAD_WEB_STEP at once, its round's other drawings unshaped
+                if rnd:
+                    deg = min(SPREAD_MAX_DEG, deg + (SPREAD_WEB_STEP if meshes and webbed(meshes[-1]) else 6))
                 pose_map = rdir / f"pose{deg}_r{rnd}.png"
                 # past 56 degrees the outstretched hands run off a 896-wide picture (the gate then finds no
                 # armpit, 11-12): a wider canvas and a slightly smaller figure
@@ -827,6 +846,11 @@ def main():
                     meshes.append(res)
                     if res["pass"]:
                         chosen = (path, out)
+                        break
+                    if webbed(res) and deg < SPREAD_MAX_DEG:
+                        # (the same pose drawn again webs again: three shapes of one angle, four minutes each,
+                        # all with no air at the elbow, before the arms were raised, 11-27)
+                        log(f"round {rnd}: the arm is webbed to the body at {deg} degrees; the arms are raised")
                         break
                 if chosen:
                     break

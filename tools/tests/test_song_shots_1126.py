@@ -145,3 +145,21 @@ def test_two_people_whose_names_begin_alike_have_each_their_own_engine_figure():
         assert CC.shared_assets(lib, ["girl_bk_wren_auto_01", a + "_seated_armchair"]) == {}
     src = Path(SK.__file__).read_text()
     assert '"--own-assets", "--from", "choose"' in src and "CC.shared_assets(" in src
+
+
+def test_an_arm_webbed_to_the_body_raises_the_arms_at_once_and_a_hidden_face_is_not_chosen():
+    """11-27: a stout figure's arms were shaped three times at one angle, each webbed to the body, before the
+    angle was raised: seven shapes for one figure. And a whole figure's hidden MetaHuman face was chosen by a
+    comparison nobody sees the result of."""
+    sys.path.insert(0, str(ROOT / "tools" / "assets" / "img3d"))
+    import cast_char as CC
+    side = lambda free, gap: {"free": free, "gap_at_elbow": gap, "pass": False}
+    assert CC.webbed({"left_of_picture": side(0.66, 0.004), "right_of_picture": side(0.67, 0.06), "pass": False})
+    assert CC.webbed({"left_of_picture": side(0.66, 0.0), "right_of_picture": side(0.66, 0.0), "pass": False})
+    assert not CC.webbed({"left_of_picture": side(0.68, 0.044), "right_of_picture": side(0.68, 0.04), "pass": False})
+    assert not CC.webbed({"left_of_picture": side(0.8, 0.3), "right_of_picture": side(0.7, 0.3), "pass": True})
+    assert not CC.webbed({"file": "x.glb", "error": "no mesh"}) and not CC.webbed({})
+    assert CC.WEB_GAP < 0.05 and CC.SPREAD_WEB_STEP > 6
+    src = Path(CC.__file__).read_text()
+    assert "if not a.mh and not a.whole and len(pool) > 1" in src
+    assert "SPREAD_WEB_STEP if meshes and webbed(meshes[-1]) else 6" in src
