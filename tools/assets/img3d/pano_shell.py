@@ -561,6 +561,14 @@ def ground_disk(eye: list, n0: int, water: bool = False) -> tuple:
     return np.array(vtx), np.array(faces), np.array(uv)
 
 
+def no_ground() -> tuple:
+    """No real ground at all (outdoor "ground": "none"), in ground_disk's form: the place's own floor is built by
+    its set and what lies under that floor's edge is the panorama's (a made floor with its picture's land round
+    it, sets/place_build.py stage_pieces: a flat round of the panorama's ground lay beside such a floor as bare
+    ground where water or a town should be, 11-27)."""
+    return np.zeros((0, 3)), np.zeros((0, 3), int), np.zeros((0, 2))
+
+
 # ------------------------------------------------------------------ the ground's own map (places/ground_map.py)
 # With a map of the place's ground drawn from straight above, the whole real ground is that one picture (its land's
 # water, banks and paths where the people are), fading at its edge into the panorama's ground colour; its water is
@@ -749,7 +757,8 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     eye_h over the ground and at eye_at from the set's middle (set frame, metres): the land stays where the
     panorama has it (surround), and the set's real ground lies round the set's middle, not under the eye.
     ground "water": the place stands in water (a made floor out on it, sets/place_build.py open_floor): with no map
-    of its ground, the whole real ground is water (ground_disk water; "water_region" says its faces)."""
+    of its ground, the whole real ground is water (ground_disk water; "water_region" says its faces).
+    ground "none": with no map of its ground, no real ground is built (no_ground)."""
     import trimesh
     from PIL import Image
     im = Image.open(picture).convert("RGB")
@@ -772,9 +781,11 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
     water = mf.get("water") if mf.get("water") and float(mf.get("half_m") or 0) == FLAT_R_M else None
     with_map = bool(map_pic and Path(map_pic).exists())
     all_wet = ground == "water" and not with_map
+    bare = ground == "none" and not with_map
     # the shell's grid is chosen so the whole world, ground included, stays under the asset chain's budget
     limit = tier_limit()
-    n_ground = len((map_disk([0.0, 0.0, 0.0], 0, water) if with_map else ground_disk([0.0, 0.0, 0.0], 0, all_wet))[1])
+    n_ground = len((map_disk([0.0, 0.0, 0.0], 0, water) if with_map else no_ground() if bare
+                    else ground_disk([0.0, 0.0, 0.0], 0, all_wet))[1])
     bd = surround(d, sky, eye_h, front_deg) if front_deg > 0 else backdrop(d, sky, eye_h)
     (vtx, faces, uv, eye), grid = fit_shell(lambda g: shell(bd, np.zeros(d.shape, bool), g, steep_deg=OUT_STEEP_DEG,
                                                             lowest=True), grid, int(BUDGET_SHARE * limit) - n_ground)
@@ -790,7 +801,7 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
         low = np.concatenate([mt, mt], 1)
     else:
         # (no map: the panorama's own ground near the eye and its bare tile repeated, as before)
-        gv, gf, guv = ground_disk(disc_eye, len(vtx), all_wet)
+        gv, gf, guv = no_ground() if bare else ground_disk(disc_eye, len(vtx), all_wet)
         n_wet = len(gf) if all_wet else 0
         gm = ground_map(rgb, d, sky, tile, eye_h)
         t4 = np.concatenate([np.concatenate([tile, tile], 1)] * 2, 0)
@@ -818,7 +829,7 @@ def outdoor(picture: str, out: str, grid: int, device: str, spot: str = "", mark
              "ground_map": {"picture": str(map_pic), "half_m": FLAT_R_M, "fade_m": MAP_FADE_M} if map_pic and Path(map_pic).exists() else None,
              # (a ground that is all water has no map of where it is: nobody is sent out onto it)
              "water": water if n_wet and not all_wet else None, "places_m": mf.get("places") or {},
-             **({"ground": "water"} if all_wet else {}),
+             **({"ground": "water"} if all_wet else {"ground": "none"} if bare else {}),
              "water_region": {"name": "water", "material": "water", "uv": WATER_UV, "under_m": WATER_UNDER_M,
                               "faces": int(n_wet)} if n_wet else None}
     o.with_suffix(".json").write_text(json.dumps(facts, indent=1))
@@ -842,7 +853,8 @@ def main():
     ap.add_argument("--map-facts", default="", help="outdoors: the vision judge's reading of that map (map.json)")
     ap.add_argument("--eye-h", type=float, default=EYE_STAND_M, help="outdoors: the panorama's eye over the ground, m")
     ap.add_argument("--eye-at", type=float, nargs=2, default=[0.0, 0.0], help="outdoors: its eye from the set's middle")
-    ap.add_argument("--ground", default="", help="outdoors: 'water' when the place's whole flat ground is water")
+    ap.add_argument("--ground", default="", help="outdoors: 'water' when the place's whole flat ground is water, "
+                    "'none' when it has no flat ground of its own")
     ap.add_argument("--front-deg", type=float, default=0.0, help="outdoors: made from the place's picture, which "
                     "stands for this many degrees either side of straight ahead (surround)")
     a = ap.parse_args()

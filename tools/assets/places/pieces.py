@@ -504,6 +504,11 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
             # img3d/pano_shell.py --ground water gives every face of it the water's material
             aid = _asset_id(kind, f"{aid} ground water")
             spec.update(panorama_id=pano, ground="water")
+        if piece.get("ground") == "none" and not piece.get("map_words"):
+            # the world has no flat ground of its own (a made floor with its picture's land round it,
+            # sets/place_build.py stage_pieces): img3d/pano_shell.py --ground none builds none
+            aid = _asset_id(kind, f"{aid} ground none")
+            spec.update(panorama_id=pano, ground="none")
         mdesc = ""
         if piece.get("map_words"):
             # the place's own ground seen from straight above, laid over the set's real ground (places/ground_map.py):

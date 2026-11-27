@@ -18,6 +18,8 @@ Scaled so a door seen in the picture is DOOR_M high (the model's metres are near
 centred on its floor, the eye standing inside its front part.
 A made floor in the open (no walls: a deck, a pier, a rooftop) is measured by its own floor instead: its sides where
 the points lying on the floor plane end (floor_span), kept within reason (floor_bounds).
+Its result has "land" too (stage_land, "stage": true): what the picture shows standing on and round the floor, one
+solid in the room's own frame with the picture as its texture, the loose things on the floor taken out of it.
 
 OUT.json: {"room_m": [W, D, H], "eye": [x, y, z], "things": {"spec:<id>" | "seen:<i>": {"xy", "size_m", "against",
 "facing", "raised_m" (it stands on a raised part of the floor, this high)}}, "off_floor": {key: {"kind"}} (things the
@@ -377,6 +379,11 @@ LAND_CUT_BEHIND_M = 0.5
 LAND_LEVEL_M = (25.0, 50.0)  # the picture's ground is levelled this near its eye; left as it lies beyond the second
 LAND_LIES = 0.8             # a surface whose upward share is at least this lies (ground); less, it stands
 LAND_LEVEL_CELLS = (5.0, 20.0)
+# A made floor in the open that keeps its picture's own structure (stage_land): the picture's land is built round
+# its real floor too. Its floor is level as fitted (nothing is levelled: a raised part of it, a roof, a step would
+# be pressed flat), and a thing of the picture that takes up more of it than this is no loose thing standing on the
+# floor but the place's own structure (rigging over a whole deck, a canopy, a frame): left in the land, not built
+STAGE_CUT_BOX = 0.2
 
 
 def _ground_rise(P, reg) -> np.ndarray:
@@ -400,13 +407,15 @@ def _ground_rise(P, reg) -> np.ndarray:
 
 
 def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np.ndarray,
-         keep_out: np.ndarray | None = None) -> tuple | None:
+         keep_out: np.ndarray | None = None, level: bool = True, cut_most: float | None = None) -> tuple | None:
     """All the land a place in the open's picture shows, as one solid standing where the picture has it: its ground
     (just under the set's real ground), and every bank, slope, rock, tree and far hill rising from it, the front the
     picture's own surface. What the frame cuts is carried on. The things that are built as pieces of the set
     (things: their place and size in the set's frame; boxes: their part of the picture) are taken out of it, the
     land behind each closed over; keep_out is a part of the grid left out whole (the land's own form, a solid of
-    its own). -> (points in the set's frame, faces, uv, the picture with the pieces painted over, the keys of the
+    its own). level False: the picture's ground is left as it lies (a made floor's, stage_land); cut_most: a thing
+    the picture shows that takes up more of it than this share is left in the land.
+    -> (points in the set's frame, faces, uv, the picture with the pieces painted over, the keys of the
     things left in it, not to be built again), or None.
 
     Why: the set of a place in the open was a flat disc of ground forty metres across with the pieces cut from the
@@ -434,6 +443,9 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
             has.append(key)                    # (far off or vast: it is the land's, and not built again)
             continue
         b = boxes[key]
+        if key.startswith("seen:") and cut_most is not None and (b[2] - b[0]) * (b[3] - b[1]) > cut_most:
+            has.append(key)                    # (it takes up much of the picture: the place's own structure)
+            continue
         r0, r1 = max(0, int(b[1] * h)), min(h, int(math.ceil(b[3] * h)))
         c0, c1 = max(0, int(b[0] * w)), min(w, int(math.ceil(b[2] * w)))
         m = np.zeros((h, w), bool)
@@ -465,9 +477,10 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
     # everything near the eye, fading out farther off: people stand on the set's level ground, and land that rose
     # with the hill stood over their heads (a man fighting on a hillside was under the hill, his sword's point out
     # of it, 11-19)
-    g = _ground_rise(P, reg)
-    rr = np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1])
-    P[..., 2] -= g * (1.0 - np.clip((rr - LAND_LEVEL_M[0]) / (LAND_LEVEL_M[1] - LAND_LEVEL_M[0]), 0.0, 1.0))
+    if level:
+        g = _ground_rise(P, reg)
+        rr = np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1])
+        P[..., 2] -= g * (1.0 - np.clip((rr - LAND_LEVEL_M[0]) / (LAND_LEVEL_M[1] - LAND_LEVEL_M[0]), 0.0, 1.0))
     P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
     # its ground under the real ground; what rises, risen from there
     # (eased down to the ground over the first RELIEF_RISE_M, not cut off there: the foot of an upright face would
@@ -491,6 +504,20 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
     F = to_set(Pf)
     B = to_set(eye + (Pf - eye) * LAND_BACK_K)
     return (*_closed(F, B, front_f, U, V), img, has)
+
+
+def stage_land(pts, mask, fr: dict, things: dict, boxes: dict, image: np.ndarray) -> tuple | None:
+    """The picture's own land round a made floor in the open (fr: the frame its floor was measured in, room_from's
+    keep; the set's frame is that room's): everything the picture shows standing on and round the floor, as land()
+    builds it for open land, with the floor left level as it was fitted and what takes up much of the picture left
+    in it (STAGE_CUT_BOX). The loose things on the floor are taken out, as from open land: each is a piece of the
+    set. -> as land().
+
+    Why: a made floor was built as a bare floor inside four plain low walls with a world drawn from words round it,
+    and nothing of what its picture shows standing on and round it: its posts, its house, its railings (11-27)."""
+    k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
+    return land(pts, mask, fr["axes"], fr["d"], lambda q: (q - off) * k_, things, boxes, image,
+                level=False, cut_most=STAGE_CUT_BOX)
 
 
 TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wide
@@ -1112,8 +1139,10 @@ def main():
     # the land's own form of a place in the open (scenes/concept.py: a piece of the land itself), made from the
     # picture's depth where it stands
     # (11-26: a place in the open whose ground is a made floor, scenes/concept.py "ground": "built", is measured as
-    # a room is: its floor's size and each thing's place on it; no land is shaped from its picture)
+    # a room is: its floor's size and each thing's place on it; 11-27: and the land its picture shows round that
+    # floor is built as open land's is, stage_land)
     open_land = concept.get("space") == "outdoors" and concept.get("ground") != "built"
+    made = concept.get("space") == "outdoors" and concept.get("ground") == "built"
     lf = land_form_key(concept) if open_land else None
     lf_reg, lf_done = {}, None
     if lf and lf in res["things"] and fr:
@@ -1144,6 +1173,17 @@ def main():
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
             res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
+    if made and fr:
+        # a made floor: what its picture shows standing on and round the floor, in the room's own frame ("stage":
+        # the set builder keeps the floor and sets this round it, sets/place_build.py picture_stage)
+        try:
+            got = stage_land(pts, mask, fr, res["things"], {k: v[0] for k, v in bx.items()}, image)
+        except ImportError as e:
+            got = None
+            print(f"no land: {e}", file=sys.stderr)
+        if got:
+            ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
+            res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]), stage=True)
     if not open_land and fr:
         # the picture on the room's own walls, floor and roof, where it sees them (room_faces)
         res["faces"] = write_faces(out_p, room_faces(pts, mask, intr, image, fr))
