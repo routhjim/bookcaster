@@ -551,6 +551,9 @@ DRAWN_MAX_SHOTS = 0           # a place the story shows in this many shots or fe
 #                               is built; 11-17 user: engine keys for everything, drawn keys brought the wrong place,
 #                               costume and identity)
 DRAWN_SEEDS = (7, 11, 23)     # a drawn key's tries
+DRAWN_MANNER = (" The last reference picture is a frame of the same film, shot in another place: this picture is made "
+                "the same way as it (the same kind of image, lens, light and richness of colour), so the two cut "
+                "together. Nothing shown in that picture is taken over: not its place, its things or its people.")
 SIDE_BOX = {"left": [0.08, 0.12, 0.46, 1.0], "right": [0.54, 0.12, 0.92, 1.0], "center": [0.3, 0.1, 0.7, 1.0],
             "centre": [0.3, 0.1, 0.7, 1.0]}       # where the plan's side puts a drawn person in the picture
 KEY_DARK = 10.0              # a key's mean brightness (of 255) under this: nearly black, not a key
@@ -1715,6 +1718,29 @@ class Story:
             return [str(best[1])]
         return [str(d / "concept.png")] if (d / "concept.png").exists() else []
 
+    def _look_picture(self, place) -> list:
+        """The picture a place that is only drawn takes its manner from: a key of the built place the story shows
+        nearest its own shots (that place's widest engine key, _room_picture); [] while no built place has a key.
+        (Drawn from the plan's words and the book's style alone, two views of a place nobody stands in were painted
+        on paper in the middle of a film of photographed frames, 11-27.)"""
+        mine = [n for n, i in enumerate(self.ids) if self.plan[i][0].get("place") == place]
+        if not mine:
+            return []
+        near = sorted((min(abs(n - m) for m in mine), n) for n in range(len(self.ids)) if n not in mine)
+        seen = []
+        for _, n in near:
+            other = self.plan[self.ids[n]][0].get("place")
+            if not other or other in seen or other not in self.places:
+                continue
+            seen.append(other)
+            kp = self.d(other) / "keys.json" if not self.only_drawn(other) else None
+            rows = [r for r in (json.loads(kp.read_text()) if kp and kp.exists() else []) if not r.get("drawn")]
+            if any(r["key"] for r in rows):
+                got = self._room_picture(other, rows)
+                if got and Path(got[0]).parent == self.keys:       # (an engine key, not that place's concept)
+                    return got
+        return []
+
     def step_drawn(self, place):
         """The shots the engine has no key for are drawn straight from the plan's own picture of them, the people
         from their sheets and LoRAs: every shot of a place the story only glances at (DRAWN_MAX_SHOTS or fewer: a
@@ -1734,6 +1760,7 @@ class Story:
         style = self.book / "art_style.txt"
         look = (style.read_text().strip().rstrip(".") + ".") if style.exists() else ""
         room = self._room_picture(place, rows) if rows else []
+        manner = [] if rows else self._look_picture(place)
         jobs, facts, vis_of = [], {}, {}
         for i in todo:
             s = self.plan[i][0]
@@ -1756,7 +1783,7 @@ class Story:
                     f"Exactly {n} {('figure is' if n == 1 else 'figures are') if fig else ('person is' if n == 1 else 'people are')} "
                     f"in the picture, each of them once.")
             where = (" The room is the one of the last reference picture: its walls, floor, furniture and light; "
-                     "whoever stands in that picture is not taken over from it.") if room else ""
+                     "whoever stands in that picture is not taken over from it.") if room else DRAWN_MANNER if manner else ""
             # (a sheet shows its person twice, near and whole, and a picture of one person alone copied both: three
             # of three drawings had the child twice, told in words or not. One person alone is drawn from their
             # LoRA; with others in the picture the sheets tell them apart)
@@ -1764,7 +1791,7 @@ class Story:
             for seed in DRAWN_SEEDS:
                 jobs.append({"id": f"{i}__{seed}", "seed": seed, "path": str(out / f"{i}__{seed}.png"),
                              "prompt": f"A photographed frame from a film. {words} {only}{where} {look}".strip(),
-                             "size": [1152, 640], "refs": sheets + room,
+                             "size": [1152, 640], "refs": sheets + room + manner,
                              "loras": [[v["_w"]["lora"], 0.8, [0.0, 0.0, 1.0, 1.0] if n == 1 else
                                         [v["box"][0], 0.0, v["box"][2], 1.0]] for v in vis]})
             facts[i] = [{k: v[k] for k in v if k != "_w"} for v in vis]
@@ -1951,6 +1978,9 @@ class Story:
         # then every place's keys drawn together on both cards (draw_all). A place's own steps up to its staging:
         after = [x for x in todo if x in DRAW_STEPS]
         todo = [x for x in todo if x not in DRAW_STEPS]
+        # (a place that is only drawn takes its manner from a built place's keys, _look_picture: drawn after them)
+        late = [p for p in places if self.only_drawn(p)] if after and any(not self.only_drawn(p) for p in self.places) else []
+        places = [p for p in places if p not in late]
         if jobs > 1 and len(places) > 1:
             with ThreadPoolExecutor(max_workers=jobs) as ex:
                 for fu in [ex.submit(self.run_place, p, todo, redo) for p in places]:
@@ -1963,6 +1993,8 @@ class Story:
                 self.run_place(place, todo, redo)
         if after:
             self.draw_all(places, after, redo)
+        for place in late:
+            self.run_place(place, todo, redo)
         report = {}
         for place in self.places:
             kp = self.d(place) / "keys.json"
