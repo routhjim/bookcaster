@@ -79,3 +79,40 @@ if __name__ == "__main__":
         if k.startswith("test_"):
             v()
     print("ok")
+
+
+def test_a_place_only_drawn_takes_its_manner_from_the_nearest_built_places_key():
+    """11-27: drawn from the plan's words and the book's style alone, it was a painting in a film of photographed
+    frames. Its reference is an engine key of the built place the story shows nearest it; none while no key is made."""
+    plan = {"_es": [], "m1": [{"place": "the Hall", "people": [{"name": "Orla"}]}],
+            "m2": [{"place": "the Quay", "people": []}],
+            "m3": [{"place": "the Pier", "people": [{"name": "Tam"}]}],
+            "m4": [{"place": "the Pier", "people": [{"name": "Tam"}]}]}
+    with tempfile.TemporaryDirectory() as td:
+        w = Path(td)
+
+        class S(SK.Story):
+            def __init__(self):
+                self.plan, self.ids = plan, ["m1", "m2", "m3", "m4"]
+                self.work, self.keys = w / "work", w / "keys"
+                self.keys.mkdir(parents=True)
+                self.places = {p: {"slug": SK.slug_of(p)} for p in ("the Hall", "the Quay", "the Pier")}
+        s = S()
+        assert s._look_picture("the Quay") == [] and s._look_picture("the Loft") == []      # (no key made yet)
+        for place, shot in (("the Hall", "m1"), ("the Pier", "m3")):
+            d = s.d(place)
+            (d / "seq" / "pl_g01").mkdir(parents=True)
+            (d / "seq" / "pl_g01" / "spec_round0.json").write_text(json.dumps(
+                {"cameras": [{"plan_id": shot, "kind": "full", "show": ["a"]}]}))
+            (d / "concept.png").write_bytes(b"x")
+        (s.d("the Hall") / "keys.json").write_text(json.dumps([{"shot": "m1", "key": True}]))
+        assert s._look_picture("the Quay") == []                 # (a key on the list whose picture is not there)
+        (s.keys / "m1_s0.png").write_bytes(b"x")
+        assert s._look_picture("the Quay") == [str(s.keys / "m1_s0.png")]
+        (s.d("the Pier") / "keys.json").write_text(json.dumps([{"shot": "m3", "key": True}]))
+        (s.keys / "m3_s0.png").write_bytes(b"x")
+        assert s._look_picture("the Quay") in ([str(s.keys / "m1_s0.png")], [str(s.keys / "m3_s0.png")])
+    src = Path(SK.__file__).read_text()
+    assert '"refs": sheets + room + manner' in src and "DRAWN_MANNER if manner" in src
+    assert "Nothing shown in that picture is taken over" in SK.DRAWN_MANNER
+    assert src.index("self.draw_all(places, after, redo)") < src.index("for place in late:")    # (after the keys)
