@@ -411,6 +411,9 @@ LAND_LEVEL_CELLS = (5.0, 20.0)
 # be pressed flat), and a thing of the picture that takes up more of it than this is no loose thing standing on the
 # floor but the place's own structure (rigging over a whole deck, a canopy, a frame): left in the land, not built
 STAGE_CUT_BOX = 0.2
+STAGE_BACK_K = 1.02         # a picture stage's land is this thin (LAND_BACK_K for it): cameras stand beside the picture's
+#                             eye there, not at it, and at 1.15 each thing's sides stood out behind it as fins of
+#                             streaks two metres deep (11-27)
 
 
 def _ground_rise(P, reg) -> np.ndarray:
@@ -434,14 +437,17 @@ def _ground_rise(P, reg) -> np.ndarray:
 
 
 def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np.ndarray,
-         keep_out: np.ndarray | None = None, level: bool = True, cut_most: float | None = None) -> tuple | None:
+         keep_out: np.ndarray | None = None, level: bool = True, cut_most: float | None = None,
+         carry: bool = True, back_k: float | None = None) -> tuple | None:
     """All the land a place in the open's picture shows, as one solid standing where the picture has it: its ground
     (just under the set's real ground), and every bank, slope, rock, tree and far hill rising from it, the front the
     picture's own surface. What the frame cuts is carried on. The things that are built as pieces of the set
     (things: their place and size in the set's frame; boxes: their part of the picture) are taken out of it, the
     land behind each closed over; keep_out is a part of the grid left out whole (the land's own form, a solid of
     its own). level False: the picture's ground is left as it lies (a made floor's, stage_land); cut_most: a thing
-    the picture shows that takes up more of it than this share is left in the land.
+    the picture shows that takes up more of it than this share is left in the land. carry False: nothing is
+    carried on past the frame's edges (a picture stage's: its world, the picture all round, is behind it);
+    back_k: how far behind its front the solid's back stands, in place of LAND_BACK_K.
     -> (points in the set's frame, faces, uv, the picture with the pieces painted over, the keys of the
     things left in it, not to be built again), or None.
 
@@ -508,7 +514,8 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
         g = _ground_rise(P, reg)
         rr = np.hypot(P[..., 0] - eye[0], P[..., 1] - eye[1])
         P[..., 2] -= g * (1.0 - np.clip((rr - LAND_LEVEL_M[0]) / (LAND_LEVEL_M[1] - LAND_LEVEL_M[0]), 0.0, 1.0))
-    P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
+    if carry:
+        P, reg, U, V = _carried(P, reg, U, V, steep_only=True)
     # its ground under the real ground; what rises, risen from there
     # (eased down to the ground over the first RELIEF_RISE_M, not cut off there: the foot of an upright face would
     # be so many points at one spot)
@@ -530,7 +537,7 @@ def land(pts, mask, axes, d: float, to_set, things: dict, boxes: dict, image: np
     front_f, _ = _front(q)
     Pf = P.reshape(-1, 3)
     F = to_set(Pf)
-    B = to_set(eye + (Pf - eye) * LAND_BACK_K)
+    B = to_set(eye + (Pf - eye) * (back_k or LAND_BACK_K))
     return (*_closed(F, B, front_f, U, V), img, has)
 
 
@@ -541,11 +548,15 @@ def stage_land(pts, mask, fr: dict, things: dict, boxes: dict, image: np.ndarray
     in it (STAGE_CUT_BOX). The loose things on the floor are taken out, as from open land: each is a piece of the
     set. -> as land().
 
+    Nothing is carried on past the picture's edges: what the frame cut, carried 10 m sideways row by row at each
+    row's own depth, stood at both sides of the floor as a stack of sheets, a band of streaks in every shot
+    (11-27); the stage's world shows the picture all round behind it.
+
     Why: a made floor was built as a bare floor inside four plain low walls with a world drawn from words round it,
     and nothing of what its picture shows standing on and round it: its posts, its house, its railings (11-27)."""
     k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
     return land(pts, mask, fr["axes"], fr["d"], lambda q: (q - off) * k_, things, boxes, image,
-                level=False, cut_most=STAGE_CUT_BOX)
+                level=False, cut_most=STAGE_CUT_BOX, carry=False, back_k=STAGE_BACK_K)
 
 
 TOPS_CELL_M = 1.0           # how high the land stands is kept in cells this wide
