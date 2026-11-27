@@ -711,7 +711,9 @@ def main():
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         out.append(dict(make_face(PB.face_spec(ww), library, seed), kind="wall_face"))
-    if spec.get("kind") != "outdoors" and not only:      # the room's walls as its concept picture shows them
+    # (11-26: and the floor of a made floor in the open, sets/place_build.py open_floor: its spec's own faces)
+    # the room's walls as its concept picture shows them
+    if (spec.get("kind") != "outdoors" or spec.get("_open_top")) and not only:
         sys.path.insert(0, str(HERE.parent / "sets"))
         import place_build as PB
         col = (((spec.get("_concept") or {}).get("bare") or {}).get("walls") or {}).get("colour")
