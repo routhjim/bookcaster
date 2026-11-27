@@ -192,9 +192,16 @@ def held_on(in_hand: dict, rows: dict, said: set, present: set) -> dict:
     hand in the ten shots that named him and gone from his hand in every shot between them, 11-27.)"""
     for k in [k for k in in_hand if k not in present]:
         del in_hand[k]
-    for k in said:
-        in_hand[k] = [dict(r) for r in rows.get(k) or [] if r.get("at") == "hand"]
     out = {k: list(v) for k, v in rows.items()}
+    for k in said:
+        now = [dict(r) for r in rows.get(k) or [] if r.get("at") == "hand"]
+        was = in_hand.get(k) or []
+        if now and len(now) < len(was) and {r["asset"] for r in now} < {r["asset"] for r in was}:
+            # (still holding one of the things they held: the shot's line names that one, and the other is in the
+            # other hand yet. A bow named once with its fiddle was gone from the hand in every shot after, 11-27)
+            out[k] = [r for r in out[k] if r.get("at") != "hand"] + [dict(r) for r in was]
+            now = [dict(r) for r in was]
+        in_hand[k] = now
     for k, kept in in_hand.items():
         if k not in said and kept:
             out.setdefault(k, []).extend(dict(r) for r in kept)
@@ -772,8 +779,35 @@ WORK_POSE = "hands_at_work"      # someone with a tool in the hand and a thing l
 WORK_ACTIONS = ("tool_raised", "striking_down", "hands_at_work")      # standing work over what is in front (pose.py)
 READY_ACTIONS = ("weapon_ready",)     # a fighter's guard (pose.py): placed by the fight, not at a piece
 BLOW_POSES = ("tool_raised", "striking_down")    # a blow the pass may name for a fighter: the clip's, not its start
+PLAY_ACTIONS = ("play_at_shoulder",)  # an instrument played (pose.py): gone on with shot after shot (played_on)
 ACTION_NAMES = ("stand_hand_on_mantel", "gesture_point", "veil_lift", "look_at_sleeve", "reach_to_forearm") + \
-    WORK_ACTIONS + READY_ACTIONS
+    WORK_ACTIONS + READY_ACTIONS + PLAY_ACTIONS
+
+
+def played_on(playing: dict, poses: dict, present: set, holding: set) -> dict:
+    """A shot's poses with the playing of those who went on playing: someone who plays an instrument in one shot
+    plays it in the shots after, whatever the shot is about, until a shot names another action for them, their hands
+    are empty or they have left. The pass names an action where a shot's own line states it: the music under a
+    whole scene is stated once. playing is kept for the next shot."""
+    out = dict(poses)
+    for k in [k for k in playing if k not in present or k not in holding
+              or (out.get(k) in ACTION_NAMES and out[k] not in PLAY_ACTIONS)]:
+        del playing[k]
+    for k, pz in out.items():
+        if pz in PLAY_ACTIONS and k in holding and k in present:
+            playing[k] = pz
+    for k, pz in playing.items():
+        out[k] = pz
+    return {k: v for k, v in out.items() if v not in PLAY_ACTIONS or k in holding}
+
+
+def play_hands(rows: list) -> list:
+    """A player's carried things with their hands as the instrument is played: the first thing in the hand (the
+    instrument: the pass's first) in the left, the second in the right."""
+    hands, out = iter(("l", "r")), []
+    for r in rows:
+        out.append(dict(r, hand=next(hands, r.get("hand"))) if r.get("at") == "hand" else r)
+    return out
 
 
 WORN_KEYS = ("wear_add", "face_covered", "wear_set", "wear_back_set", "worn_sheet")
@@ -984,7 +1018,7 @@ def action_misfit(pz: str, k: str, v: dict, st: dict, worn: str | None, things: 
     sitting = v.get("pose") == "sitting"
     if pz in ("stand_hand_on_mantel", "gesture_point", "reach_to_forearm") + WORK_ACTIONS + READY_ACTIONS and sitting:
         return f"{k} is sitting"
-    if pz in READY_ACTIONS and not any(r.get("at") == "hand" for r in carried or []):
+    if pz in READY_ACTIONS + PLAY_ACTIONS and not any(r.get("at") == "hand" for r in carried or []):
         return f"{k} has nothing in the hand"
     if pz == "stand_hand_on_mantel":
         fire = [t for t in things if t.get("fire")]
@@ -1178,6 +1212,7 @@ def main():
     groups, cur, cur_sig = [], [], None
     worn: dict = {}
     in_hand: dict = {}          # key -> what they last had in their hands (held_on)
+    playing: dict = {}          # key -> the instrument pose they are in (played_on)
 
     def apply_place(k, pa, why):
         others = ring(k)
@@ -1709,6 +1744,10 @@ def main():
             cam.pop("listener", None)
         looks = {}
         poses = {names[a_]: b_ for a_, b_ in (pa.get("pose") or {}).items() if a_ in names and b_ not in NOTS}
+        poses = played_on(playing, poses, set(state), {k_ for k_, rows_ in (cam.get("carried") or {}).items()
+                                                       if any(r_.get("at") == "hand" for r_ in rows_)})
+        for k_ in [k_ for k_, pz_ in poses.items() if pz_ in PLAY_ACTIONS and (cam.get("carried") or {}).get(k_)]:
+            cam["carried"][k_] = play_hands(cam["carried"][k_])
         # someone at work or holding a tool in an action shot: their working hand is in the frame and seen (in a
         # close of a smith the hammer and tongs the redraw was told of had nowhere to go but his head: "ears", a red
         # mask, 11-17)
