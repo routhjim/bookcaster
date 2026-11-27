@@ -578,6 +578,14 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
                     why.append(f"{k} (named for the shot) is behind {o}")
         if lead and not speaker and lead in hh and turned_away(cam, subjects[lead]["measured"]):
             why.append(f"a {kind} shot of {len(hh)} people from behind {lead} (the shot is about {lead})")
+        # (and each of them whole from side to side, the head inside: one of four stood half out of a wide's left
+        # edge, his head on the frame line; the picture drawn from it had him headless, what he held went to the
+        # hands of the man beside him, and the shot got no key, 11-27)
+        for k in hh:
+            sides = [e for e in facts[k].get("cut_edges") or [] if e in ("left", "right")]
+            if sides or not facts[k]["head_in"]:
+                why.append(f"{k} (named for the shot) is cut by the frame's {'/'.join(sides) or 'top'} edge in a "
+                           f"{kind} shot of {len(hh)} people")
         if len(hh) > 1 and max(hh.values()) > FULL_HEADS_K * max(min(hh.values()), 1e-6):
             big, small = max(hh, key=hh.get), min(hh, key=hh.get)
             why.append(f"a {kind} shot of {len(hh)} people: {big}'s head ({hh[big]:.3f}) is over {FULL_HEADS_K:g} "
