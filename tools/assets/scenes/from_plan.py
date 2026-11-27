@@ -48,6 +48,7 @@ import lying  # noqa: E402
 import stature  # noqa: E402
 import creature  # noqa: E402
 import setfacts  # noqa: E402
+import framing  # noqa: E402
 sys.path.insert(0, str(HERE.parent / "places"))
 import ground_map as GM  # noqa: E402
 
@@ -189,6 +190,16 @@ STAGE_DIR: list = []       # a place built from ONE picture, its cameras held to
 STAGE_ACROSS_DEG = 55.0    # there the line between two people of a group runs at least this far off the picture's view
 STAGE_GROUP_M = 4.0        # ... two people of a group: no further apart than this
 STAGE_REACH_M = 1.5        # a mark across the stage is looked for this far past the place's own reach, no further
+STAGE_OPEN_DEG = 30.0      # someone standing turned to a person or the group is turned this far toward the cameras
+
+
+def stage_open(facing: list, standing: bool) -> list:
+    """A standing person's facing toward a person or their group, on a stage of one picture: turned STAGE_OPEN_DEG
+    toward the side its cameras stand on, as on any stage; the facing itself anywhere else. (Four people across
+    such a stage faced each other along it, and no camera of its side saw more than a quarter of a face, 11-27.)"""
+    if not STAGE_DIR or not standing or math.hypot(facing[0], facing[1]) < 1e-6:
+        return facing
+    return framing.turned_toward(facing, [-STAGE_DIR[0], -STAGE_DIR[1]], STAGE_OPEN_DEG)
 
 
 def stage_dir(set_spec: dict) -> list:
@@ -1505,6 +1516,8 @@ def main():
             if not rel and thing and v.get("pose") != "sitting":
                 v["facing"] = open_from_wall(v["position"], v["facing"], thing,
                                              [vv["position"] for kk, vv in state.items() if kk != k])
+            elif nd > 1e-6 and k not in crt and rel not in crt:
+                v["facing"] = stage_open(v["facing"], v.get("pose") == "standing")
         spk = names.get(sh.get("speaker")) if sh.get("speaker") else None
         lis = names.get(sh.get("listener")) if sh.get("listener") else None
         if sh.get("kind") == "talk" and spk in state:
@@ -1523,6 +1536,8 @@ def main():
                 nd = math.hypot(*d)
                 if nd > 1e-6:
                     v["facing"] = [round(d[0] / nd, 4), round(d[1] / nd, 4)]
+                    if spk not in crt and lis not in crt:
+                        v["facing"] = stage_open(v["facing"], v.get("pose") == "standing")
         listed = [names[p["name"]] for p in sh.get("people") or [] if p["name"] in names]
         # (who is in the room now: someone the plan lists or has speaking who has left it, or whom the staging never
         # brought in, is not in the picture; with nobody at all in the room the shot is an insert too. 11-26: a
