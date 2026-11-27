@@ -362,6 +362,14 @@ who holds it or what is done with it, never the place around it. Use plain words
 the story itself gives a material or a thing says nothing to a prop maker). Answer with the sentence and nothing else."""
 
 
+LOOK_IS_ASK = ("A prop maker asked how an object looks and was given this sentence: {look}\nDoes the sentence say "
+               "how an object looks (its shape, what it is made of, its colours)? Answer with exactly one word: "
+               "yes or no.")
+LOOK_PLAIN_ASK = ("In a scene one person holds these things: {things}\nA prop maker must make this one of them as an "
+                  "object on its own: {what}\nThe story does not say how it looks. Describe in one sentence how such a "
+                  "thing ordinarily looks, as the one that goes with the other things this person holds: its shape "
+                  "and build, what it is made of, its colours. The thing alone: never who holds it or what is done "
+                  "with it. Answer with the sentence and nothing else.")
 THINGS_SHOTS = 8                 # shots in one ask of what is worn and carried
 
 
@@ -429,6 +437,23 @@ def things(plan: dict, ids: list, place: str, timeline: list, url: str, cache: P
         look = {w: ask(url, LOOK_ASK.format(story=SP.span(timeline, -1.0, 1e9), what=w, place=place), cache).strip()
                 for w in act if w not in part}
         look = {w: v for w, v in look.items() if 8 <= len(v) <= 400 and not set("{}[]\n") & set(v)}   # (a sentence)
+        # (an answer that the story has no such thing is no look: made from it, the thing a player's instrument is
+        # played with came out a ring with a figure standing in it, 11-27. Asked plainly then: how such a thing
+        # ordinarily looks, as the one that goes with what else its holder has in hand)
+        held_with = {}
+        for i in ids:
+            for ts in out[i].values():
+                names_ = [t["what"] for t in ts if t["on"] in ("held", "worked")]
+                for w in names_:
+                    held_with.setdefault(w, names_)
+        for w, v in list(look.items()):
+            if not ask(url, LOOK_IS_ASK.format(look=v), cache).strip().lower().startswith("no"):
+                continue
+            v2 = ask(url, LOOK_PLAIN_ASK.format(things="; ".join(held_with.get(w) or [w]), what=w), cache).strip()
+            if 8 <= len(v2) <= 400 and not set("{}[]\n") & set(v2):
+                look[w] = v2
+            else:
+                del look[w]
         # (asked for the thing alone, a look still said where it hangs, and the keys drew it hanging there, 11-18:
         # such a look is written again without those words)
         for w, v in list(look.items()):
