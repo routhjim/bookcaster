@@ -1151,7 +1151,7 @@ def cam_opts(spec, c):
     seated = {k for k, v in spec["characters"].items()
               if any(w in ((v.get("body_pose") or {}).get("pose") or "") for w in SEATED)}
     covered = {k for k, v in spec["characters"].items() if v.get("face_covered")} | head_worn(c)
-    return {"seated": seated, "subject": c.get("subject"), "listed": c.get("listed"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "covered": covered,
+    return {"seated": seated, "subject": c.get("subject"), "listed": c.get("listed"), "line_subject": c.get("line_subject"), "joints": c.get("show_joints") or [], "joints_soft": bool(c.get("joints_soft")), "covered": covered,
             "landmark": c.get("_landmark"), "at_thing": c.get("_at_thing"),
             "prev_cam": spec.get("_prev_cam"), "end_place": c.get("_end_place"),
             "seat_xy": {k: v["position"] for k, v in spec["characters"].items()
@@ -1426,6 +1426,14 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                             + 10.0 * area_excess(q, subjects, res, {spk, lis, opts.get("subject")}, opts),
                             q, mode))
                 break
+    if not out and opts.get("joints") and opts.get("joints_soft"):
+        # no camera holds the frame and a hand that only carries something (the people beside a person keep the
+        # frame of a medium narrow, the hand at the thigh under it: four shots of a man with a cup had no camera at
+        # all and went out as their least-bad tries, 11-27): the frame wins, the hand is let out of it. The list
+        # is the camera's own "show_joints", emptied in place: the checks after and the redraw's words read it.
+        log(f"{c.get('name')}: no camera shows the carrying hand ({opts['joints']}): the hand is let out of the frame")
+        del opts["joints"][:]
+        return two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried, opts)
     if not out and spk and lis and not opts.get("_single"):
         # no two-shot or over-the-shoulder passes (two people facing each other, one of them near): a clean single
         # of the speaker, the listener left to the cut

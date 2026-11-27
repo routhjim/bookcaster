@@ -464,6 +464,9 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
         subj = json.loads((sd / "result.json").read_text()).get("subjects") or {}
     except (OSError, ValueError):
         subj = {}
+    if c.get("joints_soft") and not c.get("show_joints"):
+        return ""                            # (the camera search let the carrying hand out of this frame: no words
+        #                                      of a thing the picture has no hand for)
     out = []
     for k in [p[0] for p in ppl]:
         ready = (((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}).get("action") in READY_WORDS
