@@ -242,7 +242,7 @@ class DrawingAngle(unittest.TestCase):
         # the height out, the arm 0.335 long) must lie inside the picture with a margin at every angle a run can use
         canvas = node(ast.Assign, "cw, cf =", part="value")
         step = 6
-        self.assertIn("deg0 + 6 * rnd", CAST_SRC)
+        self.assertIn("SPREAD_WEB_STEP if meshes and webbed(meshes[-1]) else 6", CAST_SRC)   # (6 a round; a web: more)
         rounds = 5
         for sleeves in ("close", "medium", "loose", ""):
             d0 = self.start(sleeves, "a man in a coat")
