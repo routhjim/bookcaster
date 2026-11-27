@@ -656,8 +656,9 @@ class Story:
         """A place drawn, not built: one the story only glances at (DRAWN_MAX_SHOTS or fewer), or one no shot puts
         anybody in (nobody to stage)."""
         shots = self.shots_of(place)
+        mine = [self.plan[i][0] for i in shots if self.plan.get(i)]
         return bool(shots) and (len(shots) <= DRAWN_MAX_SHOTS
-                                or not any(self.plan[i][0].get("people") for i in shots))
+                                or (bool(mine) and not any(s.get("people") for s in mine)))
 
     def people_of(self, place: str) -> list:
         names = dict.fromkeys(p["name"] for i in self.shots_of(place) for p in self.plan[i][0].get("people") or [])
