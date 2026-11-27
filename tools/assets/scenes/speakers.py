@@ -424,7 +424,12 @@ def framing_why(cam, kind, speaker, listener, ots, show, subjects, res, shot=Non
             # when it stands nearer the camera, each head taken at its own size (held to a person's head, a beast's
             # head two metres beyond the woman the shot was about failed every camera of the search, 11-18)
             h = h * head_size(subjects[lead]["measured"]) / head_size(v["measured"])
-        if lead and facts[k]["head_any"] and h > sh_spk * 1.02:
+        # (in a full or wide shot of several named people, nobody speaking, the named stand at sizes of one
+        # picture, its own rule below: one of them a little nearer the camera than the one the shot is about is
+        # that picture. Held to the lead's own head, a wide on four people had no camera anywhere on the floor:
+        # 26 000 framings tried, most of them refused for a head a quarter bigger, 11-27)
+        group = not speaker and kind in ("full", "wide") and lead in (show or ()) and k in (show or ())
+        if lead and facts[k]["head_any"] and h > sh_spk * (FULL_LEAD_K if group else 1.02):
             why.append(f"{k}'s head ({h:.3f}) is bigger than the {role}'s ({sh_spk:.3f})")
         if lead and k not in keep and turned_away(cam, v["measured"]):
             # a foreground back so large it takes the speaker's shot (a back alone is a staging choice: 11-12)
@@ -1762,6 +1767,7 @@ def same_miss(history: list, n: int = SAME_MISS_ROUNDS) -> bool:
 
 
 BEHIND_M = 0.3               # someone this near the line from a camera to another's eyes, and nearer it, hides them
+FULL_LEAD_K = 1.5            # ... and none of the named more than this many times the head of the one it is about
 FULL_HEADS_K = 3.0           # in a full or wide shot of several people no head is more than this many times another's
 FALLBACK_FORE_DEG = 40.0      # someone nearer a wide's camera than its subject, this near its aim, is in its foreground
 FALLBACK_LEAD_K = 0.8        # a wide's other people stand no nearer its camera than this share of the first one's distance
