@@ -1757,6 +1757,10 @@ def main():
                    if k_ in state and k_ not in crt]          # (a creature has no hand: what it holds is in its claws)
             if hj_:
                 cam["show_joints"] = hj_
+                # (a hand that only carries: wanted in the frame, given up where no camera holds it; a working
+                # hand is the shot)
+                if not any(poses.get(k_) in WORK_ACTIONS for k_, _ in hj_):
+                    cam["joints_soft"] = True
         f["pass"] = {"used": used, "camera": ck, "pose": poses, "worn": dict(worn)}
         cam["_looks"] = looks
         cam["_poses"] = poses
