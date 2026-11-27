@@ -413,3 +413,16 @@ def test_what_hangs_over_seen_ground_shuts_none_of_it():
     uv = np.full((len(vtx), 2), 0.25)
     z = CD.tops_of(vtx, uv)["z"][0]
     assert z == [0.0, 3.0, 4.0, 3.0]
+
+
+def test_a_standing_face_seen_end_on_is_no_face_of_the_land():
+    """A wall running straight away from the eye is left out; a wall facing it, and ground far off, are kept."""
+    eye = np.array([0.0, 0.0, 1.6])
+    def grid(o, du, dv):
+        return np.array([[o + i * dv + j * du for j in range(3)] for i in range(3)], float)
+    facing = grid(np.array([-1.0, 10.0, 2.0]), np.array([1.0, 0, 0]), np.array([0, 0, -1.0]))
+    away = grid(np.array([1.5, 10.0, 2.0]), np.array([0.02, 1.2, 0]), np.array([0, 0, -1.0]))
+    ground = grid(np.array([-1.0, 40.0, 0.0]), np.array([1.0, 0, 0]), np.array([0, -8.0, 0]))
+    assert not CD._end_on(facing, eye).any()
+    assert CD._end_on(away, eye).all()
+    assert not CD._end_on(ground, eye).any()
