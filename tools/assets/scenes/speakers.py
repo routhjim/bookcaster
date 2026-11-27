@@ -757,6 +757,7 @@ ACTION_HANDS_M = {"veil_lift": (0.22, all), "look_at_sleeve": (0.38, any)}   # a
                                                                              # near the chin (both / either), measured
 
 
+PLAY_HANDS = ("play_at_shoulder",)       # an instrument played: its arms are the action's own (ue/pose.py), no start to measure
 WORK_HANDS = ("tool_raised", "striking_down", "hands_at_work",     # the work start poses (ue/pose.py), measured
               "weapon_ready")                                       # (and a fighter's guard: READY_ACTIONS)
 
@@ -867,7 +868,7 @@ def staged_facts(spec, subjects):
             j = m.get("joints") or {}
             if act in WORK_HANDS:
                 bad += work_hands_why(act, m)
-            elif act not in ACTION_HANDS_M:
+            elif act not in ACTION_HANDS_M and act not in PLAY_HANDS:
                 bad.append(f"action '{act}': no start pose for it")
             elif not all(h in j for h in ("hand_l", "hand_r")):
                 bad.append(f"action '{act}': hands not measured")
