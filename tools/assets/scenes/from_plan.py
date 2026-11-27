@@ -184,6 +184,23 @@ def too_near(p: list, others: list, own_r: float = 0.0) -> bool:
     return any(math.dist(p, o[:2]) < PERSON_GAP_M + own_r + (o[2] if len(o) > 2 else 0.0) for o in others)
 
 
+def held_on(in_hand: dict, rows: dict, said: set, present: set) -> dict:
+    """A shot's carried things with what people still have in their hands from the shots before: the pass speaks of
+    a shot's own people only, so someone it says nothing of in this shot (a line spoken by another, with them in
+    the background) keeps what they held; someone it does speak of has what it says, nothing when it says nothing;
+    someone gone from the place has let go. in_hand is kept for the next shot. (A player's instrument was in his
+    hand in the ten shots that named him and gone from his hand in every shot between them, 11-27.)"""
+    for k in [k for k in in_hand if k not in present]:
+        del in_hand[k]
+    for k in said:
+        in_hand[k] = [dict(r) for r in rows.get(k) or [] if r.get("at") == "hand"]
+    out = {k: list(v) for k, v in rows.items()}
+    for k, kept in in_hand.items():
+        if k not in said and kept:
+            out.setdefault(k, []).extend(dict(r) for r in kept)
+    return out
+
+
 STAGE_DIR: list = []       # a place built from ONE picture, its cameras held to that picture's side (the set's
 #                            "picture_dir", not "all_round"; speakers.py picture_side): the way the picture looks, in
 #                            plan. main() fills it; empty in a room and in a place with a true panorama all round
@@ -1160,6 +1177,7 @@ def main():
     state: dict = {}            # key -> {"at", "pose", "position", "facing", "seat", "facing_words"}
     groups, cur, cur_sig = [], [], None
     worn: dict = {}
+    in_hand: dict = {}          # key -> what they last had in their hands (held_on)
 
     def apply_place(k, pa, why):
         others = ring(k)
@@ -1653,6 +1671,8 @@ def main():
                     obj_.setdefault(k_, []).append({"asset": made_[t_["what"]], "at": "on", "name": t_["what"], "xyz": [
                         at_["center"][0], at_["center"][1], round(at_["center"][2] + at_["half"][2], 3)],
                         **({"glow": t_["glow"]} if t_.get("glow") else {})})
+        obj_ = held_on(in_hand, obj_, {names[n_] for n_ in ((sp or {}).get("things") or {}).get(sid) or {}
+                                       if n_ in names}, set(state))
         obj_ = {k_: v_ for k_, v_ in obj_.items() if v_}
         if obj_:                              # (scene_job puts each on the person's head or in their hand)
             cam["carried"] = obj_
