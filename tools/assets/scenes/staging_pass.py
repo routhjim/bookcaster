@@ -64,7 +64,7 @@ POSE_WORDS = {"stand_hand_on_mantel": "rests a hand on the mantelpiece", "gestur
               "striking_down": "brings a tool down on the work in front of them",
               "hands_at_work": "works with both hands on something in front of them at waist height",
               "play_at_shoulder": "plays a musical instrument that is held up at the shoulder, under the chin",
-              "raise_in_hand": "lifts what is in their hand up in front of them, at about the height of their eyes, "
+              "raise_in_hand": "lifts what is in their hand up in front of them, at about the height of their face, "
                                "with no work in front of them"}
 CAMERAS = ["two_shot", "over_the_shoulder", "single", "close"]
 NOT = "not stated"

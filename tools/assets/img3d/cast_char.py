@@ -131,6 +131,7 @@ def webbed(res: dict) -> bool:
 
 
 STEPS = ["choose", "mh", "draw", "gate", "shape", "combo", "import", "arms", "seats", "check"]
+BARE_HEAD = " bare-headed (no hat)."   # (left out of a drawing whose look puts a thing on the head: both were said)
 POSE_WORDS = ("standing in a neutral rigging pose, seen straight from the front: both arms held straight out away "
               "from the body, angled down about 45 degrees, a clear open gap between each arm and the clothes, hands "
               "open with the fingers together and the palms facing down, legs slightly apart, looking at the viewer. "
@@ -789,7 +790,8 @@ def main():
                 CH.setdefault("pose_deg", []).append(deg)
                 seeds = [5 + 1000 * run_n + 6 * (3 * rnd + k) for k in range(3)]
                 jobs = [{"id": f"{tag}_s{s_}", "seed": s_, "path": str(rdir / f"spread_s{s_}.png"), "size": [cw, 1344],
-                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS}" + build_words(ch) + head_words + (
+                         "prompt": f"{a.trigger}, {look}, {POSE_WORDS if not hw_ else POSE_WORDS.replace(BARE_HEAD, '')}"
+                                   + build_words(ch) + head_words + (
                              " No outer layer over the shoulders: the arms, the sides of the body and the clothes "
                              "under it all in view." if gf_.get("outer_layer") else ""), "refs": [a.sheet],
                          "loras": [[a.lora, 0.8, [0, 0, 1, 1]]],
