@@ -876,7 +876,9 @@ def staged_facts(spec, subjects):
             j = m.get("joints") or {}
             if act in WORK_HANDS:
                 bad += work_hands_why(act, m)
-            elif act not in ACTION_HANDS_M and act not in PLAY_HANDS:
+            elif act in PLAY_HANDS:
+                pass                         # (its arms are the action's own: no start to measure)
+            elif act not in ACTION_HANDS_M:
                 bad.append(f"action '{act}': no start pose for it")
             elif not all(h in j for h in ("hand_l", "hand_r")):
                 bad.append(f"action '{act}': hands not measured")

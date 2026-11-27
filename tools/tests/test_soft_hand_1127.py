@@ -81,3 +81,11 @@ def test_someone_playing_is_said_to_play_with_the_instrument_at_the_shoulder(tmp
         assert "hanging down" not in w and "a mug" not in w      # (b's carrying hand was let out of the frame)
     assert R.PLAY_WORDS[0] in SP.PLAY_HANDS
     assert "stick" not in R.play_place([{"at": "hand", "hand": "l", "name": "lute"}])
+
+
+def test_the_staged_facts_ask_no_start_pose_of_a_play_or_a_lift():
+    for act in SP.PLAY_HANDS:                # (a play action ran on into the measured-hands branch: KeyError)
+        spec = {"characters": {"a": {"id": "fig", "position": [0, 0], "facing": [0, -1],
+                                     "body_pose": {"pose": "stand_relaxed", "params": {"action": act}}}},
+                "cameras": []}
+        assert SP.staged_facts(spec, {"a": S.person([0.0, 0.0], facing=[0, -1])})["a"] == []
