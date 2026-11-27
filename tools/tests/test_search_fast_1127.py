@@ -78,3 +78,71 @@ def test_a_line_of_sight_is_blocked_by_the_same_things(monkeypatch):
         assert got == between_plain(p, q), (p, q)
         hit += got
     assert 400 < hit < 3600                              # (both answers are met with)
+
+
+def test_the_first_sieve_refuses_no_camera_the_rules_would_take():
+    """Every camera the sieve refuses for all cameras at once is one framing_why refuses too, over made-up people
+    in every kind of shot; and it does refuse most of those the rules refuse (it is worth its work)."""
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import staging_synth as SY
+    import search_fast as SF
+    rnd = random.Random(11)
+    lim = {"EDGE": S.EDGE, "SIDE_EDGE": S.SIDE_EDGE, "SLIVER": S.SLIVER, "FULL_LEAD_K": S.FULL_LEAD_K,
+           "BEHIND_M": S.BEHIND_M}
+    res = [1152, 640]
+    refused = failed = tried = 0
+    for trial in range(60):
+        n = rnd.choice((2, 3, 4))
+        names = list("abcd")[:n]
+        subj = {}
+        for k in names:
+            a = rnd.uniform(0, 2 * math.pi)
+            subj[k] = SY.person([rnd.uniform(-2.5, 2.5), rnd.uniform(-2.5, 2.5)], (math.cos(a), math.sin(a)),
+                                seated=rnd.random() < 0.2)
+        kind = rnd.choice(("full", "wide", "medium", "close"))
+        spk = rnd.choice((None, None, "a"))
+        lis = "b" if spk and rnd.random() < 0.5 else None
+        show = rnd.choice((None, names, names[:1], names[:2]))
+        opts = {"line_subject": rnd.choice(("a", names[-1], None)), "subject": "a",
+                "listed": rnd.choice((None, names[:1], names[:2], names))}
+        qs = []
+        for _ in range(250):
+            t = subj[rnd.choice(names)]["measured"]
+            qs.append({"position": [round(rnd.uniform(-7, 7), 3), round(rnd.uniform(-7, 7), 3), rnd.choice((1.45, 1.6, 2.4))],
+                       "target": [round(t["eye_xy"][0] + rnd.uniform(-0.6, 0.6), 3),
+                                  round(t["eye_xy"][1] + rnd.uniform(-0.6, 0.6), 3), round(rnd.uniform(1.0, 1.7), 3)],
+                       "focal_mm": rnd.choice((20, 24, 28, 35, 50, 85))})
+        qs.append({"position": [0.0, 0.0, 5.0], "target": [0.0, 0.0, 0.0], "focal_mm": 28})      # (straight down)
+        qs.append({"position": [1.0, 1.0, 1.5], "target": [1.0, 1.0, 1.5], "focal_mm": 28})      # (on its own aim)
+        got = SF.sure_fail(np.array([q["position"] for q in qs], float), np.array([q["target"] for q in qs], float),
+                           np.array([q["focal_mm"] for q in qs], float), kind, spk, lis, show, subj, res, opts, lim)
+        for q, x in zip(qs, got):
+            why = S.framing_why(q, kind, spk, lis, False, show, subj, res, opts=opts)[0]
+            tried += 1
+            failed += bool(why)
+            refused += bool(x)
+            assert why or not x, (trial, q, kind, spk, lis, show, opts)
+    assert refused > 0.5 * failed > 0.2 * tried, (refused, failed, tried)
+
+
+def test_the_search_is_the_same_with_and_without_its_sieve(monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import staging_synth as SY
+    monkeypatch.setattr(S, "SOLIDS", [])
+    monkeypatch.setattr(S, "OPEN_GROUND", [])
+    monkeypatch.setattr(S, "PICTURE_SIDE", {})
+    subj = {"a": SY.person([0.0, 1.0], (0.3, -1.0)), "b": SY.person([1.3, 0.8], (-0.6, -1.0)),
+            "c": SY.person([-1.4, 1.4], (0.5, -1.0))}
+    room = [8.0, 8.0, 3.0]
+    for c, spk, lis in (({"kind": "full", "show": ["a", "b", "c"], "listed": ["a", "b", "c"], "line_subject": "a"}, None, None),
+                        ({"kind": "medium", "show": ["a"], "listed": ["a"], "line_subject": "a"}, None, None),
+                        ({"kind": "medium"}, "a", "b")):
+        shot = {"camera": SY.cam([0.0, -3.0, 1.6], [0.0, 1.0, 1.5], 35)}
+        opts = {k: c[k] for k in ("listed", "line_subject") if k in c}
+        monkeypatch.delenv("SPEAKERS_PLAIN_SEARCH", raising=False)
+        fast = S.two_shot_candidates(c, shot, spk, lis, subj, [1152, 640], room, None, None, [], dict(opts))
+        monkeypatch.setenv("SPEAKERS_PLAIN_SEARCH", "1")
+        plain = S.two_shot_candidates(c, shot, spk, lis, subj, [1152, 640], room, None, None, [], dict(opts))
+        assert fast == plain
+    assert fast                                  # (the talk shot finds cameras)

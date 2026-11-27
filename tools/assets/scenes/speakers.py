@@ -1290,6 +1290,22 @@ def side_first(c: dict, characters: dict, room) -> str | None:
     return f"{c['name']}: {abs(turn):.0f} deg from the picture's view, turned round {c['subject']} to {SIDE_ARC_DEG:.0f}"
 
 
+def sure_refused(qs: list, kind, spk, lis, show, subjects, res, opts):
+    """Per camera of qs, whether one of three plain rules of the frame surely refuses it (search_fast.sure_fail);
+    None where that cannot be worked out here (no numpy; a still's own masks would be asked: never in a search)."""
+    if not qs or os.environ.get("SPEAKERS_PLAIN_SEARCH"):
+        return None
+    try:
+        import numpy as np
+        import search_fast
+    except ImportError:
+        return None
+    return search_fast.sure_fail(np.array([q["position"] for q in qs], float), np.array([q["target"] for q in qs], float),
+                                 np.array([q["focal_mm"] for q in qs], float), kind, spk, lis, show, subjects, res,
+                                 opts, {"EDGE": EDGE, "SIDE_EDGE": SIDE_EDGE, "SLIVER": SLIVER,
+                                        "FULL_LEAD_K": FULL_LEAD_K, "BEHIND_M": BEHIND_M})
+
+
 def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, tried, opts=None):
     """Placed cameras that keep the speaker and the listener (or the named people) in view, each checked by the
     framing rules: a two-shot aimed between their faces nearer the speaker, or an over-the-shoulder from behind the
@@ -1329,6 +1345,8 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
         cm = (subjects.get(k) or {}).get("measured") or {}
         if cm.get("creature") and "eye_z" in cm:   # a creature's head from its own height and from over it (a rock
             zs |= {round(cm["eye_z"], 2), round(cm["eye_z"] + head_size(cm), 2)}   # before it, a man under it)
+    # the standpoints, aims and lenses to try, in the order they are tried ...
+    cells = []
     for x in xr:
         for y in yr:
             for z in sorted(zs):
@@ -1366,30 +1384,39 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     # first, every seated talk came out a head-on 28 mm wide with small faces, 11-14); a wide, a full
                     # or a move takes the widest
                     tight = kind in ("medium", "close") and not opts.get("points") and not opts.get("_lens")
-                    for f in (lens[::-1] if tight else lens):
-                        q = {"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim], "focal_mm": f}
-                        why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
-                                             opts=opts)
-                        pc = opts.get("prev_cam") if opts.get("points") else None
-                        sim_pen = 0.0
-                        ep = opts.get("end_place")
-                        if ep and ep.get("similar") and opts.get("mover") in subjects:
-                            # a seat like the end place nearer the mover in the frame than the end place, in view
-                            mm = subjects[opts["mover"]]["measured"]["pelvis_xy"]
-                            mq = framing.project(q, [mm[0], mm[1], 0.5], res)
-                            eq = framing.project(q, [ep["center"][0], ep["center"][1], 0.5], res)
-                            for sc_ in ep["similar"]:
-                                sq = framing.project(q, [sc_[0], sc_[1], 0.5], res)
-                                if mq and eq and sq and 0 < sq[0] < 1 and 0 < sq[1] < 1 and \
-                                        math.dist(mq, sq) < math.dist(mq, eq):
-                                    sim_pen += 3.0
-                        if not why:          # a move keeps the shot before's side of the room when it can
-                            out.append((math.dist(p, cam0["position"])
-                                        + (3.0 if pc and p[0] * pc[0] + p[1] * pc[1] < 0 else 0.0) + sim_pen
-                                        + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5)
-                                        + 10.0 * area_excess(q, subjects, res, {spk, lis, opts.get("subject")}, opts),
-                                        q, mode))
-                            break
+                    cells.append((p, mode, [{"position": [round(v, 3) for v in p], "target": [round(v, 3) for v in aim],
+                                             "focal_mm": f} for f in (lens[::-1] if tight else lens)]))
+    # ... the ones three plain rules of the frame surely refuse found for all of them at once (search_fast.py: a
+    # shot's search tried 26 000 to 50 000 cameras through framing_why one point at a time, 11-27) ...
+    refused = sure_refused([q for _, _, qs in cells for q in qs], kind, spk, lis, c.get("show"), subjects, res, opts)
+    n_q = 0
+    for p, mode, qs in cells:                # ... and the rest through every rule, the first lens that passes taken
+        at, n_q = n_q, n_q + len(qs)
+        for i_q, q in enumerate(qs):
+            if refused is not None and refused[at + i_q]:
+                continue
+            why, _ = framing_why(q, kind, spk, lis, mode == "ots", c.get("show"), subjects, res,
+                                 opts=opts)
+            pc = opts.get("prev_cam") if opts.get("points") else None
+            sim_pen = 0.0
+            ep = opts.get("end_place")
+            if ep and ep.get("similar") and opts.get("mover") in subjects:
+                # a seat like the end place nearer the mover in the frame than the end place, in view
+                mm = subjects[opts["mover"]]["measured"]["pelvis_xy"]
+                mq = framing.project(q, [mm[0], mm[1], 0.5], res)
+                eq = framing.project(q, [ep["center"][0], ep["center"][1], 0.5], res)
+                for sc_ in ep["similar"]:
+                    sq = framing.project(q, [sc_[0], sc_[1], 0.5], res)
+                    if mq and eq and sq and 0 < sq[0] < 1 and 0 < sq[1] < 1 and \
+                            math.dist(mq, sq) < math.dist(mq, eq):
+                        sim_pen += 3.0
+            if not why:          # a move keeps the shot before's side of the room when it can
+                out.append((math.dist(p, cam0["position"])
+                            + (3.0 if pc and p[0] * pc[0] + p[1] * pc[1] < 0 else 0.0) + sim_pen
+                            + (0.0 if mode == ("ots" if c.get("ots") else "two") else 0.5)
+                            + 10.0 * area_excess(q, subjects, res, {spk, lis, opts.get("subject")}, opts),
+                            q, mode))
+                break
     if not out and spk and lis and not opts.get("_single"):
         # no two-shot or over-the-shoulder passes (two people facing each other, one of them near): a clean single
         # of the speaker, the listener left to the cut
