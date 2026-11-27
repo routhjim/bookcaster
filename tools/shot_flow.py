@@ -228,7 +228,8 @@ them. The song's own recording is the whole sound of the film; nobody speaks.
 - Only {singer}'s singing is lip-synced. A "talk" shot is {singer} singing a line, the lips synced to the voice,
   framed as a talk shot above (the others around {singer} are the ones sung to). Give talk shots to the lines where
   seeing the singer matters most, never to every line: every other line plays over the other shots. A talk shot
-  starts when its line starts and runs to the line's end.
+  starts when its line starts and runs to the line's end. Two talk shots never run back to back (another shot is
+  between them), and the talk shots of a passage together take at most half of it.
 - A talk shot here ALSO gives "people" and "setting", as the other shots do: where {singer} is in that shot, in what
   posture, holding what, and who is with them. Across the song the talk shots differ from one another: {singer} in
   different spots of the place, with different people, in different framings; never the same picture twice running.
@@ -2188,6 +2189,31 @@ def _shot_faults(a: dict, cast: list, sec: float, lines: list, places=()) -> lis
     return out
 
 
+SONG_TALK_MOST = 0.5             # of a song's passage, the most its talk shots take together
+SONG_TALK_FROM = 8.0             # (a passage shorter than this may be one sung line, shown whole)
+
+
+def _song_faults(shots: list, sec: float) -> list:
+    """A music video's own rules on a passage's shots (SONG_RULES): two talk shots never back to back, and the talk
+    shots together at most SONG_TALK_MOST of the passage. (11-26: the rules said "never to every line" and no check
+    held them: six passages of a song came back as nothing but the singer's talk shots, the same people in the same
+    spots, and the film was one framing of the singer for two minutes.)"""
+    try:
+        st = [float(s.get("start")) for s in shots]
+    except (TypeError, ValueError):
+        return []                       # (_shot_faults says so)
+    talk = [s.get("kind") == "talk" for s in shots]
+    out = [f"shot {i + 1} is a talk shot right after another talk shot: in a music video two talk shots never run "
+           f"back to back. Make one of them a shot of the others there, or of what its line sings of"
+           for i in range(1, len(shots)) if talk[i] and talk[i - 1]]
+    sung = sum(b - a for a, b, t in zip(st, st[1:] + [sec], talk) if t)
+    if sec >= SONG_TALK_FROM and sung > SONG_TALK_MOST * sec + 0.5:
+        out.append(f"the talk shots take {sung:.1f} of the passage's {sec:.1f} s: at most half of it. Keep the talk "
+                   f"shots where seeing the singer matters most and show the others, the place and what the lines "
+                   f"sing of in the rest")
+    return out
+
+
 LAYOUT_ASK = ("In one or two plain sentences, say where each piece of furniture and each fixture of this room is in the "
               "picture: on the left, in the centre or on the right, and in the foreground or against the back wall. "
               "Furniture and fixtures only, no colours, no light.")
@@ -2541,7 +2567,8 @@ def direct(book: Path, stem: str, es: list, log=print, sheets: dict | None = Non
                         x["action"] = unname(str(x["action"]), cast, dress, x["who"])
             a["shots"] = [x for x in a["shots"] if isinstance(x, dict)]
             ends_ = boundary_runs(a["shots"], *edge)
-            faults = _shot_faults(a, cast, sec, quotes, RGB.places() + [home] + others) + _repeats(a, pics_before, pics_scene) + [
+            faults = _shot_faults(a, cast, sec, quotes, RGB.places() + [home] + others) + _repeats(a, pics_before, pics_scene) + (
+                _song_faults(a["shots"], sec) if song else []) + [
                 f"shot {i} is at {x.get('place')}: this scene is at {home}" + (f" and may cut to {', '.join(others)}"
                                                                                if others else "")
                 for i, x in enumerate(a["shots"], 1) if x.get("kind") != "talk" and scenes and i - 1 not in ends_ and
@@ -6260,8 +6287,18 @@ def lora_rank(book: Path, stem: str, es: list, names) -> dict:
     b = max((float(e["t"]) + float(e.get("dur") or 0) for e in es), default=float("inf"))
     tl = [x for x in load_timeline(book, stem) if x.get("kind") == "quote" and a <= float(x.get("t") or 0) < b] \
         if (book / "work" / f"{stem}.timeline.json").exists() else []
+    # (and the scenes of the stretch that list them, when the breakdown is made: in a song only the singer has
+    # lines, and one the scene has on stage all through, in none of the planner's moments, got no LoRA and so no
+    # figure: every shot they were placed in was staged without them, 11-26)
+    try:
+        scenes = json.loads((shot_dir(book, stem) / "scenes" / "breakdown.json").read_text()).get("scenes") or []
+    except (OSError, ValueError):
+        scenes = []
+    here = [sc for sc in scenes if isinstance(sc, dict) and es
+            and float(sc.get("start") or 0) < b and float(sc.get("end") or 0) > a]
     return {n: sum(any(n == w or R_.same(n, w) for w in (e.get("who") or [])) for e in es)
-            + sum(n == x.get("speaker") or R_.same(n, x.get("speaker")) for x in tl) for n in names}
+            + sum(n == x.get("speaker") or R_.same(n, x.get("speaker")) for x in tl)
+            + sum(any(n == w or R_.same(n, w) for w in (sc.get("who") or [])) for sc in here) for n in names}
 
 
 class _Loras:
