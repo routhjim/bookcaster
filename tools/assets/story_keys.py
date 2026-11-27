@@ -903,7 +903,9 @@ class Story:
                 log(f"{place}: no picture with {want} seat(s) in {CONCEPT_TRIES} tries")
                 return False
         con = json.loads((d / "concept.json").read_text())
-        if (con.get("space") == "outdoors" or spec.get("kind") == "outdoors") and \
+        # (11-26: not a made floor in the open, the concept's "ground": "built": it is built as a room is, from the
+        # picture it has, and no land round it is made from its picture)
+        if (con.get("space") == "outdoors" or spec.get("kind") == "outdoors") and con.get("ground") != "built" and \
                 (con.get("view") == "part" or con.get("cut") or str(spec.get("whole") or "").strip()):
             # (the picture of a place in the open was one door in a wall: the world made from it was bare land with
             # no building, and every key drew another background, 11-18)
@@ -941,6 +943,8 @@ class Story:
             else:
                 log(f"{place}: no picture of the whole place in {CONCEPT_TRIES} tries; the last one is kept")
         if (d / "concept.json").exists():
+            if json.loads((d / "concept.json").read_text()).get("ground") == "built":
+                log(f"{place}: in the open on a made floor: built as a room with no roof, its world round it")
             self.concept_depth(place)
         return (d / "concept.json").exists()
 

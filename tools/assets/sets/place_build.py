@@ -52,11 +52,17 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
     W, D, H = layout["size_m"]
     out = {"size_m": [W, D, H], "materials": kit["materials"], "exposure_ev100": kit.get("exposure_ev100", 5.0),
            "post": kit.get("post") or {}}
-    st = [dict(kit["floor"])]
+    # a made floor in the open (open_floor): the floor ends at its edge, the walls are that edge, as high as the spec
+    # says and bare, and nothing is overhead
+    edge = float(spec.get("_edge_m") or OPEN_EDGE_M) if spec.get("_open_top") else None
+    st = [dict(kit["floor"])] if edge is None else \
+        [dict(kit["floor"], extend_m=float(kit["wall"].get("thickness_m", 0.3)))]
     for w in ss["structure"]:
         if w.get("kind") == "wall":
             w2 = dict(kit["wall"], **{k: v for k, v in w.items() if k != "openings"})
             w2["material"] = kit["wall_material_ns"] if w["side"] in ("north", "south") else kit["wall_material_ew"]
+            if edge is not None:
+                w2 = dict({k: v for k, v in w2.items() if k not in SHELL_DRESSING}, height_m=edge)
             ops = []
             for o in w.get("openings") or []:
                 extra = kit["window"] if o["kind"] == "window_band" else kit["door"] if o["kind"] == "door" else {}
@@ -67,7 +73,9 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
             st.append(dict(w, material=kit.get("chimney_breast_material", kit["wall_material_ns"])))
         else:
             st.append(w)
-    if spec.get("_roof") == "rafters" and "panel_raised" in kit["materials"]:
+    if edge is not None:
+        pass                                  # (open to the sky: no ceiling, no roof)
+    elif spec.get("_roof") == "rafters" and "panel_raised" in kit["materials"]:
         # an open roof of timber (the concept shows beams overhead): rafters across the room's short side under a
         # ceiling of dark planks, instead of the period's plaster
         # a pitched timber roof on the walls' tops: a tie beam across the short side at each truss, two rafters up
@@ -115,7 +123,7 @@ def dress(ss: dict, layout: dict, spec: dict, kit: dict) -> dict:
                   "kelvin": NIGHT_KELVIN}
             wl.pop("color", None)
         lights.append(wl)
-    if kit["lights"].get("ceiling"):
+    if kit["lights"].get("ceiling") and edge is None:
         # a room lit from its ceiling (the period's own fitting): a grid over the floor, wider apart and stronger
         # the higher the ceiling (one fitting's light at the floor falls with the square of the height)
         cl = kit["lights"]["ceiling"]
@@ -217,6 +225,11 @@ def room_words(out: dict, lay: dict, kit: dict, recs: dict) -> tuple:
 
 
 WALL_MIN_M = 2.7                 # a measured room's walls are at least this high
+OPEN_EDGE_M = 1.1                # the wall round a made floor in the open (open_floor): its edge, about waist high
+OPEN_FLOOR_OVER_M = 0.3          # ... and the floor stands this far over the ground of the world round it
+OPEN_TOP_STAGE_M = 6.0           # ... and its stage is at least this high (the open stage's own: no ceiling stops a
+#                                  camera or a tall thing; the walls are OPEN_EDGE_M whatever this is)
+OPEN_HEAD_M = 0.3                # ... and this much higher than the tallest thing standing on it
 # a thing the picture shows on a wall, built and hung there: OFF. The first one made (a wall of hanging tools, as wide
 # as the picture) was set in the middle of the floor as a solid four metres across: nobody could be stood in the
 # room and no camera placed, and six of its eight stills were black (11-19). On again when a hung thing is put
@@ -277,7 +290,10 @@ def with_concept(spec: dict, concept: dict) -> dict:
                 p.update(source=twin["source"], look=twin.get("look") or p.get("look"))
     # what the picture shows that the spec does not have is built too (one of each kind the spec lacks)
     have = {p["kind"] for p in kept}
-    in_room_ = concept.get("space") == "room" and sp.get("kind") != "outdoors"
+    # (11-26: a place in the open whose ground is a made floor is a room in all of this: its picture's things each
+    # built, its floor measured, each thing where the picture has it. open_floor() then takes its roof off)
+    open_top = made_floor(concept)
+    in_room_ = open_top or (concept.get("space") == "room" and sp.get("kind") != "outdoors")
     # (a room's things by the reader's own name for them, where it names a kind: see seen_kind)
     seen_all = [dict(o, kind=seen_kind(o)) if in_room_ else o for o in concept.get("seen") or []]
     for i, sn in enumerate(seen_all):
@@ -323,7 +339,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
     ids = {p["id"] for p in kept}
     sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
     dp = concept.get("depth") or {}
-    if dp.get("room_m") and concept.get("space") == "room":
+    if dp.get("room_m") and (concept.get("space") == "room" or open_top):
         # the room as the concept picture shows it (img3d/concept_depth.py): its size, and each piece the picture
         # shows where it stands there, against the wall it stands against (11-17: the forge was laid out as a hall
         # 2.8 m wide, the hearth in the middle of the floor, from the kind's table and free spots)
@@ -346,7 +362,7 @@ def with_concept(spec: dict, concept: dict) -> dict:
                     # its own words at its own size, where the picture has it (a stone "the size of a sleeping dog",
                     # 0.8 m, was shaped from the picture's squared block 1.4 m long and a metre high, 11-19)
                     p.pop("source", None)
-        if sp.get("kind") != "outdoors":
+        if sp.get("kind") != "outdoors" or open_top:
             sp["pieces"], sp["_picture_left"], sp["_picture_merged"] = picture_pieces_settled(sp["pieces"], bases)
     if concept.get("space") == "room" and sp.get("kind") != "outdoors":
         # an opening the picture shows and the spec states none of is the room's (a hall drawn with tall windows down
@@ -384,9 +400,16 @@ def with_concept(spec: dict, concept: dict) -> dict:
             sp["outside"] = m.group(1).strip().rstrip(".")
         elif str(spec.get("outside") or "").strip():         # (else what the place spec says is seen outside it)
             sp["outside"] = str(spec["outside"]).strip().rstrip(".")
-    if concept.get("space") == "outdoors" or spec.get("kind") == "outdoors":
+    if open_top:
+        sp = open_floor(sp, spec, concept)
+    elif concept.get("space") == "outdoors" or spec.get("kind") == "outdoors":
         sp = outdoors(sp, spec, concept)
     sp["_concept"] = {k: concept.get(k) for k in ("concept", "space", "surfaces_words", "bare", "surfaces")}
+    if dp.get("faces") and open_top:
+        # (a made floor in the open: its floor as the picture shows it; its low edge walls and the sky take none)
+        # (laid in the floor as it is built: the stage over it is higher than the picture measured, open_floor)
+        sp["_concept"]["faces"] = [dict(f, room_m=sp.get("_room_m") or dp.get("room_m")) for f in dp["faces"]
+                                   if f.get("face") == "floor"]
     if dp.get("faces") and concept.get("space") == "room" and sp.get("kind") != "outdoors":
         # the room's own walls as its picture shows them (img3d/concept_depth.py room_faces), with the room's
         # size they were measured in
@@ -927,6 +950,62 @@ def outdoors(sp: dict, spec: dict, concept: dict) -> dict:
     return sp
 
 
+def made_floor(concept: dict) -> bool:
+    """A place in the open whose ground is itself built: a made floor with an edge round it, under the sky (the
+    concept reader's "ground": "built", scenes/concept.py GROUND_ASK)."""
+    return concept.get("space") == "outdoors" and concept.get("ground") == "built"
+
+
+def open_floor(sp: dict, spec: dict, concept: dict) -> dict:
+    """A place in the open whose ground is itself built (made_floor) is built as a room with no roof, not as open
+    land: people stand on a flat floor of the picture's floor, a low wall of the picture's sides stands round its
+    edge (OPEN_EDGE_M: seen over, never a room's wall), nothing is overhead, and the picture's things stand on it
+    where the picture has them, each made as a room's things are (with_concept). Round it and over it lies the
+    place's world, as round a place on open land (pieces "terrain", made_as "world"): the far land and the sky,
+    drawn from words alone; the set is lit by it (open_floor_stage).
+
+    (11-26: built as open land, such a place was sandy ground with every built thing of its picture, its floor and
+    its edge too, shaped as one piece ten metres wide: a smear of spikes, and no floor to stand on.)
+
+    The spec keeps the kind "outdoors" (no door or window of a room kind's own, none of its dressing) with the
+    marks "_open_top" and "_edge_m"; "_room_m" is the floor as the picture measures it, its height the stage's (how
+    high a camera may stand), not the walls'."""
+    sp = dict(sp, kind="outdoors", openings=[], outside="", _open_top=True, _edge_m=OPEN_EDGE_M)
+    for k in ("_views", "_roof"):            # (no view through a window, no roof on timbers)
+        sp.pop(k, None)
+    if sp.get("_room_m"):                    # (measured as a room: WALL_MIN_M; open to the sky, the stage's height)
+        sp["_room_m"] = [sp["_room_m"][0], sp["_room_m"][1], max(float(sp["_room_m"][2]), OPEN_TOP_STAGE_M)]
+    pcs = [p for p in sp.get("pieces") or [] if p.get("kind") != "terrain"]
+    ids = {p["id"] for p in pcs}
+    land = re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or spec.get("room") or ""),
+                  flags=re.I).strip().rstrip(".")
+    per = str(spec.get("period") or "").replace("_", " ")
+    land = f"{per}: {land}".strip(": ") if per != "not stated" else land
+    sf = concept.get("surfaces") or {}
+    said = "; ".join(f"{k}: {str(v).strip().rstrip('.')}" for k, v in (("the floor", sf.get("floor")),
+                                                                         ("the low wall round its edge", sf.get("walls")),
+                                                                         ("overhead", sf.get("ceiling")),
+                                                                         ("the light", concept.get("light"))) if v)
+    # the world round the floor is what the picture shows far off and overhead, in words alone (drawn from the
+    # picture, a panorama had the place's own built things in it again, close by: outdoors()); the floor is no part
+    # of it, and no ground map is drawn: nobody is sent out onto that ground
+    far = str(concept.get("far") or "").strip().rstrip(".")
+    tech = technique(str(spec.get("_style") or ""))
+    far_look = "; ".join(x for x in (
+        f"{per}: {far}".strip(": ") if per != "not stated" else far,
+        f"overhead: {str(sf['ceiling']).strip().rstrip('.')}" if sf.get("ceiling") else "",
+        f"painted as a {tech}" if tech else "") if x) if far else ""
+    pcs.append({"id": "t1", "kind": "terrain", "against": "free", "phrases": [],
+                "look": far_look or "; ".join(x for x in (land, said, str(spec.get("_style") or "")) if x),
+                "land_words": land, "surface_words": said,
+                **({"source": concept["concept"]} if concept.get("concept") and not far_look else {})})
+    sp["pieces"] = pcs
+    sp["relations"] = [r for r in sp.get("relations") or [] if r.get("a") in ids and r.get("b") in ids]
+    # (a phrase that lands on no piece of the floor, a door of the spec's among them, is the open floor)
+    sp["named_places"] = {ph: (v if v in ids else "floor") for ph, v in (sp.get("named_places") or {}).items()}
+    return sp
+
+
 VIEW_SIZE_M = (48.0, 24.0)       # a view's picture: wide enough to fill a canopy from the seats
 VIEW_AHEAD_M = 12.0              # how far beyond the cabin it stands
 VIEW_EMIT = 30.0                 # the picture's own light
@@ -1419,6 +1498,25 @@ def world_stage(out: dict, spec: dict, library) -> dict:
     return {"world": aid, "why": "placed", "land": land_said}
 
 
+def open_floor_stage(out: dict, spec: dict, library) -> dict:
+    """A made floor in the open (open_floor) on its stage: the room's own structure kept (the floor, the low walls
+    round its edge), the place's world set round it as round a place on open land (world_stage: the sky and the far
+    land, their sky light and the key from where the sky is brightest, the time of day, the redraw's words), its
+    ground OPEN_FLOOR_OVER_M under the floor; the lamps and fires of the floor's own pieces burn on. The set's
+    "open_top" says what it is: its cameras stay on the floor (scenes/speakers.py open_ground) and its floor is
+    still called a floor (redraw/redraw.py). -> what was done, for the report."""
+    structure = out.get("structure") or []
+    own = [l for l in out.get("lights") or [] if l.get("type") not in ("sky", "sun")]
+    done = world_stage(out, spec, library)
+    out["structure"] = structure
+    out["open_top"] = True
+    if done.get("world"):
+        fx = next(f for f in out["fixtures"] if f.get("world"))
+        fx["position"] = [fx["position"][0], fx["position"][1], round(fx["position"][2] - OPEN_FLOOR_OVER_M, 3)]
+        out["lights"] = list(out["lights"]) + own
+    return done
+
+
 def land_marks(spec: dict, world: dict, half: float = 0.0) -> tuple:
     """The parts of the land the plan sends people to (the director's land_places, named_places "floor") that the
     vision judge found on the place's ground map (img3d/pano_shell.py "places_m", set frame): each a place on the
@@ -1561,11 +1659,13 @@ HANG_CLEAR_M = 0.9               # a hung thing with no opening named for it kee
 HANG_OVER_M = 0.1                # over an opening: this far above its head
 
 
-def hang(lay: dict, hung: list, rec: dict) -> None:
+def hang(lay: dict, hung: list, rec: dict, top: float | None = None) -> None:
     """The hung pieces put on their walls, into the layout's pieces: over the opening they are against (above its
     head), else on the first stretch of wall clear of the openings and of the pieces standing against it; the back
-    on the wall, the front into the room, the lowest point "hangs_m" above the floor."""
+    on the wall, the front into the room, the lowest point "hangs_m" above the floor. top: the walls' own height
+    where they are lower than the room (a made floor's edge, open_floor): nothing hangs above them in the air."""
     W, D, H = lay["size_m"]
+    H = min(H, top) if top else H
     ops = {o["id"]: o for o in lay.get("openings") or []}
     for p in hung:
         r = rec.get(p["id"])
@@ -1641,8 +1741,18 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     # the spec gave it, no place of its own; laid under what it carries once the room is solved
     spec, bases = L.take_bases(spec)
     rec, res = records_for(spec, library)
-    spec0, world = spec, spec.get("kind") == "outdoors"
+    # (a made floor in the open, open_floor: laid out and built as a room, its world round it)
+    open_top = bool(spec.get("_open_top"))
+    spec0, world = spec, spec.get("kind") == "outdoors" and not open_top
     marks = world_marks(spec, library) if world else {}
+    if open_top:                              # (its world is not laid out: it lies round the floor)
+        spec = dict(spec, pieces=[p for p in spec.get("pieces") or [] if p.get("kind") != "terrain"])
+        # (nothing is overhead: a thing taller than the stage, a post or a tower on the floor, is no fault of the
+        # set's, sets/layout.py check "taller than the room")
+        tall = max([float(rec[p["id"]]["size_m"][2]) for p in spec["pieces"] if p["id"] in rec] + [0.0])
+        rm = spec.get("_room_m")
+        if rm and tall + OPEN_HEAD_M > float(rm[2]):
+            spec = dict(spec, _room_m=[rm[0], rm[1], round(tall + OPEN_HEAD_M, 2)])
     if world:                                 # (the place's world is not laid out: it holds the whole stage)
         # ... nor is a landmark the world itself shows (world_marks): it is a place on the ground there
         spec = dict(spec, pieces=[p for p in spec.get("pieces") or [] if p.get("kind") != "terrain" and p["id"] not in marks],
@@ -1668,7 +1778,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                    if not {r.get("a"), r.get("b"), r.get("c")} & {p["id"] for p in hung}],
         named_places={ph: v for ph, v in (spec.get("named_places") or {}).items() if v not in {p["id"] for p in hung}})
     lay = L.solve_recover(floor_spec, rec, data)    # solve, then the ladder (never drops a piece the plan names)
-    hang(lay, hung, rec)
+    hang(lay, hung, rec, float(spec.get("_edge_m") or OPEN_EDGE_M) if open_top else None)
     lay["bases"] = L.lay_bases(lay, bases)
     ss = L.to_set_spec(spec, lay, data)
     kit = kit_for(spec.get("period"))
@@ -1680,6 +1790,13 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
         if spec.get("_crowd_size") == "many":
             out["crowd_size"] = "many"
     bare = (spec.get("_concept") or {}).get("bare") or {}       # the place's own walls and floor: the concept's
+    if open_top and not (bare.get("walls") or {}).get("colour"):
+        # (the edge of a made floor whose picture shows no stretch of it: of the floor's own material, never the
+        # period's wall of a room)
+        fm = next((w.get("material") for w in out["structure"] if w.get("kind") == "floor"), None)
+        for w in out["structure"]:
+            if w.get("kind") == "wall" and fm:
+                w["material"] = fm
     if bare and out.get("structure"):
         mats = json.loads(json.dumps(out["materials"]))
         if bare.get("walls"):
@@ -1708,7 +1825,9 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
     if (spec.get("_concept") or {}).get("surfaces_words"):       # the place's own surfaces, as its concept shows them
         out["surfaces_words"] = spec["_concept"]["surfaces_words"]
         out["concept"] = spec["_concept"]["concept"]
-    if not world:                             # (a place in the open has no walls to face: a ring of wall panels
+    if open_top:                              # (a made floor in the open: its floor's own picture, no wall's)
+        wall_pictures(out, spec, library, lay)
+    elif not world:                           # (a place in the open has no walls to face: a ring of wall panels
         wall_faces(out, lay, spec, library)   # stood round the forge yard's stage, 11-18)
     cabin_stage(out, spec, library)
     based = base_boxes(out, lay)
@@ -1717,7 +1836,7 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                and not q.get("flat") and L.overlap(q["rect"], b["rect"])]
         if on_:
             next(d for d in based if d["id"] == b["id"])["stands_on_it"] = on_
-    staged = world_stage(out, spec0, library) if world else None
+    staged = world_stage(out, spec0, library) if world else open_floor_stage(out, spec0, library) if open_top else None
     lit = room_light(out, spec)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]

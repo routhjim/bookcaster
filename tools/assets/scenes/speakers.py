@@ -1596,6 +1596,11 @@ def open_ground(set_spec: dict, library: Path) -> list:
     fx = next((f for f in set_spec.get("fixtures") or [] if f.get("world")), None)
     if not (w.get("flat_r_m") and fx):
         return []
+    if set_spec.get("open_top"):
+        # (11-26: a made floor in the open, sets/place_build.py open_floor: its world lies round the floor and under
+        # it, and a camera out on that ground would look up at the people over the floor's edge. As a room's, its
+        # cameras stay on the floor)
+        return []
     try:
         st = (json.loads((library / "prop" / fx["asset"] / "asset.json").read_text()).get("world") or {}).get("stand_m")
     except (OSError, ValueError):

@@ -1042,7 +1042,10 @@ def main():
         run.setdefault("crowd", ssp.get("crowd") or "")
         run.setdefault("crowd_size", ssp.get("crowd_size") or "")
         run.setdefault("outdoors", bool(ssp.get("world")))
-    if run.get("outdoors"):
+        # (11-26: a made floor in the open, sets/place_build.py open_floor: out of doors, and its floor is a floor.
+        # Its set's own words say what is underfoot and overhead)
+        run.setdefault("made_floor", bool(ssp.get("open_top")))
+    if run.get("outdoors") and not run.get("made_floor"):
         run["room_surfaces"] = open_air_words(run.get("room_surfaces") or "")
     out = Path(run["out"])
     out.mkdir(parents=True, exist_ok=True)

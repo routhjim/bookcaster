@@ -1017,7 +1017,10 @@ def main():
     res = room_from(pts, mask, intr, bx, {k: v["size_m"] for k, v in kinds.items()}, fr)
     # the land's own form of a place in the open (scenes/concept.py: a piece of the land itself), made from the
     # picture's depth where it stands
-    lf = land_form_key(concept) if concept.get("space") == "outdoors" else None
+    # (11-26: a place in the open whose ground is a made floor, scenes/concept.py "ground": "built", is measured as
+    # a room is: its floor's size and each thing's place on it; no land is shaped from its picture)
+    open_land = concept.get("space") == "outdoors" and concept.get("ground") != "built"
+    lf = land_form_key(concept) if open_land else None
     lf_reg, lf_done = {}, None
     if lf and lf in res["things"] and fr:
         k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
@@ -1033,7 +1036,7 @@ def main():
             lf_done = lf
         else:
             lf_reg = {}
-    if concept.get("space") == "outdoors" and fr:
+    if open_land and fr:
         # all the land the picture shows, for every place in the open: its scenery, standing where the picture has it
         k_, off = fr["scale"], np.array([fr["cx"], fr["cy"], 0.0])
         try:
@@ -1047,7 +1050,7 @@ def main():
             ld = write_relief(out_p.with_name(out_p.stem.replace("_depth", "") + "_land.glb"), *got[:3], got[3])
             # (its lowest point, the back of its ground, is under the set's ground by under_m)
             res["land"] = dict(ld, has=got[4], under_m=round(-ld["z0"], 4), tops=tops_of(got[0], got[2]))
-    if concept.get("space") != "outdoors" and fr:
+    if not open_land and fr:
         # the picture on the room's own walls, floor and roof, where it sees them (room_faces)
         res["faces"] = write_faces(out_p, room_faces(pts, mask, intr, image, fr))
     # how wide the picture sees (degrees): a place in the open's panorama is made from the picture, and the land
