@@ -522,3 +522,26 @@ def test_someone_turned_to_another_on_such_a_stage_stays_open_to_its_cameras(mon
     monkeypatch.setattr(S, "PICTURE_SIDE", {})
     S.aim_bodies(spec)
     assert spec["characters"]["a"]["facing"] == [1.0, 0.0]
+
+
+def test_a_wide_on_several_named_people_takes_one_of_them_a_little_nearer_than_its_lead():
+    """The named of a full or wide shot stand at sizes of one picture; in every other shot the lead's head leads."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import staging_synth as SY
+    import speakers as S
+    S.SOLIDS[:] = []
+    subj = {"a": SY.person([0.0, 3.0]), "b": SY.person([1.2, 2.5]), "c": SY.person([-1.2, 3.2])}
+    cam = SY.cam([0.0, -1.5, 1.6], [0.0, 3.0, 1.5], 24)
+
+    def why(kind, show, speaker=None):
+        return S.framing_why(cam, kind, speaker, None, False, show, subj, [1152, 640],
+                             opts={"line_subject": "a", "subject": "a", "listed": show})[0]
+    ha, hb = (S.head_h(cam, subj[k]["measured"], [1152, 640]) for k in "ab")
+    assert 1.02 * ha < hb < S.FULL_LEAD_K * ha                       # (b a little nearer the camera than a)
+    assert not [w for w in why("full", ["a", "b", "c"]) if "is bigger than" in w]
+    assert not [w for w in why("wide", ["a", "b", "c"]) if "is bigger than" in w]
+    assert [w for w in why("medium", ["a", "b", "c"]) if w.startswith("b's head")]       # (not a wide: as before)
+    assert [w for w in why("full", ["a", "c"]) if w.startswith("b's head")]              # (b is not named for it)
+    assert [w for w in why("full", ["a", "b", "c"], speaker="a") if w.startswith("b's head")]   # (a line: as before)
+    subj["b"] = SY.person([0.6, 0.4])                                # (b far nearer: no picture of the group)
+    assert [w for w in why("full", ["a", "b", "c"]) if w.startswith("b's head")]
