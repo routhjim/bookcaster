@@ -21,11 +21,16 @@ import config as C  # noqa: E402
 WORK = Path(os.environ.get("IMG3D_WORK", str(C.UE_HOME / "lab" / "img3d_props")))
 
 
+RELIEF_EMIT = 30.0           # a picture's land that gives the picture's own light gives it as the world does
+#                             (shell_one.py WORLD_EMIT): the two are one picture and stand side by side
+
+
 def spec_for(spec0: dict, glb: Path) -> dict:
     keep = {k: spec0[k] for k in ("class", "description", "tags", "placement", "cameras", "camera_preset", "piece_kind",
                                   "look") if k in spec0}
     return dict(keep, id=f"{spec0['id']}_tr", source="generated", keep_uvs=True, source_glb=str(glb), tier="hero",
                 size_m=spec0["size_m"], height_m=spec0["size_m"][2], size_tolerance=0.05, yaw_deg=0, bump_m=0,
+                **({"emit_texture": RELIEF_EMIT} if spec0.get("own_light") else {}),
                 tags=list(keep.get("tags", [])) + ["img3d", "picture_relief"], replaces=spec0["id"],
                 licence="internal: the place's picture drawn by the local image model; depth by MoGe-2 (MIT)")
 

@@ -459,9 +459,11 @@ def generation_request(piece, K=None, python="python", tools=None, work=None):
         # As tall as the set has it, its other sides as the shape's own
         g = [float(v) for v in rl["size_m"]]
         k = float(seen[2]) / g[2] if seen and len(seen) == 3 and g[2] > 0 else 1.0
-        aid = _asset_id(kind, f"{look} relief {hashlib.sha1(Path(str(rl['glb'])).read_bytes()).hexdigest()[:10]} {k:.3f}")
+        own = bool(rl.get("own_light"))          # (its picture's light is its own: another asset than the lit one)
+        aid = _asset_id(kind, f"{look} relief {hashlib.sha1(Path(str(rl['glb'])).read_bytes()).hexdigest()[:10]} {k:.3f}"
+                        + (" own light" if own else ""))
         spec.update(id=aid, made_as="relief", relief_glb=str(rl["glb"]), size_m=[round(v * k, 3) for v in g],
-                    size_tolerance=0.05, tier="hero")
+                    size_tolerance=0.05, tier="hero", **({"own_light": True} if own else {}))
         for key in ("longest_m", "shape_res", "yaw_deg"):
             spec.pop(key, None)
         steps = [

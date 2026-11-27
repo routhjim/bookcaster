@@ -1062,7 +1062,11 @@ def stage_pieces(pcs: list, concept: dict, land: str, said: str, tech: str) -> t
     view = {"eye_at": [round(eye[0], 2), round(eye[1], 2)],
             "eye_h": round(min(VIEW_EYE_M[1], max(VIEW_EYE_M[0], eye[2])), 2), "front_deg": STAGE_FRONT_DEG}
     scenery = {"id": LAND_ID, "kind": "terrain", "against": "free", "phrases": [], "scenery": True,
-               "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"]},
+               # (the picture is drawn with its own light, its lamps and lit windows: its land gives that light as
+               # the world round it does, places/pieces.py "own_light". Lit only by the set's lights at night, a
+               # stage's wide pictures showed under a quarter of the frame over near black, 11-27)
+               "look": "the land of the place's picture", "relief": {"glb": ld["glb"], "size_m": ld["size_m"],
+                                                                     "own_light": True},
                "at_xy": [round(float(ld["xy"][0]), 3), round(float(ld["xy"][1]), 3)],
                "under_m": round(float(ld.get("under_m") or 0.0), 4),
                "_seen_size_m": [round(float(v), 3) for v in ld["size_m"]],
