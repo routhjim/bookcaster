@@ -919,6 +919,9 @@ def aim_bodies(spec):
                 n = [-n[0], -n[1]]
             a_ = math.radians(CHEAT_DEG)
             d = unit2([d[0] * math.cos(a_) + n[0] * math.sin(a_), d[1] * math.cos(a_) + n[1] * math.sin(a_)])
+        elif PICTURE_SIDE and not (c.get("creature") or ch[t].get("creature")):
+            # (a place built from one picture: turned to someone, they stay open to the side its cameras stand on)
+            d = framing.turned_toward(d, [-PICTURE_SIDE["dir"][0], -PICTURE_SIDE["dir"][1]], CHEAT_DEG)
         if math.degrees(math.acos(max(-1.0, min(1.0, d[0] * unit2(c["facing"])[0] + d[1] * unit2(c["facing"])[1])))) > 2:
             c["facing"] = [round(d[0], 4), round(d[1], 4)]
             out.append(k)

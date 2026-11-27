@@ -493,3 +493,32 @@ def test_two_who_face_each_other_on_such_a_stage_open_to_its_cameras(monkeypatch
                                "b": {"position": [xb, 1.0], "facing": [1.0, 0.0], "facing_to": "a"}}}
         S.aim_bodies(spec)
         assert all(c["facing"][1] < -0.3 for c in spec["characters"].values()), spec   # (toward the cameras' side)
+
+
+def test_someone_turned_to_another_on_such_a_stage_stays_open_to_its_cameras(monkeypatch):
+    """Across the stage from each other they would stand in profile to every camera of its side: each is turned
+    part of the way toward the cameras. Seated people, creatures, rooms: as they were."""
+    FP = _fp()
+    import framing as F
+    import speakers as S
+    assert F.turned_toward([1.0, 0.0], [0.0, -1.0], 30.0) == [round(math.cos(math.radians(-30)), 4), -0.5]
+    assert F.turned_toward([0.0, -2.0], [0.0, -1.0], 30.0) == [0.0, -1.0]            # (never past it)
+    assert F.turned_toward([0.1736, -0.9848], [0.0, -1.0], 30.0) == [0.0, -1.0]
+    monkeypatch.setattr(FP, "STAGE_DIR", [0.0, 1.0])
+    for f in ([1.0, 0.0], [-1.0, 0.0], [0.6, 0.8]):
+        g = FP.stage_open(f, True)
+        assert g[1] < f[1] - 0.3 and abs(math.hypot(*g) - 1) < 1e-3, (f, g)
+        assert FP.stage_open(f, False) == f                                           # (seated: the seat's way)
+    monkeypatch.setattr(FP, "STAGE_DIR", [])
+    assert FP.stage_open([1.0, 0.0], True) == [1.0, 0.0]                                # (a room)
+    # the engine's own turn (bodies re-aimed from where they now stand): one turned to another who looks elsewhere
+    spec = {"characters": {"a": {"position": [-1.0, 1.0], "facing": [0.0, 1.0], "facing_to": "b"},
+                           "b": {"position": [1.0, 1.0], "facing": [0.0, -1.0]}}}
+    monkeypatch.setattr(S, "PICTURE_SIDE", {"dir": [0.0, 1.0]})
+    S.aim_bodies(spec)
+    assert spec["characters"]["a"]["facing"] == [0.866, -0.5] and spec["characters"]["b"]["facing"] == [0.0, -1.0]
+    S.aim_bodies(spec)                                                              # (asked again: the same)
+    assert spec["characters"]["a"]["facing"] == [0.866, -0.5]
+    monkeypatch.setattr(S, "PICTURE_SIDE", {})
+    S.aim_bodies(spec)
+    assert spec["characters"]["a"]["facing"] == [1.0, 0.0]

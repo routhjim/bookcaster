@@ -170,6 +170,14 @@ def key_toward(cam_pos, eye, sun_toward, side_deg=KEY_SIDE_DEG, el_deg=KEY_EL_DE
     return [round(math.cos(a) * math.cos(e), 5), round(math.sin(a) * math.cos(e), 5), round(math.sin(e), 5)]
 
 
+def turned_toward(f, to, deg):
+    """The plan direction f turned toward the direction `to` by deg, never past it (both any length; -> unit)."""
+    a, b = math.atan2(f[1], f[0]), math.atan2(to[1], to[0])
+    off = (b - a + math.pi) % (2 * math.pi) - math.pi
+    a += math.copysign(min(abs(off), math.radians(deg)), off)
+    return [round(math.cos(a), 4), round(math.sin(a), 4)]
+
+
 _BASIS: dict = {}             # a camera's view axes by its place and aim (project): the search for one camera
 #                               projects some hundred thousand points through each of a few thousand cameras
 
