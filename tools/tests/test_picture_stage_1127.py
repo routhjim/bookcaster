@@ -10,6 +10,7 @@ people and the cameras. A made floor measured before this, rooms and open land a
 Made-up data only."""
 import inspect
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -434,3 +435,61 @@ def test_a_picture_stage_carries_nothing_past_its_pictures_edges():
     assert 1.0 < CD.STAGE_BACK_K < CD.LAND_BACK_K
     assert "if carry:" in inspect.getsource(CD.land)
     assert inspect.signature(CD.land).parameters["carry"].default is True      # open land: as before
+
+
+# ------------------------------------------------------------------ people stand across a stage of one picture
+def _fp():
+    import from_plan as FP
+    return FP
+
+
+def test_a_group_on_a_stage_of_one_picture_stands_across_it(monkeypatch):
+    """Every camera of such a place looks one way: nobody is stood before or behind another of their group."""
+    FP = _fp()
+    room = [12.0, 12.0, 3.0]
+    monkeypatch.setattr(FP, "STAGE_DIR", [0.0, 1.0])
+    placed = [[0.0, 0.0]]
+    for _ in range(3):
+        m = FP.free_mark([0.0, 0.0], placed, [], room, (0.5, 0.9), walls=False)
+        assert FP.across(m, placed), (m, placed)
+        placed.append(m)
+    for i, p in enumerate(placed):
+        for q in placed[i + 1:]:
+            ang = math.degrees(math.atan2(abs(q[0] - p[0]), abs(q[1] - p[1])))
+            assert ang >= 90 - FP.STAGE_ACROSS_DEG - 1e-6 or math.dist(p, q) > FP.STAGE_GROUP_M
+    marks = FP.free_marks([0.0, 0.0], [[0.0, 0.0]], [], room, (0.6, 1.6))
+    assert marks and all(FP.across(m, [[0.0, 0.0]]) for m in marks)
+
+
+def test_a_room_and_a_true_panorama_place_people_as_before(monkeypatch):
+    FP = _fp()
+    room = [12.0, 12.0, 3.0]
+    assert FP.stage_dir({}) == [] and FP.stage_dir({"picture_dir": [0, 1], "all_round": True}) == []
+    assert FP.stage_dir({"picture_dir": [0.0, 2.0]}) == [0.0, 1.0]
+    monkeypatch.setattr(FP, "STAGE_DIR", [])
+    was = FP.free_mark([0.0, 0.0], [[0.0, 0.0]], [], room, (0.5, 0.9))
+    assert FP.across([0.0, -1.2], [[0.0, 0.0]])
+    monkeypatch.setattr(FP, "STAGE_DIR", [0.0, 1.0])
+    assert not FP.across([0.0, -1.2], [[0.0, 0.0]]) and FP.across([1.2, 0.0], [[0.0, 0.0]])
+    assert FP.across([0.0, -1.2], [[0.0, 0.0, 3.0]])           # (a creature's reach is its own rule)
+    assert FP.across([0.0, -6.0], [[0.0, 0.0]])                # (not of one group)
+    assert was and len(was) == 2
+
+
+def test_a_stage_with_no_free_mark_across_it_still_places_the_person(monkeypatch):
+    """Never no place: where a wall of things leaves only marks before or behind, one of those."""
+    FP = _fp()
+    monkeypatch.setattr(FP, "STAGE_DIR", [0.0, 1.0])
+    wall = [{"kind": "fixture", "name": f"w{s}", "center": [s * 2.6, 0.0, 1.0], "half": [1.6, 6.0, 1.0]} for s in (-1, 1)]
+    m = FP.free_mark([0.0, 0.0], [[0.0, 0.0]], wall, [12.0, 12.0, 3.0], (0.5, 0.9))
+    assert m and abs(m[0]) < 0.8 and math.dist(m, [0.0, 0.0]) >= FP.PERSON_GAP_M - 1e-6
+
+
+def test_two_who_face_each_other_on_such_a_stage_open_to_its_cameras(monkeypatch):
+    import speakers as S
+    monkeypatch.setattr(S, "PICTURE_SIDE", {"dir": [0.0, 1.0]})
+    for xa, xb in ((-0.6, 0.6), (0.6, -0.6), (2.0, 3.2), (-3.2, -2.0)):
+        spec = {"characters": {"a": {"position": [xa, 1.0], "facing": [1.0, 0.0], "facing_to": "b"},
+                               "b": {"position": [xb, 1.0], "facing": [1.0, 0.0], "facing_to": "a"}}}
+        S.aim_bodies(spec)
+        assert all(c["facing"][1] < -0.3 for c in spec["characters"].values()), spec   # (toward the cameras' side)
