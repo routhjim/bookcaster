@@ -217,6 +217,18 @@ def test_the_world_and_the_land_are_asked_for_from_the_picture(tmp_path):
     rl = P.generation_request(ld)
     assert next(s for s in rl["plan"]["steps"] if s["step"] == "spec")["spec"]["made_as"] == "relief"
     assert rl["size_m"] == [30.0, 40.0, 9.0]
+    # the picture's land gives the picture's own light, as its world does: another asset than the lit land
+    sp = next(s for s in rl["plan"]["steps"] if s["step"] == "spec")["spec"]
+    assert sp["own_light"] is True
+    lit = P.generation_request(dict(ld, relief={k: v for k, v in ld["relief"].items() if k != "own_light"}))
+    assert lit["asset_id"] != rl["asset_id"]
+    assert "own_light" not in next(s for s in lit["plan"]["steps"] if s["step"] == "spec")["spec"]
+    import importlib.util
+    m = importlib.util.spec_from_file_location("relief_one", Path(P.__file__).parents[1] / "img3d" / "relief_one.py")
+    R1 = importlib.util.module_from_spec(m)
+    m.loader.exec_module(R1)
+    assert R1.spec_for(dict(sp, id="x"), Path("x.glb"))["emit_texture"] == R1.RELIEF_EMIT
+    assert "emit_texture" not in R1.spec_for({"id": "x", "size_m": [1, 1, 1]}, Path("x.glb"))
 
 
 def test_a_world_with_no_ground_of_its_own_builds_none():
