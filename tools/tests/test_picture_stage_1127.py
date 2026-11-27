@@ -426,3 +426,11 @@ def test_a_standing_face_seen_end_on_is_no_face_of_the_land():
     assert not CD._end_on(facing, eye).any()
     assert CD._end_on(away, eye).all()
     assert not CD._end_on(ground, eye).any()
+
+
+def test_a_picture_stage_carries_nothing_past_its_pictures_edges():
+    src = inspect.getsource(CD.stage_land)
+    assert "carry=False" in src and "back_k=STAGE_BACK_K" in src
+    assert 1.0 < CD.STAGE_BACK_K < CD.LAND_BACK_K
+    assert "if carry:" in inspect.getsource(CD.land)
+    assert inspect.signature(CD.land).parameters["carry"].default is True      # open land: as before
