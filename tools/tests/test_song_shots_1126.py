@@ -117,3 +117,31 @@ def test_a_place_only_drawn_takes_its_manner_from_the_nearest_built_places_key()
     assert "Nothing shown in that picture is taken over" in SK.DRAWN_MANNER
     assert src.index("self.draw_all(places, after, redo)") < src.index("for place in late:")    # (after the keys)
     assert '"drawn" in redo or "spec" in redo' in src                 # (a rebuild draws such a place again)
+
+
+def test_two_people_whose_names_begin_alike_have_each_their_own_engine_figure():
+    """11-27: ids cut to their first ten letters and last two gave two people of one book ONE engine name; the
+    second was built over the first. A figure's own name carries the whole id; a figure built before keeps the
+    name its record has; two base figures on one name are found, their seated figures left out."""
+    sys.path.insert(0, str(ROOT / "tools" / "assets" / "img3d"))
+    import cast_char as CC
+    a, b = "man_bk_the_harper_auto_01", "man_bk_the_hatter_auto_01"
+    assert CC.own_tag(a) != CC.own_tag(b) and len(CC.own_tag(a)) == 12 == len(CC.own_tag(b))
+    assert CC.own_tag(a).isalnum() and CC.own_tag(a).endswith("01") and CC.own_tag(a) == CC.own_tag(a)
+    assert CC.own_tag("man_bk_the_harper_auto_04") != CC.own_tag(a)
+    assert CC.own_tag("orla_01") == "ORLA01"
+    with tempfile.TemporaryDirectory() as td:
+        lib = Path(td)
+
+        def rec(fid, mh, **kw):
+            (lib / "character" / fid).mkdir(parents=True)
+            (lib / "character" / fid / "character.json").write_text(json.dumps(dict(kw, id=fid, rebuild_from=f"/Game/Char/{mh}")))
+        assert CC.asset_tag(a, lib) == CC.own_tag(a)                       # (never built: its own)
+        rec(a, "MHC_AUTO_MANBKTHEHA01"); rec(b, "MHC_AUTO_MANBKTHEHA01")
+        rec(a + "_seated_armchair", "MHC_AUTO_MANBKTHEHA01"); rec("girl_bk_wren_auto_01", "MHC_AUTO_GIRLBKWREN01")
+        assert CC.asset_tag(a, lib) == "MANBKTHEHA01"                       # (built before: the record's)
+        assert CC.asset_tag(a, lib, own=True) == CC.own_tag(a)
+        assert CC.shared_assets(lib, [a, b, "girl_bk_wren_auto_01"]) == {a: b, b: a}
+        assert CC.shared_assets(lib, ["girl_bk_wren_auto_01", a + "_seated_armchair"]) == {}
+    src = Path(SK.__file__).read_text()
+    assert '"--own-assets", "--from", "choose"' in src and "CC.shared_assets(" in src

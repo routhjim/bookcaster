@@ -74,14 +74,13 @@ class Names(unittest.TestCase):
     """Asset names made from the character's id and from a seat's name."""
 
     def tag(self, cid):
-        ns = {"a": types.SimpleNamespace(id=cid)}
-        for n in ast.walk(CAST_TREE):
-            if isinstance(n, ast.Assign) and len(n.targets) == 1 and getattr(n.targets[0], "id", None) == "tag":
-                seg = ast.get_source_segment(CAST_SRC, n)
-                if "a.id" in seg or "tag[" in seg:
-                    exec(seg, ns)
-        self.assertIn("tag", ns, "the id's tag is no longer made by assignments to 'tag'")
-        return ns["tag"]
+        sys.path.insert(0, str(Path(CAST_PATH).parent)) if "CAST_PATH" in globals() else None
+        ns = {}
+        for n in CAST_TREE.body:              # (the id's tag is own_tag(): the function alone, no figure built)
+            if isinstance(n, ast.FunctionDef) and n.name == "own_tag":
+                exec(ast.get_source_segment(CAST_SRC, n), ns)
+        self.assertIn("own_tag", ns, "the id's tag is no longer made by own_tag()")
+        return ns["own_tag"](cid)
 
     def test_tag_is_short_and_plain(self):
         t = self.tag("man_long_named_outfit_auto_01")
