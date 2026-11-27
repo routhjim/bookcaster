@@ -464,16 +464,24 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
         subj = json.loads((sd / "result.json").read_text()).get("subjects") or {}
     except (OSError, ValueError):
         subj = {}
-    if c.get("joints_soft") and not c.get("show_joints"):
-        return ""                            # (the camera search let the carrying hand out of this frame: no words
-        #                                      of a thing the picture has no hand for)
+    let_out = c.get("joints_soft") and not c.get("show_joints")   # (the camera search let the carrying hand out
+    #                                      of this frame: no words of a thing the picture has no hand for)
     out = []
     for k in [p[0] for p in ppl]:
-        ready = (((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}).get("action") in READY_WORDS
-        if (kind == "close" and not ready) or not held.get(k) or \
+        act = (((ch.get(k) or {}).get("body_pose") or {}).get("params") or {}).get("action")
+        ready, play = act in READY_WORDS, act in PLAY_WORDS
+        if (kind == "close" and not (ready or play)) or (let_out and not play) or not held.get(k) or \
                 str(held[k]).split(" (")[0].strip().lower() in ("nothing", "none"):
             continue
         who = nm.get(k, "the person")
+        if play:
+            # someone playing: the instrument is up at the shoulder in the engine's frame, and the words said it
+            # hung at the side in the right hand (the working hand's place, measured for a plain carry): in the
+            # wide shots a fiddle at a man's shoulder was drawn as a cup at his lips, 11-27
+            out.append(f"{who[0].upper() + who[1:]} is playing {held[k]}: {play_place((c.get('carried') or {}).get(k))}; "
+                       "it is drawn as that instrument and nothing else, never a cup, a pipe or anything he drinks "
+                       "or eats from.")
+            continue
         where = ready_place(ch, k, subj.get(k) or {}, nm, cast or {}, {p[0] for p in ppl}) if ready else \
             hand_place((subj.get(k) or {}).get("measured") or {})
         # (said without a place, a sword was drawn as a blade floating across the frame behind his head and a
@@ -485,6 +493,16 @@ def holds_words(sd: Path, cam: str, ppl: list, cast: dict | None, kind: str) -> 
 
 
 READY_WORDS = ("weapon_ready",)      # the guard of a fighter (scenes/ue/pose.py READY_ACTIONS)
+PLAY_WORDS = ("play_at_shoulder",)   # an instrument played at the shoulder (scenes/ue/pose.py act_play_at_shoulder)
+
+
+def play_place(rows: list | None) -> str:
+    """Where a played instrument is, as the engine holds it (pose.py: the first thing in the left hand up at the left
+    shoulder, a second in the right hand across it), with the second thing's own name when the scene carries one."""
+    hand = [r for r in rows or [] if r.get("at") == "hand" and r.get("name")]
+    second = next((r["name"] for r in hand if r.get("hand") == "r"), None)
+    return ("it is held up at the left shoulder under the chin, its neck out to the side in the raised left hand"
+            + (f", and the right hand holds the {second} across it" if second else ""))
 
 
 def ready_place(ch: dict, k: str, sub: dict, nm: dict, cast: dict, inf: set) -> str:

@@ -60,4 +60,23 @@ def test_the_plan_marks_only_carrying_hands_and_the_redraw_says_nothing_of_a_han
     fp = (A / "scenes" / "from_plan.py").read_text()
     assert 'if not any(poses.get(k_) in WORK_ACTIONS for k_, _ in hj_):\n                    cam["joints_soft"] = True' in fp
     rd = (A / "redraw" / "redraw.py").read_text()
-    assert 'if c.get("joints_soft") and not c.get("show_joints"):\n        return ""' in rd
+    assert "let_out and not play" in rd
+
+
+def test_someone_playing_is_said_to_play_with_the_instrument_at_the_shoulder(tmp_path):
+    import json
+    sys.path.insert(0, str(A / "redraw"))
+    import redraw as R
+    cam = {"name": "s", "holds": {"a": "a lute", "b": "a mug"}, "joints_soft": True, "show_joints": [],
+           "carried": {"a": [{"asset": "x1", "at": "hand", "hand": "l", "name": "lute"},
+                             {"asset": "x2", "at": "hand", "hand": "r", "name": "stick"}]}}
+    chars = {"a": {"body_pose": {"pose": "stand_relaxed", "params": {"action": R.PLAY_WORDS[0]}}},
+             "b": {"body_pose": {"pose": "stand_relaxed", "params": {}}}}
+    (tmp_path / "spec_round0.json").write_text(json.dumps({"cameras": [cam], "characters": chars}))
+    (tmp_path / "result.json").write_text(json.dumps({"subjects": {}}))
+    for kind in ("wide", "close"):                       # (at the shoulder it is in a close frame too)
+        w = R.holds_words(tmp_path, "s", [("a", [0.2, 0.2, 0.4, 0.9]), ("b", [0.6, 0.2, 0.8, 0.9])], {}, kind)
+        assert "is playing a lute" in w and "left shoulder" in w and "holds the stick across it" in w
+        assert "hanging down" not in w and "a mug" not in w      # (b's carrying hand was let out of the frame)
+    assert R.PLAY_WORDS[0] in SP.PLAY_HANDS
+    assert "stick" not in R.play_place([{"at": "hand", "hand": "l", "name": "lute"}])
