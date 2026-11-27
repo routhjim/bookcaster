@@ -59,6 +59,30 @@ import wardrobe as WD  # noqa: E402
 STEPS = ["shots", "spec", "concept", "pieces", "set", "cast", "pass", "stage", "redraw", "keys", "drawn"]
 # a step's rule number, raised when what the step writes changes (done(): an unfinished place runs it again)
 STEP_RULE = {"spec": 5}
+# a figure whose build failed is not tried again unasked (a build is long), until the rules it failed under change:
+# its FAILED mark holds the gates' measures for this person (11-26: a child's figure failed a gate that was then put
+# right for children, and the old mark would have kept it out of every later run)
+def figure_rules(look: str) -> str:
+    """The figure gates' measures that depend on the person, as the builder would apply them now."""
+    sys.path.insert(0, str(HERE / "img3d"))
+    import cast_char as CC
+    return f"armpit {CC.child_armpit(look)}"
+
+
+def fail_mark(w: Path, look: str) -> None:
+    (Path(w) / "FAILED").write_text(f"{time.strftime('%F %T')} | {figure_rules(look)}")
+
+
+def failed_before(w: Path, look: str) -> bool:
+    """The figure built in `w` failed under the rules as they are now for this person. (A mark without its measures
+    is from before they were kept: it failed under a grown person's.)"""
+    try:
+        got = (Path(w) / "FAILED").read_text()
+    except OSError:
+        return False
+    return (got.split("|", 1)[1].strip() if "|" in got else "armpit 0.7") == figure_rules(look)
+
+
 DRAW_STEPS = ("redraw", "keys")          # the drawing phase: run for every place together, after the staging (run())
 PY = sys.executable
 RA = [PY, str(HERE / "run_asset.py")]
@@ -1055,7 +1079,7 @@ class Story:
                 continue
             vid, w, cmd = self._variant_cmd(name, r)
             ok = (C.LIBRARY / "character" / vid / "character.json").exists()
-            if not ok and not (w / "FAILED").exists():
+            if not ok and not failed_before(w, self.look["characters"][name]):
                 log(f"{place}: {name}'s figure in {r['id']} ({vid})")
                 self._fit_mark(w)                # (built now with every fitting rule)
                 if sh(cmd + ["--until", "seats"], w / "run.log") and \
@@ -1064,7 +1088,7 @@ class Story:
                 ok = (C.LIBRARY / "character" / vid / "character.json").exists()
                 if not ok:
                     log(f"{place}: no figure for {name} in {r['id']} ({vid}); see {w / 'run.log'}")
-                    (w / "FAILED").write_text(time.strftime("%F %T"))
+                    fail_mark(w, self.look["characters"][name])
             if ok and self.outfit_words(name, r).get("head_on") and not (w / "headwear_drawn").exists():
                 # a figure built before an outfit's headwear was part of it: drawn and shaped again, once
                 log(f"{place}: {name} in {r['id']}: made again wearing its headwear")
@@ -1162,7 +1186,7 @@ class Story:
             if self._built(name):
                 self._hands_again(name, w, base)
                 continue
-            if (w / "FAILED").exists():
+            if failed_before(w, self.look["characters"][name]):
                 log(f"{place}: {name}'s figure failed its build before ({w / 'FAILED'})")
                 continue
             self._fit_mark(w)                    # (built now with every fitting rule)
@@ -1170,7 +1194,7 @@ class Story:
                 sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")          # (a new round of drawings)
             if not self._built(name):
                 log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}")
-                (w / "FAILED").write_text(time.strftime("%F %T"))      # (a build is long: not tried again unasked)
+                fail_mark(w, self.look["characters"][name])      # (a build is long: not tried again unasked)
         # someone whose own figure could not be built is staged with a stand-in: the built figure of another of
         # the book's people of the same sex (this place's first), at their own height (scenes/stature.py); the
         # redraw draws them from their own sheet and words, so only the pose and the place are the stand-in's

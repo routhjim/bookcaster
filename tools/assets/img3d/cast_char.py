@@ -54,7 +54,8 @@ OMP = os.environ.get("ASSETS_TRELLIS_OMP", "")
 PROJECT = str(Path(C.UE_HOME) / "proj" / "CharLab" / "CharLab.uproject")
 THUMBS = str(C.MH_PRESET_PORTRAITS)      # neutral studio portraits of every shipped preset (config.py)
 HEAD_VOLUME_MAX = 150      # garment vertices allowed in front of the face above the chin (a collar edge, a curl)
-GROWN_AGE = 13             # from this age a figure has a grown person's proportions
+GROWN_AGE = 18             # from this age a figure has a grown person's proportions (11-26: at 13, every drawing of a
+                           # twelve-year-old measured its armpit at 0.67 to 0.70 and none passed a grown 0.694)
 
 
 def age_of(look: str) -> int | None:
