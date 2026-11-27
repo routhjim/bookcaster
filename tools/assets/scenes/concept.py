@@ -12,6 +12,8 @@ it. Here it is asked closed questions, one fact each:
              in, people only sit) or "outdoors";
   ground     of a place "outdoors" only: "land" (people stand on the land itself) or "built" (on a floor made by
              people with an edge round it, under the sky: read and built as a room with no roof);
+  around     of a place "outdoors" only: what lies round where its people stand, out to the horizon: "water",
+             "land" or "buildings" (the place's world is drawn as that, sets/place_build.py round_of);
   walls, floor, ceiling, light   each in a few words (material and colour; where the light comes from);
   seen       the separate pieces of furniture, fittings and large objects in the picture, each with its look;
   spec       for each piece of the place spec: is one in the picture (yes / no), and its look there.
@@ -42,6 +44,14 @@ GROUND_ASK = ("What do the people in this place stand on: the land itself (earth
               "or a yard at ground level), or a floor made by people that has an edge round it and stands over the "
               "land or the water (a deck, a pier, a raft, a rooftop, a balcony, a terrace, a platform, a stage)? "
               "Answer with exactly one word: land or floor.")
+# (11-27: nothing said what lies round a place in the open: its world was always drawn as bare land, and a floor
+# out on the water stood in sand. Asked beside GROUND_ASK, of a place read "outdoors" only; an answer that is not one
+# of the three words is "land", which is how every place was built before the question)
+AROUND_ASK = ("What lies all round the place where the people in this picture stand, beyond its own edge and out to "
+              "the horizon: open water (the sea, a lake, a wide river), open land (fields, hills, woods, desert, a "
+              "shore), or buildings (the streets, houses and roofs of a town)? Answer with exactly one word: water, "
+              "land or buildings.")
+AROUND = ("water", "land", "buildings")
 ASKS = {
     "walls": "In a few words: what are the walls (or the sides of this space) made of, and what colour are they?",
     "floor": "In a few words: what is the floor made of, and what colour is it?",
@@ -213,6 +223,14 @@ def ground_of(ans) -> str:
     return "built" if "floor" in re.sub(r"[^a-z]", "", str(ans or "").lower()) else "land"
 
 
+def around_of(ans) -> str:
+    """The judge's answer to AROUND_ASK: "water" or "buildings" when it says that one alone, else "land" (no answer,
+    another word, or more than one of them: the place is built as it was before the question)."""
+    t = re.sub(r"[^a-z]", "", str(ans or "").lower())
+    got = [k for k in AROUND if k.rstrip("s") in t]
+    return got[0] if len(got) == 1 else "land"
+
+
 def made_floor(res: dict) -> bool:
     """A place in the open whose ground is itself built (a made floor with an edge, under the sky): read and built
     as a room with no roof (sets/place_build.py open_floor), not as open land."""
@@ -294,9 +312,13 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
     # (a made floor in the open is read as a room is: each thing on it apart, its kind and how many; no group)
     op = res.get("space") == "outdoors" and not made_floor(res)
     own = FLOOR_OWN if made_floor(res) else None
+    # (11-27: and how tall each of a made floor's things really is, as open land's are asked: its scale is corrected
+    # by them, img3d/concept_depth.py things_scale, which had nothing to go by)
+    mf = made_floor(res)
     items = [{"id": f"b:{p['id']}", "image": str(concept), "max_new_tokens": 30,
               "ask": {"box": BOX_ASK.format(n=plain_name(p)), **({"real": REAL_ASK.format(n=plain_name(p)),
-                                                                "made": MADE_ASK.format(n=plain_name(p))} if op else {})}}
+                                                                "made": MADE_ASK.format(n=plain_name(p))} if op else
+                                                               {"real": REAL_ASK.format(n=plain_name(p))} if mf else {})}}
              for p in pieces]
     for i, sn in enumerate(res.get("seen") or []):
         items.append({"id": f"s:{i}", "image": str(concept), "max_new_tokens": 30, "ask": {
@@ -306,7 +328,8 @@ def pieces_from(concept: Path, spec: dict, res: dict, ask, out_dir: Path, tag: s
             **({"own": OWN_ASK.format(n=sn["name"]), "real": REAL_ASK.format(n=sn["name"]),
                  "made": MADE_ASK.format(n=sn["name"])} if op else
                # (a room: how many of it, and on one side or both: the set stands that many, as the picture does)
-               {"count": COUNT_ASK.format(n=sn["name"]), "sides": SIDES_ASK.format(n=sn["name"])})}})
+               {"count": COUNT_ASK.format(n=sn["name"]), "sides": SIDES_ASK.format(n=sn["name"]),
+                **({"real": REAL_ASK.format(n=sn["name"])} if mf else {})})}})
     for k, words in BARE.items():
         items.append({"id": f"w:{k}", "image": str(concept), "max_new_tokens": 30, "ask": {"box": BOX_ASK.format(n=words)}})
     items.append({"id": "w:words", "image": str(concept), "max_new_tokens": 70, "ask": {"wall": WALL_ASK}})
@@ -457,8 +480,12 @@ def read(concept: Path, spec: dict, ask) -> dict:
     space = next((k for k in ("cockpit", "outdoors", "room") if k in sp), "room")
     surf = {k: re.sub(r"\s+", " ", str((a.get("surf") or {}).get(k) or "")).strip().rstrip(".") for k in ASKS}
     # what people stand on in a place in the open: the land, or a floor made there (asked of such a place only)
-    ground = ground_of((ask([{"id": "ground", "image": str(concept), "ask": {"ground": GROUND_ASK},
-                              "max_new_tokens": 6}]).get("ground") or {}).get("ground")) if space == "outdoors" else None
+    # ... and what lies round it (asked with it, an item of its own: the ground's answer is not touched)
+    g = ask([{"id": "ground", "image": str(concept), "ask": {"ground": GROUND_ASK}, "max_new_tokens": 6},
+             {"id": "around", "image": str(concept), "ask": {"around": AROUND_ASK}, "max_new_tokens": 6}]) \
+        if space == "outdoors" else {}
+    ground = ground_of((g.get("ground") or {}).get("ground")) if space == "outdoors" else None
+    around = around_of((g.get("around") or {}).get("around")) if space == "outdoors" else None
     open_land = space == "outdoors" and ground != "built"      # (a made floor's things are listed as a room's are)
     seen = []
     for ln in str((a.get("seen_open" if open_land else "seen") or {}).get("seen") or "").splitlines():
@@ -484,7 +511,8 @@ def read(concept: Path, spec: dict, ask) -> dict:
         abreast = 2
     view = "part" if "part" in re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("view") or "").lower()) else "whole"
     cut_ = re.sub(r"[^a-z]", "", str((a.get("view") or {}).get("cut") or "").lower()).startswith("y")
-    return {"concept": str(concept), "space": space, **({"ground": ground} if ground else {}), "view": view, "cut": cut_, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
+    return {"concept": str(concept), "space": space, **({"ground": ground} if ground else {}),
+            **({"around": around} if around else {}), "view": view, "cut": cut_, "seats_abreast": abreast, "surfaces": {k: surf[k] for k in ("walls", "floor", "ceiling")},
             "light": surf["light"], "far": surf["far"],
             "seen": seen[:OPEN_SEEN_MOST if open_land else ROOM_SEEN_MOST], "spec": sc,
             "surfaces_words": (words[0].upper() + words[1:] + "." if words else "")

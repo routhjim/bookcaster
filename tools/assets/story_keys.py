@@ -570,6 +570,19 @@ OPEN_WORDS = ("{room} Part of it: {inside} A wide view of the whole place from w
               "around it and the sky above. Empty: no people. {style}")
 
 
+# ... of a place its picture's reader says has water or a town round it (scenes/concept.py "around"): that, where
+# OPEN_WORDS asks for land. (A made floor is never drawn anew here: step_concept. A concept read before the question
+# was asked has no "around": OPEN_WORDS, word for word)
+OPEN_ROUND_WORDS = {
+    "water": ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: everything "
+              "that stands there seen whole and small in the picture, open water around it out to the horizon and "
+              "the sky above. Empty: no people. {style}"),
+    "buildings": ("{room} Part of it: {inside} A wide view of the whole place from well back, at eye level: open "
+                  "ground in front, everything that stands there seen whole from the ground up and small in the "
+                  "picture, the buildings of the town around it and the sky above. Empty: no people. {style}"),
+}
+
+
 def person_noun(look: str) -> str:
     """What a person is called in a picture's words: the look's own "man", "woman", "boy" or "girl" (its first), else
     the word after its article. (A look that began "a tall, slim young man" made its person "the tall": every key
@@ -915,7 +928,7 @@ class Story:
             # (the whole place in the spec's own words, when it has them: the set sheet's may name one part only)
             room = str(spec.get("whole") or spec.get("room") or "").strip()
             per = str(spec.get("period") or "").replace("_", " ").strip()
-            words = OPEN_WORDS.format(
+            words = OPEN_ROUND_WORDS.get(str(con.get("around") or ""), OPEN_WORDS).format(
                 room=(f"{per[0].upper() + per[1:]}: " if per and per != "not stated" else "") + room,
                 inside=re.sub(r"^\s*(inside|outside)\s*:\s*", "", str(spec.get("_director_room") or ""), flags=re.I).strip(),
                 style=key_style(style.read_text(), open_air=True) if style.exists() else "")

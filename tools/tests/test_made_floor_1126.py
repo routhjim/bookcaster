@@ -63,7 +63,8 @@ def test_a_made_floor_in_the_open_is_read_as_a_room_is():
     res = CO.read(Path("/c/concept.png"), SPEC, judge("outdoors", "floor", calls))
     assert res["space"] == "outdoors" and res["ground"] == "built" and CO.made_floor(res)
     assert [s["name"] for s in res["seen"]] == ["chair", "railing", "lamp post"]      # (the room's list, not the land's)
-    assert calls[1] == ["ground"]                                                    # (asked once, after the space)
+    # (asked once, after the space; 11-27 with it, what lies round the place: tests/test_outdoor_round_side_1127.py)
+    assert calls[1] == ["ground", "around"]
 
 
 def test_open_land_is_read_as_before():
