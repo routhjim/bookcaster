@@ -1846,7 +1846,9 @@ class Story:
 
     def run_place(self, place, todo, redo) -> None:
         if self.only_drawn(place):
-            if not self.done(place, "drawn") or "drawn" in redo:
+            # (a place built again from its spec, `--rebuild`: a place only drawn is drawn again with it; kept, its
+            # two pictures stayed as an older rule had drawn them through every rebuild of the place they cut from)
+            if not self.done(place, "drawn") or "drawn" in redo or "spec" in redo:
                 log(f"{place}: drawn")
                 llm_down()
                 if self.step_drawn(place):
