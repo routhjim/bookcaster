@@ -1393,7 +1393,10 @@ def two_shot_candidates(c, shot, spk, lis, subjects, res, room, line, est_side, 
                     elif opts.get("points"):
                         lens = (20, 24, 28)
                     elif kind in ("wide", "full"):
-                        lens = (20, 24, 28, 35)
+                        # the longest lens that holds the shot, a wider one only where none does (11-28: the
+                        # widest was tried first and kept, and every wide of a place was a 20 mm from 2 m off,
+                        # its floor bulged and the people at its edges stretched)
+                        lens = (35, 28, 24, 20)
                     elif kind == "close":
                         lens = (50, 65, 85, 100)
                     elif mode == "single" or opts.get("_single"):
