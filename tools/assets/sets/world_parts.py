@@ -390,3 +390,37 @@ def build(plan: dict) -> dict:
         mats[m].update({k: v for k, v in over.items() if k != "like"})
     return {"structure": o.structure, "lights": o.lights + list(plan.get("lights") or []), "materials": mats,
             "solids": o.solids}
+
+
+def for_place(world: dict, place: str) -> dict | None:
+    """A story's world as one of its places sees it: the same parts in that place's frame (the place's origin at
+    [0, 0, 0], turned by its "yaw_deg"), with the place's stage and spots. None for a place the world does not hold.
+
+    A story world is a world/1 plan with "places": {name: {"origin": [x, y, z], "yaw_deg", "stage_m": [W, D, H],
+    "spots": {piece id: {"at": [x, y], "facing": [dx, dy]}}}}: every place of the story stands in the one world."""
+    pl = (world.get("places") or {}).get(place)
+    if not pl:
+        return None
+    ox, oy, oz = (list(pl.get("origin") or [0, 0, 0]) + [0.0])[:3]
+    yaw = float(pl.get("yaw_deg") or 0.0)
+
+    def pt(v):
+        v = list(v)
+        x, y = _rot(v[0] - ox, v[1] - oy, -yaw)
+        return [round(x, 4), round(y, 4)] + ([round(v[2] - oz, 4)] if len(v) > 2 else [])
+    parts = []
+    for q in world.get("parts") or []:
+        q = dict(q)
+        for k in ("at", "to", "from", "front"):
+            if isinstance(q.get(k), list):
+                q[k] = pt(q[k] if k == "front" or len(q[k]) > 2 else list(q[k]) + [0.0])
+        if isinstance(q.get("stays"), list):
+            q["stays"] = [pt(v) for v in q["stays"]]
+        if yaw and q.get("kind") not in ("pole", "lights"):
+            q["yaw_deg"] = float(q.get("yaw_deg") or 0.0) - yaw
+        parts.append(q)
+    ground = [dict(g, z_m=round(float(g.get("z_m", -0.1)) - oz, 4)) for g in world.get("ground") or []]
+    return {"schema": SCHEMA, "stage_m": list(pl["stage_m"]), "ground": ground, "parts": parts,
+            "spots": dict(pl.get("spots") or {}), "night": world.get("night"),
+            **({"materials": world["materials"]} if world.get("materials") else {})}
+

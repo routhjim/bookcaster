@@ -1013,11 +1013,16 @@ class Story:
     def _build(self, place, *extra) -> int:
         d = self.d(place)
         con = ["--concept", d / "concept.json"] if (d / "concept.json").exists() else []
+        # the story's solid world (<book>/world.json, sets/world_parts.py): a place it holds is built as a spot of
+        # it, from every side, and takes nothing from a picture
+        wf = self.book / "world.json"
+        if wf.exists() and place in (json.loads(wf.read_text()).get("places") or {}):
+            con = ["--world", wf]
         tod = self.place_time(place) if "--time" in extra else ""
         extra = tuple(x for x in extra if x != "--time") + (("--time", tod) if tod else ())
         sty = ["--style", self.book / "art_style.txt"] if (self.book / "art_style.txt").exists() else []
         # (the things the place's picture was drawn dressed with: each one placed in the set or said where it is)
-        drs = ["--dress", d / "dress.json"] if con and (d / "dress.json").exists() else []
+        drs = ["--dress", d / "dress.json"] if con and con[0] == "--concept" and (d / "dress.json").exists() else []
         return sh([PY, HERE / "sets" / "place_build.py", d / "place_spec.json", self.places[place]["set"]] + con
                   + drs + sty + list(extra), d / "place_build.log")
 

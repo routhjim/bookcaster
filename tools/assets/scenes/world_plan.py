@@ -29,7 +29,8 @@ HORIZON_M = 2000           # a ground or water at least this wide: the world rea
 MAX_PARTS = 220
 # real sizes a part's numbers must lie in (metres): a wrong scale is the fault this plan exists to prevent
 RANGES = {"building": {"w": (2.5, 60), "d": (2.5, 80), "h": (2.2, 45)}, "mast": {"height_m": (3, 60)},
-          "hull": {"length_m": (3, 120), "beam_m": (1, 25), "depth_m": (0.5, 15)}, "lamp": {"height_m": (1.5, 8)}}
+          "hull": {"length_m": (3, 120), "beam_m": (1, 25), "depth_m": (0.5, 15)}, "lamp": {"height_m": (1.5, 8)},
+          "ship": {"length_m": (3, 120)}}
 
 ASK = """You are laying out a film set as a SOLID 3D WORLD for the place "{place}" of a story.
 What the story says of the place: {words}
@@ -51,6 +52,13 @@ Reply with JSON only:
 
 Part kinds. Every part has "kind", "name" (short, lowercase, what it is), "at": [x, y, z] (the middle of its BASE)
 and may have "yaw_deg" (turned counter-clockwise seen from above):
+- "ship": a WHOLE sailing vessel (hull, open main deck with rails, cabin under a raised stern, foredeck, masts,
+  yards, rigging) from "length_m"; may have "beam_m", "masts" (1 to 3), "cabin": true | false, "sails": "furled" |
+  "set". "at" is the middle of its open main deck (the deck's top), the bow toward +x before "yaw_deg". Use this for
+  any ship or boat, never a hull and masts of your own.
+- "row": buildings side by side along a line, "from": [x, y, z] "to": [x, y, z], their fronts toward "front": [x, y];
+  may have "width_m": [least, most], "height_m": [least, most] (to the eaves), "depth_m", "gap_m", "lit" (share of
+  lit windows). Use this for a street, a waterfront or a town's edge, never house by house.
 - "deck": a flat floor people can stand on, its TOP at at's z. "size_m": [x, y], "material", "rail_m" (height of a
   rail or low wall round it, 0 for none), "rail_open": the sides without it, of "north", "south", "east", "west".
 - "block": any plain solid (a wall, a cabin, a quay, a rock, steps). "size_m": [x, y, z], "material".
@@ -146,14 +154,15 @@ def faults(plan, spec: dict) -> list:
         if k not in WP.KINDS:
             f.append(f'{n}: unknown kind "{k}"; the kinds are {", ".join(WP.KINDS)}')
             continue
-        if k != "lights" and not (isinstance(p.get("at"), list) and len(p["at"]) in (2, 3) and all(_num(v) for v in p["at"])):
+        if k not in ("lights", "row") and not (isinstance(p.get("at"), list) and len(p["at"]) in (2, 3) and all(_num(v) for v in p["at"])):
             f.append(f'{n}: "at" must be [x, y, z]')
         names.add(n)
         for m in (p.get(x) for x in ("material", "wall", "roof_material")):
             if m and m not in WP.MATERIALS:
                 f.append(f'{n}: unknown material "{m}"')
         need = {"deck": ("size_m",), "block": ("size_m",), "building": ("size_m",), "hill": ("size_m",),
-                "hull": ("length_m", "beam_m"), "mast": ("height_m",), "pole": ("to",), "lights": ("from", "to")}.get(k, ())
+                "hull": ("length_m", "beam_m"), "mast": ("height_m",), "pole": ("to",), "lights": ("from", "to"),
+                "ship": ("length_m",), "row": ("from", "to")}.get(k, ())
         for key in need:
             v = p.get(key)
             if key == "size_m":
@@ -161,7 +170,7 @@ def faults(plan, spec: dict) -> list:
                 if not (isinstance(v, list) and len(v) >= want and all(_num(x) and x > 0 for x in v[:want])):
                     f.append(f'{n}: "size_m" must be {want} positive numbers')
             elif key in ("to", "from"):
-                if not (isinstance(v, list) and len(v) == 3 and all(_num(x) for x in v)):
+                if not (isinstance(v, list) and len(v) in (2, 3) and all(_num(x) for x in v)):
                     f.append(f'{n}: "{key}" must be [x, y, z]')
             elif not (_num(v) and v > 0):
                 f.append(f'{n}: "{key}" must be a positive number')
