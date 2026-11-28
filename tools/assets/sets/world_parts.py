@@ -10,6 +10,10 @@ looks right from every side and a camera may stand anywhere.
 Frame as in SETS.md: metres, X east, Y north, Z up, the stage's floor at z = 0 round the origin.
 
 Part kinds (each: "kind", "name", "at": [x, y] or [x, y, z] = the middle of its base, "yaw_deg", and its own keys):
+  ship      a whole sailing vessel from "length_m" (beam_m, masts, cabin, sails, mast_m): "at" is the middle of
+            its open main deck, the bow toward +x
+  row       buildings side by side from [x, y, z] to [x, y, z], fronts toward "front" [x, y]; width_m [lo, hi],
+            height_m [lo, hi], depth_m, gap_m, lit, walls [...], roofs [...]
   block     size_m [x, y, z], material
   deck      size_m [x, y], thickness_m, material, rail_m (a rail of that height round it), rail_open [sides]
   building  size_m [w, d, eaves_h], roof "gable" | "flat", pitch_deg, ridge "x" | "y", wall, roof_material,
@@ -262,7 +266,109 @@ def hill(o, p):
         o.box(p["name"], f(0, 0, sz * i / 4), [sx * k, sy * k, sz / 4], p.get("material", "grass"), yaw, solid=False)
 
 
-KINDS = {"block": block, "deck": deck, "building": building, "hull": hull, "mast": mast, "pole": pole, "lamp": lamp,
+def _sub(p, f, yaw, **kw):
+    """A part of a whole thing, given in the whole's own frame."""
+    q = dict(kw)
+    q["at"] = f(*q["at"])
+    q["yaw_deg"] = yaw + q.get("yaw_deg", 0.0)
+    for k in ("to", "from"):
+        if k in q:
+            q[k] = f(*q[k])
+    if "stays" in q:
+        q["stays"] = [f(*s) for s in q["stays"]]
+    q["name"] = f"{p['name']}_{q['name']}"
+    return q
+
+
+def ship(o, p):
+    """A whole sailing vessel from its length: hull, an open main deck with rails, a raised stern over a cabin, a
+    foredeck, masts with yards and stays, a bowsprit. "at" is the middle of the OPEN main deck (its top), the bow
+    toward +x before "yaw_deg"; the masts stand clear of that middle."""
+    f, yaw = _local(p)
+    L = float(p["length_m"])
+    B = float(p.get("beam_m") or max(2.0, L / 4.2))
+    n = int(p.get("masts") or (1 if L < 12 else 2 if L < 24 else 3))
+    sail = p.get("sails", "furled")
+    x_stern, x_bow = -0.42 * L, 0.58 * L                    # (the open deck's middle sits aft of the hull's)
+    cab = 0.16 * L if p.get("cabin", L >= 14) else 0.0
+    fore = 0.14 * L
+    hull(o, _sub(p, f, yaw, name="hull", at=[(x_stern + x_bow) / 2, 0, 0], length_m=L, beam_m=B,
+                 depth_m=p.get("depth_m") or max(1.2, L * 0.13), material=p.get("material", "tarred_timber")))
+    x0, x1 = x_stern + cab, x_bow - fore - 0.12 * L
+    deck(o, _sub(p, f, yaw, name="deck", at=[(x0 + x1) / 2, 0, 0], size_m=[x1 - x0, B], rail_m=1.0 if L >= 8 else 0.5,
+                 rail_open=["east", "west"]))
+    if cab:
+        ch = 2.4
+        block(o, _sub(p, f, yaw, name="cabin", at=[x_stern + cab / 2, 0, 0], size_m=[cab, B, ch], material="timber"))
+        deck(o, _sub(p, f, yaw, name="stern_deck", at=[x_stern + cab / 2, 0, ch + 0.3], size_m=[cab, B], rail_m=1.0))
+        block(o, _sub(p, f, yaw, name="cabin_door", at=[x0 + 0.05, 0, 0], size_m=[0.1, 0.9, 1.9],
+                      material="painted_timber"))
+        for sy in (-1, 1):
+            block(o, _sub(p, f, yaw, name="cabin_window", at=[x0 + 0.04, sy * B * 0.28, 1.0], size_m=[0.08, B * 0.16, 0.8],
+                          material="glow_warm" if p.get("lit", True) else "window_dark"))
+        block(o, _sub(p, f, yaw, name="stern_steps", at=[x0 + 0.8, B / 2 - 0.9, 0], size_m=[1.6, 1.0, ch / 2],
+                      material="timber"))
+    deck(o, _sub(p, f, yaw, name="foredeck", at=[x1 + fore / 2, 0, 0.0], size_m=[fore, B * 0.75], rail_m=0.9,
+                 rail_open=["west"]))
+    H = float(p.get("mast_m") or L * 0.75)
+    spots = {1: [0.22], 2: [0.30, -0.02 if not cab else None], 3: [0.20, 0.42, None]}[min(n, 3)]
+    for i, fx in enumerate(spots):
+        on_stern = fx is None
+        mx = x_stern + cab * 0.6 if on_stern else fx * L
+        mz = (2.7 if cab else 0.0) if on_stern else 0.0
+        mh = H * (1.0 if i == 0 else 0.85 if not on_stern else 0.62)
+        yards = [{"z_m": round(mh * k, 2), "length_m": round(B * w, 2), "sail": sail}
+                 for k, w in ((0.35, 2.0), (0.62, 1.5), (0.85, 1.0))][:3 if mh > 12 else 2 if mh > 6 else 1]
+        mast(o, _sub(p, f, yaw, name=f"mast_{i + 1}", at=[mx, 0, mz], height_m=mh,
+                     diameter_m=round(max(0.15, mh / 45), 2), yards=yards,
+                     stays=[[mx - 0.12 * L, B / 2, mz + 1.0], [mx - 0.12 * L, -B / 2, mz + 1.0],
+                            [mx + 0.06 * L, B / 2, mz + 1.0], [mx + 0.06 * L, -B / 2, mz + 1.0]]))
+    if L >= 10:
+        pole(o, _sub(p, f, yaw, name="bowsprit", at=[x_bow - 0.06 * L, 0, 0.5], to=[x_bow + 0.2 * L, 0, 0.5 + 0.09 * L],
+                     diameter_m=round(max(0.15, L / 90), 2)))
+
+
+def row(o, p):
+    """Buildings side by side along a line, their fronts toward "front" (a point they look at): a street, a
+    waterfront, a far town's edge. Sizes vary inside the ranges, the same at every build."""
+    a, b = p["from"], p["to"]
+    a, b = (list(a) + [0.0])[:3], (list(b) + [0.0])[:3]
+    ln = math.hypot(b[0] - a[0], b[1] - a[1])
+    if ln < 1.0:
+        return
+    ux, uy = (b[0] - a[0]) / ln, (b[1] - a[1]) / ln
+    yaw = math.degrees(math.atan2(uy, ux))
+    fr = p.get("front") or [0.0, 0.0]
+    side = "south" if (-uy) * (fr[0] - a[0]) + ux * (fr[1] - a[1]) < 0 else "north"   # (which long wall faces it)
+    w_lo, w_hi = p.get("width_m") or [6.0, 11.0]
+    h_lo, h_hi = p.get("height_m") or [5.5, 8.5]
+    d = float(p.get("depth_m") or 9.0)
+    seed = sum(ord(c) * (i + 1) for i, c in enumerate(p["name"])) or 1
+
+    def rnd():
+        nonlocal seed
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return seed / 2147483648.0
+    walls, roofs = p.get("walls") or ["plaster", "brick", "stone"], p.get("roofs") or ["slate", "tile"]
+    t, i = 0.0, 0
+    while t < ln - w_lo * 0.6 and i < 60:
+        w = min(w_lo + (w_hi - w_lo) * rnd(), ln - t)
+        h = h_lo + (h_hi - h_lo) * rnd()
+        m = t + w / 2
+        off = d / 2 * (1 if side == "south" else -1)       # (the front wall on the line, the house behind it)
+        cx, cy = a[0] + ux * m - uy * off, a[1] + uy * m + ux * off
+        building(o, {"kind": "building", "name": f"{p['name']}_{i}", "at": [cx, cy, a[2] + (b[2] - a[2]) * m / ln],
+                     "yaw_deg": yaw, "size_m": [round(w, 2), d, round(h, 2)], "roof": "gable",
+                     "ridge": "x" if rnd() < 0.6 else "y", "pitch_deg": 38 + 14 * rnd(),
+                     "wall": walls[int(rnd() * len(walls)) % len(walls)],
+                     "roof_material": roofs[int(rnd() * len(roofs)) % len(roofs)],
+                     "windows": {"rows": max(1, int(h // 2.8)), "cols": max(2, int(w // 2.5)),
+                                 "lit": p.get("lit", 0.4), "sides": [side]}, "door_side": side})
+        t += w + (float(p.get("gap_m") or 0.0) if rnd() < 0.7 else 2.5)
+        i += 1
+
+
+KINDS = {"ship": ship, "row": row, "block": block, "deck": deck, "building": building, "hull": hull, "mast": mast, "pole": pole, "lamp": lamp,
          "lights": lights, "hill": hill}
 
 
