@@ -136,14 +136,22 @@ def send(src: Path, folder: str, name: str, log=print) -> bool:
     if not (remote_size(cfg, tmp) == size and _sent().get(tmp) == dg):
         p = _smb(cfg, f'put /dev/stdin "{tmp}"', stdin=subprocess.PIPE)
         sent = 0
-        with open(src, "rb") as f:
-            while chunk := f.read(CHUNK):
-                p.stdin.write(chunk)
-                sent += len(chunk)
-                ahead = sent / RATE - (time.time() - t0)
-                if ahead > 0:
-                    time.sleep(ahead)
-        p.stdin.close()
+        try:
+            with open(src, "rb") as f:
+                while chunk := f.read(CHUNK):
+                    p.stdin.write(chunk)
+                    sent += len(chunk)
+                    ahead = sent / RATE - (time.time() - t0)
+                    if ahead > 0:
+                        time.sleep(ahead)
+            p.stdin.close()
+        except BrokenPipeError:
+            # the copier gave up part-way: what it said is the reason (11-27: only "Broken pipe" was reported)
+            out = p.stdout.read().decode(errors="replace")
+            p.wait()
+            log(f"jellyfin: copying {name} stopped after {sent / 2**20:.0f} of {size / 2**20:.0f} MiB: "
+                f"{out.strip()[-300:]}")
+            return False
         out = p.stdout.read().decode(errors="replace")
         if p.wait() != 0 or remote_size(cfg, tmp) != size:
             log(f"jellyfin: copying {name} failed: {out.strip()[-300:]}")
