@@ -1077,7 +1077,23 @@ class Story:
         w.mkdir(parents=True, exist_ok=True)
         return fid, w, [PY, HERE / "img3d" / "cast_char.py", "--id", fid, "--sheet", pr["sheet"], "--look", pr["look"],
                         "--lora", pr["lora"], "--trigger", pr["trigger"], "--work", w / "w",
-                        "--scene-tool", HERE / "scenes"] + (["--whole"] if getattr(self, "whole", True) else ["--metahuman"])
+                        "--scene-tool", HERE / "scenes"] + (
+                            # (what the usual look puts on the head is part of a whole figure, as it is of a
+                            # wardrobe variant's: built bare-headed, a man's hat was the redraw's to invent in
+                            # every key, and it wore it in the wide shots and not in the close ones, 11-27)
+                            ["--whole", "--headwear"] if getattr(self, "whole", True) else ["--metahuman"])
+
+    def _head_due(self, name, w) -> bool:
+        """Whether this person's usual look puts a thing on their head that their whole figure was not made in."""
+        if not getattr(self, "whole", True) or (w / "headwear_drawn").exists():
+            return False
+        sys.path.insert(0, str(HERE / "img3d")) if str(HERE / "img3d") not in sys.path else None
+        from cast_char import head_worn
+        return head_worn(str(self.person(name)["look"]).partition("wearing ")[2])
+
+    def _head_mark(self, name, w) -> None:
+        if self._head_due(name, w) and self._built(name):
+            (w / "headwear_drawn").write_text(time.strftime("%F %T"))
 
     def _variant_cmd(self, name, r):
         """A wardrobe variant's figure: the same person on the base figure's MetaHuman, drawn in the outfit (the
@@ -1223,6 +1239,8 @@ class Story:
                 self._fit_mark(w)
                 if sh(base + ["--own-assets", "--from", "choose", "--until", "seats"], w / "run.log"):
                     log(f"{name}: the figure could not be made again; see {w / 'run.log'}")
+                else:
+                    self._head_mark(name, w)
                 continue
             if self._built(name) and self._sheet_newer(name):
                 # (a figure made from a sheet that has since been drawn again is not that person any more)
@@ -1230,6 +1248,17 @@ class Story:
                 self._fit_mark(w)
                 if sh(base + ["--from", "draw", "--until", "seats"], w / "run.log"):
                     log(f"{name}: the figure could not be made again; see {w / 'run.log'}")
+                else:
+                    self._head_mark(name, w)
+                continue
+            if self._built(name) and self._head_due(name, w):
+                # a figure built before the usual look's headwear was part of it: drawn and shaped again, once
+                log(f"{place}: {name}: the figure is made again wearing what its look puts on its head")
+                if sh(base + ["--from", "draw", "--until", "seats"], w / "run.log") == 0:
+                    self._fit_mark(w)
+                    self._head_mark(name, w)
+                else:                            # (the figure made before stays, bare-headed)
+                    log(f"{place}: {name}: NOT made with its headwear; see {w / 'run.log'}")
                 continue
             if self._built(name):
                 self._hands_again(name, w, base)
@@ -1240,6 +1269,7 @@ class Story:
             self._fit_mark(w)                    # (built now with every fitting rule)
             if sh(base + ["--until", "seats"], w / "run.log") and not self._built(name):
                 sh(base + ["--from", "draw", "--until", "seats"], w / "run.log")          # (a new round of drawings)
+            self._head_mark(name, w)
             if not self._built(name):
                 log(f"{place}: no figure for {name} ({fid}); see {w / 'run.log'}")
                 fail_mark(w, self.look["characters"][name])      # (a build is long: not tried again unasked)

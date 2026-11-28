@@ -21,7 +21,7 @@ def test_the_hand_with_the_thing_is_up_in_front_at_about_eye_height_and_holds_it
         s = raised([T.held("mug", MUG, side)])
         left, fwd = PO._body_axes(s)
         sh, h = s.pos[f"upperarm_{side}"], s.pos[f"hand_{side}"]
-        assert PO.dot(PO.sub(h, sh), fwd) > 20 and 0 <= h[2] - s.pos["head"][2] <= 12
+        assert PO.dot(PO.sub(h, sh), fwd) > 20 and -14 <= h[2] - s.pos["head"][2] <= 0
         assert s.pos[f"lowerarm_{side}"][2] < h[2] - 8                       # (the elbow under the hand)
         plain = PO.pose_skel(T.skel(), "stand_relaxed", {"held": [T.held("mug", MUG, side)]})
         assert PO.norm(PO.sub(s.pos[f"hand_{other}"], plain.pos[f"hand_{other}"])) < 1.0   # (the other arm as it was)
@@ -33,7 +33,7 @@ def test_the_hand_with_the_thing_is_up_in_front_at_about_eye_height_and_holds_it
 
 def test_with_nothing_held_the_right_hand_lifts_and_the_name_is_known_everywhere():
     s = raised([])
-    assert s.pos["hand_r"][2] >= s.pos["head"][2] and not (s.info.get("held") or {})
+    assert s.pos["hand_r"][2] >= s.pos["upperarm_r"][2] and not (s.info.get("held") or {})
     for sub in ("scenes", "redraw", ""):
         sys.path.insert(0, str(HERE.parent / "assets" / sub))
     import from_plan as FP

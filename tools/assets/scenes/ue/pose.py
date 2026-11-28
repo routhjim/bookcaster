@@ -2121,12 +2121,13 @@ def act_play_at_shoulder(s, p):
 
 
 RAISE_FWD = 0.5              # a thing lifted in the hand: this share of the arm's length out in front of its shoulder,
-RAISE_OUT = 0.1              # ... this share out to its own side,
-RAISE_OVER_CM = 6.0          # ... and this far over the head joint (about the height of the eyes)
+RAISE_OUT = 0.3              # ... this share out to its own side (clear of the face from in front),
+RAISE_OVER_CM = -8.0         # ... and this far from the head joint's height: about the chin's (at the eyes' the hand
+#                              was drawn over the brow and across a hat, 11-27)
 
 
 def act_raise_in_hand(s, p):
-    """What is in the hand lifted up in front, at about the height of the eyes: the hand of the first thing held (the
+    """What is in the hand lifted up in front, at about the height of the chin: the hand of the first thing held (the
     right with nothing held) out before its shoulder and a little to its own side, the elbow bent under it; the
     other arm as the posture left it. The grip is the last step's (pose_skel: a raised arm holds the working end
     up). (The only raised hand there was to choose was a tool wound up over a piece of work: someone lifting a
