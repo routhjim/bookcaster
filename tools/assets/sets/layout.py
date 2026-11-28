@@ -653,10 +653,20 @@ def expand(spec, assets):
             b = el["base"]
             sz = el["size_m"]
             S.box([b[0], b[1], b[2] + sz[2] / 2], sz, el["material"], f"Boxes/{el.get('name', 'box')}",
-                  yaw=el.get("yaw_deg", 0.0))
+                  yaw=el.get("yaw_deg", 0.0), tile=el.get("tile", True))
         elif k == "ground":
+            # (a world's far ground or water: its top at z_m, round `center`, out to the horizon)
             ext = el.get("extent_m", 400)
-            S.box([0, 0, -0.6], [ext, ext, 1.0], el["material"], "Outside/ground", tile=False)
+            cx, cy = el.get("center", [0, 0])
+            S.box([cx, cy, el.get("z_m", -0.1) - 0.5], [ext, ext, 1.0], el["material"],
+                  f"Outside/{el.get('name', 'ground')}", tile=False)
+        elif k == "beam":           # a straight slab between two points (a roof's slope, a gangway, a spar)
+            S.member(el["from"], el["to"], el["size_m"][0], el["size_m"][1], el["material"],
+                     f"Solids/{el.get('name', 'beam')}", up=tuple(el.get("up") or (0, 0, 1)))
+        elif k == "pole":           # a round bar between two points (a mast, a post, a rope)
+            S.cyl(el["from"], el["to"], el["diameter_m"], el["material"], f"Solids/{el.get('name', 'pole')}")
+        elif k == "ball":
+            S.sphere(el["center"], el["diameter_m"], el["material"], f"Solids/{el.get('name', 'ball')}")
         else:
             raise ValueError(f"unknown structure kind {k}")
     env = light_items(S, spec.get("lights", []))

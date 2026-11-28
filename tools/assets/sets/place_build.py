@@ -1698,6 +1698,110 @@ def world_stage(out: dict, spec: dict, library) -> dict:
     return {"world": aid, "why": "placed", "land": land_said}
 
 
+def with_world(sp: dict, plan: dict) -> dict:
+    """The place as a spot of its story's solid world (sets/world_parts.py for_place): laid out as a floor in the
+    open of the plan's stage size with no wall of its own, the world's solids standing round it and on it. Each
+    piece the plan gives a spot stands there."""
+    sp = dict(sp, kind="outdoors", openings=[], outside="", _open_top=True, _edge_m=STAGE_NO_EDGE_M,
+              _picture_stage=True, _solid_world=plan,
+              _room_m=[float(plan["stage_m"][0]), float(plan["stage_m"][1]),
+                       max(float(plan["stage_m"][2]), OPEN_TOP_STAGE_M)])
+    spots = plan.get("spots") or {}
+    sp["pieces"] = [dict(p, at_xy=[float(v) for v in spots[p["id"]]["at"][:2]],
+                         **({"facing_xy": spots[p["id"]]["facing"]} if spots[p["id"]].get("facing") else {}))
+                    if p.get("id") in spots and p.get("kind") != "terrain" else p
+                    for p in sp.get("pieces") or [] if p.get("kind") != "terrain"]
+    return sp
+
+
+def solids_high(solids: list) -> dict | None:
+    """A world's solids as the set's "high_land" (land_high's form): where nobody is stood, where no camera stands,
+    and how high each stands for a line of sight."""
+    import ground_map as GM
+    n = GM.cells(HIGH_HALF_M, HIGH_CELL_M)
+
+    def inside(x, y, s, pad):
+        c_, s_ = math.cos(math.radians(-s[6])), math.sin(math.radians(-s[6]))
+        dx, dy = x - s[0], y - s[1]
+        return abs(dx * c_ - dy * s_) <= s[2] + pad and abs(dx * s_ + dy * c_) <= s[3] + pad
+    near = [s for s in solids if math.hypot(s[0], s[1]) - math.hypot(s[2], s[3]) < HIGH_HALF_M * 1.5
+            and s[5] > 0.0 and s[4] < 2.2]              # (what a person or a camera at eye height can meet)
+    out = {"cell_m": HIGH_CELL_M, "half_m": HIGH_HALF_M}
+    for name, least in (("runs", HIGH_M[0]), ("tall_runs", HIGH_M[1])):
+        m = [[False] * n for _ in range(n)]
+        for s in near:
+            if s[5] < least:
+                continue
+            r = math.hypot(s[2], s[3]) + HIGH_CELL_M
+            i0, j0 = GM.cell_of(s[0] - r, s[1] + r, HIGH_HALF_M, HIGH_CELL_M)
+            i1, j1 = GM.cell_of(s[0] + r, s[1] - r, HIGH_HALF_M, HIGH_CELL_M)
+            for i in range(max(0, i0), min(n, i1 + 1)):
+                for j in range(max(0, j0), min(n, j1 + 1)):
+                    x, y = GM.cell_mid(i, j, HIGH_HALF_M, HIGH_CELL_M)
+                    if inside(x, y, s, HIGH_CELL_M / 2):
+                        m[i][j] = True
+        out[name] = GM.runs_of(m)
+    cells_ = {}
+    for s in near:
+        if s[5] < HIGH_M[0]:
+            continue
+        r = math.hypot(s[2], s[3]) + SIGHT_CELL_M
+        i0, j0 = GM.cell_of(s[0] - r, s[1] + r, HIGH_HALF_M, SIGHT_CELL_M)
+        i1, j1 = GM.cell_of(s[0] + r, s[1] - r, HIGH_HALF_M, SIGHT_CELL_M)
+        ns = GM.cells(HIGH_HALF_M, SIGHT_CELL_M)
+        for i in range(max(0, i0), min(ns, i1 + 1)):
+            for j in range(max(0, j0), min(ns, j1 + 1)):
+                x, y = GM.cell_mid(i, j, HIGH_HALF_M, SIGHT_CELL_M)
+                if inside(x, y, s, SIGHT_CELL_M / 2):       # (a rail thinner than a cell still stands in one)
+                    lo, hi = cells_.get((i, j), (max(0.0, s[4]), s[5]))
+                    cells_[(i, j)] = (round(min(lo, max(0.0, s[4])), 2), round(max(hi, s[5]), 2))
+    if cells_:
+        out["tops"] = {"cell_m": SIGHT_CELL_M, "half_m": HIGH_HALF_M,
+                       "cells": [[i, j, z[0], z[1]] for (i, j), z in sorted(cells_.items())]}
+    return out if out["runs"] or out["tall_runs"] else None
+
+
+WORLD_NIGHT_SKY = 4.0            # a solid world's sky light at night (its real sky is dark: the place must still read)
+WORLD_DAY_SKY = 1.0
+WORLD_MAT = "world_"             # the world's materials in the set, apart from the period kit's of the same name
+
+
+def solid_world_stage(out: dict, spec: dict) -> dict:
+    """A place of a solid world on its stage: the world's solids in place of the floor and of any picture, a real
+    sky and ground out to the horizon, the world's own lamps beside the pieces' own; the set is good from every
+    side ("all_round") and its cameras stay on the stage ("open_top"). -> what was done, for the report."""
+    import world_parts as WP
+    plan = spec["_solid_world"]
+    w = WP.build(plan)
+    tod = spec.get("_time") or ("night" if plan.get("night") else "day")
+    dark = tod in DARK_TIMES
+    st = [dict(e, material=WORLD_MAT + e["material"]) for e in w["structure"]]
+    # (the world's own deck or ground is the floor: the room's slab would lie in it)
+    out["structure"] = [e for e in out.get("structure") or [] if e.get("kind") != "floor"] + st
+    out["materials"] = dict(out.get("materials") or {}, **{WORLD_MAT + k: v for k, v in w["materials"].items()})
+    own = [l for l in out.get("lights") or [] if l.get("type") not in ("sky", "sun")]
+    ev = float(out.get("exposure_ev100") or 5.0)
+    least = OPEN_KEY_LEAST.get(tod, 1.0) * full_lux(ev)
+    out["lights"] = [{"type": "sun", "toward_sun": list(OPEN_SUN_TOWARD), "lux": round(least, 1),
+                      "kelvin": NIGHT_KELVIN if dark else 5800, "volumetric": 0.0},
+                     {"type": "sky", "intensity": WORLD_NIGHT_SKY if dark else WORLD_DAY_SKY, "atmosphere": True}
+                     ] + own + w["lights"]
+    out["open_top"], out["all_round"] = True, True
+    out.pop("picture_dir", None)
+    hl = solids_high(w["solids"])
+    if hl:
+        out["high_land"] = hl
+    when = {"night": " at night under a dark sky", "dusk": " at dusk, the light low"}.get(tod, "")
+    held = str(out.get("words") or "").partition(": ")[2].strip().rstrip(".")
+    said = str(spec.get("_director_room") or spec.get("room") or "").strip().rstrip(".")
+    said = re.sub(r"^(outside|inside)\s*:\s*", "", said, flags=re.I)
+    out["words"] = f"In the open air{when}" + (f", {said}" if said else "") + (f"; standing there: {held}" if held else "") + "."
+    out["world"] = {"solid": True, "sun": {"dir": list(OPEN_SUN_TOWARD)}, "parts": len(plan.get("parts") or []),
+                    "sun_from": "the world's own sky"}
+    out["validation"] = {"figures": [{"position": [0.0, 0.0], "facing": [0, -1]}]}
+    return {"world": "solid", "why": "built", "parts": len(plan.get("parts") or []), "solids": len(w["solids"])}
+
+
 def open_floor_stage(out: dict, spec: dict, library) -> dict:
     """A made floor in the open (open_floor) on its stage: the room's own structure kept (the floor, the low walls
     round its edge), the place's world set round it as round a place on open land (world_stage: the sky and the far
@@ -2063,7 +2167,8 @@ def build(spec: dict, set_id: str, library=None) -> tuple:
                and not q.get("flat") and L.overlap(q["rect"], b["rect"])]
         if on_:
             next(d for d in based if d["id"] == b["id"])["stands_on_it"] = on_
-    staged = world_stage(out, spec0, library) if world else open_floor_stage(out, spec0, library) if open_top else None
+    staged = solid_world_stage(out, spec0) if spec0.get("_solid_world") else \
+        world_stage(out, spec0, library) if world else open_floor_stage(out, spec0, library) if open_top else None
     lit = room_light(out, spec)
     # a window or door is a set thing named by its wall (setfacts: "<window|door>_<wall>"), not the layout's name
     alias = {o["name"]: f"{'window' if 'window' in o['kind'] else 'door'}_{o['wall']}" for o in lay["openings"]
@@ -2120,6 +2225,11 @@ def main():
         spec = with_concept(spec, json.loads(Path(a[a.index("--concept") + 1]).read_text()))
     if "--dress" in a:                                 # the place's dressing (scenes/place_dress.py), each item placed
         spec = with_dressing(spec, json.loads(Path(a[a.index("--dress") + 1]).read_text()))
+    if "--world" in a:                                 # the story's solid world: this place as a spot of it
+        import world_parts as WP
+        plan = WP.for_place(json.loads(Path(a[a.index("--world") + 1]).read_text()), str(spec.get("place") or ""))
+        if plan:
+            spec = with_world(spec, plan)
     if "--time" in a:                                  # the place's time of day (scenes/place_spec.py time_of_day)
         spec["_time"] = a[a.index("--time") + 1]
     spec = with_crowd(spec)
